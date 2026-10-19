@@ -4,7 +4,7 @@ import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
-import { changeProposal, longProposal, requestProposal, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -35,9 +35,10 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/join/taken': { label: 'Join: email already has an account', render: () => <Join state={{ step: 'form', kind: 'invite' }} problem={{ field: 'email', message: 'There is already an account with this email. Sign in instead.' }} /> },
   '/join/expired': { label: 'Invite expired', render: () => <Join state={{ step: 'expired', kind: 'invite' }} /> },
   '/join/signed-in': { label: 'Invite opened while signed in', render: () => <Join state={{ step: 'signed-in', email: 'ana@acme.no' }} /> },
-  '/home': { label: 'Home, with changes waiting', render: () => <InApp waiting={2}><Home data={{ name: 'Ana Berg', waiting: sampleWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home': { label: 'Home, with changes waiting and your requests', render: () => <InApp waiting={3}><Home data={{ name: 'Ana Berg', waiting: sampleWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl, requests: sampleRequests }} /></InApp> },
   '/home/many': { label: 'Home, with more waiting than it shows', render: () => <InApp waiting={5}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/home/quiet': { label: 'Home, with nothing waiting', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home/not-emailed': { label: 'Home, with a request the admins weren’t emailed about', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl, requests: [{ ...sampleRequests[0], emailed: false }] }} /></InApp> },
   '/home/new': { label: 'Home, just joined', render: () => <InApp waiting={0} spaces={sampleSpaces.filter((space) => space.personal)}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 0, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/home/many-spaces': { label: 'Years in, with a hundred spaces', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} recent={recentMany.map((id) => manySpaces.find((space) => space.id === id)!)} /></InApp> },
   '/spaces/many': { label: 'A space deep among a hundred', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany} spaceId="client-14-Data platform"><Space space={{ ...sampleSpace.root, id: 'client-14-Data platform', name: 'Data platform', parentId: 'client-14', path: [{ id: 'acme', name: 'Acme' }, { id: 'client-14', name: 'Oslo Opera' }] }} view="members"><Members space={sampleSpace.root} /></Space></InApp> },
@@ -79,6 +80,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview': { label: 'Approval card in Claude and ChatGPT', render: () => <CardPreview /> },
   '/confirm/request': { label: 'Send a request to a space’s admins', render: () => <SampleConfirm proposal={requestProposal} /> },
   '/confirm/request/sent': { label: 'A request you sent, waiting for the admins', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'requested', request: { ...requestProposal.request!, sent: true } }} /> },
+  '/confirm/request/not-emailed': { label: 'A request you sent, that the admins weren’t emailed about', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'requested', request: { ...requestProposal.request!, sent: true, emailed: false } }} /> },
   '/confirm/request/admin': { label: 'A member’s request, for an admin to decide', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'requested', request: { ...requestProposal.request!, by: 'Cara Lund', sent: true } }} /> },
   '/confirm/request/approved': { label: 'Your request, approved by an admin', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'approved', decidedBy: 'Jon Dahl', request: { ...requestProposal.request!, sent: true } }} /> },
   '/confirm/request/not-sent': { label: 'A request you didn’t send', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'rejected' }} /> },

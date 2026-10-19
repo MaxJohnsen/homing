@@ -24,11 +24,11 @@ export function ProposalPage({ id }: { id: string }) {
       decide={async (approve, onlyHere) => {
         try {
           await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text });
-          await Promise.all([reload(path), reload('/api/waiting')]);
+          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status === 403) return error instanceof Error ? error.message : undefined;
           // It changed, expired or was decided elsewhere: show it as it is now.
-          await Promise.all([reload(path), reload('/api/waiting')]);
+          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
           return error.code === 'CHANGED' ? error.message : undefined;
         }
       }}

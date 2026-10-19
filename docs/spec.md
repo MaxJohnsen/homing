@@ -225,7 +225,9 @@ One concept covers guidance changes, sharing suggestions, publishing approvals, 
 - **Direct edits skip proposals.** An authorized person editing in the web app simply saves. Both paths use the same checks and the same history.
 - **An approval only counts through a channel the agent can't speak for.** An agent saying "the user approved" is never an approval.
 
-**Approvals are the exception, not the routine.** They appear where you work: in chat when possible, otherwise in an inbox and a daily digest. Each one shows what, to whom and where it came from. They are grouped by destination, and single items can be excluded. If nobody answers, knowledge stays private, important items surface in context, and actions never run. Approval fatigue is tracked as a metric.
+- **A member asks the admins.** A change that only a space's admins may make, such as to its shared rules, becomes a request when a member wants it. The member confirms the exact request first, every admin sees it, and one admin's decision settles it. Admins are emailed when Homing sends email, the email only links to the request, and the member learns the outcome there or from their assistant.
+
+**Approvals are the exception, not the routine.** They appear where you work: in chat when possible, and otherwise on Home in Homing. Each one shows what, to whom and where it came from. They are grouped by destination, and single items can be excluded. If nobody answers, knowledge stays private, important items surface in context, and actions never run. Approval fatigue is tracked as a metric.
 
 ## 7. Connections and records
 

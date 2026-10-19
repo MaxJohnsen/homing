@@ -24,11 +24,22 @@ export interface ProposalData {
    * For a request to the space's admins: who asked, or null when it's yours, why, whether it's
    * sent, and the admins who can decide it.
    */
-  request?: { by: string | null; why: string | null; sent: boolean; admins: string[] } | null;
+  request?: { by: string | null; why: string | null; sent: boolean; emailed?: boolean | null; admins: string[] } | null;
   /** Who decided it, when that was someone else. */
   decidedBy?: string | null;
   /** The rules that already apply where a new one would go. */
   alreadyApplies: { kind: RuleKind; text: string; from: string }[];
+}
+
+/** A request you sent to a space's admins, as Home shows it under your requests. */
+export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within' | 'action' | 'kind'> {
+  text: string | null;
+  state: 'requested' | 'approved' | 'rejected' | 'expired';
+  requestedAt: string;
+  /** Whether Homing could email the admins. */
+  emailed: boolean | null;
+  admins: string[];
+  decidedBy: string | null;
 }
 
 /** A change waiting for you, as Home and the list of everything waiting show it. */
@@ -105,7 +116,10 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     return {
       kind: 'sent',
       heading: `Sent to the admins of ${place}`,
-      detail: `Waiting for ${eitherOf(admins)}. Nothing changes until ${admins.length === 1 ? 'they decide' : 'one of them decides'}.`,
+      detail:
+        request!.emailed === false
+          ? `Waiting for ${eitherOf(admins)}. Homing couldn’t email them, so let them know. It waits on their Home in Homing too.`
+          : `Waiting for ${eitherOf(admins)}. Nothing changes until ${admins.length === 1 ? 'they decide' : 'one of them decides'}.`,
     };
   }
   if (state === 'approved') {

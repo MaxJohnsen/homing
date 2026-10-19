@@ -29,6 +29,8 @@ export interface Proposal {
   createdAt: Date;
   expiresAt: Date;
   requestedAt: Date | null;
+  /** For a sent request, whether Homing could email the space's admins. */
+  adminsEmailed: boolean | null;
   decidedBy: string | null;
   decidedAt: Date | null;
 }
@@ -161,6 +163,43 @@ export async function requestsIn(s: Session, spaceId: string): Promise<(Proposal
   `;
 }
 
+/** A request the person sent to a space's admins, with where it stands. */
+export interface SentRequest extends Proposal {
+  space: string;
+  within: string | null;
+  kind: RuleKind;
+  /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
+  text: string | null;
+  admins: string[];
+  decider: string | null;
+}
+
+/** The requests the person sent: those still waiting, and those settled in the last two weeks, newest first. */
+export async function requestsSent(s: Session): Promise<SentRequest[]> {
+  const me = personOf(s.principal) ?? null;
+  const sent = await s.tx<(Proposal & Pick<SentRequest, 'space' | 'within' | 'kind' | 'text'>)[]>`
+    with sent as (
+      select ${columns(s)} from proposals
+      where private_to = ${me}::uuid and space_id in (${accessibleSpaces(s)}) and requested_at is not null
+        and (state = 'requested' or coalesce(decided_at, expires_at) > now() - interval '14 days')
+    )
+    select sent.*, s.name as space,
+           case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
+           coalesce(sent.change->>'kind', rule.kind, 'preference') as kind, coalesce(sent.change->>'text', rule.body) as text
+    from sent
+    join spaces s on s.id = sent.space_id
+    left join spaces above on above.id = s.parent_id and above.id in (${accessibleSpaces(s)})
+    left join content rule on rule.id = sent.item_id and ${visible(s, 'rule')}
+    order by sent.requested_at desc
+  `;
+  const admins = new Map<string, string[]>();
+  for (const spaceId of new Set(sent.map((request) => request.spaceId))) {
+    admins.set(spaceId, ((await spaceView(s, spaceId))?.members ?? []).filter((member) => member.admin && member.id !== me).map((member) => member.name));
+  }
+  const names = await peopleNames(s, sent.map((request) => request.decidedBy));
+  return sent.map((request) => ({ ...request, admins: admins.get(request.spaceId) ?? [], decider: request.decidedBy ? (names.get(request.decidedBy) ?? null) : null }));
+}
+
 /** A proposal waiting for the person, as a list shows it. */
 export interface Waiting {
   id: string;
@@ -288,6 +327,7 @@ export function proposalData(proposal: ProposalView) {
           by: proposal.yours ? null : proposal.names.proposedTo,
           why: proposal.reason,
           sent: proposal.requestedAt !== null,
+          emailed: proposal.adminsEmailed,
           admins: proposal.admins,
         }
       : null,
@@ -341,6 +381,6 @@ function columns(s: Session) {
   return s.tx`
     id, space_id, private_to, action, item_id, change, agent, request, reason,
     case when state in ('open', 'requested') and expires_at <= now() then 'expired' else state end as state,
-    created_at, expires_at, requested_at, decided_by, decided_at
+    created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at
   `;
 }

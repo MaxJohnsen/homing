@@ -4,7 +4,7 @@ import { ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 import { reload, useLoad } from '@/lib/load';
-import type { WaitingData } from '@/lib/proposals';
+import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
 import { routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
@@ -57,7 +57,7 @@ export function AppPage() {
 function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
   switch (route.name) {
     case 'home':
-      return <Titled title="Home">{waiting && <Home data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl }} recent={recent} />}</Titled>;
+      return <Titled title="Home"><HomePage me={me} waiting={waiting} recent={recent} /></Titled>;
     case 'waiting':
       return <Titled title="Waiting for you">{waiting && <Waiting waiting={waiting} />}</Titled>;
     case 'account':
@@ -71,6 +71,12 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
     case 'skill':
       return <SkillPage id={route.id} />;
   }
+}
+
+function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
+  const requests = useLoad<{ requests: RequestData[] }>('/api/requests').data?.requests;
+  if (!waiting || !requests) return null;
+  return <Home data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl, requests }} recent={recent} />;
 }
 
 function SpacePage({ id, view }: { id: string; view: SpaceView }) {

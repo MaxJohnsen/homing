@@ -11,6 +11,7 @@ import { AccessDenied, withPrincipal, type Sql } from './db.ts';
 import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
+import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable } from './proposals.ts';
 
 /** What the web app's requests need from the server. */
@@ -179,7 +180,11 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
           onlyHere: typeof body.onlyHere === 'boolean' ? body.onlyHere : undefined,
         }),
       );
-      return decided ? json(res, 200, { person: session.user.name, proposal: proposalData(decided) }) : json(res, 404, missing);
+      if (!decided) return json(res, 404, missing);
+      // Emailing the admins about a sent request, or the member about the outcome, comes after the decision holds.
+      await afterDecision(app, person, decided);
+      const now = await withPrincipal(app.sql, { person }, (s) => readProposal(s, id));
+      return json(res, 200, { person: session.user.name, proposal: proposalData(now ?? decided) });
     } catch (error) {
       if (error instanceof Undecidable) return json(res, error.reason === 'expired' ? 410 : 409, { code: error.reason.toUpperCase(), message: error.message });
       if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {

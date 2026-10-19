@@ -116,7 +116,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   const cards = new Set(options.cardClients ?? cardClients);
   const handler = createMcpHandler(({ authInfo }) => {
     const principal = authInfo?.extra?.principal as AgentPrincipal;
-    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId) });
+    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer } });
   });
   mcp = toNodeHandler({
     fetch: async (request, context) => {
