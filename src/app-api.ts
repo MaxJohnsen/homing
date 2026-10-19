@@ -11,7 +11,7 @@ const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const kinds: RuleKind[] = ['requirement', 'preference'];
 
 /**
- * The endpoints of the app's own screens: spaces, what's waiting, and guidance. Each answers only
+ * The endpoints of the app's own screens: spaces, what's waiting, guidance, and looking after Homing. Each answers only
  * with what the signed-in person can open, and the database checks the same underneath. Returns
  * whether it answered.
  */
@@ -155,6 +155,21 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'admin': {
+        const [me] = await read((s) => s.tx<{ instanceAdmin: boolean }[]>`select instance_admin from people where id = ${person}::uuid`);
+        if (!me?.instanceAdmin) return answer(res, 403, { message: 'Only whoever looks after Homing sees this.' });
+        // Everyone with an account, from sign-in's own tables. Looking after Homing opens no spaces.
+        const { rows } = await app.authPool.query<{ id: string; name: string; email: string; createdAt: Date }>(
+          'select "id", "name", "email", "createdAt" as "createdAt" from auth."user" order by "createdAt"',
+        );
+        json(res, 200, {
+          host: app.url.host,
+          email: { sends: Boolean(app.mailer), from: app.mailer?.from ?? null },
+          people: rows.map((row) => ({ name: row.name, email: row.email, joinedAt: row.createdAt, you: row.id === person })),
+        });
+        break;
+      }
+
       case 'skill': {
         const skill = await read((s) => readSkill(s, route.id));
         if (!skill) return answer(res, 404, { message: 'There’s no skill here that you can open.' });
@@ -190,7 +205,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' }
+  | { name: 'spaces' | 'waiting' | 'admin' }
   | { name: 'space' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
@@ -198,6 +213,7 @@ function routeOf(method: string, path: string): Route | undefined {
   if (method === 'GET') {
     if (path === '/api/spaces') return { name: 'spaces' };
     if (path === '/api/waiting') return { name: 'waiting' };
+    if (path === '/api/admin') return { name: 'admin' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],

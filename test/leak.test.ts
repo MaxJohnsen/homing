@@ -440,6 +440,8 @@ describe('through the app’s endpoints', () => {
         assert.equal((await get(`/api/spaces/${space}/skills`)).status, 404);
       }
       assert.equal((await get(`/api/skills/${target.skill}`)).status, 404);
+      // Neither looks after Homing, so neither sees who else uses it.
+      assert.equal((await get('/api/admin')).status, 403);
       // Nor can they change the other client's guidance through the app.
       for (const [path, body] of [
         [`/api/spaces/${target.space}/rules`, { kind: 'requirement', text: 'Hello', shared: true }],

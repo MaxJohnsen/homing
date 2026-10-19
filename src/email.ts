@@ -7,17 +7,18 @@ export interface Email {
   text: string;
 }
 
-/** Sends email. Homing works without one, and then never sends any. */
-export type Mailer = (email: Email) => Promise<void>;
+/** Sends email, from the address it names if it says. Homing works without one, and then never sends any. */
+export type Mailer = ((email: Email) => Promise<void>) & { from?: string };
 
 /** A mailer from SMTP settings, such as `smtps://user:password@smtp.example.com`, if there are any. */
 export function smtpMailer(url = process.env.SMTP_URL, from = process.env.HOMING_EMAIL_FROM): Mailer | undefined {
   if (!url) return undefined;
   const transport = createTransport(url);
   const sender = from ?? `Homing <homing@${new URL(url).hostname}>`;
-  return async (email) => {
+  const send: Mailer = async (email) => {
     await transport.sendMail({ from: sender, ...email });
   };
+  return Object.assign(send, { from: sender });
 }
 
 export const emails = {

@@ -10,7 +10,7 @@ import { addressOf, Link, navigate, type Route } from '@/lib/router';
 import { inOrder, type SpaceSummary } from '@/lib/spaces';
 
 export interface ShellProps {
-  person: { name: string };
+  person: { name: string; instanceAdmin?: boolean };
   spaces: SpaceSummary[];
   /** How many changes wait for the person. */
   waiting: number;
@@ -248,8 +248,8 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
   return <ul className="flex flex-col gap-0.5">{inOrder(childrenOf(null)).map((space) => branch(space, 0))}</ul>;
 }
 
-/** Your name, at the bottom of the shelf: your account and signing out. */
-function PersonMenu({ person, onSignOut }: { person: { name: string }; onSignOut: () => void }) {
+/** Your name, at the bottom of the shelf: your account, looking after Homing if you do, and signing out. */
+function PersonMenu({ person, onSignOut }: { person: ShellProps['person']; onSignOut: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger className={cn('flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-base font-medium hover:bg-background/70', focusRing)}>
@@ -259,6 +259,7 @@ function PersonMenu({ person, onSignOut }: { person: { name: string }; onSignOut
       </DropdownMenuTrigger>
       <DropdownMenuContent side="top" align="start" className="w-60">
         <DropdownMenuItem onClick={() => navigate('/account')}>Your account</DropdownMenuItem>
+        {person.instanceAdmin && <DropdownMenuItem onClick={() => navigate('/admin')}>Looking after Homing</DropdownMenuItem>}
         <DropdownMenuItem onClick={onSignOut}>Sign out</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

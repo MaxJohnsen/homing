@@ -1,4 +1,5 @@
 import type { AccountData } from '@/screens/account';
+import type { AdminData } from '@/screens/admin';
 import type { ProposalData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import type { RuleData, SkillData, SkillSummary } from '@/lib/guidance';
@@ -198,3 +199,15 @@ export const manySpaces: SpaceSummary[] = [
     })),
   ]),
 ];
+
+// Ana looks after Acme's Homing.
+export const sampleAdmin: AdminData = {
+  host: 'homing.acme.no',
+  email: { sends: true, from: 'Homing <homing@acme.no>' },
+  people: [
+    { name: 'Ana Berg', email: 'ana@acme.no', joinedAt: '2026-10-14T09:00:00Z', you: true },
+    { name: 'Cara Lund', email: 'cara@acme.no', joinedAt: '2026-10-15T08:30:00Z', you: false },
+    { name: 'Jon Dahl', email: 'jon@acme.no', joinedAt: '2026-10-15T11:10:00Z', you: false },
+    { name: 'Eli Sand', email: 'eli@sand.studio', joinedAt: '2026-10-17T14:45:00Z', you: false },
+  ],
+};

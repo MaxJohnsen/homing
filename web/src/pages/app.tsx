@@ -11,6 +11,7 @@ import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import { AccountPage } from '@/pages/account';
 import { ProposalPage } from '@/pages/proposal';
 import type { AccountData } from '@/screens/account';
+import { Admin, type AdminData, type InviteMade } from '@/screens/admin';
 import { Home } from '@/screens/home';
 import { Rules, Skills } from '@/screens/guidance';
 import { Skill } from '@/screens/skill';
@@ -61,6 +62,8 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
       return <Titled title="Waiting for you">{waiting && <Waiting waiting={waiting} />}</Titled>;
     case 'account':
       return <Titled title="Your account"><AccountPage /></Titled>;
+    case 'admin':
+      return <Titled title="Looking after Homing"><AdminPage /></Titled>;
     case 'proposal':
       return <Titled title="A decision"><ProposalPage id={route.id} /></Titled>;
     case 'space':
@@ -104,6 +107,24 @@ function ruleActions(spaceId: string): RuleActions {
     edit: (id, text) => run(() => api(`/api/rules/${id}`, { text })),
     remove: (id) => run(() => api(`/api/rules/${id}/remove`, {})),
   };
+}
+
+function AdminPage() {
+  const { data, error } = useLoad<AdminData>('/api/admin');
+  if (error?.status === 403) return <ScreenHeader title="Looking after Homing" meta="Only whoever looks after Homing sees this page." />;
+  if (!data) return null;
+  return (
+    <Admin
+      data={data}
+      invite={async (email) => {
+        try {
+          return await api<InviteMade>('/api/invites', { email });
+        } catch (error) {
+          return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.' };
+        }
+      }}
+    />
+  );
 }
 
 function SkillPage({ id }: { id: string }) {

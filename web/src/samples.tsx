@@ -4,8 +4,9 @@ import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
-import { changeProposal, longProposal, manySpaces, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { changeProposal, longProposal, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
+import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
 import { Confirm } from '@/screens/confirm';
 import { Connect } from '@/screens/connect';
@@ -54,7 +55,9 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="rules"><Rules space={sampleSpace.kitchen} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/from-above': { label: 'Members of a space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="members"><Members space={sampleSpace.fromAbove} /></Space></InApp> },
   '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
-  '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }}><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },
+  '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }} looksAfterHoming><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },
+  '/admin': { label: 'Looking after Homing', render: () => <InApp route={{ name: 'admin' }} looksAfterHoming><Admin data={sampleAdmin} invite={sampleInvite} /></InApp> },
+  '/admin/no-email': { label: 'Looking after Homing, without email', render: () => <InApp route={{ name: 'admin' }} looksAfterHoming><Admin data={{ ...sampleAdmin, email: { sends: false, from: null } }} invite={sampleInvite} /></InApp> },
   '/account/password': { label: 'Your account, with a password', render: () => <InApp route={{ name: 'account' }}><Account account={{ ...sampleAccount, password: true, passkeys: [] }} /></InApp> },
   '/account/recovered': { label: 'Signed in with a sign-in link', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} notice="recovered" /></InApp> },
   '/recover': { label: 'Can’t sign in', render: () => <Recover recovery="email" /> },
@@ -94,6 +97,10 @@ function SampleConfirm({ proposal, message }: { proposal: ProposalData; message?
   );
 }
 
+/** Inviting on the sample makes a link that leads nowhere, or says it was sent. */
+const sampleInvite: MakeInvite = async (email) =>
+  email ? { to: email, expiresAt: '2026-10-26T10:00:00Z', emailed: true } : { link: 'https://homing.acme.no/join#sample', expiresAt: '2026-10-26T10:00:00Z', emailed: false };
+
 /** The spaces Ana opened lately, among a hundred. */
 const recentMany = ['client-0', 'client-14-Data platform', 'client-5', 'family'];
 
@@ -101,8 +108,9 @@ const recentMany = ['client-0', 'client-14-Data platform', 'client-5', 'family']
 const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined };
 
 /** A screen inside the app, with Ana's spaces on the shelf. */
-function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces, recent = [] }: {
+function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces, recent = [], looksAfterHoming = false }: {
   children: ReactNode;
+  looksAfterHoming?: boolean;
   route?: Route;
   spaceId?: string;
   waiting?: number;
@@ -110,7 +118,7 @@ function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, space
   recent?: string[];
 }) {
   return (
-    <Shell person={{ name: 'Ana Berg' }} spaces={spaces} waiting={waiting} recent={recent} route={spaceId ? { name: 'space', id: spaceId } : route} spaceId={spaceId} onSignOut={() => undefined}>
+    <Shell person={{ name: 'Ana Berg', instanceAdmin: looksAfterHoming }} spaces={spaces} waiting={waiting} recent={recent} route={spaceId ? { name: 'space', id: spaceId } : route} spaceId={spaceId} onSignOut={() => undefined}>
       {children}
     </Shell>
   );
