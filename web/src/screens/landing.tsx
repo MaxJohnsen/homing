@@ -7,8 +7,6 @@ import dovecote from '@/assets/illustrations/dovecote.webp';
 import faceBoy from '@/assets/illustrations/face-boy.webp';
 import faceGirl from '@/assets/illustrations/face-girl.webp';
 import resting from '@/assets/illustrations/empty.png';
-import onePlace from '@/assets/illustrations/one-place.webp';
-import rules from '@/assets/illustrations/rules.webp';
 import sharing from '@/assets/illustrations/sharing.webp';
 import startingOver from '@/assets/illustrations/starting-over.webp';
 import '@/landing.css';
@@ -24,8 +22,8 @@ const links = {
 /**
  * The landing page, read top to bottom like a picture book. The cover and the ending are centered.
  * Every chapter between them is one column with one left edge for its heading, text and product
- * fragments, opened by a drawing centered above it. Drawings share one maximum height, so none
- * outweighs the others. Chapters alternate between linen and a soft band, like turning a page.
+ * fragments. Each chapter has one picture: a drawing centered above it, or a product fragment below
+ * its text, alternating down the page. Chapters alternate between linen and a soft band.
  */
 export function Landing() {
   const root = useMotion();
@@ -42,7 +40,7 @@ export function Landing() {
           <p className="t-lead" {...reveal(3)}>We made Homing because we wanted that knowledge to stay useful.</p>
         </Chapter>
 
-        <Chapter id="together" anchor="how" band title="Bring it all together." drawing={<Drawing src={onePlace} width={1600} height={680} />}>
+        <Chapter id="together" anchor="how" band title="Bring it all together.">
           <p className="t-lead" {...reveal(2)}>Keep what matters about your projects, work and everyday life in one place.</p>
           <p className="t-body" {...reveal(3)}>
             Each project and part of your life gets its own space. Come back weeks later without explaining everything again, switch assistants without losing the context, and let Homing help keep it all up to date.
@@ -55,12 +53,9 @@ export function Landing() {
           <p className="t-body" {...reveal(3)}>
             Share a project decision with a colleague and their assistant, and everyone works from the same understanding. Everything else stays private.
           </p>
-          <div className="mt-6 flex flex-col gap-4" {...reveal(4)}>
-            <ShareSteps />
-          </div>
         </Chapter>
 
-        <Chapter id="rules" band title="Rules change only when you say so." drawing={<Drawing src={rules} width={960} height={960} />}>
+        <Chapter id="rules" band title="Rules change only when you say so.">
           <p className="t-body" {...reveal(2)}>Assistants can suggest how they should work in a space. Nothing changes until you approve it.</p>
           <RuleCard />
         </Chapter>
@@ -127,16 +122,16 @@ function Cover() {
 }
 
 /**
- * A chapter: its drawing centered at the top, then its heading, text and product fragments on
- * one left edge in one column. A band chapter sits on the soft ground.
+ * A chapter: an optional drawing centered at the top, then its heading, text and any product
+ * fragment on one left edge in one column. A band chapter sits on the soft ground.
  */
-function Chapter({ id, anchor, band, title, drawing, children }: { id: string; anchor?: string; band?: boolean; title: string; drawing: ReactNode; children: ReactNode }) {
+function Chapter({ id, anchor, band, title, drawing, children }: { id: string; anchor?: string; band?: boolean; title: string; drawing?: ReactNode; children: ReactNode }) {
   return (
     <section id={anchor} aria-labelledby={id} className="px-2 sm:px-3">
       <div className={cn('rounded-[1.75rem] px-5 py-24 sm:px-8 lg:py-32', band && 'bg-muted')}>
         <div className="mx-auto flex w-full max-w-[44rem] flex-col gap-6">
           {drawing}
-          <h2 id={id} className="t-heading mt-6 font-semibold" {...reveal(1)}>{title}</h2>
+          <h2 id={id} className={cn('t-heading font-semibold', drawing && 'mt-6')} {...reveal(1)}>{title}</h2>
           {children}
         </div>
       </div>
@@ -203,53 +198,6 @@ function SpacesMap() {
       </div>
       <figcaption className="t-small text-muted-foreground">Invite someone to a space, and they and their assistants reach what’s inside it, except what’s closed.</figcaption>
     </figure>
-  );
-}
-
-/** A conversation in an assistant: the person on the right, the assistant on the left. */
-function Chat({ where, children }: { where: string; children: ReactNode }) {
-  return (
-    <div data-ui className="flex flex-col gap-3 rounded-2xl border bg-card p-4 sm:p-5">
-      <p className="text-sm text-muted-foreground">{where}</p>
-      {children}
-    </div>
-  );
-}
-
-function Said({ children }: { children: ReactNode }) {
-  return <p className="max-w-[85%] self-end rounded-2xl bg-muted px-4 py-2.5 text-[15px]">{children}</p>;
-}
-
-function Replied({ assistant, children }: { assistant: string; children: ReactNode }) {
-  return (
-    <div className="flex flex-col gap-1">
-      <p className="text-sm font-semibold">{assistant}</p>
-      <div className="text-[15px] leading-relaxed">{children}</div>
-    </div>
-  );
-}
-
-/** Ana shares a decision, and Ben's assistant knows it. */
-function ShareSteps() {
-  return (
-    <>
-      <Chat where="Ana, in Claude">
-        <Said>The website launch moved to November 14.</Said>
-        <Replied assistant="Claude">
-          <p>Saved for you. Share it with Juniper? Ben will see it.</p>
-          <div className="mt-3 flex gap-2">
-            <span className={smallPrimary}>Share</span>
-            <span className={smallOutline}>Keep private</span>
-          </div>
-        </Replied>
-      </Chat>
-      <Chat where="Ben, in ChatGPT">
-        <Said>When does the website launch?</Said>
-        <Replied assistant="ChatGPT">
-          <p>November 14. Ana shared the new date on Monday.</p>
-        </Replied>
-      </Chat>
-    </>
   );
 }
 

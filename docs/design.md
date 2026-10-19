@@ -117,9 +117,9 @@ homing.place introduces Homing to someone meeting it for the first time. It is a
 It reads like a picture book, one chapter per idea.
 
 - The cover and the ending are centered: the drawing, the title or closing line, and the way in. Everything between them sits in one column with one left edge for headings, text and product fragments. Nothing in a chapter is wider or narrower than that column.
-- Each chapter opens with its own drawing, centered above the column. All drawings share one maximum height, so none outweighs the others, and none is cropped.
+- Each chapter has one picture, never two: a drawing centered above the column, or a product fragment below the text. They alternate down the page. All drawings share one maximum height, and none is cropped.
 - Chapters alternate between linen and the muted band.
-- Every drawing shows the one idea of its chapter: knowledge scattered and explained again, work and everyday life in one place, one card shared while the notebook stays, and a rule waiting for a person to decide. The bird opens the page flying home to its loft with a card, as a homing pigeon would, and ends it asleep in its box.
+- Every drawing shows the one idea of its chapter: knowledge scattered and explained again, and one card shared while the notebook stays. The product fragments show spaces and who reaches them, and a rule waiting for a person to approve it. The bird opens the page flying home to its loft with a card, as a homing pigeon would, and ends it asleep in its box.
 - Because it introduces rather than asks for a decision, its type is larger: the title, chapter headings, one larger line at 22 px, body text at 18 px and small notes at 15 px. Product fragments keep the app's own scale.
 
 ## Working on screens
