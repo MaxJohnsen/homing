@@ -56,7 +56,7 @@ export function JoinPage() {
         async join(name, email) {
           try {
             await createPasskey(await ticketFor(name, email));
-            location.assign('/account?welcome');
+            location.assign('/');
           } catch (error) {
             return problem(error);
           }
@@ -64,7 +64,7 @@ export function JoinPage() {
         async joinWithPassword(name, email, password) {
           try {
             await api('/api/join/password', { ticket: await ticketFor(name, email), password });
-            location.assign('/account?welcome');
+            location.assign('/');
           } catch (error) {
             return problem(error);
           }

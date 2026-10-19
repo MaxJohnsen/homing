@@ -21,6 +21,25 @@ export interface ProposalData {
   alreadyApplies: { kind: RuleKind; text: string; from: string }[];
 }
 
+/** A change waiting for you, as Home and the list of everything waiting show it. */
+export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'action' | 'kind'> {
+  spaceId: string;
+  /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
+  text: string | null;
+  createdAt: string;
+}
+
+/** Who wants what, where: "Claude wants to add a rule to Acme". */
+export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal'>): string {
+  const { assistant, action, kind } = proposal;
+  const place = placeOf(proposal);
+  return action === 'add'
+    ? `${assistant} wants to add a rule to ${place}`
+    : action === 'change'
+      ? `${assistant} wants to change a ${kind} in ${place}`
+      : `${assistant} wants to remove a ${kind} from ${place}`;
+}
+
 /** "Acme", or "your personal space". */
 export function placeOf(proposal: Pick<ProposalData, 'space' | 'personal'>): string {
   return proposal.personal ? 'your personal space' : proposal.space;

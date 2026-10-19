@@ -7,11 +7,12 @@
 // they haven't decided yet. Each tries to read and
 // change the other's, in three ways: through Homing, through Homing with
 // row-level security off, and straight against the database with Homing's
-// filters bypassed. So each layer is shown to refuse on its own.
+// filters bypassed. So each layer is shown to refuse on its own. Then two
+// people signed in to the app try the same through its endpoints.
 
 import assert from 'node:assert/strict';
-import { before, describe, test } from 'node:test';
-import { AccessDenied } from '../src/db.ts';
+import { after, before, describe, test } from 'node:test';
+import { AccessDenied, authDatabaseUrl } from '../src/db.ts';
 import { addRule, editRule, removeRule, rulesFor } from '../src/guidance.ts';
 import {
   addSource,
@@ -28,8 +29,10 @@ import {
 } from '../src/knowledge.ts';
 import { decide, openProposals, proposeRule, readProposal, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor } from '../src/skills.ts';
+import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.ts';
-import { admin, as, authDb, db, person, refused, type Person } from './helpers.ts';
+import { admin, as, authDb, db, member, person, refused, type Person } from './helpers.ts';
+import { inTestDatabase } from './reset.ts';
 
 interface Client {
   name: string;
@@ -384,6 +387,58 @@ async function client(
   );
   return { ...client, proposal };
 }
+
+describe('through the app’s endpoints', () => {
+  let homing: Homing;
+  let ana: SignedIn;
+  let ben: SignedIn;
+
+  // Signed in to the app this time, so each has an account of their own.
+  const signedIn = async (name: string, rule: string) => {
+    const who = await member(homing.url, name);
+    const space = await as(who, (s) => createSpace(s, { name: `${name}’s client` }));
+    const proposal = await as({ person: who.id, agent: 'Claude' }, (s) =>
+      proposeRule(s, { action: 'add rule', spaceId: space, kind: 'preference', text: rule, shared: true }),
+    );
+    return { name, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal };
+  };
+  type SignedIn = Awaited<ReturnType<typeof signedIn>>;
+
+  before(async () => {
+    homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl) });
+    ana = await signedIn('Ana', 'Write Acme reports in Norwegian');
+    ben = await signedIn('Ben', 'Send Beta invoices in euros');
+  });
+
+  after(() => homing.close());
+
+  test('nobody sees or decides another client’s spaces or proposals', async () => {
+    for (const [intruder, target] of [[ben, ana], [ana, ben]]) {
+      const { browser } = intruder;
+      const seen: unknown[] = [];
+      const get = async (path: string) => {
+        const response = await browser.json(path);
+        seen.push(response.body);
+        return response;
+      };
+
+      const spaces = (await get('/api/spaces')).body.spaces as { id: string }[];
+      assert.deepEqual(spaces.map((space) => space.id).sort(), [intruder.space, intruder.personalSpaceId].sort());
+      for (const space of [target.space, target.personalSpaceId]) assert.equal((await get(`/api/spaces/${space}`)).status, 404);
+      const waiting = (await get('/api/waiting')).body.waiting as { id: string }[];
+      assert.deepEqual(waiting.map((item) => item.id), [intruder.proposal.id]);
+      assert.equal((await get(`/api/proposals/${target.proposal.id}`)).status, 404);
+      const decided = await browser.json(`/api/proposals/${target.proposal.id}/decide`, { approve: true });
+      assert.equal(decided.status, 404);
+      seen.push(decided.body);
+
+      // Nothing they got back names the other client or what it asked for.
+      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}`));
+    }
+    const proposals = await admin`select state from proposals where id in ${admin([ana.proposal.id, ben.proposal.id])}`;
+    assert.deepEqual(proposals.map((row) => row.state), ['open', 'open']);
+  });
+});
 
 /** Every item and rule still says what its owner wrote, and nothing was removed. */
 async function assertUntouched() {

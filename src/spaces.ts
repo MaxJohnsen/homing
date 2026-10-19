@@ -84,3 +84,83 @@ export function accessibleSpaces(s: Session) {
     ? s.tx`select space_id from space_access where person_id = ${s.principal.person}::uuid`
     : s.tx`select ${s.principal.space}::uuid`;
 }
+
+/** Someone with access to a space, directly or through a space above it. */
+export interface Member {
+  id: string;
+  name: string;
+  admin: boolean;
+  /** Whether they're a member of this space itself. */
+  member: boolean;
+  /** The nearest space above whose members have access, if they're one of them. */
+  through: string | null;
+}
+
+/** A space as its own page shows it: where it sits and who can open it. */
+export interface SpaceView extends Space {
+  /** The spaces above it that the person can open, from the top down. */
+  path: { id: string; name: string }[];
+  /** Whether people in a space above it that the person can't open have access too. */
+  reachedFromAbove: boolean;
+  /** Everyone with access, except in a personal tree, which only its owner has. */
+  members: Member[];
+}
+
+/**
+ * A space the person can open, with the spaces above it they can also open
+ * and who has access. Access comes from a membership in the space, or in a
+ * space above it as long as nothing on the way down is closed, and admin
+ * rights follow the same way. A space above that the person can't open is
+ * never named. Returns undefined when they can't open the space.
+ */
+export async function spaceView(s: Session, spaceId: string): Promise<SpaceView | undefined> {
+  const spaces = new Map((await listSpaces(s)).map((space) => [space.id, space]));
+  const space = spaces.get(spaceId);
+  if (!space) return undefined;
+
+  const path: SpaceView['path'] = [];
+  for (let above = space.parentId && spaces.get(space.parentId); above; above = above.parentId && spaces.get(above.parentId)) {
+    path.unshift({ id: above.id, name: above.name });
+  }
+
+  // The spaces whose members have access: this one, and those above it until one is closed.
+  const reaching = [space];
+  let reachedFromAbove = false;
+  for (let below = space; !below.closed && below.parentId; ) {
+    const above = spaces.get(below.parentId);
+    if (!above) {
+      reachedFromAbove = true;
+      break;
+    }
+    reaching.push(above);
+    below = above;
+  }
+
+  const members = new Map<string, Member>();
+  if (!space.privateTo) {
+    const rows = await s.tx<{ spaceId: string; personId: string; name: string; role: Role }[]>`
+      select m.space_id, m.person_id, p.name, m.role
+      from memberships m join people p on p.id = m.person_id
+      where m.space_id in ${s.tx(reaching.map((reach) => reach.id))}
+    `;
+    // Nearest first, so "through" names the nearest space above.
+    for (const reach of reaching) {
+      for (const row of rows.filter((candidate) => candidate.spaceId === reach.id)) {
+        const here = reach.id === space.id;
+        const known = members.get(row.personId) ?? { id: row.personId, name: row.name, admin: false, member: false, through: null };
+        known.admin ||= row.role === 'admin';
+        if (here) known.member = true;
+        else known.through ??= reach.name;
+        members.set(row.personId, known);
+      }
+    }
+  }
+
+  return {
+    ...space,
+    parentId: space.parentId && spaces.has(space.parentId) ? space.parentId : null,
+    path,
+    reachedFromAbove,
+    members: [...members.values()].sort((a, b) => a.name.localeCompare(b.name)),
+  };
+}

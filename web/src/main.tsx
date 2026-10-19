@@ -1,5 +1,6 @@
 import { StrictMode, lazy, Suspense, type ComponentType } from 'react';
 import { createRoot } from 'react-dom/client';
+import { routeOf } from '@/lib/router';
 import { NotFound } from '@/screens/not-found';
 import './styles.css';
 
@@ -8,18 +9,18 @@ const pages: Record<string, ComponentType> = {
   '/sign-in': lazy(() => import('@/pages/sign-in').then((page) => ({ default: page.SignInPage }))),
   '/setup': lazy(() => import('@/pages/join').then((page) => ({ default: page.JoinPage }))),
   '/join': lazy(() => import('@/pages/join').then((page) => ({ default: page.JoinPage }))),
-  '/account': lazy(() => import('@/pages/account').then((page) => ({ default: page.AccountPage }))),
   '/connect': lazy(() => import('@/pages/connect').then((page) => ({ default: page.ConnectPage }))),
   '/recover': lazy(() => import('@/pages/recover').then((page) => ({ default: page.RecoverPage }))),
-  '/proposals/:id': lazy(() => import('@/pages/proposal').then((page) => ({ default: page.ProposalPage }))),
 };
 
-// A page's address, without what identifies the thing on it, such as /proposals/<id>.
-const path = location.pathname.replace(/\/$/, '').replace(/^(\/proposals)\/[0-9a-f-]{36}$/i, '$1/:id');
+// Every screen inside the app is one page, which moves between them without loading again.
+const App = lazy(() => import('@/pages/app').then((page) => ({ default: page.AppPage })));
+
+const path = location.pathname.replace(/(.)\/$/, '$1');
 
 const Page = import.meta.env.DEV
   ? lazy(() => import('@/samples').then((samples) => ({ default: samples.Samples })))
-  : (pages[path] ?? NotFound);
+  : routeOf(path) ? App : (pages[path] ?? NotFound);
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

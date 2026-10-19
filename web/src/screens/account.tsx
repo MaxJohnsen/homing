@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { Check, CircleCheck, Copy, KeyRound } from 'lucide-react';
+import { Check, Copy, KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Wordmark } from '@/components/wordmark';
+import { ScreenHeader } from '@/components/screen';
 import empty from '@/assets/illustrations/empty.png';
 
 export interface Passkey {
@@ -44,17 +44,15 @@ export interface AccountActions {
   verifyEmail(): Promise<string | undefined>;
   invite(email?: string): Promise<InviteMade | { problem: string }>;
   signInAgain(): Promise<void>;
-  signOut(): Promise<void>;
 }
 
 /** An invite just made: a link to share, or sent by email straight to the person. */
 export type InviteMade = { link: string; expiresAt: string; emailed: false } | { to: string; expiresAt: string; emailed: true };
 
 /** Shown once, after something that brought you here. */
-export type AccountNotice = 'welcome' | 'recovered' | 'verified';
+export type AccountNotice = 'recovered' | 'verified';
 
 const notices: Record<AccountNotice, (account: AccountData) => { title: string; text: string }> = {
-  welcome: (account) => ({ title: `Welcome, ${account.name.split(' ')[0]}`, text: 'Your account is ready. Next, connect your assistant.' }),
   recovered: () => ({ title: "You're signed in", text: 'Add a passkey on this device now, so you can sign in next time.' }),
   verified: () => ({ title: 'Your email is verified', text: 'If you ever can’t sign in, Homing can send you a sign-in link.' }),
 };
@@ -63,42 +61,27 @@ const notices: Record<AccountNotice, (account: AccountData) => { title: string; 
 export function Account({ account, notice, actions }: { account: AccountData; notice?: AccountNotice; actions?: AccountActions }) {
   const shown = notice && notices[notice](account);
   return (
-    <div className="min-h-dvh">
-      <header className="mx-auto flex w-full max-w-xl items-center justify-between px-4 py-5">
-        <a href="/" className="rounded-md focus-visible:ring-[3px] focus-visible:ring-ring/70 focus-visible:outline-none"><Wordmark /></a>
-        <span className="text-sm text-muted-foreground">{account.name}</span>
-      </header>
-
-      <main className="mx-auto flex w-full max-w-xl flex-col gap-6 px-4 pb-16">
-        {shown ? (
-          <div className="flex items-start gap-3 rounded-xl bg-change p-5" role="status">
-            <CircleCheck aria-hidden="true" className="mt-0.5 size-6 shrink-0 text-primary" />
-            <div className="flex flex-col gap-1">
-              <h1 className="text-2xl font-semibold tracking-tight">{shown.title}</h1>
-              <p className="text-base text-muted-foreground">{shown.text}</p>
-            </div>
-          </div>
-        ) : (
-          <h1 className="text-2xl font-semibold tracking-tight">Your account</h1>
-        )}
-
-        {notice === 'recovered' ? (
-          <>
-            <SignInMethods account={account} actions={actions} restoring />
-            <Assistants account={account} actions={actions} />
-          </>
-        ) : (
-          <>
-            <Assistants account={account} actions={actions} />
-            <SignInMethods account={account} actions={actions} />
-          </>
-        )}
-        {account.instanceAdmin && <Invite account={account} actions={actions} />}
-
-        <div>
-          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => actions?.signOut()}>Sign out</Button>
+    <div className="flex max-w-3xl flex-col gap-6">
+      {shown ? (
+        <div role="status">
+          <ScreenHeader title={shown.title} meta={shown.text} />
         </div>
-      </main>
+      ) : (
+        <ScreenHeader title="Your account" />
+      )}
+
+      {notice === 'recovered' ? (
+        <>
+          <SignInMethods account={account} actions={actions} restoring />
+          <Assistants account={account} actions={actions} />
+        </>
+      ) : (
+        <>
+          <Assistants account={account} actions={actions} />
+          <SignInMethods account={account} actions={actions} />
+        </>
+      )}
+      {account.instanceAdmin && <Invite account={account} actions={actions} />}
     </div>
   );
 }
@@ -172,7 +155,8 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
   );
 }
 
-function CopyAddress({ value }: { value: string }) {
+/** The address assistants connect to, with a way to copy it. */
+export function CopyAddress({ value }: { value: string }) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     await navigator.clipboard.writeText(value).catch(() => undefined);

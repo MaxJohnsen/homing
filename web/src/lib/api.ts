@@ -24,7 +24,7 @@ export async function api<T = Record<string, unknown>>(path: string, body?: unkn
 }
 
 /** Where to go after signing in: a page of Homing's own, never another site. */
-export function nextPage(fallback = '/account'): string {
+export function nextPage(fallback = '/'): string {
   return samePage(new URLSearchParams(location.search).get('next'), location.origin, fallback);
 }
 

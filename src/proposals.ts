@@ -113,6 +113,36 @@ export async function openProposals(s: Session, spaceId: string): Promise<Propos
   `;
 }
 
+/** A proposal waiting for the person, as a list shows it. */
+export interface Waiting {
+  id: string;
+  spaceId: string;
+  space: string;
+  /** Whether the space is the person's personal space. */
+  personal: boolean;
+  action: Action;
+  kind: RuleKind;
+  /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
+  text: string | null;
+  agent: string | null;
+  createdAt: Date;
+}
+
+/** Everything waiting for the person to decide, in every space they can open, oldest first. */
+export async function waitingFor(s: Session): Promise<Waiting[]> {
+  return s.tx<Waiting[]>`
+    select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
+           p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
+           coalesce(p.change->>'text', rule.body) as text, p.agent, p.created_at
+    from proposals p
+    join spaces s on s.id = p.space_id
+    left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
+    where p.private_to = ${personOf(s.principal) ?? null}::uuid and p.space_id in (${accessibleSpaces(s)})
+      and p.state = 'open' and p.expires_at > now()
+    order by p.created_at
+  `;
+}
+
 /**
  * Approves or rejects a proposal, once. Approving makes exactly the change
  * that was shown, as the person deciding, so it needs their rights at that

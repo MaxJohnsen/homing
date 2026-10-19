@@ -1,25 +1,22 @@
 import { useEffect, useState } from 'react';
 import { WebAuthnError } from '@simplewebauthn/browser';
 import { api, ApiError } from '@/lib/api';
+import { reload, useLoad } from '@/lib/load';
 import { cancelled, createPasskey } from '@/lib/passkeys';
 import { Account, signInAgainMessage, type AccountData, type AccountNotice, type InviteMade } from '@/screens/account';
 
+/** Your account, inside the app. */
 export function AccountPage() {
-  const [account, setAccount] = useState<AccountData>();
-  // Shown once, after joining, recovering or verifying an email, and not again after a reload.
+  const account = useLoad<AccountData>('/api/me').data;
+  // Shown once, after recovering or verifying an email, and not again after a reload.
   const [notice] = useState<AccountNotice | undefined>(() => {
     const params = new URLSearchParams(location.search);
-    return (['welcome', 'recovered', 'verified'] as const).find((name) => params.has(name));
+    return (['recovered', 'verified'] as const).find((name) => params.has(name));
   });
-
-  const load = () =>
-    api<AccountData>('/api/me').then(setAccount, (error) => {
-      if (error instanceof ApiError && error.status === 401) location.assign('/sign-in?next=/account');
-    });
+  const load = () => reload('/api/me');
 
   useEffect(() => {
     if (notice) history.replaceState(null, '', '/account');
-    load();
   }, [notice]);
 
   if (!account) return null;
@@ -86,10 +83,6 @@ export function AccountPage() {
         async signInAgain() {
           await api('/api/auth/sign-out', {});
           location.assign('/sign-in?next=/account');
-        },
-        async signOut() {
-          await api('/api/auth/sign-out', {});
-          location.assign('/sign-in');
         },
       }}
     />

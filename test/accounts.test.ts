@@ -144,11 +144,13 @@ describe('signing in', () => {
     assert.equal((await browser.json('/api/me')).body.name, 'Ana');
   });
 
-  test('the home page sends you to sign in, or to your account', async () => {
+  test('Home sends you to sign in, and opens the app once you are', async () => {
     const browser = new Browser(homing.url);
     assert.equal((await browser.fetch('/')).headers.get('location'), '/sign-in');
     await join(browser, 'Ana');
-    assert.equal((await browser.fetch('/')).headers.get('location'), '/account');
+    const home = await browser.fetch('/');
+    assert.equal(home.status, 200);
+    assert.match(home.headers.get('content-type') ?? '', /text\/html/);
   });
 });
 
