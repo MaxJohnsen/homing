@@ -40,7 +40,7 @@ You have a private side in every space you can access, including spaces you can 
 - Guidance applies to its space and every space below it, unless it is marked *only here*.
 - Guidance can include other guidance instead of copying it. Including it never gives anyone access to it.
 
-**Knowledge** is what is known. **Sources** (emails, meetings, documents) are compiled into **pages**, one per subject worth understanding, and every space has an **overview**. Each space's guidance names the types of pages it prefers, but agents may create other types when something deserves a page of its own.
+**Knowledge** is what is known. **Sources** (emails, meetings, documents) are compiled into **pages**, one per subject worth understanding, and every space has an **overview**. Each space's guidance names the types of pages it prefers, but agents may create other types when something deserves a page of its own. Any page can also gather other pages into a **collection**, such as "2027 planning", without moving them.
 
 **Records** are things that get worked on, such as tasks and events.
 - Each record has one home: Homing itself or an external system such as Asana.

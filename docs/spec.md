@@ -119,6 +119,13 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 
 **The overview is a map.** It holds a short summary of the space's current state, plus a list of its active pages that Homing generates. It is never an index written by an agent.
 
+**Collections group pages without a second hierarchy.** Any page can gather other pages in its space, which makes it a collection, such as "2027 planning". A page can still hold knowledge of its own.
+
+- Gathering is its own kind of link. Mentioning a page doesn't put it in a collection.
+- A page can be in several collections, or in none. Collections don't nest, so a collection can't be gathered into another.
+- People and assistants add and remove pages within the rights they already have.
+- Collections follow the access rule like any page. Each person sees only the pages they can see, in lists and counts too, and gathering a page never changes who can see it.
+
 **Upkeep.** Homing keeps improving how knowledge is organized and presented, while its meaning stays grounded in evidence. The agent doing the upkeep (Homing's own model, or an external agent if there is none) proposes operations from a fixed set. Homing applies them, checking permissions and protection and recording history. Every operation preserves visibility and provenance, and every operation can be undone.
 
 | Operation | Rule |
