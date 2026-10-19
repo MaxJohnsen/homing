@@ -26,6 +26,8 @@
   --color-private-foreground: var(--private-foreground);
   --color-change: var(--change);
   --color-wash: var(--wash);
+  --color-shelf: var(--shelf);
+  --color-primary-ink: var(--primary-ink);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);

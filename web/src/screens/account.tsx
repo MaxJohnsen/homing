@@ -75,7 +75,7 @@ export function Account({ account, notice, actions }: { account: AccountData; no
             <CircleCheck aria-hidden="true" className="mt-0.5 size-6 shrink-0 text-primary" />
             <div className="flex flex-col gap-1">
               <h1 className="text-2xl font-semibold tracking-tight">{shown.title}</h1>
-              <p className="text-[15px] text-muted-foreground">{shown.text}</p>
+              <p className="text-base text-muted-foreground">{shown.text}</p>
             </div>
           </div>
         ) : (
@@ -96,7 +96,7 @@ export function Account({ account, notice, actions }: { account: AccountData; no
         {account.instanceAdmin && <Invite account={account} actions={actions} />}
 
         <div>
-          <Button variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" onClick={() => actions?.signOut()}>Sign out</Button>
+          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => actions?.signOut()}>Sign out</Button>
         </div>
       </main>
     </div>
@@ -120,24 +120,24 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
   };
 
   return (
-    <section aria-labelledby="assistants-heading" className="flex flex-col gap-4 rounded-xl border bg-card px-6 py-5 sm:px-8 sm:py-6">
+    <section aria-labelledby="assistants-heading" className="flex flex-col gap-4 rounded-2xl bg-card px-6 py-5 sm:px-8 sm:py-6">
       <div className="flex flex-col gap-1">
         <h2 id="assistants-heading" className="text-lg font-semibold tracking-tight">Connected assistants</h2>
-        <p className="text-[15px] text-muted-foreground">They can access what you can see in Homing.</p>
+        <p className="text-base text-muted-foreground">They can access what you can see in Homing.</p>
       </div>
 
       {account.assistants.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-lg bg-muted px-4 pt-2 pb-5 text-center">
           <img src={empty} alt="" width={960} height={640} className="w-48" />
-          <p className="text-[15px] font-medium">No assistants yet</p>
+          <p className="text-base font-medium">No assistants yet</p>
         </div>
       ) : (
-        <ul className="flex flex-col divide-y rounded-lg border">
+        <ul className="flex flex-col gap-2">
           {account.assistants.map((assistant) => (
-            <li key={assistant.clientId} className="flex flex-col gap-3 px-4 py-3">
+            <li key={assistant.clientId} className="flex flex-col gap-3 rounded-xl bg-muted px-4 py-3">
               <div className="flex items-center gap-3">
                 <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-[15px] font-medium">{assistant.name}</span>
+                  <span className="truncate text-base font-medium">{assistant.name}</span>
                   <span className="truncate text-sm text-muted-foreground">
                     From {siteOf(assistant.clientId)}, connected {date.format(new Date(assistant.connectedAt))}
                   </span>
@@ -147,7 +147,7 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
                 )}
               </div>
               {disconnecting === assistant.clientId && (
-                <div className="flex flex-col gap-3 rounded-lg bg-muted p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex flex-col gap-3 rounded-lg bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
                   <p className="text-sm">{assistant.name} stops working with Homing right away. You can connect it again later.</p>
                   <div className="flex shrink-0 gap-2">
                     <Button variant="outline" size="sm" onClick={() => setDisconnecting(undefined)}>Keep it</Button>
@@ -162,7 +162,7 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
       {message && <FieldError>{message}</FieldError>}
 
       <div className="flex flex-col gap-2">
-        <p className="text-[15px]">
+        <p className="text-base">
           {account.assistants.length === 0 ? 'To connect Claude, ChatGPT or another assistant' : 'To connect another assistant'}, add
           Homing to it as a connector with this address, then sign in and connect it.
         </p>
@@ -180,7 +180,7 @@ function CopyAddress({ value }: { value: string }) {
     setTimeout(() => setCopied(false), 2000);
   };
   return (
-    <div className="flex items-center gap-2 rounded-lg border bg-background py-1.5 pr-1.5 pl-4">
+    <div className="flex items-center gap-2 rounded-full bg-muted py-1.5 pr-1.5 pl-4">
       <code className="min-w-0 flex-1 truncate text-sm">{value}</code>
       <Button variant="outline" size="sm" onClick={copy} aria-live="polite">
         {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
@@ -215,21 +215,21 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
   };
 
   return (
-    <section aria-labelledby="sign-in-heading" className="flex flex-col gap-4 rounded-xl border bg-card px-6 py-5 sm:px-8 sm:py-6">
+    <section aria-labelledby="sign-in-heading" className="flex flex-col gap-4 rounded-2xl bg-card px-6 py-5 sm:px-8 sm:py-6">
       <div className="flex flex-col gap-1">
         <h2 id="sign-in-heading" className="text-lg font-semibold tracking-tight">How you sign in</h2>
-        <p className="text-[15px] text-muted-foreground">
+        <p className="text-base text-muted-foreground">
           With your email, {account.email}, and {account.password ? (account.passkeys.length ? 'a passkey or your password' : 'your password') : 'a passkey'}.
         </p>
       </div>
 
-      <ul className="flex flex-col divide-y rounded-lg border empty:hidden">
+      <ul className="flex flex-col gap-2 empty:hidden">
         {account.passkeys.map((passkey) => (
-          <li key={passkey.id} className="flex flex-col gap-3 px-4 py-3">
+          <li key={passkey.id} className="flex flex-col gap-3 rounded-xl bg-muted px-4 py-3">
             <div className="flex items-center gap-3">
               <KeyRound aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
               <div className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-[15px] font-medium">{passkey.name ? `Passkey on ${passkey.name}` : 'Passkey'}</span>
+                <span className="truncate text-base font-medium">{passkey.name ? `Passkey on ${passkey.name}` : 'Passkey'}</span>
                 <span className="text-sm text-muted-foreground">Added {date.format(new Date(passkey.createdAt))}</span>
               </div>
               {(account.passkeys.length > 1 || account.password) && removing !== passkey.id && (
@@ -237,7 +237,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
               )}
             </div>
             {removing === passkey.id && (
-              <div className="flex flex-col gap-3 rounded-lg bg-muted p-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex flex-col gap-3 rounded-lg bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
                 <p className="text-sm">You won't be able to sign in with this passkey any more.</p>
                 <div className="flex shrink-0 gap-2">
                   <Button variant="outline" size="sm" onClick={() => setRemoving(undefined)}>Keep it</Button>
@@ -255,7 +255,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
 
       <div className="flex flex-col gap-3">
         <div>
-          <Button variant={restoring ? 'default' : 'outline'} size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy} onClick={() => actions && run(actions.addPasskey)}>
+          <Button variant={restoring ? 'default' : 'outline'} size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => actions && run(actions.addPasskey)}>
             <KeyRound data-icon="inline-start" />Add a passkey
           </Button>
         </div>
@@ -270,7 +270,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
 
       {account.canEmail && !account.emailVerified && <VerifyEmail actions={actions} />}
       {account.instanceAdmin ? (
-        <p className="border-t pt-4 text-sm text-muted-foreground">This account manages Homing. A passkey is required.</p>
+        <p className="pt-2 text-sm text-muted-foreground">This account manages Homing. A passkey is required.</p>
       ) : (
         account.passwords && <Password account={account} actions={actions} />
       )}
@@ -281,13 +281,13 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
 function VerifyEmail({ actions }: { actions?: AccountActions }) {
   const [state, setState] = useState<'idle' | 'sent' | string>('idle');
   return (
-    <div className="flex flex-col gap-3 border-t pt-4">
-      <p className="text-[15px]">Verify your email, so Homing can send you a sign-in link if you ever can't sign in.</p>
+    <div className="flex flex-col gap-3 pt-2">
+      <p className="text-base">Verify your email, so Homing can send you a sign-in link if you ever can't sign in.</p>
       {state === 'sent' ? (
         <p className="text-sm text-muted-foreground" role="status">Check your email for the link.</p>
       ) : (
         <div className="flex flex-wrap items-center gap-3">
-          <Button variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" onClick={async () => setState((await actions?.verifyEmail()) ?? 'sent')}>
+          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={async () => setState((await actions?.verifyEmail()) ?? 'sent')}>
             Send me a link
           </Button>
           {state !== 'idle' && <FieldError>{state}</FieldError>}
@@ -319,11 +319,11 @@ function Password({ account, actions }: { account: AccountData; actions?: Accoun
 
   if (!open) {
     return (
-      <div className="flex flex-col gap-3 border-t pt-4">
-        {!account.password && <p className="text-[15px]">You can also add a password, for devices without passkeys.</p>}
+      <div className="flex flex-col gap-3 pt-2">
+        {!account.password && <p className="text-base">You can also add a password, for devices without passkeys.</p>}
         {done && <p className="text-sm text-muted-foreground" role="status">Saved.</p>}
         <div>
-          <Button variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" onClick={() => { setDone(false); setOpen(true); }}>
+          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => { setDone(false); setOpen(true); }}>
             {account.password ? 'Change password' : 'Add a password'}
           </Button>
         </div>
@@ -332,7 +332,7 @@ function Password({ account, actions }: { account: AccountData; actions?: Accoun
   }
 
   return (
-    <form className="flex flex-col gap-4 border-t pt-4" onSubmit={save} noValidate>
+    <form className="flex flex-col gap-4 pt-2" onSubmit={save} noValidate>
       {account.password && (
         <Field>
           <FieldLabel htmlFor="current-password">Current password</FieldLabel>
@@ -345,8 +345,8 @@ function Password({ account, actions }: { account: AccountData; actions?: Accoun
         {message ? <FieldError>{message}</FieldError> : <p className="text-sm text-muted-foreground">At least 10 characters.</p>}
       </Field>
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button type="button" variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" onClick={() => setOpen(false)}>Cancel</Button>
-        <Button type="submit" variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy}>Save password</Button>
+        <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => setOpen(false)}>Cancel</Button>
+        <Button type="submit" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy}>Save password</Button>
       </div>
     </form>
   );
@@ -373,20 +373,20 @@ function Invite({ account, actions }: { account: AccountData; actions?: AccountA
   };
 
   return (
-    <section aria-labelledby="invite-heading" className="flex flex-col gap-4 rounded-xl border bg-card px-6 py-5 sm:px-8 sm:py-6">
+    <section aria-labelledby="invite-heading" className="flex flex-col gap-4 rounded-2xl bg-card px-6 py-5 sm:px-8 sm:py-6">
       <div className="flex flex-col gap-1">
         <h2 id="invite-heading" className="text-lg font-semibold tracking-tight">Invite someone</h2>
-        <p className="text-[15px] text-muted-foreground">
+        <p className="text-base text-muted-foreground">
           They get a link to create their own account. It works once, for a week. Being invited gives them no access to your spaces.
         </p>
       </div>
 
       {invite &&
         (invite.emailed ? (
-          <p className="text-[15px]" role="status">Sent to {invite.to}. The link goes only to them.</p>
+          <p className="text-base" role="status">Sent to {invite.to}. The link goes only to them.</p>
         ) : (
           <div className="flex flex-col gap-2" role="status">
-            <p className="text-[15px]">Share this link with them:</p>
+            <p className="text-base">Share this link with them:</p>
             <CopyAddress value={invite.link} />
           </div>
         ))}
@@ -400,7 +400,7 @@ function Invite({ account, actions }: { account: AccountData; actions?: AccountA
         )}
         {message && <FieldError>{message}</FieldError>}
         <div>
-          <Button type="submit" variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy}>
+          <Button type="submit" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy}>
             {email.trim() ? 'Send invite' : invite ? 'Create another link' : 'Create invite link'}
           </Button>
         </div>

@@ -39,7 +39,7 @@ export function Confirm({ proposal, person, decide, message: initialMessage }: {
       </header>
 
       <main className="mx-auto w-full max-w-xl px-4 pb-16">
-        <div className="flex flex-col gap-6 rounded-xl border bg-card p-6 sm:p-8">
+        <div className="flex flex-col gap-6 rounded-2xl bg-card p-6 sm:p-8">
           {!outcome ? (
             <>
               <h1 className="text-2xl font-semibold tracking-tight text-balance">
@@ -51,10 +51,10 @@ export function Confirm({ proposal, person, decide, message: initialMessage }: {
               </h1>
               <ProposalDetails proposal={proposal} onlyHere={onlyHere} onOnlyHereChange={setOnlyHere} disabled={busy} idPrefix="page" />
               <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <Button variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy} onClick={() => choose(false)}>
+                <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>
                   {buttons.reject}
                 </Button>
-                <Button size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy} onClick={() => choose(true)}>
+                <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(true)}>
                   {buttons.approve}
                 </Button>
               </div>

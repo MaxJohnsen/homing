@@ -80,7 +80,7 @@ export function SignIn({
             {connecting ? `Sign in to connect ${connecting}` : 'Sign in to Homing'}
           </h1>
           {connecting && step === 'email' && (
-            <p className="text-[15px] text-muted-foreground">Then you choose whether to connect {connecting}.</p>
+            <p className="text-base text-muted-foreground">Then you choose whether to connect {connecting}.</p>
           )}
         </div>
 
@@ -92,16 +92,14 @@ export function SignIn({
                 <Input id="email" type="email" autoComplete="username webauthn" className="h-11" value={email} onChange={(event) => setEmail(event.target.value)} aria-invalid={Boolean(message ?? notice) || undefined} />
                 {(message ?? notice) && <FieldError>{message ?? notice}</FieldError>}
               </Field>
-              <Button type="submit" size="lg" className="h-11 w-full text-[15px]">Continue</Button>
+              <Button type="submit" size="lg" className="h-11 w-full text-base">Continue</Button>
             </form>
             {providers.length > 0 && (
               <>
-                <div className="flex items-center gap-3 text-xs text-muted-foreground" aria-hidden="true">
-                  <span className="h-px flex-1 bg-border" />or<span className="h-px flex-1 bg-border" />
-                </div>
+                <p className="text-center text-sm text-muted-foreground" aria-hidden="true">or</p>
                 <div className="flex flex-col gap-2.5">
-                  {providers.includes('google') && <Button variant="outline" size="lg" className="h-11 w-full text-[15px]"><GoogleLogo />Continue with Google</Button>}
-                  {providers.includes('microsoft') && <Button variant="outline" size="lg" className="h-11 w-full text-[15px]"><MicrosoftLogo />Continue with Microsoft</Button>}
+                  {providers.includes('google') && <Button variant="outline" size="lg" className="h-11 w-full text-base"><GoogleLogo />Continue with Google</Button>}
+                  {providers.includes('microsoft') && <Button variant="outline" size="lg" className="h-11 w-full text-base"><MicrosoftLogo />Continue with Microsoft</Button>}
                 </div>
               </>
             )}
@@ -109,7 +107,7 @@ export function SignIn({
           </>
         ) : (
           <>
-            <p className="flex items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3 text-[15px]">
+            <p className="flex items-center justify-between gap-3 rounded-full bg-muted px-4 py-3 text-base">
               <span className="min-w-0 truncate">{email}</span>
               <button type="button" className="shrink-0 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => { setMessage(undefined); setStep('email'); }}>
                 Change
@@ -118,12 +116,12 @@ export function SignIn({
 
             {step === 'passkey' ? (
               <div className="flex flex-col gap-3">
-                <Button size="lg" className="h-11 w-full text-[15px]" disabled={busy} onClick={() => actions && run(actions.passkey)} autoFocus>
+                <Button size="lg" className="h-11 w-full text-base" disabled={busy} onClick={() => actions && run(actions.passkey)} autoFocus>
                   <KeyRound data-icon="inline-start" />Use your passkey
                 </Button>
                 {message && <FieldError>{message}</FieldError>}
                 {passwords && (
-                  <Button variant="ghost" size="lg" className="h-11 w-full text-[15px] text-muted-foreground" onClick={() => { setMessage(undefined); setStep('password'); }}>
+                  <Button variant="ghost" size="lg" className="h-11 w-full text-base text-muted-foreground" onClick={() => { setMessage(undefined); setStep('password'); }}>
                     Use your password instead
                   </Button>
                 )}
@@ -135,7 +133,7 @@ export function SignIn({
                   <Input id="password" type="password" autoComplete="current-password" aria-invalid={step === 'wrong' || undefined} className="h-11" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus />
                   {step === 'wrong' && <FieldError>{message ?? wrongPassword}</FieldError>}
                 </Field>
-                <Button type="submit" size="lg" className="h-11 w-full text-[15px]" disabled={busy}>Sign in</Button>
+                <Button type="submit" size="lg" className="h-11 w-full text-base" disabled={busy}>Sign in</Button>
               </form>
             )}
             <a href="/recover" className="w-fit text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Can't sign in?</a>

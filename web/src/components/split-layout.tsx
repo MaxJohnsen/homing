@@ -20,7 +20,7 @@ export function SplitLayout({ illustration, children }: { illustration: string; 
         <img src={illustration} alt="" width={960} height={640} loading="lazy" className="w-full max-w-md" />
         <div className="flex max-w-md flex-col gap-3 text-center">
           <p className="text-2xl leading-snug font-semibold tracking-tight text-balance">A home for everything worth knowing.</p>
-          <p className="text-[15px] leading-relaxed text-pretty text-muted-foreground">
+          <p className="text-base leading-relaxed text-pretty text-muted-foreground">
             Homing brings together what you and your AI assistants learn, keeps it useful as life and work evolve, and lets you share it with the people who matter.
           </p>
         </div>
@@ -31,5 +31,5 @@ export function SplitLayout({ illustration, children }: { illustration: string; 
 
 /** The card a split layout's form sits in. */
 export function FormCard({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`relative mx-auto flex w-full max-w-sm flex-col gap-7 rounded-2xl border bg-card p-6 sm:p-8 ${className}`}>{children}</div>;
+  return <div className={`relative mx-auto flex w-full max-w-sm flex-col gap-7 rounded-2xl bg-card p-6 sm:p-8 ${className}`}>{children}</div>;
 }

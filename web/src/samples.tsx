@@ -77,7 +77,7 @@ export function Samples() {
       <ul className="flex flex-col divide-y rounded-xl border bg-card">
         {Object.entries(screens).map(([path, item]) => (
           <li key={path}>
-            <a href={path} className="flex items-center justify-between gap-3 px-4 py-3 text-[15px] hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
+            <a href={path} className="flex items-center justify-between gap-3 px-4 py-3 text-base hover:bg-accent focus-visible:bg-accent focus-visible:outline-none">
               {item.label}
               <span className="text-xs text-muted-foreground">{path}</span>
             </a>

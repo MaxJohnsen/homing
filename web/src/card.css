@@ -2,33 +2,33 @@
 @import "./theme.css";
 
 /* The card lives inside Claude or ChatGPT, so it takes the host's colors, font and corners
-   when the host provides them, and falls back to Soft. The host sets --font-sans itself.
+   when the host provides them, and falls back to Homing's own. The host sets --font-sans itself.
    Sage stays for the main action. */
 :root {
   --radius: var(--border-radius-lg, 0.875rem);
 
-  --background: var(--color-background-primary, #fffdf9);
-  --foreground: var(--color-text-primary, #2b2824);
-  --card: var(--color-background-primary, #fffdf9);
-  --card-foreground: var(--color-text-primary, #2b2824);
-  --popover: var(--color-background-primary, #fffdf9);
-  --popover-foreground: var(--color-text-primary, #2b2824);
-  --primary: #4f6f58;
+  --background: var(--color-background-primary, #ffffff);
+  --foreground: var(--color-text-primary, #1f1c18);
+  --card: var(--color-background-primary, #ffffff);
+  --card-foreground: var(--color-text-primary, #1f1c18);
+  --popover: var(--color-background-primary, #ffffff);
+  --popover-foreground: var(--color-text-primary, #1f1c18);
+  --primary: #3e6b4d;
   --primary-foreground: #ffffff;
-  --secondary: var(--color-background-secondary, #efeae2);
-  --secondary-foreground: var(--color-text-primary, #2b2824);
-  --muted: var(--color-background-secondary, #efeae2);
-  --muted-foreground: var(--color-text-secondary, #716a61);
-  --accent: var(--color-background-secondary, #eef3ec);
-  --accent-foreground: var(--color-text-primary, #2b2824);
+  --secondary: var(--color-background-secondary, #e8e3da);
+  --secondary-foreground: var(--color-text-primary, #1f1c18);
+  --muted: var(--color-background-secondary, #efebe4);
+  --muted-foreground: var(--color-text-secondary, #5c554c);
+  --accent: var(--color-background-secondary, #e3ede4);
+  --accent-foreground: var(--color-text-primary, #1f1c18);
   --destructive: #a8432c;
-  --border: var(--color-border-primary, #e7e0d5);
+  --border: var(--color-border-primary, #e4ddd2);
   --input: var(--color-border-secondary, #9b9083);
-  --ring: #4f6f58;
+  --ring: #3e6b4d;
 
-  --private: #f8e3d8;
-  --private-foreground: #864530;
-  --change: color-mix(in oklab, #4f6f58 12%, var(--background));
+  --private: #f8dfd1;
+  --private-foreground: #873c1f;
+  --change: color-mix(in oklab, #3e6b4d 12%, var(--background));
   --wash: #e9a98f;
 
   --mark-light: #93ae97;
