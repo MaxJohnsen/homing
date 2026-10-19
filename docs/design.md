@@ -1,6 +1,6 @@
 # Design
 
-How Homing's screens look and behave. People work with Homing through their assistant, and open its pages to sign in, to decide something and, later, to browse and edit. Every screen follows this page.
+How Homing's screens look and behave. People work with Homing through their assistant, and use the app to explore, understand, correct and manage what Homing knows. Every screen follows this page.
 
 ## Principles
 
@@ -10,6 +10,8 @@ How Homing's screens look and behave. People work with Homing through their assi
 - The essentials come first, and details are there on request, but an important consequence is never hidden.
 - A decision shows the exact change word for word, set apart from the rest, with who wants it and where it applies.
 - Anything that shares or removes says what will happen before you confirm.
+- Who sees something is never a guess. Every page says who sees it, and what's only yours carries a label.
+- It works with nothing in it and with years of knowledge. An empty screen says how to start, and a long list pages, sorts and filters, offering only filters that match something.
 - It works on a phone, with a keyboard and with a screen reader, to WCAG 2.2 AA.
 - Quietly polished. The interface does the work, and illustrations give it character.
 
@@ -42,45 +44,69 @@ The mark is the folded paper bird: flat facets in two sages, with a peach beak. 
 
 ## Look
 
-Linen backgrounds, sage for actions and peach for what's only yours. Light only for now; dark mode comes later through the same tokens.
+Paper to read on, a linen shelf for your spaces, sage for what you can act on, and peach only for what's yours alone. Light only for now; dark mode comes later through the same tokens.
 
 | Token | Value | Used for |
 |---|---|---|
-| `background` | `#F6F3EE` | The page, linen |
-| `card` | `#FFFDF9` | Cards, fields and outline buttons |
-| `foreground` | `#2B2824` | Text |
-| `muted-foreground` | `#716A61` | Secondary text |
-| `border` | `#E7E0D5` | Dividers and card edges |
+| `background` | `#F5F5F2` | The page, paper |
+| `card` | `#FFFFFF` | What you read or act on, a step up from the page; fields and outline buttons |
+| `muted` | `#EFEBE4` | A step down from the page, for quieter groups |
+| `shelf` | `#EDE7DD` | The sidebar, linen |
+| `foreground` | `#1F1C18` | Text |
+| `muted-foreground` | `#5C554C` | Secondary text |
+| `border` | `#E4DDD2` | Edges, only where a step in tone can't do it, such as the approval card on an assistant's own background |
 | `input` | `#9B9083` | Field and checkbox edges, 3:1 against the card |
-| `primary` | `#4F6F58` | Sage, the main action, with white text |
-| `private` | `#F8E3D8` on `#864530` | "Only you" |
-| `change` | `#EEF3EC` | The exact change being decided |
+| `primary` | `#3E6B4D` | Sage, the main action, with white text |
+| `primary-ink` | `#29513A` | Sage text on a sage tint |
+| `accent` | `#E3EDE4` | A sage tint for what's selected or under the pointer |
+| `private` | `#F8DFD1` on `#873C1F` | "Only you" |
+| `change` | `#E3EDE4` | The exact change being decided |
 | `wash` | `#E9A98F` | Peach, for small accents |
 
-Figtree is the only typeface, and it ships with the app. Page titles are 24 px, section headings and the exact change 18 px, body text 15 px, secondary text 14 px, and small labels such as "Only you" 12 px. That is the whole scale. Hierarchy comes from it, two weights and the muted color, never from another size, capitals or letter-spacing. Corners start at 14 px, and buttons and fields are pills.
+Surfaces differ by a step in tone, never by lines or shadows. Only what floats over the page, such as a menu or a dialog, casts a shadow. There are no labels above headings, and facts are said in a sentence, "Updated by Cara Lund on 14 October", never strung together with dots.
+
+Figtree is the only typeface, and it ships with the app. A screen in the app has a 34 px title. A decision, and each page outside the app, has one heading at 24 px, because it is a sentence saying who wants what. Section headings and the exact change are 18 px, running text 16 px, secondary text 14 px, and small labels such as "Only you" 12 px. That is the whole scale. Hierarchy comes from it, two weights and the muted color, never from another size, capitals or letter-spacing. Running text is in full ink, and the muted color is for what's secondary. Corners start at 14 px, and buttons and fields are pills.
 
 ## Components
 
 [shadcn/ui](https://ui.shadcn.com) in its Maia style, on [Base UI](https://base-ui.com), lives in `web/src/components/ui` and takes its colors from the tokens in `web/src/styles.css`. Add one with `npx shadcn@latest add <name>` from the repository root. Homing's own components sit next to it: the wordmark, the proposed change, "Only you", where a rule applies, and the rules that already apply.
 
-- One primary button per view, for the main action. Everything else is an outline button.
+- One primary button per view, for the main action. Everything else is an outline button. A list where each row is a decision of its own, such as what's waiting on Home, gives each row its own primary Review.
 - Main buttons on pages are 44 px tall and fill the width on a phone, with the main action on top.
 - "Only you" is always a label. Color supports it but never carries it alone.
+- Writing says who will see it before you save: "Only you", or "Everyone in Northwind", with how many people that is now and that anyone who joins later sees it too. New writing starts as only yours, and the button names who will see it, such as "Share with Northwind".
+- A long list shows fifty at a time and says where you are: "Showing 1–50 of 1,240 pages".
 - A settled decision keeps showing the change, greyed, so it's clear what happened.
 - The change being decided is always shown in full, never cut short, because approving runs exactly what was shown. A short rule is set large; a longer one at reading size, keeping its line breaks.
 
 ## Layout
 
-- The mark and name sit top left, the person's name top right.
+### The app
+
+- A sidebar on the linen shelf holds the mark and name, search, Home with how many changes wait for you, and your spaces as a tree with your personal space first. Your name sits at the bottom and opens your account, Looking after Homing if you do, and signing out. On a phone the sidebar folds into a menu.
+- With more than twelve spaces, the sidebar also shows the ones you opened lately and finds one by name, and the tree opens only along where you are.
+- Home leads with what needs you: at most three changes waiting, and the rest in a list grouped by space. Then what changed, each leading with the change itself, grouped by day, a few at a time with a way to all of them. Your own requests come last. The sidebar lists your spaces, so Home doesn't; on a phone it shows the ones you opened lately.
+- Someone who has just joined sees a welcome on Home instead, with the welcome drawing. It helps them connect an assistant first, then write something or start a space.
+- A space says under its name where it sits and who it's shared with: "In Acme. Shared with its 4 members, not with everyone in Acme." Its parts are Overview, Knowledge, Guidance, Tasks and Members, and Settings once there's something to set.
+- The overview is a map: what someone wrote about the space, its collections and what's active, with what's waiting there, recent decisions, what's next and the spaces inside it alongside.
+- Knowledge has three views: pages, collections and sources. Pages can be searched within the space, filtered by the types that exist and sorted, and archived ones show on request.
+- A page leads with what's known and says under its title who sees it. Each item opens, when you ask, to its sources, earlier versions and who wrote it. When sources disagree, the reading view says so. When your private update replaces a shared item for you, the page says what others still see. Long pages can be searched within. The collections a page is in, and the pages that mention it, sit beside it.
+- A collection is a page like any other, with the pages it gathers after its own knowledge.
+- A source opens in a view of its own, because it's evidence, not a page: what Homing kept of it, the pages that use it, and the original, opened through your own access.
+- Guidance keeps rules and skills apart. Rules show what's set in this space, what reaches it from elsewhere and where from, and what applies only to you, with how they combine on request. A skill opens like a page: what it does, its instructions and files, and what it replaces.
+- Search is on every screen and finds what assistants find: pages, sources, rules and spaces, narrowed after searching.
+- Looking after Homing is only for whoever does: who uses this Homing, inviting people, and whether email works. It says that looking after Homing gives no access to anyone's spaces.
+- Your account lists your connected assistants first, with the address for connecting another, then how you sign in. Disconnecting an assistant and removing a passkey ask first, in place, and the last way to sign in can't be removed.
+- Decisions open inside the app, as one centered column with a single heading that says who wants what, where. When an assistant proposes a rule change, its link opens the decision, after signing in if needed. A new rule shows where it applies and the rules already there; a change shows the rule now above its new wording; a removal says where it stops applying. If the rule changes while the page is open, approving shows it again instead.
+
+### Outside the app
+
+- The mark and name sit top left.
 - Sign-in asks for the email first, then the passkey or password, and the email field offers saved passkeys directly. Every email gets the same next step, so the page never says whether an account exists. On a desktop the form is on the left and the illustration on the right, with the tagline; on a phone only the form shows, starting near the top.
 - Joining has the same layout, with the welcome drawing. The setup link creates the first account, and an invite everyone else's: it says who sent it, starts with the address it was sent to, and offers a password instead of a passkey. A link that no longer works says what to do instead.
 - "Can't sign in?" leads to a page that sends a sign-in link to a verified email, or, without email, says to ask whoever runs Homing. It reads the same whether or not the account exists.
-- The account page is one centered column, like decision pages. Connected assistants come first, with the address for connecting another, then how you sign in, then, for the instance admin, inviting someone. Disconnecting an assistant and removing a passkey ask first, in place, and the last way to sign in can't be removed.
 - Connecting an assistant is a decision page: "Connect Claude to Homing?", the site it says it comes from, what it can read and save, that changing rules or sharing knowledge needs your approval, and Connect Claude or Cancel.
-- Inviting people is on the account page for now. It belongs in an administration area once there is one.
 - Sign-in with Google or Microsoft uses the providers' own marks, as their guidelines ask.
-- Decision pages are one centered column with a single heading that says who wants what, where.
-- When an assistant proposes a rule change, its link opens the decision page, after signing in if needed. A new rule shows where it applies and the rules already there; a change shows the rule now above its new wording; a removal says where it stops applying. If the rule changes while the page is open, approving shows it again instead.
 
 ## Illustrations
 
@@ -118,10 +144,12 @@ It reads like a picture book, one chapter per idea.
 
 - The cover and the ending are centered: the drawing, the title or closing line, and the way in. Everything between them sits in one column with one left edge for headings, text and product fragments. Nothing in a chapter is wider or narrower than that column.
 - Each chapter has one picture, never two: a drawing centered above the column, or a product fragment below the text. They alternate down the page. All drawings share one maximum height, and none is cropped.
-- Chapters alternate between linen and the muted band.
+- Chapters alternate between the paper page and the muted band.
 - Every drawing shows the one idea of its chapter: knowledge scattered and explained again, and one card shared while the notebook stays. The product fragments show spaces and who reaches them, and a rule waiting for a person to approve it. The bird opens the page flying home to its loft with a card, as a homing pigeon would, and ends it asleep in its box.
 - Because it introduces rather than asks for a decision, its type is larger: the title, chapter headings, one larger line at 22 px, body text at 18 px and small notes at 15 px. Product fragments keep the app's own scale.
 
 ## Working on screens
 
 `npm run dev:web` serves every screen with sample data, and its start page lists them, each state at its own address. The real pages come from Homing itself: run `npm run build:web`, then start the server. The landing page is `/landing` there, and `npm run build:site` builds homing.place as static files.
+
+The app was first designed as a clickable prototype with sample data. It's a starting point, not a specification. Each change to a screen follows this page, says in its pull request where it differs from the prototype and why, and is looked at with an empty Homing and one with years of knowledge, on a desktop and a phone.

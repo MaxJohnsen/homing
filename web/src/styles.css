@@ -7,32 +7,35 @@
   --font-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
 }
 
-/* Soft: linen backgrounds, sage for actions, peach for what's only yours. Light only for now. */
+/* Paper on a linen shelf, ink you can read, sage for what you can act on, and peach only for
+   what's yours alone. Surfaces differ by a step in tone, not by lines or shadows. Light only for now. */
 :root {
   --radius: 0.875rem;
 
-  --background: #f6f3ee; /* linen */
-  --foreground: #2b2824; /* ink */
-  --card: #fffdf9;
-  --card-foreground: #2b2824;
-  --popover: #fffdf9;
-  --popover-foreground: #2b2824;
-  --primary: #4f6f58; /* sage: every main action */
+  --background: #f5f5f2; /* paper: where you read */
+  --foreground: #1f1c18; /* ink */
+  --card: #ffffff;
+  --card-foreground: #1f1c18;
+  --popover: #ffffff;
+  --popover-foreground: #1f1c18;
+  --shelf: #ede7dd; /* linen: the sidebar, where your spaces sit */
+  --primary: #3e6b4d; /* sage: everything you can act on */
   --primary-foreground: #ffffff;
-  --secondary: #efeae2;
-  --secondary-foreground: #2b2824;
-  --muted: #efeae2;
-  --muted-foreground: #716a61;
-  --accent: #eef3ec;
-  --accent-foreground: #2b2824;
+  --primary-ink: #29513a; /* sage text on sage tints */
+  --secondary: #e8e3da;
+  --secondary-foreground: #1f1c18;
+  --muted: #efebe4; /* a step down from paper */
+  --muted-foreground: #5c554c;
+  --accent: #e3ede4; /* sage tint: selected, hovered */
+  --accent-foreground: #1f1c18;
   --destructive: #a8432c;
-  --border: #e7e0d5; /* dividers and card edges */
+  --border: #e4ddd2;
   --input: #9b9083; /* field and checkbox edges, 3:1 against the card */
-  --ring: #4f6f58;
+  --ring: #3e6b4d;
 
-  --private: #f8e3d8; /* "Only you", always with its label */
-  --private-foreground: #864530;
-  --change: #eef3ec; /* the exact change someone is deciding on */
+  --private: #f8dfd1; /* "Only you", always with its label */
+  --private-foreground: #873c1f;
+  --change: #e3ede4; /* the exact change someone is deciding on */
   --wash: #e9a98f; /* peach, for small accents */
 
   --mark-light: #93ae97; /* the folded bird */

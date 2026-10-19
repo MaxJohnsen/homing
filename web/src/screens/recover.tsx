@@ -56,12 +56,12 @@ export function Recover({
                 <Input id="email" type="email" autoComplete="username" className="h-11" value={email} onChange={(event) => setEmail(event.target.value)} aria-invalid={Boolean(message) || undefined} />
                 {message && <FieldError>{message}</FieldError>}
               </Field>
-              <Button type="submit" size="lg" className="h-11 w-full text-[15px]" disabled={busy}>Send me a sign-in link</Button>
+              <Button type="submit" size="lg" className="h-11 w-full text-base" disabled={busy}>Send me a sign-in link</Button>
             </form>
             <p className="text-sm text-muted-foreground">Only a verified email gets one. Otherwise, ask whoever runs this Homing.</p>
           </>
         )}
-        <a href="/sign-in" className="text-[15px] text-primary underline-offset-4 hover:underline">Back to sign in</a>
+        <a href="/sign-in" className="text-base text-primary underline-offset-4 hover:underline">Back to sign in</a>
       </FormCard>
     </SplitLayout>
   );
@@ -71,7 +71,7 @@ function Heading({ title, children }: { title: string; children: React.ReactNode
   return (
     <div className="flex flex-col gap-1.5">
       <h1 className="text-[28px] leading-tight font-semibold tracking-tight text-balance">{title}</h1>
-      <p className="text-[15px] text-muted-foreground">{children}</p>
+      <p className="text-base text-muted-foreground">{children}</p>
     </div>
   );
 }

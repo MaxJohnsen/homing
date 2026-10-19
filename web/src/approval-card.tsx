@@ -33,7 +33,7 @@ export function ApprovalCard({ proposal, decide, message: initialMessage }: { pr
         message ? <FieldError>{message}</FieldError> : <p className="text-sm text-muted-foreground">Getting the change from Homing…</p>
       ) : !outcome ? (
         <>
-          <p className="text-[15px] font-medium">
+          <p className="text-base font-medium">
             {proposal.action === 'add'
               ? `Add this rule to ${placeOf(proposal)}?`
               : proposal.action === 'change'
@@ -52,7 +52,7 @@ export function ApprovalCard({ proposal, decide, message: initialMessage }: { pr
           <div className="flex items-start gap-2">
             <OutcomeIcon kind={outcome.kind} className="mt-0.5 size-5" />
             <div className="flex flex-col gap-0.5">
-              <p className="text-[15px] font-medium">{outcome.heading}</p>
+              <p className="text-base font-medium">{outcome.heading}</p>
               <p className="text-sm text-muted-foreground">{outcome.detail}</p>
             </div>
           </div>

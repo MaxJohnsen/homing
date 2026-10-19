@@ -42,7 +42,7 @@ export interface JoinActions {
 export function Join({ state, actions, problem: initialProblem }: { state: JoinState; actions?: JoinActions; problem?: JoinProblem }) {
   return (
     <SplitLayout illustration={welcome}>
-      <FormCard>{state.step === 'checking' ? <p className="text-[15px] text-muted-foreground" role="status">Checking your link…</p> : <Content state={state} actions={actions} initialProblem={initialProblem} />}</FormCard>
+      <FormCard>{state.step === 'checking' ? <p className="text-base text-muted-foreground" role="status">Checking your link…</p> : <Content state={state} actions={actions} initialProblem={initialProblem} />}</FormCard>
     </SplitLayout>
   );
 }
@@ -63,7 +63,7 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
             ? 'A setup link works once, for an hour. Restart Homing for a new one; it shows the link when it starts.'
             : 'An invite link works once, for a week. Ask the person who invited you for a new one.'}
         </Heading>
-        <a href="/sign-in" className="text-[15px] text-primary underline-offset-4 hover:underline">I already have an account</a>
+        <a href="/sign-in" className="text-base text-primary underline-offset-4 hover:underline">I already have an account</a>
       </>
     );
   }
@@ -75,8 +75,8 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
           You're signed in as {state.email}. Sign out to create a new account with this link.
         </Heading>
         <div className="flex flex-col gap-2.5">
-          <Button size="lg" className="h-11 w-full text-[15px]" onClick={() => actions?.signOut()}>Sign out</Button>
-          <a href="/account" className="text-center text-[15px] text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Go to your account</a>
+          <Button size="lg" className="h-11 w-full text-base" onClick={() => actions?.signOut()}>Sign out</Button>
+          <a href="/account" className="text-center text-base text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Go to your account</a>
         </div>
       </>
     );
@@ -125,10 +125,10 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
         )}
         {problem && !problem.field && <FieldError>{problem.message}</FieldError>}
         {withPassword ? (
-          <Button type="submit" size="lg" className="mt-1 h-11 w-full text-[15px]" disabled={busy}>Create account</Button>
+          <Button type="submit" size="lg" className="mt-1 h-11 w-full text-base" disabled={busy}>Create account</Button>
         ) : (
           <>
-            <Button type="submit" size="lg" className="mt-1 h-11 w-full text-[15px]" disabled={busy}>
+            <Button type="submit" size="lg" className="mt-1 h-11 w-full text-base" disabled={busy}>
               <KeyRound data-icon="inline-start" />Create account with a passkey
             </Button>
             <p className="text-sm text-muted-foreground">
@@ -137,7 +137,7 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
           </>
         )}
         {state.kind === 'invite' && state.passwords && (
-          <Button type="button" variant="ghost" size="lg" className="h-11 w-full text-[15px] text-muted-foreground" onClick={() => { setProblem(undefined); setWithPassword(!withPassword); }}>
+          <Button type="button" variant="ghost" size="lg" className="h-11 w-full text-base text-muted-foreground" onClick={() => { setProblem(undefined); setWithPassword(!withPassword); }}>
             {withPassword ? 'Use a passkey instead' : 'Use a password instead'}
           </Button>
         )}
@@ -150,7 +150,7 @@ function Heading({ title, children }: { title: string; children: React.ReactNode
   return (
     <div className="flex flex-col gap-1.5">
       <h1 className="text-[28px] leading-tight font-semibold tracking-tight text-balance">{title}</h1>
-      <p className="text-[15px] text-muted-foreground">{children}</p>
+      <p className="text-base text-muted-foreground">{children}</p>
     </div>
   );
 }

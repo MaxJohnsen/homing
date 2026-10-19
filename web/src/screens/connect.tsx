@@ -38,22 +38,22 @@ export function Connect({
       </header>
 
       <main className="mx-auto w-full max-w-xl px-4 pb-16">
-        <div className="flex flex-col gap-6 rounded-xl border bg-card p-6 sm:p-8">
+        <div className="flex flex-col gap-6 rounded-2xl bg-card p-6 sm:p-8">
           <div className="flex flex-col gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-balance">Connect {assistant.name} to Homing?</h1>
-            <p className="text-[15px] text-muted-foreground">
+            <p className="text-base text-muted-foreground">
               Connect it only if you came here from <span className="font-medium text-foreground">{assistant.site}</span>.
             </p>
           </div>
 
-          <div className="flex flex-col gap-3 rounded-lg bg-change p-5 text-[15px]">
+          <div className="flex flex-col gap-3 rounded-lg bg-change p-5 text-base">
             <p>{assistant.name} can read the knowledge you have access to, and save what it learns privately.</p>
             <p>Changing rules or sharing knowledge requires your approval.</p>
           </div>
 
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy} onClick={() => choose(false)}>Cancel</Button>
-            <Button size="lg" className="h-11 text-[15px] sm:px-5" disabled={busy} onClick={() => choose(true)}>Connect {assistant.name}</Button>
+            <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>Cancel</Button>
+            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(true)}>Connect {assistant.name}</Button>
           </div>
           {message && <FieldError>{message}</FieldError>}
           <p className="text-sm text-muted-foreground">You can disconnect it at any time from your account.</p>

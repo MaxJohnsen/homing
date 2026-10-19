@@ -48,8 +48,8 @@ function Missing() {
     <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-4 px-4 py-12">
       <Wordmark className="text-lg" />
       <h1 className="text-2xl font-semibold tracking-tight">Nothing to decide here</h1>
-      <p className="text-[15px] text-muted-foreground">This link is for someone else, or it doesn’t lead anywhere.</p>
-      <a href="/" className="text-[15px] text-primary underline-offset-4 hover:underline">Go to Homing</a>
+      <p className="text-base text-muted-foreground">This link is for someone else, or it doesn’t lead anywhere.</p>
+      <a href="/" className="text-base text-primary underline-offset-4 hover:underline">Go to Homing</a>
     </main>
   );
 }

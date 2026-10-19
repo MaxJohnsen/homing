@@ -30,7 +30,7 @@ export function ProposedChange({ kind, text, label, onlyYou, settled, className 
       <blockquote
         className={cn(
           'max-w-prose whitespace-pre-line',
-          long ? 'text-[15px] leading-relaxed' : 'text-lg leading-snug font-medium',
+          long ? 'text-base leading-relaxed' : 'text-lg leading-snug font-medium',
           settled && 'text-muted-foreground',
         )}
       >
