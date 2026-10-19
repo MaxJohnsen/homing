@@ -1,15 +1,20 @@
 import { useState, type ReactNode } from 'react';
+import { Shell } from '@/components/app-shell';
 import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
-import { changeProposal, longProposal, personalProposal, proposal, removeProposal, sampleAccount } from '@/sample';
+import type { Route } from '@/lib/router';
+import { changeProposal, longProposal, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { CardPreview } from '@/screens/card-preview';
 import { Confirm } from '@/screens/confirm';
 import { Connect } from '@/screens/connect';
+import { Home } from '@/screens/home';
 import { Join } from '@/screens/join';
 import { Landing } from '@/screens/landing';
 import { Recover } from '@/screens/recover';
 import { SignIn } from '@/screens/sign-in';
+import { Space } from '@/screens/space';
+import { Waiting } from '@/screens/waiting';
 
 // Every screen with sample data, for `npm run dev:web`. Each state has its own address for review.
 const screens: Record<string, { label: string; render: () => ReactNode }> = {
@@ -26,11 +31,21 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/join/taken': { label: 'Join: email already has an account', render: () => <Join state={{ step: 'form', kind: 'invite' }} problem={{ field: 'email', message: 'There is already an account with this email. Sign in instead.' }} /> },
   '/join/expired': { label: 'Invite expired', render: () => <Join state={{ step: 'expired', kind: 'invite' }} /> },
   '/join/signed-in': { label: 'Invite opened while signed in', render: () => <Join state={{ step: 'signed-in', email: 'ana@acme.no' }} /> },
-  '/account': { label: 'Your account', render: () => <Account account={sampleAccount} /> },
-  '/account/welcome': { label: 'Your account, just created', render: () => <Account account={{ ...sampleAccount, passkeys: sampleAccount.passkeys.slice(0, 1), assistants: [], emailVerified: false }} notice="welcome" /> },
-  '/account/admin': { label: 'Your account, looking after Homing', render: () => <Account account={{ ...sampleAccount, instanceAdmin: true }} /> },
-  '/account/password': { label: 'Your account, with a password', render: () => <Account account={{ ...sampleAccount, password: true, passkeys: [] }} /> },
-  '/account/recovered': { label: 'Signed in with a sign-in link', render: () => <Account account={sampleAccount} notice="recovered" /> },
+  '/home': { label: 'Home, with changes waiting', render: () => <InApp waiting={2}><Home data={{ name: 'Ana Berg', waiting: sampleWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home/many': { label: 'Home, with more waiting than it shows', render: () => <InApp waiting={5}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home/quiet': { label: 'Home, with nothing waiting', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home/new': { label: 'Home, just joined', render: () => <InApp waiting={0} spaces={sampleSpaces.filter((space) => space.personal)}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 0, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/waiting': { label: 'Everything waiting, by space', render: () => <InApp waiting={5} route={{ name: 'waiting' }}><Waiting waiting={manyWaiting} /></InApp> },
+  '/spaces/closed': { label: 'A closed space', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} /></InApp> },
+  '/spaces/open': { label: 'A space open to everyone above it', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} /></InApp> },
+  '/spaces/root': { label: 'A space at the top', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} /></InApp> },
+  '/spaces/personal': { label: 'Your personal space', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} /></InApp> },
+  '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} /></InApp> },
+  '/spaces/from-above': { label: 'A space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} /></InApp> },
+  '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
+  '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }}><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },
+  '/account/password': { label: 'Your account, with a password', render: () => <InApp route={{ name: 'account' }}><Account account={{ ...sampleAccount, password: true, passkeys: [] }} /></InApp> },
+  '/account/recovered': { label: 'Signed in with a sign-in link', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} notice="recovered" /></InApp> },
   '/recover': { label: 'Can’t sign in', render: () => <Recover recovery="email" /> },
   '/recover/sent': { label: 'Can’t sign in: link sent', render: () => <Recover recovery="email" initial="sent" /> },
   '/recover/operator': { label: 'Can’t sign in, without email', render: () => <Recover recovery="operator" /> },
@@ -55,15 +70,31 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
 function SampleConfirm({ proposal, message }: { proposal: ProposalData; message?: string }) {
   const [shown, setShown] = useState(proposal);
   return (
-    <Confirm
-      proposal={shown}
-      person="Ana Berg"
-      message={message}
-      decide={async (approve, onlyHere) => {
-        setShown({ ...shown, onlyHere, state: approve ? 'approved' : 'rejected', rule: shown.rule && { ...shown.rule, current: shown.action !== 'remove' } });
-        return undefined;
-      }}
-    />
+    <InApp route={{ name: 'proposal', id: 'sample' }}>
+      <Confirm
+        proposal={shown}
+        message={message}
+        decide={async (approve, onlyHere) => {
+          setShown({ ...shown, onlyHere, state: approve ? 'approved' : 'rejected', rule: shown.rule && { ...shown.rule, current: shown.action !== 'remove' } });
+          return undefined;
+        }}
+      />
+    </InApp>
+  );
+}
+
+/** A screen inside the app, with Ana's spaces on the shelf. */
+function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces }: {
+  children: ReactNode;
+  route?: Route;
+  spaceId?: string;
+  waiting?: number;
+  spaces?: typeof sampleSpaces;
+}) {
+  return (
+    <Shell person={{ name: 'Ana Berg' }} spaces={spaces} waiting={waiting} route={spaceId ? { name: 'space', id: spaceId } : route} spaceId={spaceId} onSignOut={() => undefined}>
+      {children}
+    </Shell>
   );
 }
 

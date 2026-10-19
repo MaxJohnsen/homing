@@ -1,55 +1,37 @@
-import { useEffect, useState } from 'react';
-import { Wordmark } from '@/components/wordmark';
+import { ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
+import { reload, useLoad } from '@/lib/load';
 import type { ProposalData } from '@/lib/proposals';
 import { Confirm } from '@/screens/confirm';
 
 type Loaded = { person: string; proposal: ProposalData };
 
-export function ProposalPage() {
-  const id = location.pathname.split('/')[2] ?? '';
-  // Undefined while loading, null when there's nothing here for this person.
-  const [loaded, setLoaded] = useState<Loaded | null>();
+/** A decision, inside the app, where an assistant's link leads. */
+export function ProposalPage({ id }: { id: string }) {
+  const path = `/api/proposals/${id}`;
+  const { data, error } = useLoad<Loaded>(path);
 
-  const load = () =>
-    api<Loaded>(`/api/proposals/${id}`).then(setLoaded, (error) => {
-      if (error instanceof ApiError && error.status === 401) location.assign(`/sign-in?next=${encodeURIComponent(location.pathname)}`);
-      else setLoaded(null);
-    });
+  if (error?.status === 404) {
+    return <ScreenHeader title="Nothing to decide here" meta="This link is for someone else, or it doesn’t lead anywhere." />;
+  }
+  if (!data) return null;
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  if (loaded === undefined) return null;
-  if (loaded === null) return <Missing />;
-
-  const { proposal } = loaded;
+  const { proposal } = data;
   return (
     <Confirm
+      key={proposal.id}
       proposal={proposal}
-      person={loaded.person}
       decide={async (approve, onlyHere) => {
         try {
-          setLoaded(await api<Loaded>(`/api/proposals/${id}/decide`, { approve, onlyHere, shown: proposal.rule?.text }));
+          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text });
+          await Promise.all([reload(path), reload('/api/waiting')]);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status === 403) return error instanceof Error ? error.message : undefined;
           // It changed, expired or was decided elsewhere: show it as it is now.
-          await load();
+          await Promise.all([reload(path), reload('/api/waiting')]);
           return error.code === 'CHANGED' ? error.message : undefined;
         }
       }}
     />
-  );
-}
-
-function Missing() {
-  return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-md flex-col justify-center gap-4 px-4 py-12">
-      <Wordmark className="text-lg" />
-      <h1 className="text-2xl font-semibold tracking-tight">Nothing to decide here</h1>
-      <p className="text-base text-muted-foreground">This link is for someone else, or it doesn’t lead anywhere.</p>
-      <a href="/" className="text-base text-primary underline-offset-4 hover:underline">Go to Homing</a>
-    </main>
   );
 }

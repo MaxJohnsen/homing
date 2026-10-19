@@ -76,7 +76,7 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
         </Heading>
         <div className="flex flex-col gap-2.5">
           <Button size="lg" className="h-11 w-full text-base" onClick={() => actions?.signOut()}>Sign out</Button>
-          <a href="/account" className="text-center text-base text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Go to your account</a>
+          <a href="/" className="text-center text-base text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Go to Homing</a>
         </div>
       </>
     );

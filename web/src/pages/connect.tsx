@@ -24,7 +24,7 @@ export function ConnectPage() {
       decide={async (allow) => {
         try {
           const next = await api<{ url?: string; redirect_uri?: string }>('/api/auth/oauth2/consent', { accept: allow, ...oauthQuery() });
-          location.assign(next.url ?? next.redirect_uri ?? '/account');
+          location.assign(next.url ?? next.redirect_uri ?? '/');
         } catch {
           return 'This request has expired. Go back to your assistant and connect again.';
         }

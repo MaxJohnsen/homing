@@ -10,7 +10,8 @@ import { joinWithPassword, mcpResource, saveTicket, signedInRecently, type Auth 
 import { AccessDenied, withPrincipal, type Sql } from './db.ts';
 import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
-import { decide, proposalData, readProposal, Undecidable } from './proposals.ts';
+import { decide, proposalData, readProposal, Undecidable, waitingFor } from './proposals.ts';
+import { listSpaces, spaceView } from './spaces.ts';
 
 /** What the web app's requests need from the server. */
 export interface App {
@@ -152,6 +153,66 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
     return json(res, 200, {});
   }
 
+  if (req.method === 'GET' && path === '/api/spaces') {
+    const session = await app.auth.api.getSession({ headers });
+    if (!session) return json(res, 401, { message: 'Sign in first.' });
+    const spaces = await withPrincipal(app.sql, { person: session.user.id }, listSpaces);
+    const open = new Set(spaces.map((space) => space.id));
+    return json(res, 200, {
+      // A space whose parent the person can't open sits at the top for them, and the parent stays unnamed.
+      spaces: spaces.map(({ id, name, parentId, closed, privateTo, admin }) => ({
+        id,
+        name,
+        parentId: parentId && open.has(parentId) ? parentId : null,
+        closed,
+        personal: privateTo !== null && parentId === null,
+        private: privateTo !== null,
+        admin,
+      })),
+    });
+  }
+
+  const space = /^\/api\/spaces\/([0-9a-f-]{36})$/i.exec(path);
+  if (req.method === 'GET' && space) {
+    const session = await app.auth.api.getSession({ headers });
+    if (!session) return json(res, 401, { message: 'Sign in first.' });
+    const person = session.user.id;
+    const found = await withPrincipal(app.sql, { person }, (s) => spaceView(s, space[1].toLowerCase()));
+    if (!found) return json(res, 404, { message: 'There’s no space here that you can open.' });
+    const { id, name, parentId, closed, privateTo, admin, path: above, reachedFromAbove, members } = found;
+    return json(res, 200, {
+      id,
+      name,
+      parentId,
+      closed,
+      personal: privateTo !== null && parentId === null,
+      private: privateTo !== null,
+      admin,
+      path: above,
+      reachedFromAbove,
+      members: members.map((member) => ({ ...member, you: member.id === person })),
+    });
+  }
+
+  if (req.method === 'GET' && path === '/api/waiting') {
+    const session = await app.auth.api.getSession({ headers });
+    if (!session) return json(res, 401, { message: 'Sign in first.' });
+    const waiting = await withPrincipal(app.sql, { person: session.user.id }, waitingFor);
+    return json(res, 200, {
+      waiting: waiting.map((item) => ({
+        id: item.id,
+        assistant: item.agent ?? 'Your assistant',
+        spaceId: item.spaceId,
+        space: item.space,
+        personal: item.personal,
+        action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[item.action],
+        kind: item.kind,
+        text: item.text,
+        createdAt: item.createdAt,
+      })),
+    });
+  }
+
   const proposal = /^\/api\/proposals\/([0-9a-f-]{36})(\/decide)?$/i.exec(path);
   if (proposal && (req.method === 'GET' ? !proposal[2] : req.method === 'POST' && proposal[2])) {
     const session = await app.auth.api.getSession({ headers });
@@ -191,8 +252,9 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
 
 const dist = new URL('../web/dist/app/', import.meta.url);
 
-/** The pages of the web app. Each one loads the same single-page app. */
-const pages = new Set(['/sign-in', '/setup', '/join', '/account', '/connect', '/recover']);
+/** The pages outside the app, and the app's own screens. Each one loads the same single-page app. */
+const pages = new Set(['/sign-in', '/setup', '/join', '/connect', '/recover', '/', '/waiting', '/account']);
+const screens = /^\/(spaces|proposals)\/[0-9a-f-]{36}$/i;
 
 const types: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
@@ -202,7 +264,7 @@ const types: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-/** Serves the built web app, and sends the home page to sign-in or your account. */
+/** Serves the built web app, and sends someone who isn't signed in from Home to sign-in. */
 export async function serveApp(app: App, req: IncomingMessage, res: ServerResponse, path: string): Promise<void> {
   if (req.method !== 'GET' && req.method !== 'HEAD') {
     res.writeHead(405, { allow: 'GET, HEAD' }).end();
@@ -211,8 +273,10 @@ export async function serveApp(app: App, req: IncomingMessage, res: ServerRespon
 
   if (path === '/') {
     const session = await app.auth.api.getSession({ headers: fromNodeHeaders(req.headers) });
-    res.writeHead(302, { location: session ? '/account' : '/sign-in' }).end();
-    return;
+    if (!session) {
+      res.writeHead(302, { location: '/sign-in' }).end();
+      return;
+    }
   }
 
   // Built files have a hash in their name, so they never change.
@@ -237,7 +301,7 @@ export async function serveApp(app: App, req: IncomingMessage, res: ServerRespon
       'x-content-type-options': 'nosniff',
     });
   } else {
-    res.writeHead(pages.has(path) || /^\/proposals\/[0-9a-f-]{36}$/i.test(path) ? 200 : 404, {
+    res.writeHead(pages.has(path) || screens.test(path) ? 200 : 404, {
       'content-type': 'text/html; charset=utf-8',
       'cache-control': 'no-cache',
       'content-security-policy':

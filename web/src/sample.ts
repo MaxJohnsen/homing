@@ -1,5 +1,6 @@
 import type { AccountData } from '@/screens/account';
-import type { ProposalData } from '@/lib/proposals';
+import type { ProposalData, WaitingData } from '@/lib/proposals';
+import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 
 // Claude proposes a preference for Acme, where two rules already apply.
 export const proposal: ProposalData = {
@@ -81,4 +82,77 @@ export const sampleAccount: AccountData = {
     { clientId: 'https://chatgpt.com/oauth/client-metadata.json', name: 'ChatGPT', connectedAt: '2026-10-15T08:05:00Z' },
   ],
   mcpUrl: 'https://homing.acme.no/mcp',
+};
+
+// Ana's spaces: her personal one with a kitchen renovation, Acme where she works, with a closed
+// client space and an open website project, and her family.
+export const sampleSpaces: SpaceSummary[] = [
+  { id: 'acme', name: 'Acme', parentId: null, closed: false, personal: false, private: false, admin: true },
+  { id: 'personal', name: 'Personal', parentId: null, closed: false, personal: true, private: true, admin: true },
+  { id: 'northwind', name: 'Northwind', parentId: 'acme', closed: true, personal: false, private: false, admin: true },
+  { id: 'website', name: 'Website', parentId: 'acme', closed: false, personal: false, private: false, admin: false },
+  { id: 'kitchen', name: 'Kitchen renovation', parentId: 'personal', closed: false, personal: false, private: true, admin: true },
+  { id: 'family', name: 'Berg family', parentId: null, closed: false, personal: false, private: false, admin: false },
+];
+
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+export const sampleWaiting: WaitingData[] = [
+  { id: 'w1', assistant: 'Claude', spaceId: 'northwind', space: 'Northwind', personal: false, action: 'add', kind: 'requirement', text: 'Send Northwind prices only through their procurement portal, never by email.', createdAt: minutesAgo(130) },
+  { id: 'w2', assistant: 'ChatGPT', spaceId: 'personal', space: 'Personal', personal: true, action: 'change', kind: 'preference', text: 'Keep answers short, with the most important point first.', createdAt: minutesAgo(25) },
+];
+
+export const manyWaiting: WaitingData[] = [
+  ...sampleWaiting,
+  { id: 'w3', assistant: 'Claude', spaceId: 'acme', space: 'Acme', personal: false, action: 'remove', kind: 'preference', text: 'Write status reports in Norwegian.', createdAt: minutesAgo(60 * 20) },
+  { id: 'w4', assistant: 'Claude', spaceId: 'acme', space: 'Acme', personal: false, action: 'add', kind: 'preference', text: 'Name files with the date first, like 2026-10-19 Status.', createdAt: minutesAgo(60 * 30) },
+  { id: 'w5', assistant: 'Claude', spaceId: 'website', space: 'Website', personal: false, action: 'add', kind: 'requirement', text: 'Check every page with a screen reader before it goes live.', createdAt: minutesAgo(60 * 50) },
+];
+
+const ana = { id: 'ana', name: 'Ana Berg', you: true };
+
+export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitchen' | 'fromAbove', SpaceData> = {
+  closed: {
+    ...sampleSpaces[2],
+    path: [{ id: 'acme', name: 'Acme' }],
+    reachedFromAbove: false,
+    members: [
+      { ...ana, admin: true, member: true, through: null },
+      { id: 'gunnar', name: 'Gunnar Holm', admin: false, member: true, through: null, you: false },
+    ],
+  },
+  open: {
+    ...sampleSpaces[3],
+    path: [{ id: 'acme', name: 'Acme' }],
+    reachedFromAbove: false,
+    members: [
+      { ...ana, admin: true, member: false, through: 'Acme' },
+      { id: 'cara', name: 'Cara Lund', admin: false, member: true, through: 'Acme', you: false },
+      { id: 'eli', name: 'Eli Sand', admin: false, member: true, through: null, you: false },
+      { id: 'jon', name: 'Jon Dahl', admin: false, member: false, through: 'Acme', you: false },
+    ],
+  },
+  root: {
+    ...sampleSpaces[0],
+    path: [],
+    reachedFromAbove: false,
+    members: [
+      { ...ana, admin: true, member: true, through: null },
+      { id: 'cara', name: 'Cara Lund', admin: false, member: true, through: null, you: false },
+      { id: 'jon', name: 'Jon Dahl', admin: true, member: true, through: null, you: false },
+    ],
+  },
+  personal: { ...sampleSpaces[1], path: [], reachedFromAbove: false, members: [] },
+  kitchen: { ...sampleSpaces[4], path: [{ id: 'personal', name: 'Personal' }], reachedFromAbove: false, members: [] },
+  fromAbove: {
+    ...sampleSpaces[3],
+    parentId: null,
+    admin: false,
+    path: [],
+    reachedFromAbove: true,
+    members: [
+      { id: 'cara', name: 'Cara Lund', admin: true, member: true, through: null, you: false },
+      { id: 'eli', name: 'Eli Sand', admin: false, member: true, through: null, you: true },
+    ],
+  },
 };
