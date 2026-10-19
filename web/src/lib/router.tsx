@@ -5,15 +5,20 @@ export type Route =
   | { name: 'home' }
   | { name: 'waiting' }
   | { name: 'account' }
-  | { name: 'space'; id: string }
+  | { name: 'space'; id: string; view?: SpaceView }
+  | { name: 'skill'; id: string }
   | { name: 'proposal'; id: string };
 
+/** The parts of a space: its rules and skills under Guidance, and its members. */
+export type SpaceView = 'rules' | 'skills' | 'members';
+
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-const patterns: [RegExp, (id: string) => Route][] = [
+const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/$/, () => ({ name: 'home' })],
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
-  [new RegExp(`^/spaces/${uuid}$`, 'i'), (id) => ({ name: 'space', id: id.toLowerCase() })],
+  [new RegExp(`^/spaces/${uuid}(?:/(rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
+  [new RegExp(`^/skills/${uuid}$`, 'i'), (id) => ({ name: 'skill', id: id.toLowerCase() })],
   [new RegExp(`^/proposals/${uuid}$`, 'i'), (id) => ({ name: 'proposal', id: id.toLowerCase() })],
 ];
 
@@ -22,7 +27,7 @@ export function routeOf(path: string): Route | undefined {
   const plain = path.length > 1 ? path.replace(/\/$/, '') : path;
   for (const [pattern, route] of patterns) {
     const match = pattern.exec(plain);
-    if (match) return route(match[1]);
+    if (match) return route(match[1], match[2]);
   }
   return undefined;
 }
@@ -32,7 +37,8 @@ export function addressOf(route: Route): string {
     case 'home': return '/';
     case 'waiting': return '/waiting';
     case 'account': return '/account';
-    case 'space': return `/spaces/${route.id}`;
+    case 'space': return `/spaces/${route.id}${route.view ? `/${route.view}` : ''}`;
+    case 'skill': return `/skills/${route.id}`;
     case 'proposal': return `/proposals/${route.id}`;
   }
 }

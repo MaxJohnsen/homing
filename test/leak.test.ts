@@ -400,7 +400,11 @@ describe('through the app’s endpoints', () => {
     const proposal = await as({ person: who.id, agent: 'Claude' }, (s) =>
       proposeRule(s, { action: 'add rule', spaceId: space, kind: 'preference', text: rule, shared: true }),
     );
-    return { name, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal };
+    const { rule: ruleId, skill } = await as({ person: who.id, direct: true }, async (s) => ({
+      rule: (await addRule(s, { spaceId: space, kind: 'requirement', body: `${name} never shares prices`, shared: true })).id,
+      skill: (await saveSkill(s, { spaceId: space, files: [{ path: 'SKILL.md', body: `---\nname: ${name.toLowerCase()}-report\ndescription: ${name}’s weekly report\n---\n` }], shared: true })).pageId,
+    }));
+    return { name, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill };
   };
   type SignedIn = Awaited<ReturnType<typeof signedIn>>;
 
@@ -412,7 +416,7 @@ describe('through the app’s endpoints', () => {
 
   after(() => homing.close());
 
-  test('nobody sees or decides another client’s spaces or proposals', async () => {
+  test('nobody sees or changes another client’s spaces, proposals or guidance', async () => {
     for (const [intruder, target] of [[ben, ana], [ana, ben]]) {
       const { browser } = intruder;
       const seen: unknown[] = [];
@@ -431,12 +435,34 @@ describe('through the app’s endpoints', () => {
       const decided = await browser.json(`/api/proposals/${target.proposal.id}/decide`, { approve: true });
       assert.equal(decided.status, 404);
       seen.push(decided.body);
+      for (const space of [target.space, target.personalSpaceId]) {
+        assert.equal((await get(`/api/spaces/${space}/rules`)).status, 404);
+        assert.equal((await get(`/api/spaces/${space}/skills`)).status, 404);
+      }
+      assert.equal((await get(`/api/skills/${target.skill}`)).status, 404);
+      // Nor can they change the other client's guidance through the app.
+      for (const [path, body] of [
+        [`/api/spaces/${target.space}/rules`, { kind: 'requirement', text: 'Hello', shared: true }],
+        [`/api/spaces/${target.space}/rules`, { kind: 'requirement', text: 'Hello' }],
+        [`/api/rules/${target.rule}`, { text: 'Changed' }],
+        [`/api/rules/${target.rule}/remove`, {}],
+      ] as const) {
+        const changed = await browser.json(path, body);
+        assert.equal(changed.status, 404, path);
+        seen.push(changed.body);
+      }
 
-      // Nothing they got back names the other client or what it asked for.
-      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}`));
+      // Nothing they got back names the other client, what it asked for, or its guidance.
+      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report`));
     }
     const proposals = await admin`select state from proposals where id in ${admin([ana.proposal.id, ben.proposal.id])}`;
     assert.deepEqual(proposals.map((row) => row.state), ['open', 'open']);
+    const kept = await admin`
+      select body from content
+      where id in ${admin([ana.rule, ben.rule])} and not exists (select from content r where r.supersedes = content.id)
+      order by body
+    `;
+    assert.deepEqual(kept.map((row) => row.body), ['Ana never shares prices', 'Ben never shares prices']);
   });
 });
 

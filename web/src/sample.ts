@@ -1,6 +1,7 @@
 import type { AccountData } from '@/screens/account';
 import type { ProposalData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
+import type { RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 
 // Claude proposes a preference for Acme, where two rules already apply.
 export const proposal: ProposalData = {
@@ -155,4 +156,33 @@ export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitc
       { id: 'eli', name: 'Eli Sand', admin: false, member: true, through: null, you: true },
     ],
   },
+};
+
+// The rules Ana's assistant gets in Northwind, from least to most specific, as the server lists them.
+export const sampleRules: RuleData[] = [
+  { id: 'r1', spaceId: 'personal', spaceName: 'Personal', personal: true, kind: 'preference', text: 'Keep answers short, with the most important point first.', shared: false, onlyHere: false },
+  { id: 'r2', spaceId: 'acme', spaceName: 'Acme', personal: false, kind: 'requirement', text: 'Never name other clients in documents for a client.', shared: true, onlyHere: false },
+  { id: 'r3', spaceId: 'acme', spaceName: 'Acme', personal: false, kind: 'preference', text: 'Write status reports in English.', shared: true, onlyHere: false },
+  { id: 'r4', spaceId: 'acme', spaceName: 'Acme', personal: false, kind: 'preference', text: 'Put the date first in file names.', shared: false, onlyHere: false },
+  { id: 'r5', spaceId: 'northwind', spaceName: 'Northwind', personal: false, kind: 'requirement', text: 'Send Northwind prices only through their procurement portal, never by email.', shared: true, onlyHere: false },
+  { id: 'r6', spaceId: 'northwind', spaceName: 'Northwind', personal: false, kind: 'preference', text: 'Write Northwind’s status reports in Norwegian.', shared: true, onlyHere: true },
+  { id: 'r7', spaceId: 'northwind', spaceName: 'Northwind', personal: false, kind: 'preference', text: 'Call Gunnar before sending anything big.', shared: false, onlyHere: false },
+];
+
+export const sampleSkills: SkillSummary[] = [
+  { id: 's1', name: 'estimate', description: 'Estimates work in days, with a range and what it depends on.', spaceId: 'acme', spaceName: 'Acme', shared: true, used: true, others: [] },
+  { id: 's2', name: 'status-report', description: 'The weekly status report for Northwind, in their template and in Norwegian.', spaceId: 'northwind', spaceName: 'Northwind', shared: true, used: true, others: [{ id: 's3', spaceName: 'Acme' }] },
+  { id: 's3', name: 'status-report', description: 'The weekly status report Acme sends every client.', spaceId: 'acme', spaceName: 'Acme', shared: true, used: false, others: [{ id: 's2', spaceName: 'Northwind' }] },
+];
+
+export const sampleSkill: SkillData = {
+  id: 's2',
+  name: 'status-report',
+  description: 'The weekly status report for Northwind, in their template and in Norwegian.',
+  spaceId: 'northwind',
+  spaceName: 'Northwind',
+  shared: true,
+  instructions: 'Write the report every Friday from what happened this week.\n\n1. What was done, in at most three points.\n2. What is next, with dates.\n3. Risks, each with who owns it.\n\nUse the template in template.md, and write it in Norwegian.',
+  files: [{ path: 'template.md', body: '# Statusrapport uke {uke}\n\n## Gjort\n\n## Neste\n\n## Risiko\n' }],
+  replaces: [{ id: 's3', spaceName: 'Acme' }],
 };

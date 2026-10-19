@@ -153,6 +153,92 @@ export async function skillsFor(s: Session, spaceId: string): Promise<Skill[]> {
   return skills.map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd ?? '').description ?? '' }));
 }
 
+/** A skill that applies in a space, and whether another with its name is used there instead. */
+export interface SkillHere extends Skill {
+  /** Whether the person's assistant gets this one here. */
+  used: boolean;
+  /** For one that's used, the ones with its name it replaces; for one that isn't, the one used instead. */
+  others: { pageId: string; spaceName: string | null }[];
+}
+
+/**
+ * Every skill that applies in a space, including the ones a closer skill with the same name
+ * replaces, in the order skillsFor picks them: by name, the closest first, and between equally
+ * close ones the private one.
+ */
+export async function skillsHere(s: Session, spaceId: string): Promise<SkillHere[]> {
+  const rows = await s.tx<(Omit<Skill, 'description'> & { skillMd: string | null })[]>`
+    ${applying(s, spaceId)}
+    select t.page_id, t.body as name, t.space_id, sp.name as space_name, t.private_to, f.body as skill_md
+    from applies a
+    join content t on t.space_id = a.space_id and t.kind = 'title'
+    join pages p on p.id = t.page_id and p.type = 'skill'
+    join lateral (
+      select f.body from content f
+      where f.page_id = t.page_id and f.kind = 'file' and f.path = 'SKILL.md'
+        and f.private_to is not distinct from t.private_to
+        and ${visibleContent(s, 'f')} and ${current(s, 'f')}
+      order by f.created_at
+      limit 1
+    ) f on true
+    left join spaces sp on sp.id = t.space_id and sp.id in (${accessibleSpaces(s)})
+    where ${visibleContent(s, 't')} and ${current(s, 't')}
+    order by t.body, a.distance, t.private_to is null
+  `;
+  const skills = rows.map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd ?? '').description ?? '' }));
+  return skills.map((skill) => {
+    const named = skills.filter((other) => other.name === skill.name);
+    const used = named[0] === skill;
+    const others = used ? named.slice(1) : [named[0]];
+    return { ...skill, used, others: others.map(({ pageId, spaceName }) => ({ pageId, spaceName })) };
+  });
+}
+
+/** A skill as its own page shows it: what it does, its instructions and its other files. */
+export interface SkillView extends Skill {
+  /** SKILL.md without its frontmatter. */
+  instructions: string;
+  files: SkillFile[];
+  /** Skills with its name from the spaces above its own, which it replaces there. */
+  replaces: { pageId: string; spaceName: string | null }[];
+}
+
+/** A skill the person's assistant can get, whether its space is one they can open or one above. */
+export async function readSkill(s: Session, pageId: string): Promise<SkillView | undefined> {
+  const [title] = await s.tx<{ name: string; spaceId: string; privateTo: string | null }[]>`
+    select t.body as name, t.space_id, t.private_to from content t
+    join pages p on p.id = t.page_id and p.type = 'skill'
+    where t.page_id = ${pageId}::uuid and t.kind = 'title' and ${visibleContent(s, 't')} and ${current(s, 't')}
+    order by t.private_to is null
+    limit 1
+  `;
+  if (!title) return undefined;
+  const files = await s.tx<SkillFile[]>`
+    select path, body from content
+    where page_id = ${pageId}::uuid and kind = 'file' and private_to is not distinct from ${title.privateTo}::uuid
+      and ${visibleContent(s, 'content')} and ${current(s, 'content')}
+    order by path
+  `;
+  const skillMd = files.find((file) => file.path === 'SKILL.md')?.body ?? '';
+  const [space] = await s.tx<{ name: string }[]>`
+    select name from spaces where id = ${title.spaceId}::uuid and id in (${accessibleSpaces(s)})
+  `;
+  // In its own space it replaces the ones with its name that come after it.
+  const named = (await skillsHere(s, title.spaceId)).filter((other) => other.name === title.name);
+  const above = named.slice(named.findIndex((other) => other.pageId === pageId) + 1);
+  return {
+    pageId,
+    name: title.name,
+    description: frontmatter(skillMd).description ?? '',
+    spaceId: title.spaceId,
+    spaceName: space?.name ?? null,
+    privateTo: title.privateTo,
+    instructions: skillMd.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/, '').trim(),
+    files: files.filter((file) => file.path !== 'SKILL.md'),
+    replaces: above.map(({ pageId: other, spaceName }) => ({ pageId: other, spaceName })),
+  };
+}
+
 /** The name and description of a skill, from the frontmatter of its SKILL.md. */
 function describe(files: SkillFile[]): { name: string; description: string } {
   const skillMd = files.find((file) => file.path === 'SKILL.md');

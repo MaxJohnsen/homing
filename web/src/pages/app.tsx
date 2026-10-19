@@ -1,16 +1,19 @@
 import { useEffect, type ReactNode } from 'react';
 import { Shell } from '@/components/app-shell';
 import { ScreenHeader } from '@/components/screen';
-import { api } from '@/lib/api';
-import { useLoad } from '@/lib/load';
+import { api, ApiError } from '@/lib/api';
+import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
+import { reload, useLoad } from '@/lib/load';
 import type { WaitingData } from '@/lib/proposals';
-import { routeOf, useAddress, type Route } from '@/lib/router';
+import { routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import { AccountPage } from '@/pages/account';
 import { ProposalPage } from '@/pages/proposal';
 import type { AccountData } from '@/screens/account';
 import { Home } from '@/screens/home';
-import { Space } from '@/screens/space';
+import { Rules, Skills } from '@/screens/guidance';
+import { Skill } from '@/screens/skill';
+import { Members, Space } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 /** The signed-in app: the shelf with your spaces, and the screen you're on beside it. */
@@ -21,7 +24,8 @@ export function AppPage() {
   const spaces = useLoad<{ spaces: SpaceSummary[] }>('/api/spaces').data?.spaces;
   const waiting = useLoad<{ waiting: WaitingData[] }>('/api/waiting').data?.waiting;
 
-  const spaceId = route.name === 'space' ? route.id : undefined;
+  const skill = useLoad<SkillData>(route.name === 'skill' ? `/api/skills/${route.id}` : '').data;
+  const spaceId = route.name === 'space' ? route.id : route.name === 'skill' ? (skill?.spaceId ?? undefined) : undefined;
 
   if (!me || !spaces) return null;
   return (
@@ -52,16 +56,54 @@ function Screen({ route, me, waiting }: { route: Route; me: AccountData; waiting
     case 'proposal':
       return <Titled title="A decision"><ProposalPage id={route.id} /></Titled>;
     case 'space':
-      return <SpacePage id={route.id} />;
+      return <SpacePage id={route.id} view={route.view ?? 'rules'} />;
+    case 'skill':
+      return <SkillPage id={route.id} />;
   }
 }
 
-function SpacePage({ id }: { id: string }) {
-  const { data, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
+function SpacePage({ id, view }: { id: string; view: SpaceView }) {
+  const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
+  const rules = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '').data?.rules;
+  const skills = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '').data?.skills;
   return (
-    <Titled title={data?.name ?? 'Space'}>
+    <Titled title={space?.name ?? 'Space'}>
       {error?.status === 404 && <ScreenHeader title="There’s no space here" meta="It may have been removed, or you can’t open it." />}
-      {data && <Space space={data} />}
+      {space && (
+        <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
+          {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
+          {view === 'skills' && skills && <Skills space={space} skills={skills} />}
+          {view === 'members' && !space.private && <Members space={space} />}
+        </Space>
+      )}
+    </Titled>
+  );
+}
+
+/** Changing rules directly, then showing them as they are now. */
+function ruleActions(spaceId: string): RuleActions {
+  const run = async (action: () => Promise<unknown>) => {
+    try {
+      await action();
+      await reload(`/api/spaces/${spaceId}/rules`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) await reload(`/api/spaces/${spaceId}/rules`);
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
+  return {
+    add: (input) => run(() => api(`/api/spaces/${spaceId}/rules`, input)),
+    edit: (id, text) => run(() => api(`/api/rules/${id}`, { text })),
+    remove: (id) => run(() => api(`/api/rules/${id}/remove`, {})),
+  };
+}
+
+function SkillPage({ id }: { id: string }) {
+  const { data, error } = useLoad<SkillData>(`/api/skills/${id}`);
+  return (
+    <Titled title={data?.name ?? 'Skill'}>
+      {error?.status === 404 && <ScreenHeader title="There’s no skill here" meta="It may have been removed, or it doesn’t reach you." />}
+      {data && <Skill skill={data} />}
     </Titled>
   );
 }

@@ -2,8 +2,9 @@ import { useState, type ReactNode } from 'react';
 import { Shell } from '@/components/app-shell';
 import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
+import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
-import { changeProposal, longProposal, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { changeProposal, longProposal, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { CardPreview } from '@/screens/card-preview';
 import { Confirm } from '@/screens/confirm';
@@ -13,7 +14,9 @@ import { Join } from '@/screens/join';
 import { Landing } from '@/screens/landing';
 import { Recover } from '@/screens/recover';
 import { SignIn } from '@/screens/sign-in';
-import { Space } from '@/screens/space';
+import { Rules, Skills } from '@/screens/guidance';
+import { Skill } from '@/screens/skill';
+import { Members, Space } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 // Every screen with sample data, for `npm run dev:web`. Each state has its own address for review.
@@ -36,12 +39,18 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/home/quiet': { label: 'Home, with nothing waiting', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/home/new': { label: 'Home, just joined', render: () => <InApp waiting={0} spaces={sampleSpaces.filter((space) => space.personal)}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 0, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/waiting': { label: 'Everything waiting, by space', render: () => <InApp waiting={5} route={{ name: 'waiting' }}><Waiting waiting={manyWaiting} /></InApp> },
-  '/spaces/closed': { label: 'A closed space', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} /></InApp> },
-  '/spaces/open': { label: 'A space open to everyone above it', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} /></InApp> },
-  '/spaces/root': { label: 'A space at the top', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} /></InApp> },
-  '/spaces/personal': { label: 'Your personal space', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} /></InApp> },
-  '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} /></InApp> },
-  '/spaces/from-above': { label: 'A space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} /></InApp> },
+  '/spaces/rules': { label: 'A space’s rules, as an admin', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="rules"><Rules space={sampleSpace.closed} rules={sampleRules} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/rules/member': { label: 'A space’s rules, as a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="rules"><Rules space={sampleSpace.open} rules={sampleRules.filter((rule) => rule.spaceId !== 'northwind').map((rule) => ({ ...rule, spaceId: rule.spaceId === 'acme' && !rule.shared ? 'website' : rule.spaceId }))} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/rules/from-above': { label: 'Rules from a space you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="rules"><Rules space={sampleSpace.fromAbove} rules={sampleRules.filter((rule) => rule.spaceId === 'acme' && rule.shared).map((rule) => ({ ...rule, spaceName: null }))} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/rules/personal': { label: 'Your personal rules', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="rules"><Rules space={sampleSpace.personal} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/rules/new': { label: 'Rules in a new space', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="rules"><Rules space={sampleSpace.root} rules={[]} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/skills': { label: 'A space’s skills', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="skills"><Skills space={sampleSpace.closed} skills={sampleSkills} /></Space></InApp> },
+  '/skill': { label: 'A skill', render: () => <InApp spaceId="northwind"><Skill skill={sampleSkill} /></InApp> },
+  '/spaces/closed': { label: 'A closed space’s members', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="members"><Members space={sampleSpace.closed} /></Space></InApp> },
+  '/spaces/open': { label: 'Members of a space open to everyone above it', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="members"><Members space={sampleSpace.open} /></Space></InApp> },
+  '/spaces/root': { label: 'Members of a space at the top', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="members"><Members space={sampleSpace.root} /></Space></InApp> },
+  '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="rules"><Rules space={sampleSpace.kitchen} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/from-above': { label: 'Members of a space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="members"><Members space={sampleSpace.fromAbove} /></Space></InApp> },
   '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
   '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }}><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },
   '/account/password': { label: 'Your account, with a password', render: () => <InApp route={{ name: 'account' }}><Account account={{ ...sampleAccount, password: true, passkeys: [] }} /></InApp> },
@@ -82,6 +91,9 @@ function SampleConfirm({ proposal, message }: { proposal: ProposalData; message?
     </InApp>
   );
 }
+
+/** Changing rules on the sample does nothing, so the forms can be tried. */
+const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined };
 
 /** A screen inside the app, with Ana's spaces on the shelf. */
 function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces }: {
