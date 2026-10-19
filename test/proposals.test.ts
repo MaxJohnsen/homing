@@ -238,8 +238,8 @@ test('only the person it was proposed to sees and decides it', async () => {
   assert.deepEqual(await rules(ana, space), []);
 });
 
-test('only a space’s admins propose changes to its shared rules, for now', async () => {
-  const { ana, cara, ref, space, claude } = await acme();
+test('a member’s change to shared rules becomes a request to the admins, which they send first', async () => {
+  const { ana, ref, space, claude } = await acme();
   const shared = await as(direct(ana), (s) => addRule(s, { spaceId: space, kind: 'requirement', body: 'Never send prices by email', shared: true }));
 
   for (const input of [
@@ -247,12 +247,13 @@ test('only a space’s admins propose changes to its shared rules, for now', asy
     { change: 'change', rule: `item:${shared.id}`, text: 'Send prices by email' },
     { change: 'remove', rule: `item:${shared.id}` },
   ]) {
-    const attempt = await claude.cara.call('act', { action: 'guidance.propose', input: { space: ref, ...input } });
-    assert.equal(attempt.failed, true);
-    assert.match(attempt.text, /Only the admins of Acme change its shared rules/);
+    const asked = await claude.cara.call('act', { action: 'guidance.propose', input: { space: ref, ...input } });
+    assert.equal(asked.failed, false, asked.text);
+    assert.match(asked.text, /this is a request to them/);
   }
   // Her own rules are hers to change.
-  await propose(claude.cara, { space: ref, change: 'add', kind: 'preference', text: 'Cara writes her reports in Norwegian' });
+  const own = await propose(claude.cara, { space: ref, change: 'add', kind: 'preference', text: 'Cara writes her reports in Norwegian' });
+  assert.match(own.text, /Waiting for the user's approval/);
   // And nobody proposes anything for a space they can't open.
   const ben = await member(homing.url, 'Ben');
   const outside = await (await chat(ben)).call('act', { action: 'guidance.propose', input: { space: ref, change: 'add', kind: 'preference', text: 'Hello' } });
