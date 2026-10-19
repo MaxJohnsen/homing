@@ -42,12 +42,9 @@ export interface AccountActions {
   removePasskey(id: string): Promise<string | undefined>;
   setPassword(password: string, current?: string): Promise<string | undefined>;
   verifyEmail(): Promise<string | undefined>;
-  invite(email?: string): Promise<InviteMade | { problem: string }>;
   signInAgain(): Promise<void>;
 }
 
-/** An invite just made: a link to share, or sent by email straight to the person. */
-export type InviteMade = { link: string; expiresAt: string; emailed: false } | { to: string; expiresAt: string; emailed: true };
 
 /** Shown once, after something that brought you here. */
 export type AccountNotice = 'recovered' | 'verified';
@@ -57,7 +54,7 @@ const notices: Record<AccountNotice, (account: AccountData) => { title: string; 
   verified: () => ({ title: 'Your email is verified', text: 'If you ever can’t sign in, Homing can send you a sign-in link.' }),
 };
 
-/** Your account: the assistants connected to Homing, how you sign in, and inviting people. */
+/** Your account: the assistants connected to Homing, and how you sign in. */
 export function Account({ account, notice, actions }: { account: AccountData; notice?: AccountNotice; actions?: AccountActions }) {
   const shown = notice && notices[notice](account);
   return (
@@ -81,7 +78,6 @@ export function Account({ account, notice, actions }: { account: AccountData; no
           <SignInMethods account={account} actions={actions} />
         </>
       )}
-      {account.instanceAdmin && <Invite account={account} actions={actions} />}
     </div>
   );
 }
@@ -333,63 +329,6 @@ function Password({ account, actions }: { account: AccountData; actions?: Accoun
         <Button type="submit" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy}>Save password</Button>
       </div>
     </form>
-  );
-}
-
-function Invite({ account, actions }: { account: AccountData; actions?: AccountActions }) {
-  const [email, setEmail] = useState('');
-  const [invite, setInvite] = useState<InviteMade>();
-  const [message, setMessage] = useState<string>();
-  const [busy, setBusy] = useState(false);
-
-  const create = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!actions) return;
-    setBusy(true);
-    setMessage(undefined);
-    const result = await actions.invite(email.trim() || undefined);
-    if ('problem' in result) setMessage(result.problem);
-    else {
-      setInvite(result);
-      setEmail('');
-    }
-    setBusy(false);
-  };
-
-  return (
-    <section aria-labelledby="invite-heading" className="flex flex-col gap-4 rounded-2xl bg-card px-6 py-5 sm:px-8 sm:py-6">
-      <div className="flex flex-col gap-1">
-        <h2 id="invite-heading" className="text-lg font-semibold tracking-tight">Invite someone</h2>
-        <p className="text-base text-muted-foreground">
-          They get a link to create their own account. It works once, for a week. Being invited gives them no access to your spaces.
-        </p>
-      </div>
-
-      {invite &&
-        (invite.emailed ? (
-          <p className="text-base" role="status">Sent to {invite.to}. The link goes only to them.</p>
-        ) : (
-          <div className="flex flex-col gap-2" role="status">
-            <p className="text-base">Share this link with them:</p>
-            <CopyAddress value={invite.link} />
-          </div>
-        ))}
-
-      <form className="flex flex-col gap-4" onSubmit={create} noValidate>
-        {account.canEmail && (
-          <Field data-invalid={Boolean(message) || undefined}>
-            <FieldLabel htmlFor="invite-email">Their email (optional)</FieldLabel>
-            <Input id="invite-email" type="email" className="h-11" value={email} onChange={(event) => setEmail(event.target.value)} aria-invalid={Boolean(message) || undefined} />
-          </Field>
-        )}
-        {message && <FieldError>{message}</FieldError>}
-        <div>
-          <Button type="submit" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy}>
-            {email.trim() ? 'Send invite' : invite ? 'Create another link' : 'Create invite link'}
-          </Button>
-        </div>
-      </form>
-    </section>
   );
 }
 

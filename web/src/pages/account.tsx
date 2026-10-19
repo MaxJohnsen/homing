@@ -3,7 +3,7 @@ import { WebAuthnError } from '@simplewebauthn/browser';
 import { api, ApiError } from '@/lib/api';
 import { reload, useLoad } from '@/lib/load';
 import { cancelled, createPasskey } from '@/lib/passkeys';
-import { Account, signInAgainMessage, type AccountData, type AccountNotice, type InviteMade } from '@/screens/account';
+import { Account, signInAgainMessage, type AccountData, type AccountNotice } from '@/screens/account';
 
 /** Your account, inside the app. */
 export function AccountPage() {
@@ -71,13 +71,6 @@ export function AccountPage() {
             await api('/api/auth/send-verification-email', { email: account.email, callbackURL: '/account?verified' });
           } catch (error) {
             return error instanceof Error ? error.message : 'Something went wrong. Try again.';
-          }
-        },
-        async invite(email) {
-          try {
-            return await api<InviteMade>('/api/invites', { email });
-          } catch (error) {
-            return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.' };
           }
         },
         async signInAgain() {

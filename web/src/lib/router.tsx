@@ -5,6 +5,7 @@ export type Route =
   | { name: 'home' }
   | { name: 'waiting' }
   | { name: 'account' }
+  | { name: 'admin' }
   | { name: 'space'; id: string; view?: SpaceView }
   | { name: 'skill'; id: string }
   | { name: 'proposal'; id: string };
@@ -17,6 +18,7 @@ const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/$/, () => ({ name: 'home' })],
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
+  [/^\/admin$/, () => ({ name: 'admin' })],
   [new RegExp(`^/spaces/${uuid}(?:/(rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
   [new RegExp(`^/skills/${uuid}$`, 'i'), (id) => ({ name: 'skill', id: id.toLowerCase() })],
   [new RegExp(`^/proposals/${uuid}$`, 'i'), (id) => ({ name: 'proposal', id: id.toLowerCase() })],
@@ -37,6 +39,7 @@ export function addressOf(route: Route): string {
     case 'home': return '/';
     case 'waiting': return '/waiting';
     case 'account': return '/account';
+    case 'admin': return '/admin';
     case 'space': return `/spaces/${route.id}${route.view ? `/${route.view}` : ''}`;
     case 'skill': return `/skills/${route.id}`;
     case 'proposal': return `/proposals/${route.id}`;

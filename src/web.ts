@@ -195,7 +195,7 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
 const dist = new URL('../web/dist/app/', import.meta.url);
 
 /** The pages outside the app, and the app's own screens. Each one loads the same single-page app. */
-const pages = new Set(['/sign-in', '/setup', '/join', '/connect', '/recover', '/', '/waiting', '/account']);
+const pages = new Set(['/sign-in', '/setup', '/join', '/connect', '/recover', '/', '/waiting', '/account', '/admin']);
 const screens = /^\/(spaces\/[0-9a-f-]{36}(\/(rules|skills|members))?|proposals\/[0-9a-f-]{36}|skills\/[0-9a-f-]{36})$/i;
 
 const types: Record<string, string> = {
