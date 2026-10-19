@@ -18,7 +18,7 @@ import {
   writeItem,
   type Hit,
 } from './knowledge.ts';
-import { decide, openProposals, proposalData, proposeRule, readProposal, Undecidable, type Proposal } from './proposals.ts';
+import { decide, openProposals, proposalData, proposeRule, readProposal, requestsIn, Undecidable, type Proposal } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { listSpaces, peopleNames, type Space } from './spaces.ts';
 import type { AgentPrincipal } from './assistants.ts';
@@ -132,7 +132,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
       description:
         'Makes a change that the user decides. guidance.propose proposes adding, changing or removing a rule: ' +
         'nothing changes until the user approves the exact change in Homing, and nobody can approve it for them. ' +
-        'Give the user the link it returns.',
+        "A member's change to a space's shared rules becomes a request to its admins, which the user sends first. " +
+        "Don't offer a rule only for the user instead, since that isn't the same thing. Give the user the link it returns.",
       inputSchema: z.object({
         action: z.enum(['guidance.propose']),
         input: z.object({
@@ -147,8 +148,9 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
           shared: z
             .boolean()
             .optional()
-            .describe("For a new rule: true for everyone in the space, which only the space's admins can propose. Otherwise only for the user"),
+            .describe("For a new rule: true for everyone in the space, which its admins decide. Otherwise only for the user"),
           onlyHere: z.boolean().optional().describe('For a new rule: true to keep it out of the spaces below this one'),
+          why: text().optional().describe('Why the user wants it, in their words, for whoever decides'),
         }),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
@@ -332,6 +334,9 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
   const rules = await rulesFor(s, spaceId);
   const skills = await skillsFor(s, spaceId);
   const waiting = await openProposals(s, spaceId);
+  const requests = await requestsIn(s, spaceId);
+  const sent = requests.filter((request) => request.yours);
+  const toDecide = requests.filter((request) => !request.yours && request.state === 'requested');
   const lines = [
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
@@ -349,7 +354,20 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
       ? [
           '\n## Waiting for approval',
           'Changes the user hasn\'t decided yet. Nothing changes until they approve them.',
-          ...waiting.map((proposal) => `- ${describeProposal(proposal)} (${ref('proposal', proposal.id)}, approve at ${links.proposal(proposal.id)})`),
+          ...waiting.map((proposal) => `- ${describeProposal(proposal)} (${ref('proposal', proposal.id)}, ${proposal.request ? 'send' : 'approve'} at ${links.proposal(proposal.id)})`),
+        ]
+      : []),
+    ...(sent.length
+      ? [
+          "\n## The user's requests to the admins",
+          ...sent.map((request) => `- ${describeProposal(request)} (${ref('proposal', request.id)}): ${outcome(request, links)}`),
+        ]
+      : []),
+    ...(toDecide.length
+      ? [
+          '\n## Requests waiting for the user',
+          "Members asked this space's admins for these. The user decides them in Homing, never you.",
+          ...toDecide.map((request) => `- ${describeProposal(request)} (${ref('proposal', request.id)}, decide at ${links.proposal(request.id)})`),
         ]
       : []),
     ...(skills.length
@@ -536,6 +554,7 @@ async function proposeGuidance(
     text?: string;
     shared?: boolean;
     onlyHere?: boolean;
+    why?: string;
   },
   card: boolean,
 ): Promise<string | Answer> {
@@ -543,24 +562,28 @@ async function proposeGuidance(
   let proposal: Proposal;
   if (input.change === 'add') {
     if (!input.kind || !input.text) throw new Refused('A new rule needs its kind and its text.');
-    proposal = await proposeRule(s, { action: 'add rule', spaceId, kind: input.kind, text: input.text, shared: input.shared, onlyHere: input.onlyHere });
+    proposal = await proposeRule(s, { action: 'add rule', spaceId, kind: input.kind, text: input.text, shared: input.shared, onlyHere: input.onlyHere, why: input.why });
   } else {
     if (!input.rule) throw new Refused(`Name the rule to ${input.change}, such as item:….`);
     const ruleId = parseRef(input.rule, 'item');
     if (input.change === 'change') {
       if (!input.text) throw new Refused("Give the rule's new text.");
-      proposal = await proposeRule(s, { action: 'change rule', spaceId, ruleId, text: input.text });
+      proposal = await proposeRule(s, { action: 'change rule', spaceId, ruleId, text: input.text, why: input.why });
     } else {
-      proposal = await proposeRule(s, { action: 'remove rule', spaceId, ruleId });
+      proposal = await proposeRule(s, { action: 'remove rule', spaceId, ruleId, why: input.why });
     }
   }
+  const verb = proposal.request ? 'send or cancel' : 'approve or reject';
   const where = card
-    ? 'Homing shows them the exact change in a card here, to approve or reject. ' +
+    ? `Homing shows them the exact change in a card here, to ${verb}. ` +
       `If they can't see the card, give them this link instead: ${links.proposal(proposal.id)}`
-    : `Give them this link to approve or reject it in Homing: ${links.proposal(proposal.id)}`;
-  const text =
-    `Waiting for the user's approval (${ref('proposal', proposal.id)}). Nothing has changed yet. ${where}\n\n` +
-    'Only they can decide it, so never say it is approved until `read` shows it is. Once it is, call `context` again for the rules as they are.';
+    : `Give them this link to ${verb} it in Homing: ${links.proposal(proposal.id)}`;
+  const text = proposal.request
+    ? `Only the space's admins change its shared rules, so this is a request to them (${ref('proposal', proposal.id)}). ` +
+      `The user sends it first. Nothing has changed yet. ${where}\n\n` +
+      'Once it is sent, any admin of the space decides it. Never say it is approved until `read` shows it is.'
+    : `Waiting for the user's approval (${ref('proposal', proposal.id)}). Nothing has changed yet. ${where}\n\n` +
+      'Only they can decide it, so never say it is approved until `read` shows it is. Once it is, call `context` again for the rules as they are.';
   // The card finds its proposal in the structured part. Some assistants show
   // the model only that part, so it carries what the model needs too.
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
@@ -569,23 +592,31 @@ async function proposeGuidance(
 /** "Add a preference: "Write reports in Norwegian"", for an agent. */
 function describeProposal(proposal: Proposal): string {
   const { change } = proposal;
+  const ask = proposal.request ? 'Ask the admins to ' : '';
   if (proposal.action === 'add rule') {
     const where = [change.shared ? 'shared' : 'private', change.onlyHere && 'only here'].filter(Boolean).join(', ');
-    return `Add a ${change.kind} (${where}): ${quote(change.text!)}`;
+    return `${ask}${ask ? 'add' : 'Add'} a ${change.kind} (${where}): ${quote(change.text!)}`;
   }
   const rule = ref('item', proposal.itemId!);
-  return proposal.action === 'change rule' ? `Change ${rule} to: ${quote(change.text!)}` : `Remove ${rule}`;
+  return proposal.action === 'change rule' ? `${ask}${ask ? 'change' : 'Change'} ${rule} to: ${quote(change.text!)}` : `${ask}${ask ? 'remove' : 'Remove'} ${rule}`;
 }
 
 /** Where a proposal stands, for an agent. */
 function outcome(proposal: Proposal, links: Links): string {
+  const decider = proposal.request ? 'An admin of the space' : 'The user';
   switch (proposal.state) {
     case 'open':
-      return `Waiting for the user's approval until ${day(proposal.expiresAt)}, at ${links.proposal(proposal.id)}. Nothing has changed yet.`;
+      return proposal.request
+        ? `Waiting for the user to send this request to the space's admins, until ${day(proposal.expiresAt)}, at ${links.proposal(proposal.id)}. Nothing has changed yet.`
+        : `Waiting for the user's approval until ${day(proposal.expiresAt)}, at ${links.proposal(proposal.id)}. Nothing has changed yet.`;
+    case 'requested':
+      return `Sent to the space's admins on ${day(proposal.requestedAt!)}. Waiting for one of them to decide, until ${day(proposal.expiresAt)}. Nothing has changed yet.`;
     case 'approved':
-      return `The user approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
+      return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
-      return `The user rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
+      return proposal.request && !proposal.requestedAt
+        ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
+        : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
     case 'expired':
       return `Nobody decided it before ${day(proposal.expiresAt)}, so it expired and nothing changed.`;
   }

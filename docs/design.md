@@ -97,7 +97,7 @@ Figtree is the only typeface, and it ships with the app. A screen in the app has
 - Search is on every screen and finds what assistants find: pages, sources, rules and spaces, narrowed after searching.
 - Looking after Homing is only for whoever does, from the menu under their name: inviting people first, then whether email works, and who uses this Homing. It says that looking after Homing gives no access to anyone's spaces.
 - Your account lists your connected assistants first, with the address for connecting another, then how you sign in. Disconnecting an assistant and removing a passkey ask first, in place, and the last way to sign in can't be removed.
-- Decisions open inside the app, as one centered column with a single heading that says who wants what, where. When an assistant proposes a rule change, its link opens the decision, after signing in if needed. A new rule shows where it applies and the rules already there; a change shows the rule now above its new wording; a removal says where it stops applying. If the rule changes while the page is open, approving shows it again instead.
+- Decisions open inside the app, as one centered column with a single heading that says who wants what, where. When an assistant proposes a rule change, its link opens the decision, after signing in if needed. A new rule shows where it applies and the rules already there; a change shows the rule now above its new wording; a removal says where it stops applying. If the rule changes while the page is open, approving shows it again instead. A member's change to shared rules comes as a request: they send it from the same page, which then says whose decision it waits for, and an admin sees who asked and why.
 
 ### Outside the app
 

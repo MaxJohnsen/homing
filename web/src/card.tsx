@@ -4,12 +4,12 @@ import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type 
 import { ApprovalCard } from '@/approval-card';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 import type { ProposalData } from '@/lib/proposals';
-import { longProposal, proposal as sample } from '@/sample';
+import { longProposal, proposal as sample, requestProposal } from '@/sample';
 import './card.css';
 
 // Inside Claude, the card shows the proposal the assistant just made and lets the person decide
 // it. It reaches Homing only through the assistant, with tools the model can't see. Outside an
-// assistant, ?host= previews it with a host's approximate styles, and ?sample=long a longer rule.
+// assistant, ?host= previews it with a host's approximate styles, ?sample=long a longer rule, and ?sample=request a request to a space's admins.
 const params = new URLSearchParams(location.search);
 const demo = demoHosts[params.get('host') ?? ''];
 
@@ -69,8 +69,16 @@ function applyHost(context: McpUiHostContext) {
 
 /** The card outside an assistant, deciding on sample data. */
 function Preview() {
-  const [shown, setShown] = useState(params.get('sample') === 'long' ? longProposal : sample);
-  return <ApprovalCard proposal={shown} decide={async (approve) => void setShown({ ...shown, state: approve ? 'approved' : 'rejected' })} />;
+  const [shown, setShown] = useState(params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : sample);
+  const sending = Boolean(shown.request && !shown.request.sent);
+  return (
+    <ApprovalCard
+      proposal={shown}
+      decide={async (approve) =>
+        void setShown(sending && approve ? { ...shown, state: 'requested', request: { ...shown.request!, sent: true } } : { ...shown, state: approve ? 'approved' : 'rejected' })
+      }
+    />
+  );
 }
 
 if (demo) {

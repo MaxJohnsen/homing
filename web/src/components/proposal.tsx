@@ -1,4 +1,4 @@
-import { CircleCheck, CircleSlash, Clock } from 'lucide-react';
+import { CircleCheck, CircleSlash, Clock, Send } from 'lucide-react';
 import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
 import { ProposedChange } from '@/components/proposed-change';
@@ -13,7 +13,8 @@ import { precedenceOf, type ProposalData } from '@/lib/proposals';
 export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, disabled, idPrefix }: {
   proposal: ProposalData;
   onlyHere: boolean;
-  onOnlyHereChange: (value: boolean) => void;
+  /** Left out where the reach is as asked, such as a request on its way to the admins. */
+  onOnlyHereChange?: (value: boolean) => void;
   disabled?: boolean;
   idPrefix: string;
 }) {
@@ -59,7 +60,7 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
 }
 
 /** The mark beside an outcome. */
-export function OutcomeIcon({ kind, className }: { kind: 'approved' | 'rejected' | 'expired' | 'gone'; className?: string }) {
-  const Icon = kind === 'approved' ? CircleCheck : kind === 'expired' ? Clock : CircleSlash;
-  return <Icon aria-hidden="true" className={cn('shrink-0', kind === 'approved' ? 'text-primary' : 'text-muted-foreground', className)} />;
+export function OutcomeIcon({ kind, className }: { kind: 'approved' | 'rejected' | 'expired' | 'gone' | 'sent'; className?: string }) {
+  const Icon = kind === 'approved' ? CircleCheck : kind === 'expired' ? Clock : kind === 'sent' ? Send : CircleSlash;
+  return <Icon aria-hidden="true" className={cn('shrink-0', kind === 'approved' || kind === 'sent' ? 'text-primary' : 'text-muted-foreground', className)} />;
 }

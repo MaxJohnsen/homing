@@ -4,7 +4,7 @@ import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
-import { changeProposal, longProposal, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { changeProposal, longProposal, requestProposal, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -77,6 +77,12 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/expired': { label: 'Request expired', render: () => <SampleConfirm proposal={{ ...proposal, state: 'expired' }} /> },
   '/confirm/gone': { label: 'Rule removed before deciding', render: () => <SampleConfirm proposal={{ ...changeProposal, rule: { ...changeProposal.rule!, current: false } }} /> },
   '/card-preview': { label: 'Approval card in Claude and ChatGPT', render: () => <CardPreview /> },
+  '/confirm/request': { label: 'Send a request to a space’s admins', render: () => <SampleConfirm proposal={requestProposal} /> },
+  '/confirm/request/sent': { label: 'A request you sent, waiting for the admins', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'requested', request: { ...requestProposal.request!, sent: true } }} /> },
+  '/confirm/request/admin': { label: 'A member’s request, for an admin to decide', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'requested', request: { ...requestProposal.request!, by: 'Cara Lund', sent: true } }} /> },
+  '/confirm/request/approved': { label: 'Your request, approved by an admin', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'approved', decidedBy: 'Jon Dahl', request: { ...requestProposal.request!, sent: true } }} /> },
+  '/confirm/request/not-sent': { label: 'A request you didn’t send', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'rejected' }} /> },
+  '/card-preview/request': { label: 'Approval card for a request', render: () => <CardPreview sample="request" /> },
   '/card-preview/long': { label: 'Approval card with a longer rule', render: () => <CardPreview sample="long" /> },
 };
 
@@ -89,7 +95,8 @@ function SampleConfirm({ proposal, message }: { proposal: ProposalData; message?
         proposal={shown}
         message={message}
         decide={async (approve, onlyHere) => {
-          setShown({ ...shown, onlyHere, state: approve ? 'approved' : 'rejected', rule: shown.rule && { ...shown.rule, current: shown.action !== 'remove' } });
+          if (approve && shown.request && !shown.request.sent) setShown({ ...shown, state: 'requested', request: { ...shown.request, sent: true } });
+          else setShown({ ...shown, onlyHere, state: approve ? 'approved' : 'rejected', rule: shown.rule && { ...shown.rule, current: shown.action !== 'remove' } });
           return undefined;
         }}
       />

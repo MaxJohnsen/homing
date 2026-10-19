@@ -82,6 +82,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[item.action],
             kind: item.kind,
             text: item.text,
+            // For a request: who asked, unless it's the person, and whether it's sent.
+            request: item.request ? { by: item.askedBy, sent: item.sent } : null,
             createdAt: item.createdAt,
           })),
         });

@@ -3,10 +3,10 @@ import { OutcomeIcon, ProposalDetails, SettledChange } from '@/components/propos
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
-import { buttonsOf, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, isSending, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
-const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide' };
+const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
 
 /** The approval shown inside the conversation. Same parts as the page, sized for a chat. */
 export function ApprovalCard({ proposal, decide, message: initialMessage }: { proposal?: ProposalData; decide?: Decide; message?: string }) {
@@ -14,6 +14,7 @@ export function ApprovalCard({ proposal, decide, message: initialMessage }: { pr
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(initialMessage);
   const outcome = proposal && outcomeOf(proposal);
+  const sending = proposal ? isSending(proposal) : false;
 
   const choose = async (approve: boolean) => {
     if (!decide) return;
@@ -34,16 +35,19 @@ export function ApprovalCard({ proposal, decide, message: initialMessage }: { pr
       ) : !outcome ? (
         <>
           <p className="text-base font-medium">
-            {proposal.action === 'add'
-              ? `Add this rule to ${placeOf(proposal)}?`
-              : proposal.action === 'change'
-                ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
-                : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
+            {sending
+              ? `Ask the admins of ${placeOf(proposal)} for this change?`
+              : proposal.action === 'add'
+                ? `Add this rule to ${placeOf(proposal)}?`
+                : proposal.action === 'change'
+                  ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
+                  : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          <ProposalDetails proposal={proposal} onlyHere={onlyHere} onOnlyHereChange={setOnlyHere} disabled={busy} idPrefix="card" />
+          <ProposalDetails proposal={proposal} onlyHere={onlyHere} onOnlyHereChange={sending ? undefined : setOnlyHere} disabled={busy} idPrefix="card" />
+          {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
-            <Button className="h-10 px-4" disabled={busy} onClick={() => choose(true)}>{buttonsOf(proposal.action).approve}</Button>
-            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action).reject}</Button>
+            <Button className="h-10 px-4" disabled={busy} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending).approve}</Button>
+            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending).reject}</Button>
           </div>
           {message && <FieldError>{message}</FieldError>}
         </>

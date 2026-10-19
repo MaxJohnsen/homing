@@ -102,6 +102,7 @@ const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).
 export const sampleWaiting: WaitingData[] = [
   { id: 'w1', assistant: 'Claude', spaceId: 'northwind', space: 'Northwind', personal: false, action: 'add', kind: 'requirement', text: 'Send Northwind prices only through their procurement portal, never by email.', createdAt: minutesAgo(130) },
   { id: 'w2', assistant: 'ChatGPT', spaceId: 'personal', space: 'Personal', personal: true, action: 'change', kind: 'preference', text: 'Keep answers short, with the most important point first.', createdAt: minutesAgo(25) },
+  { id: 'w6', assistant: 'Claude', spaceId: 'northwind', space: 'Northwind', within: 'Acme', personal: false, action: 'add', kind: 'requirement', text: 'Copy the CFO on every invoice to Northwind.', request: { by: 'Cara Lund', sent: true }, createdAt: minutesAgo(10) },
 ];
 
 export const manyWaiting: WaitingData[] = [
@@ -210,4 +211,15 @@ export const sampleAdmin: AdminData = {
     { name: 'Jon Dahl', email: 'jon@acme.no', joinedAt: '2026-10-15T11:10:00Z', you: false },
     { name: 'Eli Sand', email: 'eli@sand.studio', joinedAt: '2026-10-17T14:45:00Z', you: false },
   ],
+};
+
+// Cara asks Claude for a rule in Northwind, a client space only its admins change the rules of.
+export const requestProposal: ProposalData = {
+  ...proposal,
+  space: 'Northwind',
+  within: 'Acme',
+  kind: 'requirement',
+  text: 'Copy the CFO on every invoice to Northwind.',
+  request: { by: null, why: 'Their CFO asked for it at Monday’s meeting.', sent: false, admins: ['Ana Berg', 'Jon Dahl'] },
+  alreadyApplies: [{ kind: 'requirement', text: 'Send Northwind prices only through their procurement portal.', from: 'Northwind' }],
 };

@@ -18,7 +18,15 @@ export interface ProposalData {
   rule: { text: string; current: boolean } | null;
   shared: boolean;
   onlyHere: boolean;
-  state: 'open' | 'approved' | 'rejected' | 'expired';
+  /** Requested means a member sent it to the space's admins, and it waits for one of them. */
+  state: 'open' | 'requested' | 'approved' | 'rejected' | 'expired';
+  /**
+   * For a request to the space's admins: who asked, or null when it's yours, why, whether it's
+   * sent, and the admins who can decide it.
+   */
+  request?: { by: string | null; why: string | null; sent: boolean; admins: string[] } | null;
+  /** Who decided it, when that was someone else. */
+  decidedBy?: string | null;
   /** The rules that already apply where a new one would go. */
   alreadyApplies: { kind: RuleKind; text: string; from: string }[];
 }
@@ -26,20 +34,24 @@ export interface ProposalData {
 /** A change waiting for you, as Home and the list of everything waiting show it. */
 export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind'> {
   spaceId: string;
+  /** For a request: who asked, or null when it's yours to send, and whether it's sent. */
+  request?: { by: string | null; sent: boolean } | null;
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
   text: string | null;
   createdAt: string;
 }
 
-/** Who wants what, where: "Claude wants to add a rule to Acme". Under a heading that names the place, without it. */
-export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'>, withPlace = true): string {
-  const { assistant, action, kind } = proposal;
+/**
+ * Who wants what, where: "Claude wants to add a rule to Acme", "Claude wants to ask the admins of Acme
+ * to add a rule", or "Cara Lund asks to add a rule to Acme". Under a heading that names the place, without it.
+ */
+export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null } | null }, withPlace = true): string {
+  const { assistant, action, kind, request } = proposal;
+  const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
   const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
-  return action === 'add'
-    ? `${assistant} wants to add a rule${place}`
-    : action === 'change'
-      ? `${assistant} wants to change a ${kind}${place}`
-      : `${assistant} wants to remove a ${kind}${place}`;
+  if (request?.by) return `${request.by} asks to ${what}${place}`;
+  if (request) return withPlace ? `${assistant} wants to ask the admins of ${placeOf(proposal)} to ${what}` : `${assistant} wants to ask the admins to ${what}`;
+  return `${assistant} wants to ${what}${place}`;
 }
 
 /** "Acme", "Website in Northwind", or "your personal space". */
@@ -59,8 +71,9 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule'>): boolean
   return proposal.action !== 'add' && !proposal.rule?.current;
 }
 
-/** The buttons for deciding it. */
-export function buttonsOf(action: ProposalData['action']): { approve: string; reject: string } {
+/** The buttons for deciding it, or for a request you haven't sent, for sending it. */
+export function buttonsOf(action: ProposalData['action'], sending = false): { approve: string; reject: string } {
+  if (sending) return { approve: 'Send request', reject: 'Don’t send' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
     : action === 'change'
@@ -68,25 +81,53 @@ export function buttonsOf(action: ProposalData['action']): { approve: string; re
       : { approve: 'Remove rule', reject: 'Keep it' };
 }
 
-/** What happened, once it is decided, expired, or no longer possible. Undefined while it waits. */
-export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejected' | 'expired' | 'gone'; heading: string; detail: string } | undefined {
-  const { action, assistant, state } = proposal;
+/** Whether this is a request you haven't sent yet, so deciding it means sending it. */
+export function isSending(proposal: Pick<ProposalData, 'request' | 'state'>): boolean {
+  return Boolean(proposal.request && proposal.request.by === null && !proposal.request.sent && proposal.state === 'open');
+}
+
+/** "Ana Berg or Jon Dahl". */
+export function eitherOf(names: string[]): string {
+  return names.length <= 1 ? (names[0] ?? 'its admins') : `${names.slice(0, -1).join(', ')} or ${names.at(-1)}`;
+}
+
+/**
+ * What happened, once it is decided, sent, expired, or no longer possible. Undefined while it waits
+ * for the reader. A request someone sent waits for the space's admins, so for them it's sent.
+ */
+export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejected' | 'expired' | 'gone' | 'sent'; heading: string; detail: string } | undefined {
+  const { action, assistant, state, request, decidedBy } = proposal;
   const place = placeOf(proposal);
+  const yours = Boolean(request && request.by === null);
+  if (state === 'requested') {
+    if (!yours) return undefined;
+    const admins = request!.admins;
+    return {
+      kind: 'sent',
+      heading: `Sent to the admins of ${place}`,
+      detail: `Waiting for ${eitherOf(admins)}. Nothing changes until ${admins.length === 1 ? 'they decide' : 'one of them decides'}.`,
+    };
+  }
   if (state === 'approved') {
     return {
       kind: 'approved',
       heading: action === 'add' ? `Rule added to ${place}` : action === 'change' ? `Rule changed in ${place}` : `Rule removed from ${place}`,
-      detail: action === 'remove' ? 'It no longer applies.' : 'It applies from now on.',
+      detail: [decidedBy && `${decidedBy} approved ${yours ? 'your request' : 'it'}.`, action === 'remove' ? 'It no longer applies.' : 'It applies from now on.'].filter(Boolean).join(' '),
     };
   }
   if (state === 'rejected') {
-    return { kind: 'rejected', heading: action === 'add' ? 'Not added' : action === 'change' ? 'Not changed' : 'Not removed', detail: 'Nothing changed.' };
+    if (request && yours && !request.sent) return { kind: 'rejected', heading: 'Not sent', detail: 'Nothing changed, and the admins never saw it.' };
+    return {
+      kind: 'rejected',
+      heading: action === 'add' ? 'Not added' : action === 'change' ? 'Not changed' : 'Not removed',
+      detail: [decidedBy && `${decidedBy} didn’t approve ${yours ? 'your request' : 'it'}.`, 'Nothing changed.'].filter(Boolean).join(' '),
+    };
   }
   if (state === 'expired') {
     return { kind: 'expired', heading: 'This request expired', detail: `Nothing changed. Ask ${assistant} again if you still want it.` };
   }
   if (isGone(proposal)) {
-    return { kind: 'gone', heading: 'This rule no longer applies', detail: `It was removed after ${assistant} asked, so there’s nothing to decide.` };
+    return { kind: 'gone', heading: 'This rule no longer applies', detail: `It was removed after ${request?.by ?? assistant} asked, so there’s nothing to decide.` };
   }
   return undefined;
 }
