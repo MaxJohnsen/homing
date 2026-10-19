@@ -39,11 +39,11 @@ export function reload(path: string): Promise<void> {
   return entry.fetching;
 }
 
-/** What the server answers at this address: undefined until it has, and an error if it refused. */
+/** What the server answers at this address: undefined until it has, and an error if it refused. An empty address loads nothing. */
 export function useLoad<T>(path: string): { data?: T; error?: ApiError } {
   useSyncExternalStore(subscribe, () => version);
   useEffect(() => {
-    reload(path);
+    if (path) reload(path);
   }, [path]);
   const entry = loaded.get(path);
   return { data: entry?.data as T | undefined, error: entry?.error };

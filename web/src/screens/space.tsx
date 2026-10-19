@@ -1,15 +1,59 @@
-import { Fragment } from 'react';
+import { Fragment, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
-import { Link } from '@/lib/router';
+import { Link, type SpaceView } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
-/** A space: where it sits, who it's shared with, and who can open it. */
-export function Space({ space }: { space: SpaceData }) {
+/**
+ * A space: where it sits and who it's shared with, then its parts. Guidance holds its rules and
+ * skills, and Members who can open it. A space in your personal tree has no members but you.
+ */
+export function Space({ space, view, children }: { space: SpaceData; view: SpaceView; children: ReactNode }) {
+  const tabs = [
+    { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
+    ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
+  ];
   return (
     <>
-      <ScreenHeader title={space.name} meta={<Where space={space} />} />
-      {!space.private && <Members space={space} />}
+      <ScreenHeader
+        title={space.name}
+        meta={<Where space={space} />}
+        below={
+          tabs.length > 1 && (
+            <nav aria-label={`${space.name}’s parts`} className="-mx-1 mt-4 flex gap-1 overflow-x-auto pb-1">
+              {tabs.map((tab) => (
+                <Link
+                  key={tab.label}
+                  href={tab.href}
+                  aria-current={tab.current ? 'page' : undefined}
+                  className={cn(
+                    'shrink-0 rounded-full px-4 py-2 text-base font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
+                    focusRing,
+                    tab.current && 'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground',
+                  )}
+                >
+                  {tab.label}
+                </Link>
+              ))}
+            </nav>
+          )
+        }
+      />
+      {(view === 'rules' || view === 'skills') && (
+        <nav aria-label="Guidance" className="-mt-4 flex w-fit gap-1 rounded-full bg-muted p-1">
+          {(['rules', 'skills'] as const).map((part) => (
+            <Link
+              key={part}
+              href={`/spaces/${space.id}/${part}`}
+              aria-current={view === part ? 'page' : undefined}
+              className={cn('shrink-0 rounded-full px-4 py-1.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground', focusRing, view === part && 'bg-card text-foreground')}
+            >
+              {part === 'rules' ? 'Rules' : 'Skills'}
+            </Link>
+          ))}
+        </nav>
+      )}
+      {children}
     </>
   );
 }
@@ -49,7 +93,7 @@ function members(n: number) {
 }
 
 /** Who can open the space, and who looks after it. */
-function Members({ space }: { space: SpaceData }) {
+export function Members({ space }: { space: SpaceData }) {
   const parent = space.path.at(-1);
   return (
     <Section

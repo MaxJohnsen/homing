@@ -5,7 +5,7 @@ import { cn } from 'cn';
 export const focusRing = 'focus-visible:ring-[3px] focus-visible:ring-ring/60 focus-visible:outline-none';
 
 /** A screen's title, at the top of the scale, with a line under it saying where it is. */
-export function ScreenHeader({ title, meta, aside }: { title: ReactNode; meta?: ReactNode; aside?: ReactNode }) {
+export function ScreenHeader({ title, meta, aside, below }: { title: ReactNode; meta?: ReactNode; aside?: ReactNode; below?: ReactNode }) {
   return (
     <header className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
@@ -13,6 +13,7 @@ export function ScreenHeader({ title, meta, aside }: { title: ReactNode; meta?: 
         {aside}
       </div>
       {meta && <p className="max-w-[65ch] text-base text-muted-foreground">{meta}</p>}
+      {below}
     </header>
   );
 }
