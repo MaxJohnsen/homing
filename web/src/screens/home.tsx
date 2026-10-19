@@ -4,6 +4,7 @@ import welcome from '@/assets/illustrations/welcome.png';
 import { ago, capitalize, count, focusRing, ScreenHeader } from '@/components/screen';
 import { wantsTo, type WaitingData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
+import type { SpaceSummary } from '@/lib/spaces';
 import { CopyAddress } from '@/screens/account';
 
 /** What Home needs: what waits for you, and whether an assistant is connected yet. */
@@ -22,22 +23,40 @@ const shown = 3;
  * who has just joined is helped to connect their assistant. The sidebar is the way to your spaces,
  * so Home doesn't list them.
  */
-export function Home({ data, now }: { data: HomeData; now?: Date }) {
+export function Home({ data, recent = [], now }: { data: HomeData; recent?: SpaceSummary[]; now?: Date }) {
   const { waiting } = data;
   if (waiting.length > 0) {
     return (
       <>
         <ScreenHeader title={waiting.length === 1 ? 'One change is waiting for you' : `${count(waiting.length, 'change', 'changes')} are waiting for you`} />
         <WaitingList waiting={waiting} now={now} />
+        <RecentSpaces spaces={recent} />
       </>
     );
   }
   if (data.assistants === 0) return <Welcome data={data} />;
   return (
-    <ScreenHeader
-      title="Nothing is waiting for you"
-      meta="When your assistant proposes a change that needs your approval, it waits here."
-    />
+    <>
+      <ScreenHeader
+        title="Nothing is waiting for you"
+        meta="When your assistant proposes a change that needs your approval, it waits here."
+      />
+      <RecentSpaces spaces={recent} />
+    </>
+  );
+}
+
+/** On a phone the sidebar is tucked away, so the spaces you opened lately are a tap away here. */
+function RecentSpaces({ spaces }: { spaces: SpaceSummary[] }) {
+  if (spaces.length < 2) return null;
+  return (
+    <nav aria-label="Recent spaces" className="-mt-4 flex gap-2 overflow-x-auto md:hidden">
+      {spaces.map((space) => (
+        <Link key={space.id} href={`/spaces/${space.id}`} className={cn('shrink-0 rounded-full bg-shelf px-4 py-2 text-sm font-semibold', focusRing)}>
+          {space.name}
+        </Link>
+      ))}
+    </nav>
   );
 }
 
@@ -67,12 +86,12 @@ function WaitingList({ waiting, now }: { waiting: WaitingData[]; now?: Date }) {
  * One change to decide. The whole row opens the decision, where the full change is shown first.
  * Each row is a decision of its own, so each has its own primary Review.
  */
-export function WaitingRow({ item, now, compact }: { item: WaitingData; now?: Date; compact?: boolean }) {
+export function WaitingRow({ item, now, compact }: { item: WaitingData; now?: Date; /** Smaller, under a heading that names the space. */ compact?: boolean }) {
   return (
     <li>
       <Link href={`/proposals/${item.id}`} className={cn('group flex items-center gap-4 rounded-xl bg-card px-5 py-4 transition-colors hover:bg-background', focusRing)}>
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-          <span className="text-base font-semibold">{wantsTo(item)}</span>
+          <span className="text-base font-semibold">{wantsTo(item, !compact)}</span>
           {item.text && <span className={cn('line-clamp-2 whitespace-pre-line', compact ? 'text-base' : 'text-lg leading-snug')}>{item.text}</span>}
           <span className="text-sm text-muted-foreground">{capitalize(ago(item.createdAt, now))}</span>
         </div>

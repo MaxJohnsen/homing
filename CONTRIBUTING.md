@@ -14,6 +14,8 @@ npm test                  # recreates the test database and runs the tests
 npm run dev:web           # the screens, with sample data, at http://localhost:5173
 ```
 
+To try the app against a whole Homing, `npm run sample -- big` builds one with about 100 spaces, 10,000 pages, 100,000 sources and 30 changes waiting, in a database of its own, and serves it at http://localhost:4200. `npm run sample -- empty` is one where someone has just joined. Both need `npm run build:web` first, and print how to sign in.
+
 ### Running it
 
 [Running Homing](docs/deployment.md) explains settings, HTTPS and updates. For a local try:

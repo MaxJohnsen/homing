@@ -5,6 +5,7 @@ import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 import { reload, useLoad } from '@/lib/load';
 import type { WaitingData } from '@/lib/proposals';
+import { useRecent } from '@/lib/recent';
 import { routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import { AccountPage } from '@/pages/account';
@@ -26,6 +27,12 @@ export function AppPage() {
 
   const skill = useLoad<SkillData>(route.name === 'skill' ? `/api/skills/${route.id}` : '').data;
   const spaceId = route.name === 'space' ? route.id : route.name === 'skill' ? (skill?.spaceId ?? undefined) : undefined;
+  const { recent, opened } = useRecent(me?.email ?? '');
+  // Only a space that opened counts as visited.
+  const visited = route.name === 'space' && spaces?.some((space) => space.id === route.id) ? route.id : undefined;
+  useEffect(() => {
+    if (me && visited) opened(visited);
+  }, [me, visited, opened]);
 
   if (!me || !spaces) return null;
   return (
@@ -33,6 +40,7 @@ export function AppPage() {
       person={me}
       spaces={spaces}
       waiting={waiting?.length ?? 0}
+      recent={recent}
       route={route}
       spaceId={spaceId}
       onSignOut={async () => {
@@ -40,15 +48,15 @@ export function AppPage() {
         location.assign('/sign-in');
       }}
     >
-      <Screen key={address} route={route} me={me} waiting={waiting} />
+      <Screen key={address} route={route} me={me} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
     </Shell>
   );
 }
 
-function Screen({ route, me, waiting }: { route: Route; me: AccountData; waiting?: WaitingData[] }) {
+function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
   switch (route.name) {
     case 'home':
-      return <Titled title="Home">{waiting && <Home data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl }} />}</Titled>;
+      return <Titled title="Home">{waiting && <Home data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl }} recent={recent} />}</Titled>;
     case 'waiting':
       return <Titled title="Waiting for you">{waiting && <Waiting waiting={waiting} />}</Titled>;
     case 'account':

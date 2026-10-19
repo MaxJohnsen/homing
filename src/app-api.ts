@@ -78,6 +78,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             spaceId: item.spaceId,
             space: item.space,
             personal: item.personal,
+            within: item.within,
             action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[item.action],
             kind: item.kind,
             text: item.text,
