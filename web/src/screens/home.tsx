@@ -2,7 +2,7 @@ import { ChevronRight } from 'lucide-react';
 import { cn } from 'cn';
 import welcome from '@/assets/illustrations/welcome.png';
 import { ago, capitalize, count, focusRing, ScreenHeader } from '@/components/screen';
-import { wantsTo, type WaitingData } from '@/lib/proposals';
+import { eitherOf, placeOf, wantsTo, type RequestData, type WaitingData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import type { SpaceSummary } from '@/lib/spaces';
 import { CopyAddress } from '@/screens/account';
@@ -14,6 +14,8 @@ export interface HomeData {
   assistants: number;
   /** The address assistants connect to. */
   mcpUrl: string;
+  /** Requests you sent to a space's admins. */
+  requests?: RequestData[];
 }
 
 const shown = 3;
@@ -31,6 +33,7 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
         <ScreenHeader title={waiting.length === 1 ? 'One change is waiting for you' : `${count(waiting.length, 'change', 'changes')} are waiting for you`} />
         <WaitingList waiting={waiting} now={now} />
         <RecentSpaces spaces={recent} />
+        <YourRequests requests={data.requests ?? []} now={now} />
       </>
     );
   }
@@ -42,6 +45,7 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
         meta="When your assistant proposes a change that needs your approval, it waits here."
       />
       <RecentSpaces spaces={recent} />
+      <YourRequests requests={data.requests ?? []} now={now} />
     </>
   );
 }
@@ -102,6 +106,42 @@ export function WaitingRow({ item, now, compact }: { item: WaitingData; now?: Da
       </Link>
     </li>
   );
+}
+
+/** What you asked a space's admins for. Worth tracking, but it waits on someone else, so it sits back. */
+function YourRequests({ requests, now }: { requests: RequestData[]; now?: Date }) {
+  if (requests.length === 0) return null;
+  return (
+    <section aria-labelledby="your-requests" className="flex flex-col gap-3">
+      <h2 id="your-requests" className="text-lg leading-snug font-semibold tracking-[-0.01em]">Your requests</h2>
+      <ul className="-mx-3 flex flex-col gap-1">
+        {requests.map((request) => (
+          <li key={request.id}>
+            <Link href={`/proposals/${request.id}`} className={cn('group flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-muted', focusRing)}>
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <span className="text-base font-semibold">
+                  You asked the admins of {placeOf({ ...request, personal: false })} to {request.action === 'add' ? 'add a rule' : `${request.action} a ${request.kind}`}
+                </span>
+                {request.text && <span className="line-clamp-2 text-base">{request.text}</span>}
+                <span className="text-sm text-muted-foreground">{statusOf(request, now)}</span>
+              </div>
+              <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Where a request stands, in a line. */
+function statusOf(request: RequestData, now?: Date): string {
+  if (request.state === 'approved') return request.decidedBy ? `${request.decidedBy} approved it.` : 'Approved.';
+  if (request.state === 'rejected') return request.decidedBy ? `${request.decidedBy} didn’t approve it. Nothing changed.` : 'Not approved. Nothing changed.';
+  if (request.state === 'expired') return 'Nobody decided it in time, so nothing changed.';
+  return request.emailed === false
+    ? `Waiting for ${eitherOf(request.admins)}. Homing couldn’t email them, so let them know.`
+    : `Waiting for ${eitherOf(request.admins)}, sent ${ago(request.requestedAt, now)}.`;
 }
 
 /** For someone who has just joined: what Homing is for, and connecting their assistant first. */

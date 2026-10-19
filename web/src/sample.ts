@@ -1,6 +1,6 @@
 import type { AccountData } from '@/screens/account';
 import type { AdminData } from '@/screens/admin';
-import type { ProposalData, WaitingData } from '@/lib/proposals';
+import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import type { RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 
@@ -223,3 +223,9 @@ export const requestProposal: ProposalData = {
   request: { by: null, why: 'Their CFO asked for it at Monday’s meeting.', sent: false, admins: ['Ana Berg', 'Jon Dahl'] },
   alreadyApplies: [{ kind: 'requirement', text: 'Send Northwind prices only through their procurement portal.', from: 'Northwind' }],
 };
+
+// Requests Ana sent to admins of spaces she's a member of.
+export const sampleRequests: RequestData[] = [
+  { id: 'r1', space: 'Website', within: 'Fonn Water', action: 'add', kind: 'requirement', text: 'Check every page with a screen reader before it goes live.', state: 'requested', requestedAt: minutesAgo(90), emailed: true, admins: ['Jon Dahl', 'Mia Bakke'], decidedBy: null },
+  { id: 'r2', space: 'Berg family', within: null, action: 'change', kind: 'preference', text: 'Plan holidays a year ahead.', state: 'approved', requestedAt: minutesAgo(60 * 30), emailed: true, admins: ['Ola Berg'], decidedBy: 'Ola Berg' },
+];

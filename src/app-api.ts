@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { waitingFor } from './proposals.ts';
+import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
@@ -85,6 +85,26 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             // For a request: who asked, unless it's the person, and whether it's sent.
             request: item.request ? { by: item.askedBy, sent: item.sent } : null,
             createdAt: item.createdAt,
+          })),
+        });
+        break;
+      }
+
+      case 'requests': {
+        const sent = await read(requestsSent);
+        json(res, 200, {
+          requests: sent.map((request) => ({
+            id: request.id,
+            space: request.space,
+            within: request.within,
+            action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[request.action],
+            kind: request.kind,
+            text: request.text,
+            state: request.state,
+            requestedAt: request.requestedAt,
+            emailed: request.adminsEmailed,
+            admins: request.admins,
+            decidedBy: request.decider,
           })),
         });
         break;
@@ -207,7 +227,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' }
   | { name: 'space' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
@@ -216,6 +236,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/spaces') return { name: 'spaces' };
     if (path === '/api/waiting') return { name: 'waiting' };
     if (path === '/api/admin') return { name: 'admin' };
+    if (path === '/api/requests') return { name: 'requests' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],

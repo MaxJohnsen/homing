@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
+import type { Email } from '../src/email.ts';
 import { addRule, editRule, rulesFor } from '../src/guidance.ts';
 import { decide as decideAs } from '../src/proposals.ts';
 import { startServer, type Homing } from '../src/server.ts';
@@ -18,9 +19,16 @@ import { admin, as, db, member, refused, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
+/** The emails Homing sent, and whether sending fails, as it can when the mail server is down. */
+const outbox: Email[] = [];
+let mailDown = false;
 
 before(async () => {
-  homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
+  const mailer = async (email: Email) => {
+    if (mailDown) throw new Error('The mail server is down');
+    outbox.push(email);
+  };
+  homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), mailer, ...testAssistants });
 });
 
 after(() => homing.close());
@@ -155,4 +163,42 @@ test('no assistant sends or decides a request', async () => {
   await decide(cara, id, { approve: true });
   await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => decideAs(s, id, { approve: true })), refused);
   assert.deepEqual(await rules(ana, space), []);
+});
+
+test('sending a request emails the space’s admins, and deciding it emails the member', async () => {
+  const { ana, jon, cara, ref, claude } = await acme();
+  const id = await request(claude, { space: ref, change: 'add', kind: 'requirement', text: 'Copy the CFO on every invoice', shared: true, why: 'The CFO asked' });
+  outbox.length = 0;
+  await decide(cara, id, { approve: true });
+
+  // Every admin, and nobody else, with a link that only opens the request.
+  assert.deepEqual(outbox.map((email) => email.to).sort(), [ana.email, jon.email].sort());
+  const [email] = outbox;
+  assert.equal(email.subject, 'Cara asks to add a rule to Acme');
+  assert.match(email.text, /Copy the CFO on every invoice/);
+  assert.match(email.text, /Why: The CFO asked/);
+  assert.ok(email.text.includes(new URL(`/proposals/${id}`, homing.url).toString()));
+  assert.equal((await page(cara, id)).body.proposal.request.emailed, true);
+  const [mine] = (await cara.browser.json('/api/requests')).body.requests;
+  assert.deepEqual([mine.id, mine.state, mine.emailed, mine.admins.sort()], [id, 'requested', true, ['Ana', 'Jon']]);
+
+  outbox.length = 0;
+  await decide(jon, id, { approve: true });
+  assert.deepEqual(outbox.map((sent) => [sent.to, sent.subject]), [[cara.email, 'Jon approved your request for Acme']]);
+  const [settled] = (await cara.browser.json('/api/requests')).body.requests;
+  assert.deepEqual([settled.state, settled.decidedBy], ['approved', 'Jon']);
+});
+
+test('when the admins can’t be emailed, the request still waits for them, and the member is told', async () => {
+  const { ana, cara, ref, claude } = await acme();
+  const id = await request(claude, { space: ref, change: 'add', kind: 'preference', text: 'Write in Icelandic', shared: true });
+  mailDown = true;
+  try {
+    assert.equal((await decide(cara, id, { approve: true })).body.proposal.state, 'requested');
+  } finally {
+    mailDown = false;
+  }
+  assert.equal((await page(cara, id)).body.proposal.request.emailed, false);
+  assert.equal((await cara.browser.json('/api/requests')).body.requests[0].emailed, false);
+  assert.deepEqual((await waiting(ana)).map((item) => item.id), [id]);
 });

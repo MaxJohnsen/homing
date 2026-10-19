@@ -18,6 +18,7 @@ import {
   writeItem,
   type Hit,
 } from './knowledge.ts';
+import { afterDecision, type Notifier } from './notify.ts';
 import { decide, openProposals, proposalData, proposeRule, readProposal, requestsIn, Undecidable, type Proposal } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { listSpaces, peopleNames, type Space } from './spaces.ts';
@@ -42,7 +43,7 @@ const approvalCard = 'ui://homing/approval.html';
  * from operating the approval card, so the person can decide in the
  * conversation.
  */
-export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card = false } = {}): McpServer {
+export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card = false, notifier }: { card?: boolean; notifier?: Notifier } = {}): McpServer {
   const server = new McpServer({ name: 'homing', version: process.env.HOMING_VERSION ?? 'dev' }, { instructions });
   const answer = (fn: (s: Session) => Promise<string | Answer>) => respond(sql, principal, fn);
   const links: Links = { proposal: (id) => new URL(`/proposals/${id}`, url).toString() };
@@ -193,9 +194,10 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
       async ({ proposal, approve, shown, onlyHere }) => {
         try {
           // The person pressed the button, so it is their own decision, made in this assistant's card.
-          await withPrincipal(sql, { person: principal.person, direct: true }, (s) =>
+          const decided = await withPrincipal(sql, { person: principal.person, direct: true }, (s) =>
             decide(s, proposal, { approve, shown, onlyHere, decidedIn: principal.agent }),
           );
+          if (decided && notifier) await afterDecision(notifier, principal.person, decided);
           return cardAnswer(sql, principal, proposal);
         } catch (error) {
           const message =
