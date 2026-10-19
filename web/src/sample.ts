@@ -186,3 +186,15 @@ export const sampleSkill: SkillData = {
   files: [{ path: 'template.md', body: '# Statusrapport uke {uke}\n\n## Gjort\n\n## Neste\n\n## Risiko\n' }],
   replaces: [{ id: 's3', spaceName: 'Acme' }],
 };
+
+// Years in: about a hundred spaces, most of them Acme's clients and their projects.
+const clientNames = ['Northwind', 'Fjord Bank', 'Nordlys Energi', 'Havbris', 'Polar Freight', 'Granitt Bygg', 'Skog & Co', 'Bølge Media', 'Elv Health', 'Furu Retail', 'Isbre Insurance', 'Lynx Logistics', 'Mjøsa Foods', 'Nesna Shipping', 'Oslo Opera', 'Pine Analytics', 'Ravn Security', 'Solberg Hotels', 'Tinde Outdoor', 'Utsikt Travel', 'Vann Utilities', 'Westfjord Fisheries', 'Yr Weather', 'Zenit Telecom', 'Aurora Pharma', 'Birk Schools', 'Corvus Air', 'Dovre Rail', 'Eik Furniture', 'Fonn Water', 'Gran Paper', 'Hav Aquaculture', 'Ild Foods', 'Jotun Paints', 'Kyst Bank', 'Lomen Hydro', 'Myra Farms', 'Norne Mining', 'Odda Steel'];
+export const manySpaces: SpaceSummary[] = [
+  ...sampleSpaces.filter((space) => space.id !== 'northwind' && space.id !== 'website'),
+  ...clientNames.flatMap((name, index): SpaceSummary[] => [
+    { id: `client-${index}`, name, parentId: 'acme', closed: index % 3 === 0, personal: false, private: false, admin: true },
+    ...['Website', 'Data platform', 'Brand refresh'].slice(0, index % 4).map((project) => ({
+      id: `client-${index}-${project}`, name: project, parentId: `client-${index}`, closed: false, personal: false, private: false, admin: true,
+    })),
+  ]),
+];

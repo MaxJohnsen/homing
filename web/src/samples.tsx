@@ -4,7 +4,7 @@ import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
-import { changeProposal, longProposal, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { changeProposal, longProposal, manySpaces, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { CardPreview } from '@/screens/card-preview';
 import { Confirm } from '@/screens/confirm';
@@ -38,6 +38,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/home/many': { label: 'Home, with more waiting than it shows', render: () => <InApp waiting={5}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/home/quiet': { label: 'Home, with nothing waiting', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/home/new': { label: 'Home, just joined', render: () => <InApp waiting={0} spaces={sampleSpaces.filter((space) => space.personal)}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 0, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home/many-spaces': { label: 'Years in, with a hundred spaces', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} recent={recentMany.map((id) => manySpaces.find((space) => space.id === id)!)} /></InApp> },
+  '/spaces/many': { label: 'A space deep among a hundred', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany} spaceId="client-14-Data platform"><Space space={{ ...sampleSpace.root, id: 'client-14-Data platform', name: 'Data platform', parentId: 'client-14', path: [{ id: 'acme', name: 'Acme' }, { id: 'client-14', name: 'Oslo Opera' }] }} view="members"><Members space={sampleSpace.root} /></Space></InApp> },
   '/waiting': { label: 'Everything waiting, by space', render: () => <InApp waiting={5} route={{ name: 'waiting' }}><Waiting waiting={manyWaiting} /></InApp> },
   '/spaces/rules': { label: 'A space’s rules, as an admin', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="rules"><Rules space={sampleSpace.closed} rules={sampleRules} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/member': { label: 'A space’s rules, as a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="rules"><Rules space={sampleSpace.open} rules={sampleRules.filter((rule) => rule.spaceId !== 'northwind').map((rule) => ({ ...rule, spaceId: rule.spaceId === 'acme' && !rule.shared ? 'website' : rule.spaceId }))} actions={sampleRuleActions} /></Space></InApp> },
@@ -92,19 +94,23 @@ function SampleConfirm({ proposal, message }: { proposal: ProposalData; message?
   );
 }
 
+/** The spaces Ana opened lately, among a hundred. */
+const recentMany = ['client-0', 'client-14-Data platform', 'client-5', 'family'];
+
 /** Changing rules on the sample does nothing, so the forms can be tried. */
 const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined };
 
 /** A screen inside the app, with Ana's spaces on the shelf. */
-function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces }: {
+function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces, recent = [] }: {
   children: ReactNode;
   route?: Route;
   spaceId?: string;
   waiting?: number;
   spaces?: typeof sampleSpaces;
+  recent?: string[];
 }) {
   return (
-    <Shell person={{ name: 'Ana Berg' }} spaces={spaces} waiting={waiting} route={spaceId ? { name: 'space', id: spaceId } : route} spaceId={spaceId} onSignOut={() => undefined}>
+    <Shell person={{ name: 'Ana Berg' }} spaces={spaces} waiting={waiting} recent={recent} route={spaceId ? { name: 'space', id: spaceId } : route} spaceId={spaceId} onSignOut={() => undefined}>
       {children}
     </Shell>
   );

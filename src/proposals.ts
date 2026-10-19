@@ -25,7 +25,8 @@ export interface Proposal {
 
 /** A proposal with what someone needs to decide it. */
 export interface ProposalView extends Proposal {
-  space: { name: string; personal: boolean };
+  /** Its space, and the space above it if the person can open that, so two spaces with one name are told apart. */
+  space: { name: string; personal: boolean; within: string | null };
   /** The rule a change or removal is about, as it is now, or null if it can't be seen. */
   rule: { kind: RuleKind; text: string; shared: boolean; onlyHere: boolean; current: boolean } | null;
   /** For a new rule, the rules that already apply in its space. */
@@ -93,12 +94,18 @@ export async function readProposal(s: Session, proposalId: string): Promise<Prop
     select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${own(s)}
   `;
   if (!proposal) return undefined;
-  const space = (await listSpaces(s)).find((candidate) => candidate.id === proposal.spaceId);
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === proposal.spaceId);
   if (!space) return undefined;
+  const above = spaces.find((candidate) => candidate.id === space.parentId);
   const rule = proposal.itemId ? await ruleFor(s, proposal.itemId) : undefined;
   return {
     ...proposal,
-    space: { name: space.name, personal: space.privateTo !== null && space.parentId === null },
+    space: {
+      name: space.name,
+      personal: space.privateTo !== null && space.parentId === null,
+      within: above ? (above.privateTo !== null && above.parentId === null ? 'your personal space' : above.name) : null,
+    },
     rule: rule ? { kind: rule.kind, text: rule.text, shared: rule.shared, onlyHere: rule.onlyHere, current: rule.current } : null,
     alreadyApplies: proposal.action === 'add rule' ? await rulesFor(s, proposal.spaceId) : [],
   };
@@ -120,6 +127,8 @@ export interface Waiting {
   space: string;
   /** Whether the space is the person's personal space. */
   personal: boolean;
+  /** The space above it, if the person can open that. */
+  within: string | null;
   action: Action;
   kind: RuleKind;
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
@@ -132,10 +141,12 @@ export interface Waiting {
 export async function waitingFor(s: Session): Promise<Waiting[]> {
   return s.tx<Waiting[]>`
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
+           case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
            coalesce(p.change->>'text', rule.body) as text, p.agent, p.created_at
     from proposals p
     join spaces s on s.id = p.space_id
+    left join spaces above on above.id = s.parent_id and above.id in (${accessibleSpaces(s)})
     left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
     where p.private_to = ${personOf(s.principal) ?? null}::uuid and p.space_id in (${accessibleSpaces(s)})
       and p.state = 'open' and p.expires_at > now()
@@ -199,6 +210,7 @@ export function proposalData(proposal: ProposalView) {
     assistant: proposal.agent ?? 'Your assistant',
     space: proposal.space.name,
     personal: proposal.space.personal,
+    within: proposal.space.within,
     action,
     kind: proposal.change.kind ?? rule?.kind ?? 'preference',
     // The new rule, or the rule's new wording.

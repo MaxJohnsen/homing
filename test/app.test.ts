@@ -111,6 +111,13 @@ test('what waits for a person is theirs alone, until they decide it', async () =
   ]);
   assert.deepEqual((await cara.browser.json('/api/waiting')).body.waiting, []);
 
+  // A change in a space inside another names the one above, so two spaces with one name are told apart.
+  const inside = await as(claude, (s) => proposeRule(s, { action: 'add rule', spaceId: northwind, kind: 'preference', text: 'Write in English' }));
+  const waiting = (await ana.browser.json('/api/waiting')).body.waiting as { id: string; space: string; within: string | null }[];
+  assert.deepEqual(waiting.map(({ space, within }) => [space, within]), [['Acme', null], ['Northwind', 'Acme']]);
+  assert.equal((await ana.browser.json(`/api/proposals/${inside.id}`)).body.proposal.within, 'Acme');
+  await as({ person: ana.id, direct: true }, (s) => decide(s, inside.id, { approve: false }));
+
   await as({ person: ana.id, direct: true }, (s) => decide(s, proposal.id, { approve: false }));
   assert.deepEqual((await ana.browser.json('/api/waiting')).body.waiting, []);
 });

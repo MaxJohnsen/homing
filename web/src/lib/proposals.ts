@@ -8,6 +8,8 @@ export interface ProposalData {
   space: string;
   /** Whether the space is the person's personal space, whose rules follow them everywhere. */
   personal: boolean;
+  /** The space above it, if the person can open that, so two spaces with one name are told apart. */
+  within?: string | null;
   action: 'add' | 'change' | 'remove';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
@@ -22,27 +24,27 @@ export interface ProposalData {
 }
 
 /** A change waiting for you, as Home and the list of everything waiting show it. */
-export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'action' | 'kind'> {
+export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind'> {
   spaceId: string;
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
   text: string | null;
   createdAt: string;
 }
 
-/** Who wants what, where: "Claude wants to add a rule to Acme". */
-export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal'>): string {
+/** Who wants what, where: "Claude wants to add a rule to Acme". Under a heading that names the place, without it. */
+export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'>, withPlace = true): string {
   const { assistant, action, kind } = proposal;
-  const place = placeOf(proposal);
+  const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
   return action === 'add'
-    ? `${assistant} wants to add a rule to ${place}`
+    ? `${assistant} wants to add a rule${place}`
     : action === 'change'
-      ? `${assistant} wants to change a ${kind} in ${place}`
-      : `${assistant} wants to remove a ${kind} from ${place}`;
+      ? `${assistant} wants to change a ${kind}${place}`
+      : `${assistant} wants to remove a ${kind}${place}`;
 }
 
-/** "Acme", or "your personal space". */
-export function placeOf(proposal: Pick<ProposalData, 'space' | 'personal'>): string {
-  return proposal.personal ? 'your personal space' : proposal.space;
+/** "Acme", "Website in Northwind", or "your personal space". */
+export function placeOf(proposal: Pick<ProposalData, 'space' | 'personal' | 'within'>): string {
+  return proposal.personal ? 'your personal space' : proposal.within ? `${proposal.space} in ${proposal.within}` : proposal.space;
 }
 
 /** What happens when a new rule disagrees with one that already applies. */

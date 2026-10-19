@@ -14,6 +14,8 @@ export interface ShellProps {
   spaces: SpaceSummary[];
   /** How many changes wait for the person. */
   waiting: number;
+  /** The spaces they opened lately, newest first. */
+  recent: string[];
   /** The screen being shown, and the space it belongs to, if any. */
   route: Route;
   spaceId?: string;
@@ -68,7 +70,7 @@ export function Shell({ children, route, ...sidebar }: ShellProps) {
   );
 }
 
-function Sidebar({ person, spaces, waiting, route, spaceId, onSignOut, onClose }: Omit<ShellProps, 'children'> & { onClose?: () => void }) {
+function Sidebar({ person, spaces, waiting, recent, route, spaceId, onSignOut, onClose }: Omit<ShellProps, 'children'> & { onClose?: () => void }) {
   return (
     <div className="flex h-full flex-col gap-6 overflow-y-auto px-4 pt-6 pb-4">
       <div className="flex items-center justify-between px-2">
@@ -94,10 +96,7 @@ function Sidebar({ person, spaces, waiting, route, spaceId, onSignOut, onClose }
           )}
         </NavLink>
 
-        <div className="flex flex-col gap-1">
-          <h2 className="px-3 text-sm font-semibold text-muted-foreground">Your spaces</h2>
-          <SpaceTree spaces={spaces} current={spaceId} />
-        </div>
+        <Spaces spaces={spaces} recent={recent} current={spaceId} address={addressOf(route)} />
       </nav>
 
       <div className="mt-auto">
@@ -124,28 +123,106 @@ function NavLink({ href, active, children, className }: { href: string; active?:
   );
 }
 
-/** Your spaces as a tree, your personal space first. Spaces at the top are set in bold. */
-function SpaceTree({ spaces, current }: { spaces: SpaceSummary[]; current?: string }) {
-  const [closed, setClosed] = useState<Set<string>>(new Set());
+/** With more spaces than this, the sidebar helps find them. */
+const many = 12;
+
+/**
+ * Your spaces. A few show as a tree. With many, the spaces you opened lately come first, you can
+ * find one by name, and the tree opens only along where you are.
+ */
+function Spaces({ spaces, recent, current, address }: { spaces: SpaceSummary[]; recent: string[]; current?: string; address: string }) {
+  const [typed, setTyped] = useState('');
+  const crowded = spaces.length > many;
+  // Moving to another screen clears the search.
+  useEffect(() => setTyped(''), [address]);
+  const query = crowded ? typed.trim().toLowerCase() : '';
+  const byId = new Map(spaces.map((space) => [space.id, space]));
+  const found = query ? spaces.filter((space) => space.name.toLowerCase().includes(query)).slice(0, many) : [];
+  const lately = recent.map((id) => byId.get(id)).filter((space): space is SpaceSummary => Boolean(space));
+  // Two spaces can share a name, such as each client's Website, and then the way there tells them apart.
+  const shared = new Set(spaces.filter((space, index) => spaces.findIndex((other) => other.name === space.name) !== index).map((space) => space.name));
+
+  return (
+    <div className="flex flex-col gap-5">
+      {crowded && (
+        <input
+          type="search"
+          aria-label="Find a space"
+          placeholder={`Find one of ${spaces.length} spaces`}
+          value={typed}
+          onChange={(event) => setTyped(event.target.value)}
+          className="h-10 w-full rounded-full bg-background/70 px-4 text-base outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/60"
+        />
+      )}
+      {query ? (
+        <ul className="flex flex-col gap-0.5" aria-label="Spaces found">
+          {found.map((space) => (
+            <li key={space.id}>
+              <NavLink href={`/spaces/${space.id}`} active={current === space.id} className="flex-col items-start gap-0">
+                <span className="max-w-full truncate font-semibold">{space.name}</span>
+                <span className="max-w-full truncate text-sm text-muted-foreground">{pathOf(space, byId) || 'At the top'}</span>
+              </NavLink>
+            </li>
+          ))}
+          {found.length === 0 && <li className="px-3 text-sm text-muted-foreground">No space is called that.</li>}
+        </ul>
+      ) : (
+        <>
+          {crowded && lately.length > 0 && (
+            <div className="flex flex-col gap-1">
+              <h2 className="px-3 text-sm font-semibold text-muted-foreground">Recent</h2>
+              <ul className="flex flex-col gap-0.5">
+                {lately.map((space) => (
+                  <li key={space.id}>
+                    <NavLink href={`/spaces/${space.id}`} active={current === space.id} className={cn(shared.has(space.name) && 'flex-col items-start gap-0')}>
+                      <span className="max-w-full truncate">{space.name}</span>
+                      {shared.has(space.name) && <span className="max-w-full truncate text-sm text-muted-foreground">{pathOf(space, byId) || 'At the top'}</span>}
+                    </NavLink>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          <div className="flex flex-col gap-1">
+            <h2 className="px-3 text-sm font-semibold text-muted-foreground">{crowded ? 'All spaces' : 'Your spaces'}</h2>
+            <SpaceTree spaces={spaces} current={current} crowded={crowded} />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** "Acme, Northwind": the spaces above one, from the top. */
+function pathOf(space: SpaceSummary, byId: Map<string, SpaceSummary>): string {
+  const names: string[] = [];
+  for (let above = space.parentId && byId.get(space.parentId); above; above = above.parentId && byId.get(above.parentId)) names.unshift(above.name);
+  return names.join(', ');
+}
+
+/**
+ * Your spaces as a tree, your personal space first. Spaces at the top are set in bold. With many,
+ * only the way to where you are is open, and a closed branch says how many spaces it holds.
+ */
+function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; current?: string; crowded: boolean }) {
+  const [toggled, setToggled] = useState<Map<string, boolean>>(new Map());
+  const byId = new Map(spaces.map((space) => [space.id, space]));
   const childrenOf = (id: string | null) => spaces.filter((space) => space.parentId === id);
-  const toggle = (id: string) =>
-    setClosed((previous) => {
-      const next = new Set(previous);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+  const along = new Set<string>();
+  for (let above = current ? byId.get(current)?.parentId : undefined; above; above = byId.get(above)?.parentId) along.add(above);
+  const isOpen = (id: string) => toggled.get(id) ?? (!crowded || along.has(id));
+  const toggle = (id: string) => setToggled((previous) => new Map(previous).set(id, !isOpen(id)));
 
   const branch = (space: SpaceSummary, depth: number): ReactNode => {
     const children = childrenOf(space.id);
-    const expanded = !closed.has(space.id);
+    const expanded = isOpen(space.id);
     return (
       <li key={space.id} className={cn(depth === 0 && 'mt-1 first:mt-0')}>
         <div className="relative flex items-center">
           <NavLink
             href={`/spaces/${space.id}`}
             active={current === space.id}
-            className={cn('flex-1 pr-9', depth === 0 ? 'font-semibold' : depth === 1 ? 'pl-7' : 'pl-11')}
+            className={cn('flex-1 pr-11', depth === 0 ? 'font-semibold' : depth === 1 ? 'pl-7' : 'pl-11')}
           >
             <span className="truncate">{space.name}</span>
             {space.personal && <Lock aria-label="Only you" className="size-3.5 shrink-0 text-private-foreground" />}
@@ -153,11 +230,12 @@ function SpaceTree({ spaces, current }: { spaces: SpaceSummary[]; current?: stri
           {children.length > 0 && (
             <button
               type="button"
-              aria-label={expanded ? `Hide the spaces in ${space.name}` : `Show the spaces in ${space.name}`}
+              aria-label={expanded ? `Hide the spaces in ${space.name}` : `Show the ${children.length} spaces in ${space.name}`}
               aria-expanded={expanded}
               onClick={() => toggle(space.id)}
-              className={cn('absolute right-1.5 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-background/70 hover:text-foreground', focusRing)}
+              className={cn('absolute right-1.5 flex h-7 min-w-7 items-center justify-center gap-0.5 rounded-md px-1 text-xs text-muted-foreground hover:bg-background/70 hover:text-foreground', focusRing)}
             >
+              {!expanded && crowded && children.length}
               {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
             </button>
           )}

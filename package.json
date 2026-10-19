@@ -12,7 +12,8 @@
     "test": "node test/reset.ts && node --test 'test/**/*.test.ts'",
     "dev:web": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts && vite build --config web/vite.config.ts --mode card",
-    "build:site": "vite build --config web/vite.config.ts --mode site"
+    "build:site": "vite build --config web/vite.config.ts --mode site",
+    "sample": "node scripts/sample.ts"
   },
   "dependencies": {
     "@better-auth/cimd": "^1.7.8",
