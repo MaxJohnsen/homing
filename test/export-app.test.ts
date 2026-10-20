@@ -5,19 +5,19 @@
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { strFromU8, unzipSync } from 'fflate';
 import { parse } from 'yaml';
 import { authDatabaseUrl } from '../src/db.ts';
 import type { Author, Manifest } from '../src/export.ts';
-import { addRule } from '../src/guidance.ts';
+import { addRule, removeRule } from '../src/guidance.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
 import { addMember, archiveSpace, createSpace, removeMember } from '../src/spaces.ts';
 import { addTask, changeTask } from '../src/tasks.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, type Member } from './helpers.ts';
+import { admin, as, db, member, until, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -72,6 +72,7 @@ before(async () => {
     await addRule(s, { spaceId: acme, kind: 'preference', body: 'Keep status notes under 200 words.', shared: true, onlyHere: true });
     const norwegian = await addRule(s, { spaceId: acme, kind: 'preference', body: 'Draft in Norwegian first.' });
     await addRule(s, { spaceId: acme, kind: 'preference', body: houseStyle, shared: true });
+    await removeRule(s, (await addRule(s, { spaceId: acme, kind: 'preference', body: 'Use the old logo.', shared: true })).id);
     await saveSkill(s, { spaceId: acme, files: [{ path: 'SKILL.md', body: skillMd }, { path: 'references/tone.md', body: 'Plain, short sentences.\n' }], shared: true });
     // A skill whose files would land outside its folder on some systems.
     await saveSkill(s, { spaceId: acme, shared: true, files: [{ path: 'SKILL.md', body: oddSkill }, { path: 'refs\\..\\..\\evil.md', body: 'Out!' }, { path: 'C:/evil.md', body: 'Out!' }, { path: 'refs/./evil.md', body: 'Out!' }] });
@@ -141,19 +142,45 @@ before(async () => {
     board.push('Board', 'Merger talks', 'Northwind wants to buy Acme', '40 MNOK', 'Board minutes', 'Value the company', 'Keep the offer within the board',
       closed, merger, offer.id, minutes.id, valuation.id, quiet.id);
 
-    // A page Cara kept to herself, archived and reopened, before she shared from it.
-    const venues = await createPage(s, { spaceId: acme, title: 'Venue ideas' });
-    const idea = await writeItem(s, { pageId: venues, body: 'Bislett has a hall for 300.' });
-    await archivePage(s, venues, true);
-    await archivePage(s, venues, false);
-    await admin`update content set created_at = '2026-01-05T09:00:00Z', updated_at = '2026-01-05T09:00:00Z' where page_id = ${venues}`;
-    await admin`update pages set created_at = '2026-01-05T09:00:00Z' where id = ${venues}`;
-    await admin`update page_archives set at = case when archived then '2026-01-10T09:00:00Z'::timestamptz else '2026-01-12T09:00:00Z'::timestamptz end where page_id = ${venues}`;
-    await publishItem(s, idea.id, idea.body);
+    // Two of Cara's shared items rest on sources Ana can't see: her own, and Board's.
+    await writeItem(s, { pageId: plan, body: 'The caterer is booked.', sources: [notebook.id], shared: true });
+    await writeItem(s, { pageId: plan, body: 'The board signed off the budget.', sources: [minutes.id], shared: true });
   });
+
+  // Two pages Cara kept to herself in January, one archived and reopened, one archived still, before
+  // she shared from them in October.
+  const cara_ = { ...cara, direct: true as const };
+  const [venues, old] = await as(cara_, async (s) => {
+    const venues = await createPage(s, { spaceId: acme, title: 'Venue ideas' });
+    const old = await createPage(s, { spaceId: acme, title: 'Old venues' });
+    return [
+      { page: venues, item: await writeItem(s, { pageId: venues, body: 'Bislett has a hall for 300.' }) },
+      { page: old, item: await writeItem(s, { pageId: old, body: 'The old hall closed in 2024.' }) },
+    ];
+  });
+  await as(cara_, (s) => archivePage(s, venues.page, true));
+  await as(cara_, (s) => archivePage(s, venues.page, false));
+  await as(cara_, (s) => archivePage(s, old.page, true));
+  const pages = [venues.page, old.page];
+  assert.equal((await admin`update content set created_at = '2026-01-05T09:00:00Z', updated_at = '2026-01-05T09:00:00Z' where page_id in ${admin(pages)}`).count, 4);
+  assert.equal((await admin`update pages set created_at = '2026-01-05T09:00:00Z', archived_at = case when archived_at is null then null else '2026-01-10T09:00:00Z'::timestamptz end where id in ${admin(pages)}`).count, 2);
+  assert.equal((await admin`update page_archives set at = case when archived then '2026-01-10T09:00:00Z'::timestamptz else '2026-01-12T09:00:00Z'::timestamptz end where page_id in ${admin(pages)}`).count, 3);
+  await as(cara_, (s) => publishItem(s, venues.item.id, venues.item.body));
+  await as(cara_, (s) => publishItem(s, old.item.id, old.item.body));
 });
 
 after(() => homing.close());
+
+/** Ana's assistant, connected once. */
+let claude: Awaited<ReturnType<Assistant['open']>> | undefined;
+async function anasClaude() {
+  if (!claude) {
+    const assistant = new Assistant(homing.url, assistants.claude);
+    await assistant.connect(ana.browser);
+    claude = await assistant.open();
+  }
+  return claude;
+}
 
 /** Downloads a space's export as the person, and unpacks it. */
 async function download(who: Member, spaceId: string) {
@@ -206,7 +233,11 @@ test('a member downloads everything they see in a space, readable and ready to i
     ['Keep status notes under 200 words.', 'preference', true, 'shared'],
     ['Draft in Norwegian first.', 'preference', false, 'private'],
     [houseStyle, 'preference', false, 'shared'],
+    ['Use the old logo.', 'preference', false, 'shared'],
   ]);
+  // A removal reaches as far as what it removed, so spaces below see the rule is gone.
+  const removal = manifest.items.find((candidate) => candidate.kind === 'removed')!;
+  assert.deepEqual([removal.supersedes, removal.reachesDown], [item('Use the old logo.').id, true]);
   assert.deepEqual(manifest.items.filter((file) => file.kind === 'file').map((file) => file.path).slice(0, 2), ['SKILL.md', 'references/tone.md']);
   const page = (title: string) => manifest.items.find((candidate) => candidate.kind === 'title' && candidate.body === title)!.page;
   assert.deepEqual(manifest.links.map((link) => [link.from, link.to]), [[page('Launch plan'), page('Gunnar Holm')]]);
@@ -282,11 +313,18 @@ test('an export never holds anyone else’s private side, or a closed space the 
   assert.ok(manifest.items.some((item) => item.body === 'The board’s view decides the date.'));
   assert.ok(zip.length > 0);
 
-  // Cara's page shows only from when she shared from it: not when she started it, archived it or reopened it.
-  const venues = manifest.pages.find((page) => page.id === manifest.items.find((item) => item.body === 'Venue ideas')!.page)!;
-  assert.ok(venues.createdAt > '2026-02-01', venues.createdAt);
-  assert.ok(!manifest.pageArchives.some((archive) => archive.page === venues.id));
-  for (const [path, text] of files) if (path !== 'homing.json') assert.ok(!text.includes('2026-01-'), `${path} tells of January`);
+  // Cara's pages carry the dates of what she wrote on them, which she shared, but not what she did
+  // with them while they were hers alone: archiving, reopening, or who archived the one still archived.
+  const page = (title: string) => manifest.pages.find((candidate) => candidate.id === manifest.items.find((item) => item.body === title)!.page)!;
+  const [venues, old] = [page('Venue ideas'), page('Old venues')];
+  assert.equal(venues.createdAt, '2026-01-05T09:00:00.000Z');
+  assert.ok(!manifest.pageArchives.some((archive) => archive.page === venues.id || archive.page === old.id));
+  assert.equal(old.archived?.by, null);
+  assert.ok(old.archived!.at > '2026-10-01', old.archived!.at);
+  for (const [path, text] of files) {
+    for (const day of ['2026-01-10', '2026-01-12']) assert.ok(!text.includes(day), `${path} tells of ${day}`);
+  }
+  assert.doesNotMatch(files.get('knowledge/old-venues.md')!, /Archived on 2026-01|by Cara/);
 });
 
 test('each member’s export is their own view of the space', async () => {
@@ -330,6 +368,12 @@ test('what an item rests on outside the export is noted, never brought along', a
   assert.deepEqual(budget.sources.map((id) => manifest.sources.find((source) => source.id === id)!.reference), ['Email from Gunnar, 3 October']);
   assert.match(files.get('knowledge/gunnar-holm.md')!, /The budget is 2 MNOK\.\[\^[0-9a-f-]+\]\n\n_Also rests on 1 source not in this export\._/);
   for (const [path, text] of files) assert.ok(!text.includes('My own reckoning') && !text.includes('Ana’s notebook'), path);
+  // What rests on sources Ana can't see at all, Cara's own or Board's, isn't counted, even as a number.
+  for (const body of ['The caterer is booked.', 'The board signed off the budget.']) {
+    const item = manifest.items.find((candidate) => candidate.body === body)!;
+    assert.deepEqual([item.sources, item.sourcesElsewhere], [[], 0], body);
+  }
+  assert.doesNotMatch(files.get('knowledge/launch-plan.md')!, /Also rests on/);
 });
 
 test('a skill’s files stay in its folder, and guidance comes out word for word', async () => {
@@ -364,12 +408,39 @@ test('a space below another, one below a closed space, and the personal space ex
   for (const [path, text] of own.files) assert.ok(!text.includes(acme) && !text.includes('Gunnar leads'), path);
 });
 
+test('a person makes one export at a time, until it has been sent', async () => {
+  // A space too big to send at once: what doesn't compress, megabytes of it.
+  const scans = await as({ ...ana, direct: true }, async (s) => {
+    const scans = await createSpace(s, { name: 'Scans' });
+    for (let n = 0; n < 8; n++) await addSource(s, { spaceId: scans, excerpt: randomBytes(400_000).toString('base64'), reference: `Scan ${n}`, shared: true });
+    return scans;
+  });
+  const first = await ana.browser.fetch(`/api/spaces/${scans}/export`);
+  assert.equal(first.status, 200);
+  // Made, but not yet taken: the next one waits.
+  const second = await ana.browser.fetch(`/api/spaces/${scans}/export`);
+  assert.equal(second.status, 429);
+  assert.match((await second.json()).message, /another export right now/);
+  await first.arrayBuffer();
+  await until(async () => {
+    const again = await ana.browser.fetch(`/api/spaces/${acme}/export`);
+    await again.arrayBuffer();
+    return again.status === 200;
+  });
+});
+
+test('a title written with extra spaces or on several lines names the same page', async () => {
+  const claude = await anasClaude();
+  await claude.call('remember', { space: `space:${acme}`, page: 'Jon  Dahl', text: 'Jon builds the booking flow.' });
+  await claude.call('remember', { space: `space:${acme}`, page: 'jon\n dahl', text: 'Jon works from Bergen.' });
+  const pages = await admin`select distinct page_id, body from content where space_id = ${acme} and kind = 'title' and lower(body) like 'jon%dahl'`;
+  assert.deepEqual(pages.map((row) => row.body), ['Jon Dahl']);
+});
+
 test('only someone who can open a space exports it, and an assistant gives them the link', async () => {
   assert.equal((await download(ben, acme)).response.status, 404);
   assert.equal((await download(ana, boardId)).response.status, 404, 'a closed space Ana isn’t in');
-  const assistant = new Assistant(homing.url, assistants.claude);
-  await assistant.connect(ana.browser);
-  const claude = await assistant.open();
+  const claude = await anasClaude();
   const answer = (await claude.call('act', { action: 'space.export', input: { space: `space:${acme}` } })).text;
   assert.ok(answer.includes(`/spaces/${acme}/settings`) && answer.includes(`/api/spaces/${acme}/export`), answer);
   assert.match((await claude.call('act', { action: 'space.export', input: { space: `space:${boardId}` } })).text, /no space with that reference/);

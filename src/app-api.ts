@@ -13,8 +13,10 @@ import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, renameSp
 import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-/** Who is exporting a space right now. */
+/** Who is exporting a space right now, until it has been sent. */
 const exporting = new Set<string>();
+/** How long an export may take to make and send before it's given up on. */
+const exportTimeout = 5 * 60_000;
 const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
@@ -199,11 +201,18 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'export': {
-        // One at a time for each person, and only a few at once, since a big space takes a lot of memory.
+        // One at a time for each person, and only a few at once, since a big space takes a lot of memory,
+        // until it has been sent, or given up on after a few minutes.
         if (exporting.has(person) || exporting.size >= 2) return answer(res, 429, { message: 'Homing is making another export right now. Try again in a moment.' });
         exporting.add(person);
+        const timeout = setTimeout(() => res.destroy(), exportTimeout);
+        res.once('close', () => {
+          clearTimeout(timeout);
+          exporting.delete(person);
+        });
         // Everything the person sees in the space, read in one snapshot as them.
-        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url), { snapshot: true }).finally(() => exporting.delete(person));
+        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url), { snapshot: true });
+        if (res.destroyed) break;
         if (!exported) return answer(res, 404, noSpace);
         res.writeHead(200, {
           'content-type': 'application/zip',

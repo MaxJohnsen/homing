@@ -1,8 +1,12 @@
 // Zip files, written with Node's own zlib. A big space exports as tens of thousands of files, more
 // than plain zip can count, so past 65,535 files the zip ends with ZIP64's records, which every
-// common unzip tool reads. Compressing is native, and it pauses now and then for other requests.
+// common unzip tool reads. Compressing is native, and never holds up other requests for long: a
+// big file is compressed off the main thread, and small ones a few hundred at a time.
 
-import { crc32, deflateRawSync } from 'node:zlib';
+import { promisify } from 'node:util';
+import { crc32, deflateRaw, deflateRawSync } from 'node:zlib';
+
+const deflate = promisify(deflateRaw);
 
 /** The files, by their paths, as one zip. A zip over 4 GB isn't made. */
 export async function zip(files: Iterable<[string, string]>, at = new Date()): Promise<Buffer> {
@@ -17,7 +21,7 @@ export async function zip(files: Iterable<[string, string]>, at = new Date()): P
     const name = Buffer.from(path);
     const data = Buffer.from(text);
     // A copy of its own, since zlib hands back a slice of a larger buffer, which would all stay in memory.
-    const packed = Buffer.from(deflateRawSync(data));
+    const packed = data.length > 1024 * 1024 ? await deflate(data) : Buffer.from(deflateRawSync(data));
     const crc = crc32(data);
     if (offset + 30 + name.length + packed.length > 0xffffffff) throw new Error('That’s too much for one zip.');
 

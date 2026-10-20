@@ -64,7 +64,7 @@ export interface Manifest {
     space: string;
     /** A free-text type, or guidance, skill or overview. */
     type: string | null;
-    /** When the exporter could first see something on it. */
+    /** When the first of its items the exporter sees was written. */
     createdAt: string;
     archived: { at: string; by: string | null } | null;
     /** Where it reads in the bundle. */
@@ -86,6 +86,8 @@ export interface Manifest {
     supersedes: string | null;
     /** For a rule: it applies only in its own space. */
     onlyHere?: boolean;
+    /** For a removal: whether it reaches the spaces below, as what it removed did. */
+    reachesDown?: boolean;
     /** For a shared copy of the exporter's own private item: that item. */
     publishedFrom: string | null;
     published: { by: string | null; at: string } | null;
@@ -126,7 +128,7 @@ export async function exportSpace(s: Session, spaceId: string, instance: URL, no
   const found = await collect(s, spaceId, instance, now);
   if (!found) return undefined;
   const { manifest, layout } = found;
-  const files = Object.entries({ 'homing.json': `${JSON.stringify(manifest, null, 2)}\n`, ...(await readable(manifest, layout)) });
+  const files = Object.entries({ 'homing.json': await jsonOf(manifest), ...(await readable(manifest, layout)) });
   return { filename: `${slug(manifest.spaces[0].name, 'space')}-${manifest.exportedAt.slice(0, 10)}.zip`, zip: await zip(files, now) };
 }
 
@@ -154,18 +156,21 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     where a.space_id in ${s.tx(ids)} and a.person_id = ${me}::uuid
     order by a.at
   `;
-  // A page's history starts when the person could first see something on it: something shared
-  // from someone's own side, when it was shared.
-  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; seen: Date; archivedAt: Date | null; archivedBy: string | null }[]>`
-    select p.id, p.space_id, p.type, p.archived_at, p.archived_by, seen.at as seen
+  // A page starts with the first of its items the person sees, which carry their own dates. What
+  // happened to the page itself before the person could see anything on it, such as when someone
+  // had it to themselves and archived it, stays theirs: something shared from someone's own side
+  // counts from when it was shared.
+  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; seen: Date; archivedAt: Date | null; archivedBy: string | null }[]>`
+    select p.id, p.space_id, p.type, p.archived_at, p.archived_by, first.created_at, first.seen
     from pages p
     join lateral (
-      select min(case when c.private_to is null and c.published_at is not null then greatest(c.created_at, c.published_at) else c.created_at end) as at
+      select min(c.created_at) as created_at,
+             min(case when c.private_to is null and c.published_at is not null then greatest(c.created_at, c.published_at) else c.created_at end) as seen
       from content c
       where c.page_id = p.id and ${visible(s, 'c')}
-    ) seen on seen.at is not null
+    ) first on first.created_at is not null
     where p.space_id in ${s.tx(ids)}
-    order by seen.at, p.id
+    order by first.created_at, p.id
   `;
   const found = await s.tx<Item[]>`
     select ${itemColumns(s, 'c')} from content c
@@ -268,15 +273,16 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       };
     }),
     spaceArchives: spaceArchives.map((archive) => ({ space: archive.spaceId, archived: archive.archived, author: author(archive.personId, archive.agent), at: time(archive.at) })),
-    pages: pages.map((page) => ({
+    pages: await inSteps(pages, (page) => ({
       id: page.id,
       space: page.spaceId,
       type: page.type,
-      createdAt: time(page.seen),
-      archived: page.archivedAt ? { at: time(page.archivedAt), by: key(page.archivedBy) } : null,
+      createdAt: time(page.createdAt),
+      // Archived before the person could see it: archived since then, by nobody they know of.
+      archived: !page.archivedAt ? null : page.archivedAt < page.seen ? { at: time(page.seen), by: null } : { at: time(page.archivedAt), by: key(page.archivedBy) },
       file: null,
     })),
-    items: items.map((item) => ({
+    items: await inSteps(items, (item) => ({
       id: item.id,
       page: item.pageId,
       space: item.spaceId,
@@ -289,14 +295,14 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       writtenAt: time(item.updatedAt),
       supersedes: item.supersedes && itemIds.has(item.supersedes) ? item.supersedes : null,
       ...(item.kind === 'requirement' || item.kind === 'preference' ? { onlyHere: !item.reachesDown } : {}),
+      // A removal reaches as far as what it removes, so the spaces below see it's gone.
+      ...(item.kind === 'removed' ? { reachesDown: item.reachesDown } : {}),
       publishedFrom: item.publishedFrom && itemIds.has(item.publishedFrom) ? item.publishedFrom : null,
       published: item.publishedAt ? { by: key(item.publishedBy), at: time(item.publishedAt) } : null,
       sources: (cited.get(item.id) ?? []).filter((citation) => citation.here).map((citation) => citation.sourceId),
       sourcesElsewhere: (cited.get(item.id) ?? []).filter((citation) => !citation.here).length,
     })),
-    revisions: revisions
-      .filter((revision) => itemIds.has(revision.contentId))
-      .map((revision) => ({
+    revisions: await inSteps(revisions.filter((revision) => itemIds.has(revision.contentId)), (revision) => ({
         item: revision.contentId,
         visibility: side(revision.privateTo),
         body: verbatim(kindOf.get(revision.contentId)!) ? revision.body : clean(revision.body),
@@ -304,7 +310,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
         writtenAt: time(revision.writtenAt),
         replacedAt: time(revision.replacedAt),
       })),
-    sources: sources.map((source) => ({
+    sources: await inSteps(sources, (source) => ({
       id: source.id,
       space: source.spaceId,
       visibility: side(source.privateTo),
@@ -314,9 +320,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       createdAt: time(source.createdAt),
     })),
     links: [],
-    gathered: gathered
-      .filter((gathering) => pageIds.has(gathering.collectionId) && pageIds.has(gathering.pageId))
-      .map((gathering) => ({
+    gathered: await inSteps(gathered.filter((gathering) => pageIds.has(gathering.collectionId) && pageIds.has(gathering.pageId)), (gathering) => ({
         collection: gathering.collectionId,
         page: gathering.pageId,
         visibility: side(gathering.privateTo),
@@ -327,7 +331,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     pageArchives: archives
       .filter((archive) => pageIds.has(archive.pageId) && archive.at >= firstSeen.get(archive.pageId)!)
       .map((archive) => ({ page: archive.pageId, archived: archive.archived, author: author(archive.personId, archive.agent), at: time(archive.at) })),
-    tasks: tasks.map((task) => ({
+    tasks: await inSteps(tasks, (task) => ({
       id: task.id,
       space: task.spaceId,
       visibility: side(task.privateTo),
@@ -479,6 +483,25 @@ function titlesOf(current: Map<string, Data[]>): Map<string, string> {
   return titles;
 }
 
+/** Each of many things made into another, a few thousand at a time, pausing between them for other requests. */
+async function inSteps<T, U>(things: T[], fn: (thing: T) => U): Promise<U[]> {
+  const made: U[] = [];
+  for (let at = 0; at < things.length; at++) {
+    if (at % 2000 === 1999) await setImmediate();
+    made.push(fn(things[at]));
+  }
+  return made;
+}
+
+/** The manifest as compact JSON, written a list at a time, pausing within long lists for other requests. */
+async function jsonOf(manifest: Manifest): Promise<string> {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(manifest)) {
+    parts.push(`${JSON.stringify(key)}:${Array.isArray(value) ? `[${(await inSteps(value, (entry) => JSON.stringify(entry))).join(',')}]` : JSON.stringify(value)}`);
+  }
+  return `{${parts.join(',')}}\n`;
+}
+
 /** Groups things by a key, keeping their order. */
 function groupBy<T>(things: T[], key: (thing: T) => string): Map<string, T[]> {
   const groups = new Map<string, T[]>();
@@ -543,8 +566,6 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
   };
   /** Where an item stands among the others: a replacement where the first it replaced stood. */
   const firstOf = (item: Data): Data => (item.supersedes && byId.has(item.supersedes) ? firstOf(byId.get(item.supersedes)!) : item);
-  /** When the exporter could first see an item: something shared from someone's own side, when it was shared. */
-  const seenAt = (item: Data) => (item.visibility === 'shared' && item.published && item.published.at > item.createdAt ? item.published.at : item.createdAt);
 
   for (const space of m.spaces) {
     const folder = layout.folders.get(space.id)!;
@@ -618,10 +639,10 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
         lines,
       );
 
-      // What happened to it, for the log, from when the exporter could see it.
+      // What happened to it, for the log.
       if (!overview) log.push({ at: page.createdAt, word: 'Creation', verb: 'Started', page: page.id, private: whole });
       for (const item of items) {
-        log.push({ at: seenAt(item), word: 'Update', verb: item.supersedes ? 'Updated' : 'Added', counted: 'item', page: page.id, private: item.visibility === 'private' });
+        log.push({ at: item.createdAt, word: 'Update', verb: item.supersedes ? 'Updated' : 'Added', counted: 'item', page: page.id, private: item.visibility === 'private' });
       }
       for (const revision of revisionsOn.get(page.id) ?? []) {
         if (byId.get(revision.item)!.kind !== 'text') continue;

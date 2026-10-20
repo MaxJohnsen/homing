@@ -73,10 +73,10 @@ Each routine run is a job, recording who it acted for, which connection it used,
 
 ## Export
 
-A space's export is a zip, read in one snapshot as the person who asks for it, so row-level security keeps everyone else's private side out underneath Homing's own filters. It goes down only through spaces the person can open, and only sources kept in those spaces come along. A page's history starts when the person could first see something on it, so a page someone kept to themselves before sharing from it shows nothing from before. In knowledge, a reference such as `page:…` to anything left out keeps its words and loses the reference; rules and skills' files stay word for word, and plain Homing addresses stay as written.
+A space's export is a zip, read in one snapshot as the person who asks for it, so row-level security keeps everyone else's private side out underneath Homing's own filters. It goes down only through spaces the person can open, and only sources kept in those spaces come along. Items, tasks and spaces carry their own dates, as the app shows them. What happened to a page itself before the person could see anything on it stays out: its archive history starts when they could first see it, counting something shared from someone's own side from when it was shared, and a page archived before then shows as archived since then, by nobody named. In knowledge, a reference such as `page:…` to anything left out keeps its words and loses the reference; rules and skills' files stay word for word, and plain Homing addresses stay as written.
 
 ```
-homing.json                    the manifest, the only file import reads
+homing.json                    the manifest, compact JSON, the only file import reads
 knowledge/                     an OKF v0.2 bundle
   index.md                     okf_version, then the space's overview, tasks, sources, pages and spaces
   log.md                       what changed, by day, newest first
@@ -95,7 +95,7 @@ The manifest has `format: "homing-export"`, `version: 1`, the instance's address
 
 Each page is a concept with its type (`Page` when it has none), `title` on one line, its id under `homing`, `generated` with the last writer as an OKF actor (`human:<name>`, `<assistant>/homing` for an agent, `process:homing` for a routine), and `sources` pointing to their concepts, cited as footnotes keyed by source id. Items keep their ids in comments, private ones say whose they are, ones resting on sources elsewhere say so, replaced ones follow under Earlier, and an archived page has `status: deprecated`. A skill's file that wouldn't stay in its folder on every system, with a backslash, a colon, `.` or `..` in its path, is left out of `guidance/`, though the manifest has it. A test checks the knowledge folder against OKF §11 on every change.
 
-The zip is written with Node's own zlib, each file compressed into memory of its own. A big space is tens of thousands of files, so past 65,535 the zip ends with ZIP64's records, which common unzip tools read. Writing it pauses every few hundred files for other requests. Each person makes one export at a time, and Homing two at once; on the big sample, about 100,000 files, an export peaks at about 1.1 GB.
+The zip is written with Node's own zlib, each file compressed into memory of its own. A big space is tens of thousands of files, so past 65,535 the zip ends with ZIP64's records, which common unzip tools read. Other requests keep being answered while an export is made: the manifest is built and written a few thousand rows at a time, small files are compressed a few hundred at a time, and a file over 1 MB, such as `homing.json`, is compressed off the main thread. Each person makes one export at a time, and Homing two at once, each until its zip has been sent, or for at most five minutes. On the big sample, about 100,000 files, an export peaks at about 1 GB, and nothing else waits more than about a tenth of a second.
 
 ## Self-hosting
 

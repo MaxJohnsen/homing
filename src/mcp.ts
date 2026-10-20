@@ -25,6 +25,7 @@ import {
   writeOverview,
   updateItem,
   writeItem,
+  oneLineTitle,
   type Hit,
   type Item,
 } from './knowledge.ts';
@@ -851,7 +852,7 @@ async function collect(s: Session, spaceId: string, input: { page?: string; gath
   if (!input.page) throw new Refused('Say which page, with page: and a page reference or its title.');
   const page = /^page:/i.test(input.page)
     ? { id: parseRef(input.page, 'page') }
-    : (await listPages(s, spaceId, { withArchived: true })).find((candidate) => candidate.title?.toLowerCase() === input.page!.toLowerCase());
+    : (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === oneLineTitle(input.page!).toLowerCase());
   if (!page) throw new Refused('There is no page with that title in this space that you can see.');
   const said: string[] = [];
   if (input.gatherInto) {
@@ -876,9 +877,10 @@ async function pageFor(s: Session, spaceId: string, page?: string, type?: string
     if (found.type === 'guidance' || found.type === 'skill') throw new Refused(onlyPeople);
     return { id, title: found.title, created: false, archived: found.archived !== null };
   }
-  const title = page ?? 'Notes';
+  // Titles are one line however they were written, so "Gunnar  Holm" is Gunnar Holm's page.
+  const title = oneLineTitle(page ?? 'Notes') || 'Notes';
   // A subject keeps one page, archived or not: an active one with the title first.
-  const existing = (await listPages(s, spaceId, { withArchived: true })).find((candidate) => candidate.title?.toLowerCase() === title.toLowerCase());
+  const existing = (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === title.toLowerCase());
   if (existing) return { id: existing.id, title: existing.title!, created: false, archived: existing.archived };
   return { id: await createPage(s, { spaceId, title, type: page ? type : 'notes' }), title, created: true, archived: false };
 }
@@ -1263,7 +1265,6 @@ async function proposeSpaceSharing(s: Session, links: Links, input: z.infer<type
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
-/** Renames a space the user looks after. */
 /**
  * Where the user downloads a space's export (spec §3): everything they see in it, which only they
  * can download, signed in to Homing. The assistant never gets the export itself.
@@ -1277,6 +1278,7 @@ async function exportLink(s: Session, links: Links, input: z.infer<typeof export
     'It holds everything they see there and in the spaces in it they can open, with what only they see marked as theirs.';
 }
 
+/** Renames a space the user looks after. */
 async function renameSpaceFor(s: Session, links: Links, input: z.infer<typeof renameSpaceInput>, card: boolean): Promise<string | Answer> {
   const spaceId = parseRef(input.space, 'space');
   const before = (await listSpaces(s)).find((space) => space.id === spaceId);
