@@ -8,11 +8,12 @@ export type Route =
   | { name: 'admin' }
   | { name: 'space'; id: string; view?: SpaceView }
   | { name: 'page'; id: string }
+  | { name: 'source'; id: string }
   | { name: 'skill'; id: string }
   | { name: 'proposal'; id: string };
 
-/** The parts of a space: its pages under Knowledge, its rules and skills under Guidance, and its members. */
-export type SpaceView = 'pages' | 'rules' | 'skills' | 'members';
+/** The parts of a space: its pages and sources under Knowledge, its rules and skills under Guidance, and its members. */
+export type SpaceView = 'pages' | 'sources' | 'rules' | 'skills' | 'members';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const patterns: [RegExp, (id: string, view?: string) => Route][] = [
@@ -20,8 +21,9 @@ const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
   [/^\/admin$/, () => ({ name: 'admin' })],
-  [new RegExp(`^/spaces/${uuid}(?:/(pages|rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
+  [new RegExp(`^/spaces/${uuid}(?:/(pages|sources|rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
   [new RegExp(`^/pages/${uuid}$`, 'i'), (id) => ({ name: 'page', id: id.toLowerCase() })],
+  [new RegExp(`^/sources/${uuid}$`, 'i'), (id) => ({ name: 'source', id: id.toLowerCase() })],
   [new RegExp(`^/skills/${uuid}$`, 'i'), (id) => ({ name: 'skill', id: id.toLowerCase() })],
   [new RegExp(`^/proposals/${uuid}$`, 'i'), (id) => ({ name: 'proposal', id: id.toLowerCase() })],
 ];
@@ -44,6 +46,7 @@ export function addressOf(route: Route): string {
     case 'admin': return '/admin';
     case 'space': return `/spaces/${route.id}${route.view ? `/${route.view}` : ''}`;
     case 'page': return `/pages/${route.id}`;
+    case 'source': return `/sources/${route.id}`;
     case 'skill': return `/skills/${route.id}`;
     case 'proposal': return `/proposals/${route.id}`;
   }

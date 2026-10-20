@@ -78,3 +78,37 @@ export function nameOf(author: Author): string {
   if (!author) return 'Homing';
   return author.you ? 'You' : (author.name ?? 'Someone');
 }
+
+/** A source in a space's list of sources. */
+export interface SourceSummary {
+  id: string;
+  reference: string | null;
+  excerpt: string;
+  createdAt: string;
+  /** Only you have it. */
+  onlyYou: boolean;
+  /** How many pages you see it used on. */
+  pages: number;
+}
+
+/** A space's sources, fifty at a time. */
+export interface SourcesData {
+  sources: SourceSummary[];
+  /** How many match the search. */
+  total: number;
+  /** How many there are without searching. */
+  all: number;
+}
+
+/** A source: what Homing kept of it, who kept it, and the pages whose items rest on it. */
+export interface SourceData {
+  id: string;
+  reference: string | null;
+  excerpt: string;
+  shared: boolean;
+  keptAt: string;
+  by: Author;
+  agent: string | null;
+  space: { id: string; name: string; personal: boolean; private: boolean };
+  pages: { id: string; title: string; items: { id: string; text: string; shared: boolean }[] }[];
+}

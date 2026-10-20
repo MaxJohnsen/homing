@@ -327,6 +327,79 @@ export async function pagesIn(
   };
 }
 
+/** A source in a list, as the viewer sees it. */
+export interface SourceSummary {
+  id: string;
+  reference: string | null;
+  excerpt: string;
+  createdAt: Date;
+  /** Only the viewer has it. */
+  onlyYou: boolean;
+  /** How many pages the viewer sees it used on. */
+  pages: number;
+}
+
+/**
+ * The sources kept in a space that the viewer can see, newest first or best match, fifty at a
+ * time, with how many pages use each. Also says how many there are in all.
+ */
+export async function sourcesIn(
+  s: Session,
+  spaceId: string,
+  options: { query?: string; offset?: number; limit?: number } = {},
+): Promise<{ sources: SourceSummary[]; total: number; all: number }> {
+  const terms = termsOf(options.query ?? '');
+  const limit = options.limit ?? 50;
+  const matching = terms ? s.tx`and src.search @@ to_tsquery('simple', ${terms})` : s.tx``;
+  const order = terms ? s.tx`ts_rank(src.search, to_tsquery('simple', ${terms}), 1) desc, src.created_at desc` : s.tx`src.created_at desc`;
+  const list = (offset: number) => s.tx<(Omit<SourceSummary, 'pages'> & { total: number })[]>`
+    select src.id, src.reference, src.excerpt, src.created_at, src.private_to is not null as only_you, count(*) over ()::int as total
+    from sources src
+    where src.space_id = ${spaceId}::uuid and ${visible(s, 'src')} ${matching}
+    order by ${order}, src.id
+    limit ${limit} offset ${offset}
+  `;
+  let rows = await list(Math.max(0, options.offset ?? 0));
+  if (rows.length === 0 && (options.offset ?? 0) > 0) rows = await list(0);
+  // Counted only for the ones shown, from the items the viewer sees now.
+  const used = rows.length === 0 ? [] : await s.tx<{ sourceId: string; pages: number }[]>`
+    select ci.source_id, count(distinct c.page_id)::int as pages
+    from citations ci
+    join content c on c.id = ci.content_id
+    join pages p on p.id = c.page_id
+    where ci.source_id in ${s.tx(rows.map((row) => row.id))} and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
+    group by ci.source_id
+  `;
+  const [{ all }] = await s.tx<{ all: number }[]>`
+    select count(*)::int as all from sources src where src.space_id = ${spaceId}::uuid and ${visible(s, 'src')}
+  `;
+  return {
+    sources: rows.map(({ total: _, ...row }) => ({ ...row, pages: used.find((entry) => entry.sourceId === row.id)?.pages ?? 0 })),
+    total: rows[0]?.total ?? 0,
+    all,
+  };
+}
+
+/**
+ * A source as the viewer sees it: what was kept of it, who kept it, and the items that rest on
+ * it, by page, only those the viewer can see and that are still current.
+ */
+export async function sourceView(s: Session, sourceId: string) {
+  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date })[]>`
+    select ${sourceColumns(s)}, written_by, agent, created_at from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
+  `;
+  if (!source) return undefined;
+  const uses = await s.tx<{ pageId: string; title: string | null; itemId: string; body: string; privateTo: string | null }[]>`
+    select c.page_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.id as item_id, c.body, c.private_to
+    from citations ci
+    join content c on c.id = ci.content_id
+    join pages p on p.id = c.page_id
+    where ci.source_id = ${sourceId}::uuid and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
+    order by c.created_at
+  `;
+  return { ...source, uses };
+}
+
 /** Earlier versions of these items that the viewer can see, oldest first. */
 export async function historyOf(s: Session, itemIds: string[]): Promise<(Revision & { itemId: string })[]> {
   if (itemIds.length === 0) return [];

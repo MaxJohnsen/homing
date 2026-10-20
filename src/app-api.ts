@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, historyOf, pagesIn, readItem, readPage, supersedeItem, updateItem, writeItem, type PageOrder } from './knowledge.ts';
+import { createPage, historyOf, pagesIn, readItem, readPage, sourcesIn, sourceView, supersedeItem, updateItem, writeItem, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, peopleNames, spaceView } from './spaces.ts';
@@ -180,6 +180,51 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'sources': {
+        const query = new URL(req.url ?? '', 'http://homing').searchParams;
+        const offset = Number.parseInt(query.get('offset') ?? '0', 10);
+        const found = await read(async (s) =>
+          (await spaceView(s, route.id))
+            ? sourcesIn(s, route.id, { query: query.get('q')?.slice(0, 200) ?? undefined, offset: Number.isFinite(offset) ? offset : 0 })
+            : undefined,
+        );
+        if (!found) return answer(res, 404, noSpace);
+        json(res, 200, found);
+        break;
+      }
+
+      case 'source': {
+        const found = await read(async (s) => {
+          const source = await sourceView(s, route.id);
+          if (!source) return undefined;
+          const space = await spaceView(s, source.spaceId);
+          if (!space) return undefined;
+          const names = await peopleNames(s, [source.writtenBy]);
+          return { source, space, names };
+        });
+        if (!found) return answer(res, 404, { message: 'There’s no source here that you can open.' });
+        const { source, space, names } = found;
+        // The pages it's used on, each with the items that rest on it.
+        const pages = new Map<string, { id: string; title: string; items: { id: string; text: string; shared: boolean }[] }>();
+        for (const use of source.uses) {
+          const page = pages.get(use.pageId) ?? { id: use.pageId, title: use.title ?? 'Untitled', items: [] };
+          page.items.push({ id: use.itemId, text: use.body, shared: use.privateTo === null });
+          pages.set(use.pageId, page);
+        }
+        json(res, 200, {
+          id: source.id,
+          reference: source.reference,
+          excerpt: source.excerpt,
+          shared: source.privateTo === null,
+          keptAt: source.createdAt,
+          by: source.writtenBy === null ? null : { name: names.get(source.writtenBy) ?? null, you: source.writtenBy === person },
+          agent: source.agent,
+          space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
+          pages: [...pages.values()],
+        });
+        break;
+      }
+
       case 'add page': {
         const body = await readJson(req);
         const title = typeof body.title === 'string' ? body.title.trim() : '';
@@ -341,7 +386,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' }
-  | { name: 'space' | 'pages' | 'page' | 'add page' | 'add item' | 'correct item' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -354,6 +399,8 @@ function routeOf(method: string, path: string): Route | undefined {
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],
       ['page', `/api/pages/${uuid}`],
+      ['sources', `/api/spaces/${uuid}/sources`],
+      ['source', `/api/sources/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],
       ['skills', `/api/spaces/${uuid}/skills`],
       ['skill', `/api/skills/${uuid}`],

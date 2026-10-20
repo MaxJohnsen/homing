@@ -138,15 +138,15 @@ function PageRow({ page, space, now }: { page: PageSummary; space: SpaceData; no
   );
 }
 
-/** "Showing 51–100 of 1,240 pages", with the way to the pages before and after. Nothing when everything fits. */
-function Pager({ total, from, onChange }: { total: number; from: number; onChange: (from: number) => void }) {
+/** "Showing 51–100 of 1,240 pages", with the way to the fifty before and after. Just how many when everything fits. */
+export function Pager({ total, from, onChange, noun = ['page', 'pages'] }: { total: number; from: number; onChange: (from: number) => void; noun?: [string, string] }) {
   const first = Math.min(from, Math.max(0, total - 1));
   const last = Math.min(total, first + pageSize);
-  if (total <= pageSize) return <p className="text-sm text-muted-foreground">{count(total, 'page', 'pages')}</p>;
+  if (total <= pageSize) return <p className="text-sm text-muted-foreground">{count(total, ...noun)}</p>;
   return (
     <nav aria-label="Pages of the list" className="flex flex-wrap items-center justify-between gap-3">
       <p className="text-sm text-muted-foreground" aria-live="polite">
-        Showing {(first + 1).toLocaleString('en-US')}–{last.toLocaleString('en-US')} of {count(total, 'page', 'pages')}
+        Showing {(first + 1).toLocaleString('en-US')}–{last.toLocaleString('en-US')} of {count(total, ...noun)}
       </p>
       <div className="flex gap-2">
         <button type="button" disabled={first === 0} onClick={() => onChange(Math.max(0, first - pageSize))} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-medium disabled:opacity-40', focusRing)}>

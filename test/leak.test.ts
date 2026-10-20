@@ -23,6 +23,8 @@ import {
   readItem,
   readPage,
   search,
+  sourcesIn,
+  sourceView,
   supersedeItem,
   updateItem,
   writeItem,
@@ -95,7 +97,9 @@ for (const [layer, sql] of [
           for (const space of [target.space, target.person.personalSpaceId]) {
             assert.equal((await listPages(s, space)).length, 0);
             assert.deepEqual(await pagesIn(s, space, { query: 'launch' }), { pages: [], total: 0, all: 0, types: [] });
+            assert.deepEqual(await sourcesIn(s, space), { sources: [], total: 0, all: 0 });
           }
+          assert.equal(await sourceView(s, target.source.id), undefined);
           for (const page of target.pages) assert.equal(await readPage(s, page), undefined);
           for (const item of target.items) assert.equal(await readItem(s, item.id), undefined);
           assert.equal((await peopleNames(s, [target.person.id])).size, 0);
@@ -410,11 +414,13 @@ describe('through the app’s endpoints', () => {
     // A shared page with a private item on it, and a page only they see.
     const pages = await as(who, async (s) => {
       const shared = await createPage(s, { spaceId: space, title: `${name}’s launch`, shared: true });
-      const sharedItem = (await writeItem(s, { pageId: shared, body: `${name} launches in March`, shared: true })).id;
-      const privateItem = (await writeItem(s, { pageId: shared, body: `${name} worries the launch slips` })).id;
+      const sharedSource = (await addSource(s, { spaceId: space, reference: `${name}’s plan`, excerpt: `${name} plans the launch for March`, shared: true })).id;
+      const privateSource = (await addSource(s, { spaceId: space, reference: `${name}’s diary`, excerpt: `${name} fears the launch will slip` })).id;
+      const sharedItem = (await writeItem(s, { pageId: shared, body: `${name} launches in March`, sources: [sharedSource], shared: true })).id;
+      const privateItem = (await writeItem(s, { pageId: shared, body: `${name} worries the launch slips`, sources: [privateSource, sharedSource] })).id;
       const own = await createPage(s, { spaceId: space, title: `${name}’s salary talks` });
       await writeItem(s, { pageId: own, body: `${name} asks for a raise in December` });
-      return { shared, own, sharedItem, privateItem };
+      return { shared, own, sharedItem, privateItem, sharedSource, privateSource };
     });
     return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages };
   };
@@ -452,8 +458,10 @@ describe('through the app’s endpoints', () => {
         assert.equal((await get(`/api/spaces/${space}/skills`)).status, 404);
         assert.equal((await get(`/api/spaces/${space}/pages`)).status, 404);
         assert.equal((await get(`/api/spaces/${space}/pages?q=launch`)).status, 404);
+        assert.equal((await get(`/api/spaces/${space}/sources?q=launch`)).status, 404);
       }
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
+      for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
       assert.equal((await get(`/api/skills/${target.skill}`)).status, 404);
       // Neither looks after Homing, so neither sees who else uses it.
       assert.equal((await get('/api/admin')).status, 403);
@@ -509,12 +517,24 @@ describe('through the app’s endpoints', () => {
       assert.ok(found.all <= 1 && found.total <= 1, query);
     }
     await get(`/api/pages/${ana.pages.own}`);
+    // Ana's diary isn't among the sources, in the list, the count or a search, nor on its own.
+    for (const query of ['', '?q=fears', '?q=diary', '?q=launch']) {
+      const found = await get(`/api/spaces/${ana.space}/sources${query}`);
+      assert.deepEqual(found.sources.map((source: { id: string }) => source.id).filter((id: string) => id !== ana.pages.sharedSource), [], query);
+      assert.equal(found.all, 1, query);
+    }
+    assert.equal((await cara.browser.json(`/api/sources/${ana.pages.privateSource}`)).status, 404);
+    // The plan they share shows only the item Cara sees resting on it.
+    const plan = await get(`/api/sources/${ana.pages.sharedSource}`);
+    assert.deepEqual(plan.pages.map((page: { items: { text: string }[] }) => page.items.map((item) => item.text)), [['Ana launches in March']]);
+    const listed = await get(`/api/spaces/${ana.space}/sources`);
+    assert.equal(listed.sources[0].pages, 1);
     const shared = await get(`/api/pages/${ana.pages.shared}`);
     assert.deepEqual(shared.items.map((item: { text: string }) => item.text), ['Ana launches in March']);
     // Even when the page last changed comes only from what Cara can see.
     const [{ latest }] = await admin`select max(updated_at) as latest from content where page_id = ${ana.pages.shared} and private_to is null`;
     assert.equal(new Date(shared.updatedAt).getTime(), latest.getTime());
-    assert.doesNotMatch(JSON.stringify(seen), /salary|raise|worries/);
+    assert.doesNotMatch(JSON.stringify(seen), /salary|raise|worries|fears|diary/);
     // Nor can she write on what's only Ana's.
     for (const [path, body] of [
       [`/api/pages/${ana.pages.own}/items`, { text: 'Hello' }],
@@ -522,7 +542,7 @@ describe('through the app’s endpoints', () => {
     ] as const) {
       const answer = await cara.browser.json(path, body);
       assert.equal(answer.status, 404, path);
-      assert.doesNotMatch(JSON.stringify(answer.body), /salary|raise|worries/);
+      assert.doesNotMatch(JSON.stringify(answer.body), /salary|raise|worries|fears|diary/);
     }
   });
 });

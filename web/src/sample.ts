@@ -1,5 +1,5 @@
 import type { AccountData } from '@/screens/account';
-import type { PageData, PagesData } from '@/lib/knowledge';
+import type { PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
@@ -291,5 +291,32 @@ export const samplePage: PageData = {
       sources: [{ id: 'source-3', reference: 'Teams chat with Gunnar', excerpt: 'Can we talk before you send anything on scope? I’d rather not have it in writing yet.' }],
       replaced: null, earlier: [],
     },
+  ],
+};
+
+/** Northwind's sources, as Ana sees them. */
+export const sampleSources: SourcesData = {
+  total: 12_400,
+  all: 12_400,
+  sources: [
+    { id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'Gunnar wants another week for content. New launch date November 20, but he hasn’t told his team yet.', createdAt: daysAgo(0, 5), onlyYou: true, pages: 1 },
+    { id: 'source-4', reference: 'Steering group notes, October 9', excerpt: 'Design is signed off. Content is late, and Northwind’s team asks for help with the booking texts.', createdAt: daysAgo(11), onlyYou: false, pages: 0 },
+    { id: 'source-1', reference: 'Kickoff deck, September 2', excerpt: 'Goal: customers book service appointments online. Acme: design and build. Northwind: content.', createdAt: daysAgo(48), onlyYou: false, pages: 2 },
+  ],
+};
+
+/** A source a page rests on, with an item only Ana sees using it too. */
+export const sampleSource: SourceData = {
+  id: 'source-1',
+  reference: 'Kickoff deck, September 2',
+  excerpt: 'Goal: customers book service appointments online.\nAcme: design and build.\nNorthwind: content, and the booking texts.',
+  shared: true,
+  keptAt: daysAgo(48),
+  by: { name: 'Cara Lund', you: false },
+  agent: 'Claude',
+  space: { id: 'northwind', name: 'Northwind', personal: false, private: false },
+  pages: [
+    { id: samplePage.id, title: 'Website relaunch', items: [{ id: 'item-1', text: samplePage.items[0].text, shared: true }] },
+    { id: '7d1c2a40-0000-4000-8000-000000000003', title: 'Pricing thoughts before the renewal', items: [{ id: 'item-9', text: 'The booking flow is the part they care most about, so it carries the price.', shared: false }] },
   ],
 };
