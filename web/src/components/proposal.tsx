@@ -1,3 +1,5 @@
+import { ShareSpaceFields, type ShareChoice } from '@/components/share-space-fields';
+import { FieldError } from '@/components/ui/field';
 import { CircleCheck, CircleSlash, Clock, Send } from 'lucide-react';
 import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
@@ -12,7 +14,7 @@ import { placeOf, precedenceOf, type ProposalData, type PublicationData, type Ta
  * with where it applies and the rules already there, a change with the rule now above its new
  * wording, or a removal with where it stops applying.
  */
-export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, onDraftChange, problem, disabled, idPrefix }: {
+export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, onDraftChange, problem, disabled, idPrefix, share, onShareChange }: {
   proposal: ProposalData;
   onlyHere: boolean;
   /** Left out where the reach is as asked, such as a request on its way to the admins. */
@@ -23,8 +25,22 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
   problem?: { field?: string; message: string };
   disabled?: boolean;
   idPrefix: string;
+  /** Sharing a space from the personal tree: where it goes and what becomes of its rules, as the person is setting them. */
+  share?: ShareChoice;
+  onShareChange?: (choice: ShareChoice) => void;
 }) {
   const { action, kind, rule, shared, personal, space } = proposal;
+  if (action === 'convert') {
+    if (!proposal.conversion || !share || !onShareChange) return null;
+    return (
+      <>
+        <p className="text-base">{space} is in your personal space, so only you have it. Shared, it leaves your personal space and you can add people. Everything in it stays only yours until you share it.</p>
+        <ShareSpaceFields name={space} conversion={proposal.conversion} choice={share} onChange={onShareChange} disabled={disabled} idPrefix={`${idPrefix}-share`} />
+        {/* A name that's taken where it would go is said here, as the other problems are under the buttons. */}
+        {problem?.field === 'name' && <FieldError>{problem.message}</FieldError>}
+      </>
+    );
+  }
   if (action === 'members') return proposal.member ? <MemberChangeDetails proposal={proposal} member={proposal.member} /> : null;
   if (action === 'publish') return proposal.publication ? <PublishDetails proposal={proposal} publication={proposal.publication} /> : null;
   if (action === 'task') return proposal.task ? <TaskShareDetails place={placeOf(proposal)} task={proposal.task} /> : null;
@@ -74,7 +90,7 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
   if (action === 'members') return member && <Who member={member} settled />;
   if (action === 'publish') return proposal.publication && <ProposedChange kind="preference" label={`On ${proposal.publication.page}`} text={proposal.publication.text} settled />;
   if (action === 'task') return proposal.task && <ProposedChange kind="preference" label="Task" text={proposal.task.title} settled />;
-  if (action === 'archive') return <ProposedChange kind="preference" label="Space" text={proposal.space} settled />;
+  if (action === 'archive' || action === 'convert') return <ProposedChange kind="preference" label="Space" text={proposal.space} settled />;
   if (action === 'space') {
     return suggestion && <p className="rounded-xl bg-muted px-4 py-3 text-base text-muted-foreground">{suggestion.created?.name ?? suggestion.name}</p>;
   }

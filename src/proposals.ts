@@ -2,10 +2,11 @@ import { AccessDenied, personOf, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import { current, itemColumns, publicationOf, publishItem, visible, type Publication } from './knowledge.ts';
 import type { FindAccount } from './people.ts';
+import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
 import { readTask, shareTask, type Task } from './tasks.ts';
 import { accessibleSpaces, archiveSpace, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space';
 
 /**
  * A change of who is in a space: about someone the user shares a space with, by their id, or about
@@ -86,6 +87,17 @@ export interface ProposalView extends Proposal {
    * only the reader has it, and whether it's archived now.
    */
   archive: { spaces: number; private: boolean; archived: boolean } | null;
+  /**
+   * For sharing a space from the person's personal tree: what sharing it would do, while it's still
+   * there, as Settings shows it. Null once it's shared, or for anyone else.
+   */
+  conversion: {
+    rulesLeaving: { kind: RuleKind; text: string; from: string | null }[];
+    skillsLeaving: { name: string; from: string | null }[];
+    places: { id: string; name: string; label: string; people: number; above: boolean }[];
+    /** The rules leaving as shown, which approving sends back, so only those are kept or shared. */
+    shown: string;
+  } | null;
   /** For sharing a task: the task as it is now, if the reader can see it, and whether it's still theirs alone. */
   task: { title: string; description: string | null; due: string | null; done: boolean; shared: boolean; shown: string } | null;
   /** For a suggested space: where the person may put it, and the space it became, if they can open it. */
@@ -323,6 +335,26 @@ export async function suggestArchive(s: Session, input: { spaceId: string; why?:
   return insertProposal(s, { spaceId: space.id, action: 'archive space', itemId: null, change: asked ? { asked } : {}, request: false, reason: input.why?.trim() || null });
 }
 
+/**
+ * Proposes sharing a space from the person's personal tree (spec §1), for them to decide on the card
+ * where it goes, who has it and what becomes of its rules. One waits at a time for each space.
+ */
+export async function proposeSpaceShare(s: Session, input: { spaceId: string; why?: string }): Promise<Proposal> {
+  // One person's proposals are made one at a time, so two at once can't both pass the check for one waiting.
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.suggest:' || ${personOf(s.principal)!}))`;
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === input.spaceId);
+  if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (!space.privateTo) throw new SpaceRefused('where', `${space.name} is shared already: add people to it with members.change.`);
+  if (!space.parentId) throw new SpaceRefused('where', 'The personal space itself stays the user’s own; share a space inside it.');
+  if (space.archived) throw new SpaceRefused('where', `${space.name} is archived. Reopen it before sharing it.`);
+  const [waiting] = await s.tx<{ id: string }[]>`
+    select id from proposals where ${yours(s)} and action = 'share space' and space_id = ${space.id}::uuid and state = 'open' and expires_at > now()
+  `;
+  if (waiting) throw new SpaceRefused('person', `Sharing ${space.name} already waits for the user (proposal:${waiting.id}). Give them that link again if they need it.`);
+  return insertProposal(s, { spaceId: space.id, action: 'share space', itemId: null, change: {}, request: false, reason: input.why?.trim() || null });
+}
+
 /** Whether a space is somewhere inside another, as far as the person can see. */
 function isInside(space: Space, ancestorId: string, spaces: Space[]): boolean {
   const byId = new Map(spaces.map((candidate) => [candidate.id, candidate]));
@@ -402,6 +434,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     },
     admins,
     publication,
+    conversion: await conversionFor(s, proposal),
     archive: proposal.action === 'archive space' ? { spaces: spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length, private: space.privateTo !== null, archived: space.archived } : null,
     task: task ? { title: task.title, description: task.description, due: task.due, done: task.doneAt !== null, shared: task.privateTo === null, shown: taskShown(task) } : null,
     audience: audienceOf ? { people: audienceOf.members.length, above: audienceOf.reachedFromAbove } : null,
@@ -421,6 +454,25 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
           }
         : null,
   };
+}
+
+/** What sharing the space would do, for the person it's proposed to, while it's in their personal tree. */
+async function conversionFor(s: Session, proposal: Proposal): Promise<ProposalView['conversion']> {
+  if (proposal.action !== 'share space' || proposal.privateTo !== personOf(s.principal)) return null;
+  const conversion = await conversionOf(s, proposal.spaceId);
+  // Shared since, or archived, it can't be shared from here.
+  if (!conversion || conversion.space.archived) return null;
+  return {
+    rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName })),
+    skillsLeaving: conversion.skillsLeaving,
+    places: conversion.places,
+    shown: rulesShown(conversion.rulesLeaving),
+  };
+}
+
+/** The rules leaving a space as they're shown, so approving keeps or shares only those. */
+function rulesShown(rules: { id: string; kind: RuleKind; body: string }[]): string {
+  return rules.map((rule) => `${rule.id}:${rule.kind}:${rule.body}`).join('\n');
 }
 
 /** "In Acme. Everyone in Acme has it.": where a space is and who has it, for its creator. */
@@ -565,7 +617,7 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body, task.title, case when p.action = 'archive space' then s.name end) as text, p.agent,
+           coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body, task.title, case when p.action in ('archive space', 'share space') then s.name end) as text, p.agent,
            coalesce((p.change->>'asked')::boolean, false) as asked, p.change->>'member' as member, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
@@ -595,7 +647,11 @@ function taskStands(s: Session, table: string) {
 /** Archiving a space waits only while it's open; archived another way, there's nothing to decide. */
 function spaceOpen(s: Session, table: string) {
   const p = s.tx(table);
-  return s.tx`(${p}.action <> 'archive space' or not exists (select from archived_since(${p}.space_id)))`;
+  return s.tx`(${p}.action <> 'archive space' or not exists (select from archived_since(${p}.space_id)))
+    and (${p}.action <> 'share space' or (
+      exists (select from spaces x where x.id = ${p}.space_id and x.private_to is not null)
+      and not exists (select from archived_since(${p}.space_id))
+    ))`;
 }
 
 function ruleStands(s: Session, table: string) {
@@ -620,7 +676,16 @@ function ruleStands(s: Session, table: string) {
 export async function decide(
   s: Session,
   proposalId: string,
-  decision: { approve: boolean; shown?: string; onlyHere?: boolean; decidedIn?: string; space?: Partial<SpaceChange>; findAccount?: FindAccount },
+  decision: {
+    approve: boolean;
+    shown?: string;
+    onlyHere?: boolean;
+    decidedIn?: string;
+    space?: Partial<SpaceChange>;
+    /** For sharing a space: where it goes, whether it's closed there, and what becomes of its rules, as the person set them. */
+    share?: { in: string | null; closed: boolean; rules: RulesLeaving };
+    findAccount?: FindAccount;
+  },
 ): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
     select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${seen(s)} for update
@@ -644,6 +709,15 @@ export async function decide(
       if (decision.shown === undefined || !(await publishItem(s, proposal.itemId!, decision.shown))) {
         throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
       }
+    } else if (proposal.action === 'share space') {
+      if (!decision.share) throw new Undecidable('changed', 'Choose where it goes and what becomes of its rules.');
+      const conversion = await conversionOf(s, proposal.spaceId);
+      if (!conversion || conversion.space.archived) throw new Undecidable('changed', 'It was shared or archived after you opened this page, so there’s nothing to decide.');
+      if (decision.shown !== rulesShown(conversion.rulesLeaving)) {
+        throw new Undecidable('changed', 'The rules that stop applying in it changed after you opened this page. Check them again before sharing it.');
+      }
+      // Checked again as it moves, as in Settings: where it may go, the name there, and the rules leaving.
+      await makeCollaborative(s, proposal.spaceId, { in: decision.share.in ?? undefined, closed: decision.share.closed, rules: decision.share.rules });
     } else if (proposal.action === 'archive space') {
       // As one of its admins, now, and with the spaces in it that were shown; a space archived
       // meanwhile has nothing left to archive.
@@ -732,7 +806,7 @@ export function publicationData(publication: Publication, audience: { people: nu
 }
 
 /** An action as the app names it. */
-export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task', 'archive space': 'archive' } as const;
+export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task', 'archive space': 'archive', 'share space': 'convert' } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
 export function proposalData(proposal: ProposalView) {
@@ -789,6 +863,8 @@ export function proposalData(proposal: ProposalView) {
     publication: proposal.publication ? publicationData(proposal.publication, proposal.audience, proposal.reason) : null,
     // Archiving a space: how many spaces in it go with it, who has it, whether it's archived now, and why.
     archive: proposal.archive ? { ...proposal.archive, asked: proposal.change.asked ?? false, why: proposal.reason } : null,
+    // Sharing a space from the personal tree: what it would do, while it's there, and why.
+    conversion: proposal.conversion ? { ...proposal.conversion, why: proposal.reason } : null,
     // Sharing a task: the task as it is now, why, and who will see it.
     task: proposal.task ? { ...proposal.task, why: proposal.reason, audience: proposal.audience } : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({

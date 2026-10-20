@@ -97,12 +97,50 @@ test('only you share a space of yours, only as a person, and only into a space y
   assert.equal((await cara.browser.json(`/api/spaces/${closet}`)).status, 404);
 });
 
-test('an assistant gives the user the link, where they decide it', async () => {
-  const garden = await as({ person: ana.id, direct: true }, (s) => createSpace(s, { name: 'Shed', parentId: ana.personalSpaceId }));
-  const answer = await chat.call('act', { action: 'space.share', input: { space: `space:${garden}` } });
-  assert.ok(!answer.failed, answer.text);
-  assert.match(answer.text, new RegExp(`Nothing has changed yet\\. Give them this link: ${homing.url}spaces/${garden}/settings`));
-  assert.equal((await spaceAs(ana, garden)).private, true);
+test('an assistant proposes sharing a space, and the user decides where it goes on the card', async () => {
+  const [shed, porch] = await as({ person: ana.id, direct: true }, async (s) => [
+    await createSpace(s, { name: 'Shed', parentId: home }),
+    await createSpace(s, { name: 'Porch', parentId: ana.personalSpaceId }),
+  ]);
+  // Homing never suggests sharing there: only when the user asks.
+  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${shed}` } })).text, /never suggests sharing/);
+  const answer = await chat.call('act', { action: 'space.share', input: { space: `space:${shed}`, why: 'Cara builds it with me.', asked: true } });
+  assert.match(answer.text, /Waiting for the user's approval .+ Nothing is shared yet/);
+  const proposal = /proposal:([0-9a-f-]{36})/.exec(answer.text)![1];
+  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${shed}`, asked: true } })).text, /already waits for the user/);
+
+  // The card shows what Settings shows: where it can go, and the rules from Home that stop applying.
+  const shown = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal;
+  assert.equal(shown.action, 'convert');
+  assert.deepEqual(shown.conversion.rulesLeaving.map((rule: { text: string }) => rule.text), ['Keep renovation notes in Norwegian.']);
+  assert.ok(shown.conversion.places.some((place: { name: string }) => place.name === 'Acme'));
+  assert.equal(shown.conversion.why, 'Cara builds it with me.');
+  assert.equal((await cara.browser.json(`/api/proposals/${proposal}`)).status, 404);
+  assert.equal((await spaceAs(ana, shed)).private, true, 'nothing changes before Ana decides');
+
+  // Approving needs her choices, and checks them as Settings does.
+  const decide = (share?: Record<string, unknown>, shownRules = shown.conversion.shown) => ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: true, shown: shownRules, ...(share && { share }) });
+  assert.notEqual((await decide()).status, 200);
+  // A rule that would leave with it, added after the card was shown, means looking again.
+  await as({ person: ana.id, direct: true }, (s) => addRule(s, { spaceId: home, kind: 'preference', body: 'Measure twice.' }));
+  assert.equal((await decide({ in: acme, closed: true, rules: 'share' })).status, 409);
+  const again = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal;
+  assert.deepEqual(again.conversion.rulesLeaving.map((rule: { text: string }) => rule.text).sort(), ['Keep renovation notes in Norwegian.', 'Measure twice.']);
+  assert.notEqual((await decide({ in: ana.personalSpaceId, closed: false, rules: 'keep' })).status, 200, 'only into a shared space she looks after');
+  assert.equal((await decide({ in: acme, closed: true, rules: 'share' }, again.conversion.shown)).status, 200);
+  const moved = await spaceAs(ana, shed);
+  assert.deepEqual([moved.private, moved.parentId, moved.closed], [false, acme, true]);
+  assert.match((await chat.call('read', { ref: `proposal:${proposal}` })).text, /The user shared it on .+ add people with members\.change/);
+
+  // Kept in the personal space, nothing changes; shared another way meanwhile, there's nothing to decide.
+  const kept = /proposal:([0-9a-f-]{36})/.exec((await chat.call('act', { action: 'space.share', input: { space: `space:${porch}`, asked: true } })).text)![1];
+  assert.equal((await ana.browser.json(`/api/proposals/${kept}/decide`, { approve: false })).status, 200);
+  assert.equal((await spaceAs(ana, porch)).private, true);
+  assert.match((await chat.call('read', { ref: `proposal:${kept}` })).text, /Don't propose sharing it again unless they ask/);
+  const asked = /proposal:([0-9a-f-]{36})/.exec((await chat.call('act', { action: 'space.share', input: { space: `space:${porch}`, asked: true } })).text)![1];
+  assert.equal((await convert(ana, porch, { in: null, closed: false, rules: 'drop' })).status, 200);
+  assert.ok(!((await ana.browser.json('/api/waiting')).body.waiting as { id: string }[]).some((item) => item.id === asked));
+  assert.match((await chat.call('read', { ref: `proposal:${asked}` })).text, /shared or archived since, so there is nothing to decide/);
 });
 
 test('shared closed, with its rules for everyone: only people added have it, and nothing of Ana\'s private side is theirs', async () => {
@@ -160,7 +198,7 @@ test('a space can\'t take a name that\'s taken where it goes, nor go where the d
   }
 });
 
-test('the assistant\'s link is only for a space in the personal space', async () => {
-  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${ana.personalSpaceId}` } })).text, /personal space itself stays the user’s own/);
-  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${acme}` } })).text, /already shared/);
+test('the assistant proposes sharing only a space in the personal space', async () => {
+  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${ana.personalSpaceId}`, asked: true } })).text, /personal space itself stays the user’s own/);
+  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${acme}`, asked: true } })).text, /shared already/);
 });

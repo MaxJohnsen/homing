@@ -4,6 +4,7 @@ import { Avatar, dateOf, focusRing, ScreenHeader, Section, Tag } from '@/compone
 import { MoreHorizontal } from 'lucide-react';
 import { ProposedChange } from '@/components/proposed-change';
 import { RadioCards } from '@/components/radio-cards';
+import { firstChoice, shareButton, shareOf, ShareSpaceFields, type ConversionData, type ShareChoice } from '@/components/share-space-fields';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { FieldError } from '@/components/ui/field';
@@ -134,12 +135,7 @@ function members(n: number) {
   return n === 1 ? '1 member' : `${n} members`;
 }
 
-/** What sharing a space from your personal tree would do: the rules that stop applying, and where it can go. */
-export interface ConversionData {
-  rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null }[];
-  skillsLeaving: { name: string; from: string | null }[];
-  places: { id: string; name: string; label: string; people: number; above: boolean }[];
-}
+export type { ConversionData } from '@/components/share-space-fields';
 
 /** Sharing a space from your personal tree. Resolves to what went wrong, if anything. */
 export interface ShareSpaceActions {
@@ -297,9 +293,7 @@ function Archive({ space, archive }: { space: SpaceData; archive: (archived: boo
  */
 function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: ShareSpaceActions; open: boolean; onOpen: (open: boolean) => void }) {
   const [conversion, setConversion] = useState<ConversionData | null>();
-  const [inside, setInside] = useState('');
-  const [closed, setClosed] = useState(false);
-  const [rules, setRules] = useState<'keep' | 'share' | 'drop'>('keep');
+  const [choice, setChoice] = useState<ShareChoice>(firstChoice);
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState(false);
   useEffect(() => {
@@ -310,8 +304,6 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
       live = false;
     };
   }, [open, conversion, share]);
-  const parent = conversion?.places.find((place) => place.id === inside);
-  const others = parent ? parent.people - 1 : 0;
   const opener = useRef<HTMLButtonElement>(null);
   const first = useRef<HTMLDivElement>(null);
   // Opening takes you into the form; closing it brings you back to where you were.
@@ -323,9 +315,9 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
     requestAnimationFrame(() => opener.current?.focus());
   };
 
-  const convert = async () => {
+  const convert = async (conversion: ConversionData) => {
     setBusy(true);
-    const answer = await share.convert({ in: parent?.id ?? null, closed: Boolean(parent) && closed, rules });
+    const answer = await share.convert(shareOf(choice, conversion));
     setBusy(false);
     if (answer) setProblem(answer);
     else navigate(`/spaces/${space.id}/members`);
@@ -348,83 +340,11 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
         <p className="text-base">{space.name} can’t be shared from here.</p>
       ) : (
         <div ref={first} className="flex flex-col gap-4">
-          {conversion.places.length > 0 && (
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="share-space-in" className="text-base">Where does it go?</Label>
-              <select
-                id="share-space-in"
-                value={inside}
-                onChange={(event) => setInside(event.target.value)}
-                disabled={busy}
-                className={cn('h-11 w-full rounded-4xl border border-input bg-card px-3.5 text-base disabled:opacity-50 sm:max-w-md', focusRing)}
-              >
-                <option value="">On its own</option>
-                {conversion.places.map((place) => <option key={place.id} value={place.id}>{place.label}</option>)}
-              </select>
-            </div>
-          )}
-          {parent && (
-            <RadioCards
-              label="Who has access?"
-              surface="muted"
-              value={closed ? 'closed' : 'open'}
-              onChange={(value) => setClosed(value === 'closed')}
-              disabled={busy}
-              options={[
-                {
-                  value: 'open',
-                  label: `Everyone in ${parent.name}`,
-                  detail: parent.above
-                    ? `${others > 0 ? `${others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`}, ` : ''}everyone who can open the space above it, and anyone who joins later.`
-                    : `${others > 0 ? `${others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`} now, and ` : ''}anyone who joins ${parent.name} later.`,
-                },
-                { value: 'closed', label: 'Only people you add', detail: `Others in ${parent.name} don’t see it.` },
-              ]}
-            />
-          )}
-          <p className="text-base">
-            {!parent
-              ? `A space of its own, with you as its admin. Only you have it until you add people.`
-              : closed
-                ? `In ${parent.name}, with you as its admin. Only the people you add have it, and ${parent.name}’s shared rules apply in it.`
-                : `In ${parent.name}. Everyone there sees its name and the spaces under it, ${parent.name}’s admins look after it with you, and its shared rules apply in it.`}
-          </p>
-          {conversion.rulesLeaving.length > 0 && (
-            <div className="flex flex-col gap-3">
-              <p className="text-base font-medium">These rules from your personal space stop applying in it:</p>
-              <ul className="flex flex-col gap-2">
-                {conversion.rulesLeaving.map((rule, index) => (
-                  <li key={index}>
-                    <ProposedChange kind={rule.kind} label={`${rule.kind === 'requirement' ? 'Requirement' : 'Preference'} from ${rule.from ?? 'a space above'}`} text={rule.text} settled />
-                  </li>
-                ))}
-              </ul>
-              <RadioCards
-                label="What becomes of them?"
-                surface="muted"
-                value={rules}
-                onChange={setRules}
-                disabled={busy}
-                options={[
-                  { value: 'keep', label: 'Keep them for me', detail: `In ${space.name}, only for you.`, private: true },
-                  { value: 'share', label: 'Add them for everyone', detail: `In ${space.name}, for everyone who has it.` },
-                  { value: 'drop', label: 'Let them go', detail: 'They stay in your personal space.' },
-                ]}
-              />
-            </div>
-          )}
-          {conversion.skillsLeaving.length > 0 && (
-            <p className="text-base">
-              {conversion.skillsLeaving.length === 1 ? 'The skill' : 'The skills'} {conversion.skillsLeaving.map((skill) => `“${skill.name}”`).join(', ')} from your personal space stop applying in it too. Add {conversion.skillsLeaving.length === 1 ? 'it' : 'them'} to {space.name}’s Guidance afterwards if you need {conversion.skillsLeaving.length === 1 ? 'it' : 'them'}.
-            </p>
-          )}
+          <ShareSpaceFields name={space.name} conversion={conversion} choice={choice} onChange={setChoice} disabled={busy} idPrefix="share-space" />
           {problem && <FieldError>{problem}</FieldError>}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
             <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={close}>Cancel</Button>
-            {/* The button names who will have it: everyone in a space it goes in, or for now only you. */}
-            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={convert}>
-              {parent && !closed ? `Share with ${parent.name}` : `Move ${space.name} out of your personal space`}
-            </Button>
+            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => convert(conversion)}>{shareButton(space.name, choice, conversion)}</Button>
           </div>
         </div>
       )}
