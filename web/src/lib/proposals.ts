@@ -132,7 +132,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
   if (action === 'space' && suggestion) {
-    if (state === 'approved') return { kind: 'approved', heading: `Created ${suggestion.created?.name ?? suggestion.name}`, detail: 'It’s with your spaces now.' };
+    if (state === 'approved') return { kind: 'approved', heading: 'Space created', detail: 'It’s with your spaces now.' };
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: suggestion.asked ? 'Nothing was created.' : 'Nothing was created, and it won’t be suggested again.' };
     if (state === 'expired') {
       return suggestion.asked
