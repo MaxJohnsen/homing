@@ -38,7 +38,11 @@ Later, a client moves a launch date. Homing learns about it on your private side
 
 ## Status
 
-Homing is being designed and built in the open. The concept and the specification are written, and work on the first increment has begun: spaces, guidance and knowledge over MCP, with no AI model needed. Progress is tracked in the [milestone](https://github.com/MaxJohnsen/homing/milestone/1).
+Homing is being designed and built in the open, in three increments:
+
+1. [**The core**](https://github.com/MaxJohnsen/homing/milestone/1), being built now: spaces, guidance, knowledge and simple tasks, used from your assistant over MCP and explored in the web app. No AI model needed. It ends with version 0.1.0.
+2. [**Learning**](https://github.com/MaxJohnsen/homing/milestone/2): Homing learns from your email on its own, routes what it learns to the right space and keeps knowledge up to date, with a model of your choice.
+3. [**Records**](https://github.com/MaxJohnsen/homing/milestone/3): tasks and events in the systems where they live, such as Asana, and planning across them.
 
 ## Read more
 
