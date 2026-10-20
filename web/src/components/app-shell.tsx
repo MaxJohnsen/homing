@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Home, Lock, Menu, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Home, Lock, Menu, Search, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing } from '@/components/screen';
@@ -84,6 +84,8 @@ function Sidebar({ person, spaces, waiting, recent, route, spaceId, onSignOut, o
         )}
       </div>
 
+      <SearchField key={addressOf(route)} onSearched={onClose} />
+
       <nav aria-label="Homing" className="flex flex-col gap-6">
         <NavLink href="/" active={route.name === 'home'}>
           <Home aria-hidden="true" className="size-[18px]" />
@@ -103,6 +105,33 @@ function Sidebar({ person, spaces, waiting, recent, route, spaceId, onSignOut, o
         <PersonMenu person={person} onSignOut={onSignOut} />
       </div>
     </div>
+  );
+}
+
+/** Search everything, from any screen: the same results your assistant gets. */
+function SearchField({ onSearched }: { onSearched?: () => void }) {
+  const [typed, setTyped] = useState('');
+  return (
+    <form
+      role="search"
+      className="relative"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (!typed.trim()) return;
+        navigate(`/search?q=${encodeURIComponent(typed.trim())}`);
+        onSearched?.();
+      }}
+    >
+      <Search aria-hidden="true" className="pointer-events-none absolute top-1/2 left-4 size-[18px] -translate-y-1/2 text-muted-foreground" />
+      <input
+        type="search"
+        aria-label="Search Homing"
+        placeholder="Search everything"
+        value={typed}
+        onChange={(event) => setTyped(event.target.value)}
+        className={cn('h-11 w-full rounded-full bg-card pr-4 pl-11 text-base outline-none placeholder:text-muted-foreground', focusRing)}
+      />
+    </form>
   );
 }
 

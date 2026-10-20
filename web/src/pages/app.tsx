@@ -8,6 +8,7 @@ import { reload, useLoad } from '@/lib/load';
 import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
 import { navigate, routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
+import type { SearchData, SearchKind } from '@/lib/search';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import { AccountPage } from '@/pages/account';
 import { ProposalPage } from '@/pages/proposal';
@@ -17,6 +18,7 @@ import { Home } from '@/screens/home';
 import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
+import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { Members, Space } from '@/screens/space';
@@ -75,6 +77,8 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
   switch (route.name) {
     case 'home':
       return <Titled title="Home"><HomePage me={me} waiting={waiting} recent={recent} /></Titled>;
+    case 'search':
+      return <Titled title="Search"><SearchPage /></Titled>;
     case 'waiting':
       return <Titled title="Waiting for you">{waiting && <Waiting waiting={waiting} />}</Titled>;
     case 'account':
@@ -192,6 +196,24 @@ function PagePage({ id }: { id: string }) {
       {data && !error && <Page page={data} actions={pageActions(data, gatheredPath)} gathered={gathered} gatheredFrom={from} onGatheredFrom={setFrom} />}
     </Titled>
   );
+}
+
+/** Searching everything, with the search, the kind shown and the place in the list in the address. */
+function SearchPage() {
+  const search = new URLSearchParams(location.search);
+  const query = search.get('q')?.trim() ?? '';
+  const kind = (['pages', 'sources', 'rules', 'skills', 'spaces'] as const).find((candidate) => candidate === search.get('kind')) ?? 'all';
+  const from = Math.max(0, Number.parseInt(search.get('from') ?? '0', 10) || 0);
+  const { data, error } = useLoad<SearchData>(query ? `/api/search?q=${encodeURIComponent(query)}` : '');
+  const go = (next: { kind?: SearchKind; from?: number }) => {
+    const address = new URLSearchParams({ q: query });
+    if ((next.kind ?? kind) !== 'all') address.set('kind', next.kind ?? kind);
+    if (next.from) address.set('from', String(next.from));
+    navigate(`/search?${address}`);
+    scrollTo({ top: 0 });
+  };
+  if (failed(error)) return <LoadFailed paths={[`/api/search?q=${encodeURIComponent(query)}`]} />;
+  return <Search data={data} query={query} kind={kind} from={from} onKind={(next) => go({ kind: next, from: 0 })} onFrom={(next) => go({ from: next })} />;
 }
 
 /** Starting a page in a space. */

@@ -467,6 +467,13 @@ describe('through the app’s endpoints', () => {
       }
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
+      // Searching for anything of the other client's finds nothing.
+      for (const query of ['launch', 'salary', 'raise', 'diary', 'plan', target.name, `${target.name.toLowerCase()}-report`, 'prices']) {
+        const found = (await get(`/api/search?q=${encodeURIComponent(query)}`)).body;
+        const spaces = [found.pages, found.sources, found.rules, found.skills].flat().map((hit: { space: { id: string | null } }) => hit.space.id);
+        assert.ok(spaces.every((id) => id === intruder.space || id === intruder.personalSpaceId), query);
+        assert.ok(found.spaces.every((space: { id: string }) => space.id === intruder.space || space.id === intruder.personalSpaceId), query);
+      }
       // Nor what the other client's collection gathers, even asked about from their own space.
       assert.equal((await get(`/api/spaces/${target.space}/pages?in=${target.pages.collection}`)).status, 404);
       assert.deepEqual((await get(`/api/spaces/${intruder.space}/pages?in=${target.pages.collection}`)).body.pages, []);
@@ -561,6 +568,8 @@ describe('through the app’s endpoints', () => {
     const collections = await get(`/api/spaces/${ana.space}/pages?collections=1`);
     assert.deepEqual(collections.pages.map((page: { gathers: number }) => page.gathers), [1]);
     assert.equal((await get(`/api/pages/${ana.pages.collection}`)).gathers, 1);
+    // Search finds Ana's shared launch for Cara, and nothing she keeps to herself.
+    for (const query of ['launch', 'salary', 'raise', 'worries', 'fears', 'diary']) await get(`/api/search?q=${query}`);
     const shared = await get(`/api/pages/${ana.pages.shared}`);
     assert.deepEqual(shared.items.map((item: { text: string }) => item.text), ['Ana launches in March']);
     // Even when the page last changed comes only from what Cara can see.

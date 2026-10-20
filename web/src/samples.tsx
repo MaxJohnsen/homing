@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleGathered, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -20,6 +20,7 @@ import { SignIn } from '@/screens/sign-in';
 import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
+import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { Members, Space } from '@/screens/space';
@@ -52,6 +53,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/pages/few': { label: 'A space with three pages', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="pages"><SamplePages space={sampleSpace.open} data={{ ...samplePages, pages: samplePages.pages.slice(0, 3), total: 3, all: 3, types: [{ type: 'project', count: 1 }, { type: 'person', count: 1 }] }} /></Space></InApp> },
   '/spaces/pages/search': { label: 'Searching a space’s pages, with nothing found', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages data={{ ...samplePages, pages: [], total: 0 }} filters={{ q: 'sauna', type: '', from: 0 }} /></Space></InApp> },
   '/spaces/pages/empty': { label: 'A space with no pages yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="pages"><SamplePages space={sampleSpace.root} data={{ pages: [], total: 0, all: 0, types: [] }} /></Space></InApp> },
+  '/search': { label: 'Search, everything that matches', render: () => <InApp route={{ name: 'search' }}><SampleSearch /></InApp> },
+  '/search/none': { label: 'Search, with nothing found', render: () => <InApp route={{ name: 'search' }}><Search data={{ spaces: [], pages: [], rules: [], skills: [], sources: [] }} query="sauna" kind="all" from={0} onKind={() => {}} onFrom={() => {}} /></InApp> },
   '/load-failed': { label: 'Something that didn’t load', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><LoadFailed paths={[]} /></Space></InApp> },
   '/spaces/sources': { label: 'A space’s sources', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="sources"><SampleSources /></Space></InApp> },
   '/spaces/sources/empty': { label: 'A space with no sources yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="sources"><Sources space={sampleSpace.root} data={{ sources: [], total: 0, all: 0 }} filters={{ q: '', type: '', from: 0 }} onFilters={() => {}} /></Space></InApp> },
@@ -196,4 +199,9 @@ const samplePageActions = {
 function SampleSources() {
   const [filters, setFilters] = useState<PageFilters>({ q: '', type: '', from: 0 });
   return <Sources space={sampleSpace.closed} data={sampleSources} filters={filters} onFilters={setFilters} />;
+}
+
+function SampleSearch() {
+  const [kind, setKind] = useState<'all' | 'pages' | 'sources' | 'rules' | 'skills' | 'spaces'>('all');
+  return <Search data={sampleSearch} query="launch" kind={kind} from={0} onKind={setKind} onFrom={() => {}} />;
 }
