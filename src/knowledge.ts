@@ -28,6 +28,44 @@ export interface Item {
   publishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Where it came from, if it was imported. */
+  imported: Imported | null;
+}
+
+/** Someone named in an import: their key in the export it came in, and their name there. Nobody here. */
+export interface ImportedPerson {
+  person: string | null;
+  name: string | null;
+}
+
+/** Who did something before it was imported: a person, an agent for a person, or a routine. */
+export interface ImportedAuthor extends ImportedPerson {
+  by: 'person' | 'agent' | 'routine';
+  agent: string | null;
+}
+
+/**
+ * Something that came in an import: the import, its id in the export, and, while it still says what
+ * it said there, who wrote it. Nobody here is credited with it.
+ */
+export interface Imported {
+  import: string;
+  id?: string;
+  author?: ImportedAuthor;
+  /** Who shared it there, for a shared copy of someone's own item. */
+  publishedBy?: ImportedPerson;
+  /** How many sources it rested on there that the export didn't hold. */
+  sourcesElsewhere?: number;
+}
+
+/** Who wrote it before it was imported, while it still says what they wrote. */
+export function importedAuthor(imported: Imported | null | undefined): ImportedAuthor | null {
+  return imported?.author ?? null;
+}
+
+/** Whether a person wrote it, here or before it was imported, so agents never rewrite it. */
+export function byPerson(written: { writtenBy: string | null; agent: string | null; imported: Imported | null }): boolean {
+  return (written.writtenBy !== null && written.agent === null) || importedAuthor(written.imported)?.by === 'person';
 }
 
 export interface Source {
@@ -69,6 +107,7 @@ export interface Revision {
   agent: string | null;
   writtenAt: Date;
   replacedAt: Date;
+  imported: Imported | null;
 }
 
 export interface Hit {
@@ -288,6 +327,8 @@ export interface Publication {
    */
   hidden: { reference: string | null; excerpt: string; space: string | null }[];
   hiddenUnseen: number;
+  /** How many sources it rested on that didn't come with the export it was imported from. */
+  hiddenElsewhere: number;
   /** Whether it's shared as a copy citing only what everyone there sees, rather than moving. */
   copy: boolean;
   /** What everyone sees now that this replaces for them, when it's your update of something shared. */
@@ -335,7 +376,8 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
     pageTitle: facts.sharedTitle ?? facts.ownTitle ?? 'Untitled',
     sharesTitle: facts.sharedTitle === null,
     hidden,
-    hiddenUnseen: Math.max(0, facts.hiddenCount - hidden.length),
+    hiddenUnseen: Math.max(0, facts.hiddenCount - hidden.length - (item.imported?.sourcesElsewhere ?? 0)),
+    hiddenElsewhere: item.imported?.sourcesElsewhere ?? 0,
     copy: !moves,
     sharedText: facts.sharedText,
     // Shared already as a copy, it's the copy from then on, and an update of that is shared instead.
@@ -375,7 +417,7 @@ export async function readItem(s: Session, itemId: string) {
   `;
   if (!item) return undefined;
   const history = await s.tx<Revision[]>`
-    select body, written_by, agent, written_at, replaced_at
+    select body, written_by, agent, written_at, replaced_at, imported
     from revisions
     where content_id = ${itemId}::uuid and ${visible(s, 'revisions')}
     order by replaced_at
@@ -654,7 +696,7 @@ export async function writeOverview(s: Session, input: { spaceId: string; text: 
     return insertItem(s, { pageId: page, spaceId: input.spaceId, privateTo: null, kind: 'text', body: input.text });
   }
   if (mine) return (await updateItem(s, mine.id, { body: input.text }))!;
-  const replaceable = shared && (s.principal.agent === undefined || shared.agent !== null || shared.writtenBy === null);
+  const replaceable = shared && (s.principal.agent === undefined || !byPerson(shared));
   if (shared && replaceable) return (await supersedeItem(s, shared.id, { body: input.text }))!;
   return insertItem(s, { pageId: page, spaceId: input.spaceId, privateTo: sideOf(s), kind: 'text', body: input.text });
 }
@@ -677,6 +719,7 @@ export interface Change {
   pageArchived: boolean;
   writtenBy: string | null;
   agent: string | null;
+  imported: Imported | null;
   at: Date;
   onlyYou: boolean;
 }
@@ -710,7 +753,7 @@ export async function recentChanges(
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
-    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, at, only_you, overview,
+    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, imported, at, only_you, overview,
            exists (select from pages p where p.id = recent.page_id and p.archived_at is not null) as page_archived
     from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
@@ -722,7 +765,7 @@ export async function recentChanges(
                select from content o where o.page_id = c.page_id and o.kind = 'text' and o.created_at < c.created_at and ${visible(s, 'o')}
              ) as new_page,
              -- Shared from someone's own side, it's new when it was shared.
-             c.written_by, c.agent, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
+             c.written_by, c.agent, c.imported, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
              (select p.type from pages p where p.id = c.page_id) is not distinct from 'overview' as overview,
              ${current(s, 'c')} as is_current,
              ${sharedAsCopy(s, 'c')} as shared_as_copy
@@ -808,8 +851,8 @@ export async function sourcesIn(
  * it, by page, only those the viewer can see and that are still current.
  */
 export async function sourceView(s: Session, sourceId: string) {
-  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date })[]>`
-    select ${sourceColumns(s)}, written_by, agent, created_at from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
+  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null })[]>`
+    select ${sourceColumns(s)}, written_by, agent, created_at, imported from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
   `;
   if (!source) return undefined;
   // Your original of something you shared as a copy shows as the copy, as it does on its page.
@@ -835,7 +878,7 @@ export async function sourceView(s: Session, sourceId: string) {
 export async function historyOf(s: Session, itemIds: string[]): Promise<(Revision & { itemId: string })[]> {
   if (itemIds.length === 0) return [];
   return s.tx<(Revision & { itemId: string })[]>`
-    select content_id as item_id, body, written_by, agent, written_at, replaced_at
+    select content_id as item_id, body, written_by, agent, written_at, replaced_at, imported
     from revisions
     where content_id in ${s.tx(itemIds)} and ${visible(s, 'revisions')}
     order by replaced_at
@@ -925,9 +968,9 @@ export async function search(
 }
 
 export function itemColumns(s: Session, table?: string) {
-  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at`;
+  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at, imported`;
   const t = s.tx(table);
-  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at`;
+  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at, ${t}.imported`;
 }
 
 function sourceColumns(s: Session) {
@@ -963,7 +1006,7 @@ async function changeableItem(s: Session, itemId: string): Promise<Item | undefi
   if (replacement) {
     throw new AccessDenied(`That item is no longer current. It was replaced by item:${replacement.id}.`);
   }
-  if (s.principal.agent !== undefined && item.writtenBy && item.agent === null) {
+  if (s.principal.agent !== undefined && byPerson(item)) {
     throw new AccessDenied(
       'Agents never change what people wrote. Save what you found as a new item on the same page, and point out the difference to the user.',
     );

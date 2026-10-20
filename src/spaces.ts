@@ -161,7 +161,7 @@ function placeName(parent: Space | undefined, personal: Space | undefined): stri
  * A name as Homing keeps it: one line, single spaces, composed the usual way, and without
  * characters nobody can see, which could hide or reverse what the name says to others.
  */
-function cleanName(name: string): string {
+export function cleanName(name: string): string {
   const clean = name.normalize('NFC').replace(/\s+/g, ' ').trim();
   if (/[\p{Cc}\p{Cf}]/u.test(clean.replaceAll('\u200d', ''))) throw new SpaceRefused('name', 'Leave out invisible characters.');
   if (!clean) throw new SpaceRefused('name', 'Give the space a name.');

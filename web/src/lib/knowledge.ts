@@ -32,8 +32,12 @@ export interface PagesData {
   archived?: number;
 }
 
-/** Who wrote something: you, someone by name, or someone the reader no longer shares a space with. Null when a space's own routine did. */
-export type Author = { name: string | null; you: boolean } | null;
+/**
+ * Who wrote something: you, someone by name, or someone the reader no longer shares a space with.
+ * Imported, they wrote it before it came in an import, and are nobody here. Null when a space's own
+ * routine did.
+ */
+export type Author = { name: string | null; you: boolean; imported?: boolean } | null;
 
 export interface ItemData {
   id: string;
@@ -111,7 +115,14 @@ export function plain(markdown: string): string {
 /** "Cara Lund", "You", or "Someone" when the reader no longer shares a space with them. */
 export function nameOf(author: Author): string {
   if (!author) return 'Homing';
+  if (author.imported) return `${author.name ?? 'Someone'} (imported)`;
   return author.you ? 'You' : (author.name ?? 'Someone');
+}
+
+/** Who something was for, or by, in the middle of a sentence: "you", "Cara Lund", "Cara Lund (imported)", or nobody named. */
+export function nameIn(author: Author): string | null {
+  if (author?.you) return 'you';
+  return author?.name || author?.imported ? nameOf(author) : null;
 }
 
 /** A source in a space's list of sources. */

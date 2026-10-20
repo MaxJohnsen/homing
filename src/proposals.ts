@@ -560,7 +560,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     // Once shared, the item may have moved to the shared side: it still shows what was shared.
     const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
     const [title] = item ? await s.tx<{ body: string }[]>`select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and ${visible(s, 'content')} order by private_to is null limit 1` : [];
-    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, copy: false, sharedText: null, current: false, sharedAs: null };
+    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, hiddenElsewhere: 0, copy: false, sharedText: null, current: false, sharedAs: null };
   }
   const task: Task | undefined = proposal.taskId ? await readTask(s, proposal.taskId) : undefined;
   const audienceOf = proposal.action === 'publish' || proposal.action === 'share task' ? await spaceView(s, proposal.spaceId) : undefined;
@@ -1136,6 +1136,7 @@ export function publicationData(publication: Publication, audience: { people: nu
     pageId: publication.item.pageId,
     hidden: publication.hidden.map((source) => (source.space ? { space: source.space, reference: null } : { space: null, reference: source.reference ?? source.excerpt.slice(0, 80) })),
     hiddenUnseen: publication.hiddenUnseen,
+    hiddenElsewhere: publication.hiddenElsewhere,
     copy: publication.copy,
     sharesTitle: publication.sharesTitle,
     sharedText: publication.sharedText,

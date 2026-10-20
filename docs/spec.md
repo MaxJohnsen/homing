@@ -26,7 +26,7 @@ The guarantees hold for everything that goes through Homing. Whoever can reach t
 Two release tests make guarantees 2 and 10 concrete:
 
 - **Leak test.** Two people in different client spaces, each with shared and private knowledge, try to read and write across clients through every storage path. The test runs through Homing and directly against the database with Homing's filters bypassed, so the database is shown to refuse on its own.
-- **Round trip.** A space is exported and re-imported, and must come back intact.
+- **Round trip.** A space is exported, imported and exported again, and the two exports must say the same: its knowledge, who sees what, how things hang together, sources, history, rules, skills and tasks, and who did what. Only IDs and what records the import may differ.
 
 ## 1. Spaces and access
 
@@ -175,6 +175,13 @@ Upkeep runs when new evidence arrives, and in a periodic tidy pass per space tha
 
 - The bundle is readable as it is: the knowledge as Markdown in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format), and the rules and skills beside it as AGENTS.md and SKILL.md folders.
 - Everything keeps its stable ID and who did it: a person by name, told apart from others with the same name, an agent acting for them, or a space's routine. A manifest holds what importing it again needs, and importing it into a new space brings the space back intact (guarantee 10).
+
+**Import.** A person imports an export in the web app, as a new space of their own with the spaces that came with it below it, and only they have it until they add people the usual way. Before anything is created, they see what it brings, its rules word for word and its skills by name, because their assistants will follow them. Then all of it is imported, or none of it.
+
+- What the export shared goes on the new space's shared side, and what was private becomes the person's own. Nothing goes into their personal tree.
+- Everything gets a new ID, and every reference follows, in text too. Each thing records that it was imported, by whom, when, from where, and its ID there.
+- Who did what comes along as imported provenance, by name, and nobody here is credited with it: an imported "Anna" is never a local Anna, nor the person importing. What a person wrote stays protected from agents, as it was. What rested on sources the export didn't hold never counts as resting only on what everyone can see.
+- An export is untrusted. One that's damaged, changed, from a newer version of the format or too big is refused with nothing created.
 
 ## 4. People and identity
 

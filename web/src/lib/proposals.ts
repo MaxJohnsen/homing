@@ -119,6 +119,8 @@ export interface PublicationData {
   hidden: { space: string | null; reference: string | null }[];
   /** Sources it cites that you can no longer open. */
   hiddenUnseen: number;
+  /** Sources it rested on that didn't come with the export it was imported from. */
+  hiddenElsewhere?: number;
   /** Shared as a copy, citing only what everyone there sees, rather than moving. */
   copy: boolean;
   /** The page has no shared title yet, so yours is shared with it. */

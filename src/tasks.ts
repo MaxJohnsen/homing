@@ -3,7 +3,7 @@
 // person's private tasks with `remember`; people also write and share them in the app.
 
 import { personOf, type Session } from './db.ts';
-import { checkSpace, sideOf } from './knowledge.ts';
+import { checkSpace, sideOf, type Imported, type ImportedPerson } from './knowledge.ts';
 import { spaceView } from './spaces.ts';
 
 export interface Task {
@@ -22,10 +22,12 @@ export interface Task {
   agent: string | null;
   createdAt: Date;
   updatedAt: Date;
+  /** Where it came from, if it was imported, with who wrote it, had it and finished it there, by name. */
+  imported: (Imported & { assignee?: ImportedPerson; doneBy?: ImportedPerson }) | null;
 }
 
 const columns = (s: Session) =>
-  s.tx`id, space_id, private_to, title, description, to_char(due, 'YYYY-MM-DD') as due, assignee, done_at, done_by, written_by, agent, created_at, updated_at`;
+  s.tx`id, space_id, private_to, title, description, to_char(due, 'YYYY-MM-DD') as due, assignee, done_at, done_by, written_by, agent, created_at, updated_at, imported`;
 
 /** A day as YYYY-MM-DD that is a real date, or a refusal in words. */
 export function dayOf(value: string): string {

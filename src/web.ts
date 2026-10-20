@@ -334,6 +334,19 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body));
 }
 
+/** The request's body as it came, such as a file, or undefined when it's larger than the limit. */
+export async function readUpload(req: IncomingMessage, limit: number): Promise<Buffer | undefined> {
+  if (Number(req.headers['content-length'] ?? 0) > limit) return undefined;
+  let size = 0;
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length;
+    if (size > limit) return undefined;
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
 export async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   let size = 0;
   const chunks: Buffer[] = [];

@@ -348,6 +348,36 @@ describe('straight against the database', () => {
         }), refused);
       }
 
+      // Nor anything through an import, which writes only into spaces it makes: not a page in the other
+      // client's space, nor an item on one of their pages, nor an item replacing one of theirs.
+      const imported = (lists: Record<string, unknown[]>) => {
+        const space = crypto.randomUUID();
+        const page = crypto.randomUUID();
+        return {
+          from: { instance: 'https://elsewhere.test', exportedBy: 'Mallory', exportedAt: new Date().toISOString(), space: crypto.randomUUID() },
+          spaces: [{ id: space, name: 'Imported', parent: null, closed: false, archivedAt: null, imported: {} }],
+          pages: [{ id: page, space, type: null, createdAt: new Date().toISOString(), archivedAt: null, imported: {} }],
+          items: [] as unknown[], citations: [] as unknown[], sources: [] as unknown[], revisions: [] as unknown[], gathered: [] as unknown[], pageArchives: [] as unknown[], tasks: [] as unknown[],
+          ...lists,
+          own: { space, page },
+        };
+      };
+      const item = (fields: Record<string, unknown>) => ({ id: crypto.randomUUID(), kind: 'text', path: null, body: 'Hello', private: false, supersedes: null, reachesDown: false, publishedFrom: null, publishedAt: null, createdAt: new Date().toISOString(), writtenAt: new Date().toISOString(), imported: {}, ...fields });
+      for (const bundle of [
+        imported({ pages: [{ id: crypto.randomUUID(), space: target.space, type: null, createdAt: new Date().toISOString(), archivedAt: null, imported: {} }] }),
+        imported({ items: [item({ page: page })] }),
+        imported({ items: [item({ page: page, private: true })] }),
+        imported({ sources: [{ id: crypto.randomUUID(), space: target.space, private: false, reference: null, excerpt: 'Hello', createdAt: new Date().toISOString(), imported: {} }] }),
+        imported({ tasks: [{ id: crypto.randomUUID(), space: target.space, private: false, title: 'Hello', description: null, due: null, doneAt: null, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), imported: {} }] }),
+        imported({ citations: [{ item: intruder.items[1].id, source: target.source.id }] }),
+      ]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), refused);
+      }
+      const replacing = imported({});
+      replacing.items = [item({ page: replacing.own.page, supersedes: target.items[0].id })];
+      // The store refuses a replacement across pages before the import's own check gets to it.
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(replacing as never)})`), (error: { code?: string }) => ['42501', '23503'].includes(error.code ?? ''));
+
       // Nor a rule on the other client's guidance page, editing directly.
       await assert.rejects(as(me, (s) => s.tx`select guidance_page(${target.space})`), refused);
       const [rule] = target.rules;

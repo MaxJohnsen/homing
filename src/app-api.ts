@@ -2,26 +2,28 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
+import { ImportRefused, importLimits, importSpace, previewOf, readExport } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
-import { archivePage, createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
+import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { addTask, changeTask, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView, type Space } from './spaces.ts';
-import { json, readJson, type App } from './web.ts';
+import { json, readJson, readUpload, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-/** Who is exporting a space right now, until it has been sent. */
+/** Who is exporting a space right now, until it has been sent, and who is importing one. */
 const exporting = new Set<string>();
+const importing = new Set<string>();
 /** How long an export may take to make and send before it's given up on. */
 const exportTimeout = 5 * 60_000;
 const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
 /**
- * The endpoints of the app's own screens: spaces and their exports, what's waiting, knowledge, search, guidance, and looking after Homing. Each answers only
+ * The endpoints of the app's own screens: spaces, exporting and importing them, what's waiting, knowledge, search, guidance, and looking after Homing. Each answers only
  * with what the signed-in person can open, and the database checks the same underneath. Returns
  * whether it answered.
  */
@@ -137,9 +139,14 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           description: task.description,
           due: task.due,
           shared: task.privateTo === null,
-          // Someone the reader can't see stays unnamed, and so does their id.
-          assignee: task.assignee && { id: found.names.has(task.assignee) ? task.assignee : null, name: found.names.get(task.assignee) ?? null, you: task.assignee === person },
-          done: task.doneAt && { at: task.doneAt, by: task.doneBy ? { name: found.names.get(task.doneBy) ?? null, you: task.doneBy === person } : null },
+          // Someone the reader can't see stays unnamed, and so does their id. Someone named in an import is nobody here.
+          assignee: task.assignee
+            ? { id: found.names.has(task.assignee) ? task.assignee : null, name: found.names.get(task.assignee) ?? null, you: task.assignee === person }
+            : task.imported?.assignee ? { id: null, name: task.imported.assignee.name, you: false, imported: true } : null,
+          done: task.doneAt && {
+            at: task.doneAt,
+            by: task.doneBy ? { name: found.names.get(task.doneBy) ?? null, you: task.doneBy === person } : task.imported?.doneBy ? { name: task.imported.doneBy.name, you: false, imported: true } : null,
+          },
           agent: task.agent,
         });
         json(res, 200, { open: found.open.map(shape), done: found.done.map(shape) });
@@ -220,6 +227,28 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           'cache-control': 'no-store',
         });
         res.end(exported.zip);
+        break;
+      }
+
+      case 'import preview':
+      case 'import': {
+        // One at a time for each person, and only a few at once, like exports.
+        if (importing.has(person) || importing.size >= 2) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
+        importing.add(person);
+        try {
+          // An export from Homing, as the zip itself, which is read here and never kept.
+          const zip = await readUpload(req, importLimits.upload);
+          if (!zip) {
+            res.setHeader('connection', 'close');
+            return answer(res, 413, { message: `That file is larger than Homing imports at once, ${importLimits.upload / 1024 / 1024} MB.` });
+          }
+          const manifest = readExport(zip);
+          if (route.name === 'import preview') return answer(res, 200, previewOf(manifest));
+          const id = await write((s) => importSpace(s, manifest, new URL(req.url ?? '', app.url).searchParams.get('name') ?? ''));
+          json(res, 200, { id });
+        } finally {
+          importing.delete(person);
+        }
         break;
       }
 
@@ -334,8 +363,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         });
         if (!found) return answer(res, 404, noPage);
         const { page, space, history, names, links, gathers } = found;
-        // Who wrote something: a person by name, or nobody named when they're no longer someone the reader shares a space with.
-        const by = (writtenBy: string | null) => (writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person });
+        const by = (writtenBy: string | null) => authorOf(names, person, writtenBy, null, null).by;
         json(res, 200, {
           id: page.id,
           title: page.title,
@@ -361,18 +389,17 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             id: item.id,
             text: item.body,
             shared: item.privateTo === null,
-            by: by(item.writtenBy),
-            agent: item.agent,
+            ...authorOf(names, person, item.writtenBy, item.agent, item.imported),
             writtenAt: item.updatedAt,
-            // Who shared it from their own private side, and when.
-            sharedBy: item.publishedBy && item.privateTo === null ? by(item.publishedBy) : null,
+            // Who shared it from their own private side, and when, imported or not.
+            sharedBy: item.privateTo !== null ? null : item.publishedBy ? by(item.publishedBy) : item.publishedAt && item.imported?.publishedBy ? { name: item.imported.publishedBy.name, you: false, imported: true } : null,
             sharedAt: item.privateTo === null ? item.publishedAt : null,
             sources: item.sources,
             // What it replaced, and so what others still see when it's your private update to something shared.
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
             earlier: history
               .filter((entry) => entry.itemId === item.id)
-              .map((entry) => ({ text: entry.body, by: by(entry.writtenBy), agent: entry.agent, writtenAt: entry.writtenAt, until: entry.replacedAt })),
+              .map((entry) => ({ text: entry.body, ...authorOf(names, person, entry.writtenBy, entry.agent, entry.imported), writtenAt: entry.writtenAt, until: entry.replacedAt })),
           })),
         });
         break;
@@ -415,8 +442,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           excerpt: source.excerpt,
           shared: source.privateTo === null,
           keptAt: source.createdAt,
-          by: source.writtenBy === null ? null : { name: names.get(source.writtenBy) ?? null, you: source.writtenBy === person },
-          agent: source.agent,
+          ...authorOf(names, person, source.writtenBy, source.agent, source.imported),
           space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
           pages: [...pages.values()],
         });
@@ -506,8 +532,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             kind: change.kind,
             newPage: change.newPage,
             overview: change.overview,
-            by: change.writtenBy === null ? null : { name: names.get(change.writtenBy) ?? null, you: change.writtenBy === person },
-            agent: change.agent,
+            ...authorOf(names, person, change.writtenBy, change.agent, change.imported),
             at: change.at,
             onlyYou: change.onlyYou,
             pageArchived: change.pageArchived,
@@ -540,8 +565,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             id: item.id,
             text: item.body,
             shared: item.privateTo === null,
-            by: item.writtenBy === null ? null : { name: names.get(item.writtenBy) ?? null, you: item.writtenBy === person },
-            agent: item.agent,
+            ...authorOf(names, person, item.writtenBy, item.agent, item.imported),
             writtenAt: item.updatedAt,
             // Your own overview that explicitly replaces the shared one, which the others still see.
             replacesShared: item.privateTo !== null && item.replaced?.shared === true ? item.replaced.body : null,
@@ -801,6 +825,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     if (error instanceof SpaceRefused) return answer(res, error.status, { field: error.field, message: error.message });
     if (error instanceof IncludeRefused) return answer(res, error.status, { message: error.message });
     if (error instanceof TaskRefused) return answer(res, 400, { field: error.field, message: error.message });
+    if (error instanceof ImportRefused) return answer(res, 400, { field: error.field, message: error.message });
     if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
       return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });
     }
@@ -856,13 +881,25 @@ function clamp(offset: number): number {
   return Number.isFinite(offset) ? Math.min(Math.max(0, Math.floor(offset)), 1_000_000) : 0;
 }
 
+/**
+ * Who wrote something, as the app shows it: you, someone by name, or nobody named when they're no
+ * longer someone the reader shares a space with, and the agent that wrote it for them. What still
+ * says what it said when it was imported shows who wrote it before, credited to nobody here.
+ * Nobody at all when a space's routine wrote it.
+ */
+function authorOf(names: Map<string, string>, person: string, writtenBy: string | null, agent: string | null, imported: Imported | null) {
+  const before = importedAuthor(imported);
+  if (before) return { by: before.person ? { name: before.name, you: false, imported: true } : null, agent: before.agent };
+  return { by: writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person }, agent };
+}
+
 function answer(res: ServerResponse, status: number, body: unknown): true {
   json(res, status, body);
   return true;
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include'; id: string };
 
@@ -897,6 +934,8 @@ function routeOf(method: string, path: string): Route | undefined {
   }
   if (method === 'POST') {
     if (path === '/api/spaces') return { name: 'create space' };
+    if (path === '/api/import') return { name: 'import' };
+    if (path === '/api/import/preview') return { name: 'import preview' };
     const member = new RegExp(`^/api/spaces/${uuid}/members/${uuid}$`, 'i').exec(path);
     if (member) return { name: 'change member', id: member[1].toLowerCase(), person: member[2].toLowerCase() };
     for (const [name, pattern] of [

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { cn } from 'cn';
 import { OnlyYou } from '@/components/only-you';
 import { ago, dateOf, focusRing, ScreenHeader } from '@/components/screen';
-import { plain, type ChangeData } from '@/lib/knowledge';
+import { nameIn, plain, type ChangeData } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import { placeName } from '@/lib/search';
 
@@ -15,7 +15,7 @@ function dayOf(at: string, now = new Date()): string {
 
 /** "by Cara Lund", "by you", "by Claude, for you", "by Cara Lund through Claude". */
 function byWhom(change: ChangeData): string {
-  const person = change.by?.you ? 'you' : (change.by?.name ?? null);
+  const person = nameIn(change.by);
   if (change.agent) return person === 'you' ? `by ${change.agent}, for you` : person ? `by ${person} through ${change.agent}` : `by ${change.agent}`;
   return person ? `by ${person}` : 'by someone no longer in the space';
 }

@@ -27,6 +27,7 @@ import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { NewSpace, type CreateSpace } from '@/screens/new-space';
 import { Tasks } from '@/screens/tasks';
+import { ImportSpace, type ImportActions, type ImportPreviewData } from '@/screens/import-space';
 import { Members, Space, SpaceSettings, type MemberActions, type ShareSpaceActions } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
@@ -98,6 +99,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/root': { label: 'Members of a space at the top, as its admin', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="members"><Members space={sampleSpace.root} actions={sampleMemberActions} /></Space></InApp> },
   '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="rules"><Rules space={sampleSpace.kitchen} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/new': { label: 'Starting a space', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
+  '/spaces/import': { label: 'Importing a space', render: () => <InApp route={{ name: 'import space' }}><ImportSpace actions={sampleImport} onImported={() => {}} onCancel={() => {}} /></InApp> },
+  '/spaces/import/preview': { label: 'Importing a space, what it brings', render: () => <InApp route={{ name: 'import space' }}><ImportSpace actions={sampleImport} onImported={() => {}} onCancel={() => {}} shown={sampleImportPreview} /></InApp> },
   '/spaces/new/in': { label: 'Starting a space in Acme', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} start="acme" create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/settings/personal': { label: 'Sharing a space from your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="settings"><SpaceSettings space={sampleSpace.kitchen} rename={async () => 'Samples don’t save anything.'} share={sampleShareSpace} /></Space></InApp> },
   '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} archive={async () => 'Samples don’t save anything.'} /></Space></InApp> },
@@ -299,3 +302,28 @@ function SampleSearch() {
   const [kind, setKind] = useState<'all' | 'pages' | 'sources' | 'rules' | 'skills' | 'spaces'>('all');
   return <Search data={sampleSearch} query="launch" kind={kind} from={0} onKind={setKind} onFrom={() => {}} />;
 }
+
+const sampleImportPreview: ImportPreviewData = {
+  name: 'Northwind',
+  from: { instance: 'https://homing.acme.example', exportedBy: 'Cara Lund', exportedAt: '2026-10-18T14:00:00Z' },
+  spaces: [
+    { name: 'Northwind', depth: 0, closed: false, archived: false, pages: 214, sources: 1_380, tasks: 12 },
+    { name: 'Website', depth: 1, closed: false, archived: false, pages: 38, sources: 97, tasks: 4 },
+    { name: 'Contracts', depth: 1, closed: true, archived: false, pages: 9, sources: 31, tasks: 0 },
+    { name: 'Rebrand 2025', depth: 1, closed: false, archived: true, pages: 22, sources: 64, tasks: 0 },
+  ],
+  shared: 1_906,
+  private: 41,
+  rules: [
+    { space: 'Northwind', kind: 'requirement', text: 'Write dates as YYYY-MM-DD.', onlyHere: false, private: false },
+    { space: 'Northwind', kind: 'preference', text: 'Status reports go to Gunnar on Fridays, in Norwegian.', onlyHere: false, private: false },
+    { space: 'Contracts', kind: 'requirement', text: 'Never quote prices before legal has looked at them.', onlyHere: true, private: false },
+    { space: 'Northwind', kind: 'preference', text: 'Keep my notes short.', onlyHere: false, private: true },
+  ],
+  skills: [{ space: 'Northwind', name: 'status-report', private: false }],
+};
+
+const sampleImport: ImportActions = {
+  preview: async () => ({ preview: sampleImportPreview }),
+  import: async () => ({ problem: 'Samples don’t save anything.' }),
+};

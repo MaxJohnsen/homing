@@ -26,8 +26,11 @@ import {
   updateItem,
   writeItem,
   oneLineTitle,
+  byPerson,
+  importedAuthor,
   type Hit,
   type Item,
+  type Imported,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
@@ -740,17 +743,22 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     const item = await readItem(s, id);
     if (!item) throw missing;
     const names = await peopleNames(s, [item.writtenBy, ...item.history.map((revision) => revision.writtenBy)]);
-    const author = (writtenBy: string | null, agent: string | null) =>
-      [writtenBy ? (names.get(writtenBy) ?? 'someone') : "the space's routine", agent && `through ${agent}`]
-        .filter(Boolean)
-        .join(' ');
+    // Who wrote it before it was imported is nobody here, so they're named as imported.
+    const author = (writtenBy: string | null, agent: string | null, imported: Imported | null) => {
+      const before = importedAuthor(imported);
+      const who = before
+        ? before.person ? `${before.name ?? 'someone'} (imported)` : "a routine, before it was imported"
+        : writtenBy ? (names.get(writtenBy) ?? 'someone') : "the space's routine";
+      const through = before ? before.agent : agent;
+      return [who, through && `through ${through}`].filter(Boolean).join(' ');
+    };
     const rule = item.kind === 'requirement' || item.kind === 'preference';
     const what = rule ? `A ${item.kind}, ` : item.path ? `The skill file ${item.path}, ` : '';
     return [
       item.body,
       '',
       `${what}${ref('item', item.id)} on ${ref('page', item.pageId)}, ${side(item.privateTo)}. ` +
-        `Written by ${author(item.writtenBy, item.agent)} on ${day(item.updatedAt)}.`,
+        `Written by ${author(item.writtenBy, item.agent, item.imported)} on ${day(item.updatedAt)}.`,
       ...(item.replacedBy
         ? [
             item.replacedBy.shared || item.privateTo
@@ -780,7 +788,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ? [
             '\n## Earlier versions',
             ...item.history.map(
-              (revision) => `- ${quote(revision.body)}, by ${author(revision.writtenBy, revision.agent)}, until ${day(revision.replacedAt)}`,
+              (revision) => `- ${quote(revision.body)}, by ${author(revision.writtenBy, revision.agent, revision.imported)}, until ${day(revision.replacedAt)}`,
             ),
           ]
         : []),
@@ -1122,8 +1130,8 @@ async function rememberTask(
       const task = await readTask(s, taskId);
       if (!task || task.spaceId !== spaceId) throw new Refused('There is no task with that reference in this space that you can see.');
       if (!ownTask(s, task)) throw new Refused("That task is the space's: people change shared tasks in Homing. Nothing changed.");
-      if ((input.title !== undefined || input.description !== undefined) && task.agent === null && task.writtenBy !== null) {
-        throw new Refused('The user wrote this task, so its words stay theirs. Nothing changed. You can still mark it done or change its due date.');
+      if ((input.title !== undefined || input.description !== undefined) && byPerson(task)) {
+        throw new Refused((task.writtenBy ? 'The user wrote this task' : 'A person wrote this task before it was imported') + ', so its words stay theirs. Nothing changed. You can still mark it done or change its due date.');
       }
       const changed = (await changeTask(s, taskId, { title: input.title, description: input.description, due: input.due, done: input.done }))!;
       return `${changed.doneAt ? 'Done' : 'Open'}: ${oneLine(changed.title)} (${ref('task', changed.id)}${changed.due ? `, due ${changed.due}` : ''}). Only the user sees it.`;
