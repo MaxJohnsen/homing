@@ -5,7 +5,7 @@ import { MoreHorizontal } from 'lucide-react';
 import { ProposedChange } from '@/components/proposed-change';
 import { RadioCards } from '@/components/radio-cards';
 import { firstChoice, shareButton, shareOf, ShareSpaceFields, type ConversionData, type ShareChoice } from '@/components/share-space-fields';
-import { Button, buttonVariants } from '@/components/ui/button';
+import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -224,6 +224,31 @@ export function SpaceSettings({ space, rename, share, archive }: {
  */
 function Export({ space }: { space: SpaceData }) {
   const name = space.personal ? 'your personal space' : space.name;
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  // Fetched first, so a big space says it's on its way, and a refusal says why instead of downloading it.
+  const download = async () => {
+    setBusy(true);
+    setProblem(undefined);
+    try {
+      const response = await fetch(`/api/spaces/${space.id}/export`);
+      if (!response.ok) {
+        setProblem(((await response.json().catch(() => ({}))) as { message?: string }).message ?? 'Something went wrong. Try again.');
+        return;
+      }
+      const file = URL.createObjectURL(await response.blob());
+      const link = Object.assign(document.createElement('a'), {
+        href: file,
+        download: /filename="([^"]+)"/.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? 'export.zip',
+      });
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(file), 60_000);
+    } catch {
+      setProblem('Homing can’t be reached right now. Check your connection and try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <Section
       title="Export"
@@ -233,10 +258,10 @@ function Export({ space }: { space: SpaceData }) {
         : `A zip of everything you see in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it you can open. What’s only yours comes along, marked as yours. Nobody else’s does.`}
     >
       <div>
-        <a href={`/api/spaces/${space.id}/export`} download className={cn(buttonVariants({ variant: 'outline', size: 'lg' }), 'h-11 text-base sm:px-5')}>
-          Download {name}
-        </a>
+        <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={download}>Download {name}</Button>
       </div>
+      {busy && <p role="status" className="text-sm text-muted-foreground">Putting the export together. A big space takes a little while.</p>}
+      {problem && <FieldError>{problem}</FieldError>}
     </Section>
   );
 }

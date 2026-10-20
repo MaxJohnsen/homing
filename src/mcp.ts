@@ -99,6 +99,10 @@ const renameSpaceInput = z.strictObject({
   name: spaceName().describe('Its new name'),
 }).describe('For space.rename');
 
+const exportInput = z.strictObject({
+  space: text().describe('The space to export, such as space:…'),
+}).describe('For space.export');
+
 const membersInput = z.strictObject({
   space: text().describe('The space, such as space:…'),
   person: text().max(254).describe("Someone the user shares a space with, by their name, or anyone else by their email address"),
@@ -168,6 +172,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
     space: (id) => new URL(`/spaces/${id}`, url).toString(),
     settings: (id) => new URL(`/spaces/${id}/settings`, url).toString(),
     page: (id) => new URL(`/pages/${id}`, url).toString(),
+    export: (id) => new URL(`/api/spaces/${id}/export`, url).toString(),
   };
 
   server.registerTool(
@@ -298,11 +303,11 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'proposal.withdraw withdraws a proposal or request of the user\'s that still waits, when they no longer want it; it never decides it. ' +
         'Whether a proposal still waits, and how it ended, comes from Homing: `read` it rather than going by what you said before. ' +
         "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once. " +
-        "There's no action for exporting a space: the user downloads it from the space's Settings in Homing.",
+        'space.export gives the link where the user downloads a space as they see it, with the spaces in it they can open, when they ask for an export or a copy.',
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'proposal.withdraw']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'space.export', 'proposal.withdraw']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, withdrawInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, exportInput, withdrawInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -330,6 +335,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             return archivePageFor(s, links, inputFor(action, pageArchiveInput, input), card);
           case 'space.share':
             return proposeSpaceSharing(s, links, inputFor(action, shareSpaceInput, input), card);
+          case 'space.export':
+            return exportLink(s, links, inputFor(action, exportInput, input));
           case 'proposal.withdraw':
             return withdrawFor(s, links, inputFor(action, withdrawInput, input), card);
         }
@@ -439,6 +446,7 @@ interface Links {
   space(id: string): string;
   settings(id: string): string;
   page(id: string): string;
+  export(id: string): string;
 }
 
 const onlyPeople = 'Only people change guidance. To add, change or remove a rule, propose it with `act`, and the user approves it in Homing.';
@@ -1256,6 +1264,19 @@ async function proposeSpaceSharing(s: Session, links: Links, input: z.infer<type
 }
 
 /** Renames a space the user looks after. */
+/**
+ * Where the user downloads a space's export (spec §3): everything they see in it, which only they
+ * can download, signed in to Homing. The assistant never gets the export itself.
+ */
+async function exportLink(s: Session, links: Links, input: z.infer<typeof exportInput>): Promise<string> {
+  const spaceId = parseRef(input.space, 'space');
+  const space = (await listSpaces(s)).find((candidate) => candidate.id === spaceId);
+  if (!space) throw new Refused('There is no space with that reference that you can see.');
+  return `The user downloads ${space.name} as a zip from its Settings in Homing, signed in: ${links.settings(space.id)}. ` +
+    `Or straight away, from a browser where they're signed in: ${links.export(space.id)}. ` +
+    'It holds everything they see there and in the spaces in it they can open, with what only they see marked as theirs.';
+}
+
 async function renameSpaceFor(s: Session, links: Links, input: z.infer<typeof renameSpaceInput>, card: boolean): Promise<string | Answer> {
   const spaceId = parseRef(input.space, 'space');
   const before = (await listSpaces(s)).find((space) => space.id === spaceId);

@@ -13,6 +13,8 @@ import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, renameSp
 import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
+/** Who is exporting a space right now. */
+const exporting = new Set<string>();
 const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
@@ -197,8 +199,11 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'export': {
+        // One at a time for each person, and only a few at once, since a big space takes a lot of memory.
+        if (exporting.has(person) || exporting.size >= 2) return answer(res, 429, { message: 'Homing is making another export right now. Try again in a moment.' });
+        exporting.add(person);
         // Everything the person sees in the space, read in one snapshot as them.
-        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url), { snapshot: true });
+        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url), { snapshot: true }).finally(() => exporting.delete(person));
         if (!exported) return answer(res, 404, noSpace);
         res.writeHead(200, {
           'content-type': 'application/zip',

@@ -127,10 +127,12 @@ export async function createPage(
 ): Promise<string> {
   const privateTo = sideOf(s, input.shared);
   await checkSpace(s, input.spaceId, input.shared);
+  // A title and a type are one line each, however they were written.
+  const line = (text: string) => text.replace(/\s+/g, ' ').trim();
   // A page is only visible through its items, so it can't be returned until its title exists.
   const id = randomUUID();
-  await s.tx`insert into pages (id, space_id, type) values (${id}::uuid, ${input.spaceId}::uuid, ${input.type ?? null})`;
-  await insertItem(s, { pageId: id, spaceId: input.spaceId, privateTo, kind: 'title', body: input.title });
+  await s.tx`insert into pages (id, space_id, type) values (${id}::uuid, ${input.spaceId}::uuid, ${input.type === undefined ? null : line(input.type) || null})`;
+  await insertItem(s, { pageId: id, spaceId: input.spaceId, privateTo, kind: 'title', body: line(input.title) || 'Untitled' });
   return id;
 }
 

@@ -4,6 +4,7 @@
 // holds the rules and skills as AGENTS.md files and SKILL.md folders. Everything is read in the
 // person's own session, so row-level security keeps anyone else's private side out underneath.
 
+import { setImmediate } from 'node:timers/promises';
 import { stringify } from 'yaml';
 import { personOf, type Session } from './db.ts';
 import { itemColumns, visible, type Item } from './knowledge.ts';
@@ -11,10 +12,19 @@ import { frontmatter } from './skills.ts';
 import { listSpaces, peopleNames, type Space } from './spaces.ts';
 import { zip } from './zip.ts';
 
-/** Who wrote something: a person by name, and the agent that wrote it for them, if one did. */
-export interface Author {
-  /** Null for someone the exporter doesn't share a space with any more, or a space's routine. */
+/** Someone the export names, by a key that holds only within it: never an account's id or email. */
+export interface Person {
+  key: string;
+  /** Null for someone the exporter doesn't share a space with any more. */
   name: string | null;
+}
+
+/** Who did something: a person, an agent for a person, or a space's own routine. */
+export interface Author {
+  by: 'person' | 'agent' | 'routine';
+  /** The person's key in the export's people, if a person did it or an agent did it for one. */
+  person: string | null;
+  /** The agent, when one did it. */
   agent: string | null;
 }
 
@@ -28,9 +38,10 @@ export interface Manifest {
   /** The Homing it came from. */
   instance: string;
   exportedAt: string;
-  exportedBy: { name: string };
+  exportedBy: { person: string; name: string };
   /** The space that was exported. The others are below it. */
   space: string;
+  people: Person[];
   spaces: {
     id: string;
     name: string;
@@ -39,16 +50,21 @@ export interface Manifest {
     closed: boolean;
     /** In the exporter's personal tree, so only they have it. */
     private: boolean;
+    /** Who created it, if Homing knows. */
+    creator: Author | null;
     archived: { at: string; by: string | null } | null;
     createdAt: string;
     /** Its folder in knowledge/ and guidance/, empty for the exported space. */
     folder: string;
   }[];
+  /** Every time the exporter archived or reopened one of the spaces. */
+  spaceArchives: { space: string; archived: boolean; author: Author; at: string }[];
   pages: {
     id: string;
     space: string;
     /** A free-text type, or guidance, skill or overview. */
     type: string | null;
+    /** When the exporter could first see something on it. */
     createdAt: string;
     archived: { at: string; by: string | null } | null;
     /** Where it reads in the bundle. */
@@ -73,7 +89,10 @@ export interface Manifest {
     /** For a shared copy of the exporter's own private item: that item. */
     publishedFrom: string | null;
     published: { by: string | null; at: string } | null;
+    /** The sources in the export it rests on. */
     sources: string[];
+    /** How many sources it also rests on that the exporter sees, kept in spaces outside the export. */
+    sourcesElsewhere: number;
   }[];
   revisions: { item: string; visibility: Visibility; body: string; author: Author; writtenAt: string; replacedAt: string }[];
   sources: { id: string; space: string; visibility: Visibility; reference: string | null; excerpt: string; author: Author; createdAt: string }[];
@@ -81,7 +100,7 @@ export interface Manifest {
   links: { item: string; from: string; to: string }[];
   /** Pages gathered into collections. */
   gathered: { collection: string; page: string; visibility: Visibility; author: Author; createdAt: string }[];
-  /** Every time a page was archived or reopened. */
+  /** Every time a page was archived or reopened, since the exporter could see it. */
   pageArchives: { page: string; archived: boolean; author: Author; at: string }[];
   tasks: {
     id: string;
@@ -90,7 +109,8 @@ export interface Manifest {
     title: string;
     description: string | null;
     due: string | null;
-    assignee: { name: string | null } | null;
+    /** Who it's for, by their key in people. */
+    assignee: string | null;
     done: { at: string; by: string | null } | null;
     author: Author;
     createdAt: string;
@@ -103,14 +123,19 @@ export interface Manifest {
  * when they can't open it. Read in one snapshot, so it holds together.
  */
 export async function exportSpace(s: Session, spaceId: string, instance: URL, now = new Date()): Promise<{ filename: string; zip: Buffer } | undefined> {
-  const manifest = await manifestOf(s, spaceId, instance, now);
-  if (!manifest) return undefined;
-  const files = Object.entries({ 'homing.json': `${JSON.stringify(manifest, null, 2)}\n`, ...readable(manifest) });
+  const found = await collect(s, spaceId, instance, now);
+  if (!found) return undefined;
+  const { manifest, layout } = found;
+  const files = Object.entries({ 'homing.json': `${JSON.stringify(manifest, null, 2)}\n`, ...(await readable(manifest, layout)) });
   return { filename: `${slug(manifest.spaces[0].name, 'space')}-${manifest.exportedAt.slice(0, 10)}.zip`, zip: await zip(files, now) };
 }
 
 /** Everything the person can see in the space and the spaces below it they can open. */
 export async function manifestOf(s: Session, spaceId: string, instance: URL, now = new Date()): Promise<Manifest | undefined> {
+  return (await collect(s, spaceId, instance, now))?.manifest;
+}
+
+async function collect(s: Session, spaceId: string, instance: URL, now: Date): Promise<{ manifest: Manifest; layout: Layout } | undefined> {
   const me = personOf(s.principal);
   if (!me) return undefined;
   const open = await listSpaces(s);
@@ -121,24 +146,38 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
   for (let i = 0; i < tree.length; i++) tree.push(...open.filter((space) => space.parentId === tree[i].id));
   const ids = tree.map((space) => space.id);
 
-  const spaceRows = await s.tx<{ id: string; archivedBy: string | null; createdAt: Date }[]>`
-    select id, archived_by, created_at from spaces where id in ${s.tx(ids)}
+  const spaceRows = await s.tx<{ id: string; archivedBy: string | null; createdAt: Date; createdBy: string | null; agent: string | null }[]>`
+    select id, archived_by, created_at, created_by, agent from spaces where id in ${s.tx(ids)}
   `;
-  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; archivedAt: Date | null; archivedBy: string | null }[]>`
-    select p.id, p.space_id, p.type, p.created_at, p.archived_at, p.archived_by from pages p
-    where p.space_id in ${s.tx(ids)} and exists (select from content c where c.page_id = p.id and ${visible(s, 'c')})
-    order by p.created_at, p.id
+  const spaceArchives = await s.tx<{ spaceId: string; archived: boolean; personId: string | null; agent: string | null; at: Date }[]>`
+    select a.space_id, a.archived, a.person_id, a.agent, a.at from space_archives a
+    where a.space_id in ${s.tx(ids)} and a.person_id = ${me}::uuid
+    order by a.at
+  `;
+  // A page's history starts when the person could first see something on it: something shared
+  // from someone's own side, when it was shared.
+  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; seen: Date; archivedAt: Date | null; archivedBy: string | null }[]>`
+    select p.id, p.space_id, p.type, p.archived_at, p.archived_by, seen.at as seen
+    from pages p
+    join lateral (
+      select min(case when c.private_to is null and c.published_at is not null then greatest(c.created_at, c.published_at) else c.created_at end) as at
+      from content c
+      where c.page_id = p.id and ${visible(s, 'c')}
+    ) seen on seen.at is not null
+    where p.space_id in ${s.tx(ids)}
+    order by seen.at, p.id
   `;
   const found = await s.tx<Item[]>`
     select ${itemColumns(s, 'c')} from content c
     where c.space_id in ${s.tx(ids)} and ${visible(s, 'c')}
     order by c.created_at, c.id
   `;
-  const citations = await s.tx<{ contentId: string; sourceId: string }[]>`
-    select ci.content_id, ci.source_id from citations ci
+  // The sources an item rests on that the person sees: in the export, or kept somewhere else.
+  const citations = await s.tx<{ contentId: string; sourceId: string; here: boolean }[]>`
+    select ci.content_id, ci.source_id, src.space_id in ${s.tx(ids)} as here from citations ci
     join content c on c.id = ci.content_id
     join sources src on src.id = ci.source_id
-    where c.space_id in ${s.tx(ids)} and ${visible(s, 'c')} and src.space_id in ${s.tx(ids)} and ${visible(s, 'src')}
+    where c.space_id in ${s.tx(ids)} and ${visible(s, 'c')} and ${visible(s, 'src')}
     order by src.created_at, src.id
   `;
   const revisions = await s.tx<{ contentId: string; privateTo: string | null; body: string; writtenBy: string | null; agent: string | null; writtenAt: Date; replacedAt: Date }[]>`
@@ -170,20 +209,24 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
     order by t.created_at, t.id
   `;
 
-  // Names only of people the person shares a space with, the way Homing shows them.
-  const names = await peopleNames(s, [
+  // Everyone named gets a key of their own, and a name only if the person shares a space with them, the way Homing shows them.
+  const named = [
     me,
-    ...spaceRows.map((row) => row.archivedBy),
+    ...spaceRows.flatMap((row) => [row.createdBy, row.archivedBy]),
+    ...spaceArchives.map((archive) => archive.personId),
     ...pages.map((page) => page.archivedBy),
     ...found.flatMap((item) => [item.writtenBy, item.publishedBy]),
     ...revisions.map((revision) => revision.writtenBy),
     ...sources.map((source) => source.writtenBy),
     ...archives.map((archive) => archive.personId),
     ...gathered.map((gathering) => gathering.addedBy),
-    ...tasks.flatMap((task) => [task.assignee, task.doneBy, task.writtenBy]),
-  ]);
-  const name = (id: string | null) => (id ? (names.get(id) ?? null) : null);
-  const author = (id: string | null, agent: string | null): Author => ({ name: name(id), agent });
+    ...tasks.flatMap((task) => [task.writtenBy, task.assignee, task.doneBy]),
+  ].filter((id) => id !== null);
+  const names = await peopleNames(s, named);
+  const keys = new Map<string, string>();
+  for (const id of named) if (!keys.has(id)) keys.set(id, `person-${keys.size + 1}`);
+  const key = (id: string | null) => (id ? keys.get(id)! : null);
+  const author = (id: string | null, agent: string | null): Author => ({ by: agent ? 'agent' : id ? 'person' : 'routine', person: key(id), agent });
   const side = (privateTo: string | null): Visibility => (privateTo ? 'private' : 'shared');
   const time = (date: Date) => date.toISOString();
 
@@ -192,9 +235,13 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
   const items = found.filter((item) => item.kind !== 'removed' || (item.supersedes && seen.has(item.supersedes)));
   const itemIds = new Set(items.map((item) => item.id));
   const pageIds = new Set(pages.map((page) => page.id));
+  const firstSeen = new Map(pages.map((page) => [page.id, page.seen]));
   // References in text to anything left out lose their id, so nothing outside the bundle shows through.
+  // Rules and skills' files stay word for word, as guidance comes out as it went in.
   const known = new Set([...ids, ...pageIds, ...itemIds, ...sources.map((source) => source.id), ...tasks.map((task) => task.id)]);
   const clean = (text: string) => scrub(text, known);
+  const verbatim = (kind: Item['kind']) => kind === 'file' || kind === 'requirement' || kind === 'preference';
+  const kindOf = new Map(items.map((item) => [item.id, item.kind]));
   const cited = groupBy(citations, (citation) => citation.contentId);
   const spaceOf = new Map(spaceRows.map((row) => [row.id, row]));
 
@@ -203,24 +250,30 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
     version: 1,
     instance: instance.origin,
     exportedAt: time(now),
-    exportedBy: { name: name(me) ?? '' },
+    exportedBy: { person: key(me)!, name: names.get(me) ?? '' },
     space: root.id,
-    spaces: tree.map((space) => ({
-      id: space.id,
-      name: space.name,
-      parent: space === root ? null : space.parentId,
-      closed: space.closed,
-      private: space.privateTo !== null,
-      archived: space.archivedAt ? { at: time(space.archivedAt), by: name(spaceOf.get(space.id)?.archivedBy ?? null) } : null,
-      createdAt: time(spaceOf.get(space.id)!.createdAt),
-      folder: '',
-    })),
+    people: [...keys].map(([id, person]) => ({ key: person, name: names.get(id) ?? null })),
+    spaces: tree.map((space) => {
+      const row = spaceOf.get(space.id)!;
+      return {
+        id: space.id,
+        name: space.name,
+        parent: space === root ? null : space.parentId,
+        closed: space.closed,
+        private: space.privateTo !== null,
+        creator: row.createdBy || row.agent ? author(row.createdBy, row.agent) : null,
+        archived: space.archivedAt ? { at: time(space.archivedAt), by: key(row.archivedBy) } : null,
+        createdAt: time(row.createdAt),
+        folder: '',
+      };
+    }),
+    spaceArchives: spaceArchives.map((archive) => ({ space: archive.spaceId, archived: archive.archived, author: author(archive.personId, archive.agent), at: time(archive.at) })),
     pages: pages.map((page) => ({
       id: page.id,
       space: page.spaceId,
       type: page.type,
-      createdAt: time(page.createdAt),
-      archived: page.archivedAt ? { at: time(page.archivedAt), by: name(page.archivedBy) } : null,
+      createdAt: time(page.seen),
+      archived: page.archivedAt ? { at: time(page.archivedAt), by: key(page.archivedBy) } : null,
       file: null,
     })),
     items: items.map((item) => ({
@@ -229,7 +282,7 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
       space: item.spaceId,
       kind: item.kind,
       path: item.path,
-      body: clean(item.body),
+      body: verbatim(item.kind) ? item.body : clean(item.body),
       visibility: side(item.privateTo),
       author: author(item.writtenBy, item.agent),
       createdAt: time(item.createdAt),
@@ -237,15 +290,16 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
       supersedes: item.supersedes && itemIds.has(item.supersedes) ? item.supersedes : null,
       ...(item.kind === 'requirement' || item.kind === 'preference' ? { onlyHere: !item.reachesDown } : {}),
       publishedFrom: item.publishedFrom && itemIds.has(item.publishedFrom) ? item.publishedFrom : null,
-      published: item.publishedAt ? { by: name(item.publishedBy), at: time(item.publishedAt) } : null,
-      sources: (cited.get(item.id) ?? []).map((citation) => citation.sourceId),
+      published: item.publishedAt ? { by: key(item.publishedBy), at: time(item.publishedAt) } : null,
+      sources: (cited.get(item.id) ?? []).filter((citation) => citation.here).map((citation) => citation.sourceId),
+      sourcesElsewhere: (cited.get(item.id) ?? []).filter((citation) => !citation.here).length,
     })),
     revisions: revisions
       .filter((revision) => itemIds.has(revision.contentId))
       .map((revision) => ({
         item: revision.contentId,
         visibility: side(revision.privateTo),
-        body: clean(revision.body),
+        body: verbatim(kindOf.get(revision.contentId)!) ? revision.body : clean(revision.body),
         author: author(revision.writtenBy, revision.agent),
         writtenAt: time(revision.writtenAt),
         replacedAt: time(revision.replacedAt),
@@ -269,8 +323,9 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
         author: author(gathering.addedBy, gathering.agent),
         createdAt: time(gathering.createdAt),
       })),
+    // Only since the person could see the page, so nothing from before shows through.
     pageArchives: archives
-      .filter((archive) => pageIds.has(archive.pageId))
+      .filter((archive) => pageIds.has(archive.pageId) && archive.at >= firstSeen.get(archive.pageId)!)
       .map((archive) => ({ page: archive.pageId, archived: archive.archived, author: author(archive.personId, archive.agent), at: time(archive.at) })),
     tasks: tasks.map((task) => ({
       id: task.id,
@@ -279,8 +334,8 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
       title: clean(task.title),
       description: task.description && clean(task.description),
       due: task.due,
-      assignee: task.assignee ? { name: name(task.assignee) } : null,
-      done: task.doneAt ? { at: time(task.doneAt), by: name(task.doneBy) } : null,
+      assignee: key(task.assignee),
+      done: task.doneAt ? { at: time(task.doneAt), by: key(task.doneBy) } : null,
       author: author(task.writtenBy, task.agent),
       createdAt: time(task.createdAt),
       updatedAt: time(task.updatedAt),
@@ -295,7 +350,7 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
   const layout = layoutOf(manifest);
   for (const space of manifest.spaces) space.folder = layout.folders.get(space.id)!;
   for (const page of manifest.pages) page.file = layout.files.get(page.id) ?? null;
-  return manifest;
+  return { manifest, layout };
 }
 
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
@@ -419,7 +474,7 @@ function titlesOf(current: Map<string, Data[]>): Map<string, string> {
   const titles = new Map<string, string>();
   for (const [page, items] of current) {
     const title = items.filter((item) => item.kind === 'title').sort((a, b) => Number(a.visibility === 'shared') - Number(b.visibility === 'shared'))[0];
-    if (title) titles.set(page, title.body);
+    if (title) titles.set(page, oneLine(title.body, 200));
   }
   return titles;
 }
@@ -435,15 +490,16 @@ function groupBy<T>(things: T[], key: (thing: T) => string): Map<string, T[]> {
   return groups;
 }
 
-/** The knowledge and guidance as files, by their place in the zip. */
-function readable(m: Manifest): Record<string, string> {
+/** The knowledge and guidance as files, by their place in the zip. It pauses now and then for other requests. */
+async function readable(m: Manifest, layout: Layout): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
-  const layout = layoutOf(m);
   const current = currentItems(m);
   const titles = titlesOf(current);
-  const me = m.exportedBy.name || 'whoever exported it';
-  const privately = `private to ${me}`;
-  const Privately = privately[0].toUpperCase() + privately.slice(1);
+  const people = new Map(m.people.map((person) => [person.key, person.name]));
+  const nameOf = (key: string | null) => (key ? (people.get(key) ?? null) : null);
+  const exporter = oneLine(m.exportedBy.name || 'whoever exported it', 200);
+  const privately = `private to ${exporter}`;
+  const Privately = `Private to ${exporter}`;
   const byId = new Map(m.items.map((item) => [item.id, item]));
   const sources = new Map(m.sources.map((source) => [source.id, source]));
   const itemsOn = groupBy(m.items, (item) => item.page);
@@ -455,42 +511,53 @@ function readable(m: Manifest): Record<string, string> {
   const tasksIn = groupBy(m.tasks, (task) => task.space);
   const sourcesIn = groupBy(m.sources, (source) => source.space);
   const childrenOf = groupBy(m.spaces.filter((space) => space.parent), (space) => space.parent!);
+  const spaceName = new Map(m.spaces.map((space) => [space.id, space.name]));
   const usedOn = new Map<string, Set<string>>();
+  let written = 0;
+  const breathe = async () => {
+    if (++written % 200 === 0) await setImmediate();
+  };
 
   for (const page of m.pages) {
-    if (page.type === 'overview') titles.set(page.id, `Overview of ${m.spaces.find((space) => space.id === page.space)!.name}`);
+    if (page.type === 'overview') titles.set(page.id, `Overview of ${oneLine(spaceName.get(page.space)!, 200)}`);
   }
   const title = (page: string) => titles.get(page) ?? 'Untitled';
-  const link = (page: string) => `[${title(page)}](/${layout.knowledge.get(page)})`;
+  const link = (page: string) => `[${title(page).replace(/[[\]]/g, '')}](/${layout.knowledge.get(page)})`;
   const onlyYou = (page: string) => (itemsOn.get(page) ?? []).every((item) => item.visibility === 'private');
   const sourcePath = (source: string) => `/${join(layout.folders.get(sources.get(source)!.space)!, `sources/${source}.md`)}`;
+  const actor = (author: Author) =>
+    author.by === 'agent' && author.agent ? `${slug(author.agent, 'assistant')}/homing` : author.by === 'routine' ? 'process:homing' : `human:${oneLine(nameOf(author.person) ?? 'unknown', 200)}`;
   // Links between pages point to their files; links to anything else stay as they are.
   const linked = (text: string) =>
     text.replace(new RegExp(`\\]\\(page:(${uuid})\\)`, 'gi'), (whole, id: string) => {
       const path = layout.knowledge.get(id.toLowerCase());
       return path ? `](/${path})` : whole;
     });
-  /** An item, with the sources it cites as footnotes keyed by their ids. */
+  /** An item, with the sources it cites as footnotes keyed by their ids, and what it rests on outside the export. */
   const withSources = (item: Data) => {
     const body = linked(item.body).trimEnd();
-    const notes = item.sources.map((id) => `[^${id}]`).join('');
-    if (!notes) return body;
+    const notes = item.sources.filter((id) => sources.has(id)).map((id) => `[^${id}]`).join('');
     // On its last line, unless that ends a code block or a table.
-    return /^\s*(```|~~~|\|)/.test(body.split('\n').at(-1) ?? '') ? `${body}\n\n${notes}` : `${body}${notes}`;
+    const cited = !notes ? body : /^\s*(```|~~~|\|)/.test(body.split('\n').at(-1) ?? '') ? `${body}\n\n${notes}` : `${body}${notes}`;
+    return item.sourcesElsewhere ? `${cited}\n\n_Also rests on ${count(item.sourcesElsewhere, 'source')} not in this export._` : cited;
   };
   /** Where an item stands among the others: a replacement where the first it replaced stood. */
   const firstOf = (item: Data): Data => (item.supersedes && byId.has(item.supersedes) ? firstOf(byId.get(item.supersedes)!) : item);
+  /** When the exporter could first see an item: something shared from someone's own side, when it was shared. */
+  const seenAt = (item: Data) => (item.visibility === 'shared' && item.published && item.published.at > item.createdAt ? item.published.at : item.createdAt);
 
   for (const space of m.spaces) {
     const folder = layout.folders.get(space.id)!;
     const here = (path: string) => `knowledge/${join(folder, path)}`;
     const local = (path: string) => (folder ? path.slice(folder.length + 1) : path);
+    const named = oneLine(space.name, 200);
     const spacePages = pagesIn.get(space.id) ?? [];
     const log: Event[] = [];
 
     for (const page of spacePages) {
       const path = layout.knowledge.get(page.id);
       if (!path) continue;
+      await breathe();
       const overview = page.type === 'overview';
       const whole = onlyYou(page.id);
       const items = (itemsOn.get(page.id) ?? []).filter((item) => item.kind === 'text');
@@ -501,16 +568,17 @@ function readable(m: Manifest): Record<string, string> {
         .filter((item) => !agreeing.has(item.id))
         .sort((a, b) => firstOf(a).createdAt.localeCompare(firstOf(b).createdAt) || a.createdAt.localeCompare(b.createdAt));
       const earlier = items.filter((item) => !live.has(item));
-      const cited = [...new Set([...shown, ...earlier].flatMap((item) => item.sources))];
+      const cited = [...new Set([...shown, ...earlier].flatMap((item) => item.sources))].filter((id) => sources.has(id));
       for (const id of cited) usedOn.set(id, (usedOn.get(id) ?? new Set()).add(page.id));
       const latest = [...(current.get(page.id) ?? [])].sort((a, b) => b.writtenAt.localeCompare(a.writtenAt))[0];
       const name = title(page.id);
+      const archiver = page.archived && nameOf(page.archived.by);
 
       const lines = [
         `# ${name}`,
         '',
         ...(whole ? [`_${Privately}: nobody else sees this page._`, ''] : []),
-        ...(page.archived ? [`_Archived on ${day(page.archived.at)}${page.archived.by ? ` by ${page.archived.by}` : ''}: no longer active._`, ''] : []),
+        ...(page.archived ? [`_Archived on ${day(page.archived.at)}${archiver ? ` by ${oneLine(archiver, 200)}` : ''}: no longer active._`, ''] : []),
       ];
       for (const item of shown) {
         lines.push(`<!-- homing:item ${item.id} -->`);
@@ -533,14 +601,14 @@ function readable(m: Manifest): Record<string, string> {
           const at = day(by.map((replacement) => replacement.createdAt).sort()[0] ?? item.writtenAt);
           const forYou = item.visibility === 'shared' && by.every((replacement) => replacement.visibility === 'private');
           lines.push(`<!-- homing:item ${item.id} -->`);
-          lines.push(forYou ? `_Replaced on ${at}, for ${me} only. Everyone else still sees it._` : `_Replaced on ${at}${item.visibility === 'private' && !whole ? `, ${privately}` : ''}._`, '');
+          lines.push(forYou ? `_Replaced on ${at}, for ${exporter} only. Everyone else still sees it._` : `_Replaced on ${at}${item.visibility === 'private' && !whole ? `, ${privately}` : ''}._`, '');
           lines.push(withSources(item), '');
         }
       }
       for (const id of cited) lines.push(`[^${id}]: ${oneLine(labelOf(sources.get(id)!), 120)}`);
       files[`knowledge/${path}`] = concept(
         {
-          type: overview ? 'Overview' : (page.type ?? 'Page'),
+          type: overview ? 'Overview' : oneLine(page.type ?? 'Page', 200) || 'Page',
           title: name,
           homing: { id: page.id, ...(whole && { private: true }) },
           ...(page.archived && { status: 'deprecated' }),
@@ -550,12 +618,10 @@ function readable(m: Manifest): Record<string, string> {
         lines,
       );
 
-      // What happened to it, for the log.
+      // What happened to it, for the log, from when the exporter could see it.
       if (!overview) log.push({ at: page.createdAt, word: 'Creation', verb: 'Started', page: page.id, private: whole });
       for (const item of items) {
-        log.push(item.supersedes
-          ? { at: item.createdAt, word: 'Update', verb: 'Updated', counted: 'item', page: page.id, private: item.visibility === 'private' }
-          : { at: item.createdAt, word: 'Update', verb: 'Added', counted: 'item', page: page.id, private: item.visibility === 'private' });
+        log.push({ at: seenAt(item), word: 'Update', verb: item.supersedes ? 'Updated' : 'Added', counted: 'item', page: page.id, private: item.visibility === 'private' });
       }
       for (const revision of revisionsOn.get(page.id) ?? []) {
         if (byId.get(revision.item)!.kind !== 'text') continue;
@@ -569,10 +635,11 @@ function readable(m: Manifest): Record<string, string> {
     const tasks = tasksIn.get(space.id) ?? [];
     if (tasks.length) {
       const line = (task: Manifest['tasks'][number]) => {
+        const doneBy = task.done && nameOf(task.done.by);
         const facts = [
           task.due && `due ${task.due}`,
-          task.assignee && `for ${task.assignee.name ?? 'someone'}`,
-          task.done && `done on ${day(task.done.at)}${task.done.by ? ` by ${task.done.by}` : ''}`,
+          task.assignee && `for ${oneLine(nameOf(task.assignee) ?? 'someone', 200)}`,
+          task.done && `done on ${day(task.done.at)}${doneBy ? ` by ${oneLine(doneBy, 200)}` : ''}`,
           task.visibility === 'private' && privately,
         ].filter(Boolean);
         return [
@@ -584,8 +651,8 @@ function readable(m: Manifest): Record<string, string> {
       const done = tasks.filter((task) => task.done);
       const latest = [...tasks].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
       files[here('tasks.md')] = concept(
-        { type: 'Tasks', title: `Tasks in ${space.name}`, homing: { space: space.id }, generated: { by: actor(latest.author), at: latest.updatedAt } },
-        [`# Tasks in ${space.name}`, '', ...(open.length ? ['## Open', '', ...open.flatMap(line), ''] : []), ...(done.length ? ['## Done', '', ...done.flatMap(line), ''] : [])],
+        { type: 'Tasks', title: `Tasks in ${named}`, homing: { space: space.id }, generated: { by: actor(latest.author), at: latest.updatedAt } },
+        [`# Tasks in ${named}`, '', ...(open.length ? ['## Open', '', ...open.flatMap(line), ''] : []), ...(done.length ? ['## Done', '', ...done.flatMap(line), ''] : [])],
       );
       for (const task of tasks) {
         log.push({ at: task.createdAt, word: 'Task', verb: 'Added', counted: 'task', private: task.visibility === 'private' });
@@ -595,6 +662,7 @@ function readable(m: Manifest): Record<string, string> {
 
     const kept = sourcesIn.get(space.id) ?? [];
     for (const source of kept) {
+      await breathe();
       const label = oneLine(labelOf(source), 120);
       const uses = [...(usedOn.get(source.id) ?? [])];
       files[here(`sources/${source.id}.md`)] = concept(
@@ -618,7 +686,7 @@ function readable(m: Manifest): Record<string, string> {
     }
     if (kept.length) {
       files[here('sources/index.md')] = index([[
-        `Sources in ${space.name}`,
+        `Sources in ${named}`,
         kept.map((source) => entry(oneLine(labelOf(source), 120), `${source.id}.md`, [`kept on ${day(source.createdAt)}`, source.visibility === 'private' && privately].filter(Boolean).join(', '))),
       ]]);
     }
@@ -629,25 +697,25 @@ function readable(m: Manifest): Record<string, string> {
     const children = childrenOf.get(space.id) ?? [];
     files[here('index.md')] = index(
       [
-        [space.name, [
-          ...(overview ? [entry('Overview', 'overview.md', `where ${space.name} stands`)] : []),
+        [named, [
+          ...(overview ? [entry('Overview', 'overview.md', `where ${named} stands`)] : []),
           ...(tasks.length ? [entry('Tasks', 'tasks.md', `${tasks.filter((task) => !task.done).length} open, ${tasks.filter((task) => task.done).length} done`)] : []),
           ...(kept.length ? [entry('Sources', 'sources/', count(kept.length, 'source'))] : []),
         ]],
-        [`Pages in ${space.name}`, pages.map((page) => entry(
+        [`Pages in ${named}`, pages.map((page) => entry(
           title(page.id),
           local(layout.knowledge.get(page.id)!),
-          [page.type ?? 'page', page.archived && 'archived', onlyYou(page.id) && privately].filter(Boolean).join(', '),
+          [oneLine(page.type ?? 'page', 200), page.archived && 'archived', onlyYou(page.id) && privately].filter(Boolean).join(', '),
         ))],
-        [`Spaces in ${space.name}`, children.map((child) => entry(
-          child.name,
+        [`Spaces in ${named}`, children.map((child) => entry(
+          oneLine(child.name, 200),
           `${local(layout.folders.get(child.id)!)}/`,
           [count((pagesIn.get(child.id) ?? []).filter((page) => page.type !== 'overview' && layout.knowledge.has(page.id)).length, 'page'), child.archived && 'archived', child.private && privately].filter(Boolean).join(', '),
         ))],
       ],
       space.parent === null,
     );
-    if (log.length) files[here('log.md')] = logOf(`What changed in ${space.name}`, log, link, privately);
+    if (log.length) files[here('log.md')] = logOf(`What changed in ${named}`, log, link, privately);
 
     // Guidance goes alongside the knowledge, never in it: AGENTS.md and SKILL.md aren't OKF concepts.
     const guidancePage = spacePages.find((page) => page.type === 'guidance');
@@ -655,10 +723,8 @@ function readable(m: Manifest): Record<string, string> {
     const skills = spacePages.filter((page) => layout.skills.has(page.id));
     for (const skill of skills) {
       for (const file of current.get(skill.id) ?? []) {
-        // A file's place in its folder, never outside it.
-        if (file.kind === 'file' && file.path?.split('/').every((part) => part && part !== '.' && part !== '..')) {
-          files[`guidance/${layout.skills.get(skill.id)}/${file.path}`] = file.body;
-        }
+        // A file's place in its folder, never outside it, on any system.
+        if (file.kind === 'file' && file.path && safePath(file.path)) files[`guidance/${layout.skills.get(skill.id)}/${file.path}`] = file.body;
       }
     }
     if (rules.length || skills.length) {
@@ -673,14 +739,14 @@ function readable(m: Manifest): Record<string, string> {
         const parts = current.get(page.id) ?? [];
         const name = parts.find((item) => item.kind === 'title')!;
         const description = frontmatter(parts.find((item) => item.path === 'SKILL.md')?.body ?? '').description;
-        return `- [${name.body}](${local(layout.skills.get(page.id)!)}/SKILL.md)${description ? `: ${oneLine(description, 300)}` : ''}${name.visibility === 'private' ? ` (${Privately}.)` : ''}`;
+        return `- [${oneLine(name.body, 200).replace(/[[\]]/g, '')}](${local(layout.skills.get(page.id)!)}/SKILL.md)${description ? `: ${oneLine(description, 300)}` : ''}${name.visibility === 'private' ? ` (${Privately}.)` : ''}`;
       };
       const requirements = ordered('requirement');
       const preferences = ordered('preference');
       files[`guidance/${join(folder, 'AGENTS.md')}`] = [
-        `# Rules for ${space.name}`,
+        `# Rules for ${named}`,
         '',
-        `Kept in Homing. Requirements always apply. A rule applies in ${space.name} and the spaces in it, unless it's marked only here.` +
+        `Kept in Homing. Requirements always apply. A rule applies in ${named} and the spaces in it, unless it's marked only here.` +
           (space.parent === null ? '' : ' The rules one folder up apply here too, except those marked only here.'),
         '',
         ...(requirements.length ? ['## Requirements', '', ...requirements.map(rule), ''] : []),
@@ -690,6 +756,11 @@ function readable(m: Manifest): Record<string, string> {
     }
   }
   return files;
+}
+
+/** Whether a skill's file stays in its folder on any system: plain names, without a drive, a backslash, control characters, or . and ... */
+export function safePath(path: string): boolean {
+  return path.split('/').every((part) => part !== '' && part !== '.' && part !== '..' && !/[\\:\p{Cc}]/u.test(part));
 }
 
 /** Something that happened, for a log. */
@@ -741,7 +812,7 @@ function index(sections: [string, string[]][], top = false): string {
 }
 
 function entry(title: string, href: string, description: string): string {
-  return `* [${title.replace(/[[\]]/g, '')}](${encodeURI(href)})${description ? ` - ${description}` : ''}`;
+  return `* [${oneLine(title, 200).replace(/[[\]]/g, '')}](${encodeURI(href)})${description ? ` - ${oneLine(description, 300)}` : ''}`;
 }
 
 /** An OKF concept: YAML frontmatter with its type, then Markdown. */
@@ -749,11 +820,6 @@ function concept(front: Record<string, unknown>, lines: string[]): string {
   return `---\n${stringify(front, { lineWidth: 0 })}---\n\n${lines.join('\n').trimEnd()}\n`;
 }
 
-/** Who wrote something, as OKF names actors: human:<name> for people, and <assistant>/homing for agents. */
-function actor(author: Author): string {
-  if (author.agent) return `${slug(author.agent, 'assistant')}/homing`;
-  return `human:${author.name ?? 'unknown'}`;
-}
 
 /** What a source is called: its reference, or how its excerpt starts. */
 function labelOf(source: Manifest['sources'][number]): string {

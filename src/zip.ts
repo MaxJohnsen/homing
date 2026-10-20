@@ -16,7 +16,8 @@ export async function zip(files: Iterable<[string, string]>, at = new Date()): P
     if (++count % 500 === 0) await new Promise((resolve) => setImmediate(resolve));
     const name = Buffer.from(path);
     const data = Buffer.from(text);
-    const packed = deflateRawSync(data);
+    // A copy of its own, since zlib hands back a slice of a larger buffer, which would all stay in memory.
+    const packed = Buffer.from(deflateRawSync(data));
     const crc = crc32(data);
     if (offset + 30 + name.length + packed.length > 0xffffffff) throw new Error('That’s too much for one zip.');
 
