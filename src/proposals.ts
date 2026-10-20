@@ -52,7 +52,7 @@ export interface Proposal {
   request: boolean;
   /** Why the person wants it, in their words. */
   reason: string | null;
-  state: 'open' | 'requested' | 'approved' | 'rejected' | 'expired';
+  state: 'open' | 'requested' | 'approved' | 'rejected' | 'withdrawn' | 'expired';
   createdAt: Date;
   expiresAt: Date;
   requestedAt: Date | null;
@@ -786,6 +786,40 @@ export async function decide(
     where id = ${proposalId}::uuid and ${seen(s)}
   `;
   return readProposal(s, proposalId, decision.findAccount);
+}
+
+/**
+ * Withdraws a proposal while it waits, as the person it's for or their assistant (spec §6): it ends,
+ * and nothing changes. A request sent to the space's admins is withdrawn the same way.
+ * Undefined when there's no such proposal of the person's.
+ */
+export async function withdraw(s: Session, proposalId: string): Promise<ProposalView | undefined> {
+  const [proposal] = await s.tx<Proposal[]>`
+    select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${yours(s)} for update
+  `;
+  if (!proposal) return undefined;
+  if (proposal.state === 'expired') throw new Undecidable('expired', 'It had expired already, so nothing changed.');
+  if (proposal.state !== 'open' && proposal.state !== 'requested') throw new Undecidable('decided', 'It was decided already, so there’s nothing to withdraw.');
+  await s.tx`update proposals set state = 'withdrawn' where id = ${proposalId}::uuid`;
+  return readProposal(s, proposalId);
+}
+
+/**
+ * The person's proposals in a space that ended in the last day: decided, withdrawn or expired,
+ * newest first, so their assistant knows how they ended instead of going by what it said before.
+ */
+export async function endedLately(s: Session, spaceId: string): Promise<Proposal[]> {
+  return s.tx<Proposal[]>`
+    select * from (
+      select ${columns(s)}, coalesce(decided_at, expires_at) as ended from proposals
+      where space_id = ${spaceId}::uuid and ${yours(s)}
+        and (decided_at > now() - interval '1 day' or (state in ('open', 'requested') and expires_at <= now() and expires_at > now() - interval '1 day'))
+        -- Requests sent to the admins are listed with where they stand already.
+        and requested_at is null
+    ) ended
+    order by ended desc
+    limit 20
+  `;
 }
 
 /** What sharing an item would do, as the decision page, the card and the page itself show it. */

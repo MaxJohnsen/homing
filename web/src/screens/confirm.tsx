@@ -23,9 +23,11 @@ export type Decide = (approve: boolean, onlyHere: boolean, space?: SpaceSet, sha
  * the app. A request to a space's admins comes here twice: first for the member to send it, then for
  * any admin to decide it, and in between it tells the member who it waits for.
  */
-export function Confirm({ proposal, decide, message: initialMessage }: {
+export function Confirm({ proposal, decide, withdraw, message: initialMessage }: {
   proposal: ProposalData;
   decide?: Decide;
+  /** Withdraws a request you sent while it waits for the admins. Answers with what went wrong, if anything. */
+  withdraw?: () => Promise<string | undefined>;
   /** Something to tell the person before they decide. */
   message?: string;
 }) {
@@ -118,6 +120,26 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
               </div>
             </div>
             <SettledChange proposal={proposal} />
+            {/* A request you sent waits for the admins; you can still take it back, which decides nothing. */}
+            {withdraw && proposal.state === 'requested' && request?.yours && (
+              <div className="flex flex-col gap-2">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="h-11 w-fit text-base sm:px-5"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    const answer = await withdraw();
+                    setBusy(false);
+                    if (answer) setProblem({ message: answer });
+                  }}
+                >
+                  Withdraw request
+                </Button>
+                {problem && <FieldError>{problem.message}</FieldError>}
+              </div>
+            )}
             {proposal.action === 'publish' && proposal.state === 'approved' && proposal.publication && (
               <Link href={`/pages/${proposal.publication.pageId}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
                 Open {proposal.publication.page}

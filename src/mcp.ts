@@ -28,7 +28,7 @@ import {
   type Hit,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
-import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
+import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
@@ -126,6 +126,10 @@ const pageArchiveInput = z.strictObject({
   page: text().describe('The page that is no longer active, such as page:…'),
   reopen: z.boolean().optional().describe('True to reopen an archived page the user asked you to reopen'),
 }).describe('For page.archive');
+
+const withdrawInput = z.strictObject({
+  proposal: text().describe('The proposal or request to withdraw, such as proposal:…'),
+}).describe('For proposal.withdraw');
 
 const shareSpaceInput = z.strictObject({
   space: text().describe("The space in the user's personal space to share, such as space:…"),
@@ -285,11 +289,13 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'one others have, or your own idea, waits for their approval. ' +
         'page.archive takes a page that is no longer active, such as a finished project or someone who has left, out of everyday context; it stays searchable. ' +
         'Only when the user asks, or with clear evidence; age is not evidence. A page only the user has is archived, or reopened, at once. ' +
+        'proposal.withdraw withdraws a proposal or request of the user\'s that still waits, when they no longer want it; it never decides it. ' +
+        'Whether a proposal still waits, and how it ended, comes from Homing: `read` it rather than going by what you said before. ' +
         "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once.",
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'proposal.withdraw']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, withdrawInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -317,6 +323,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             return archivePageFor(s, links, inputFor(action, pageArchiveInput, input), card);
           case 'space.share':
             return proposeSpaceSharing(s, links, inputFor(action, shareSpaceInput, input), card);
+          case 'proposal.withdraw':
+            return withdrawFor(s, inputFor(action, withdrawInput, input), card);
         }
       }),
   );
@@ -522,6 +530,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
   const requests = await requestsIn(s, spaceId);
   const sent = requests.filter((request) => request.yours);
   const toDecide = requests.filter((request) => !request.yours && request.state === 'requested');
+  const ended = await endedLately(s, spaceId);
   const overview = (await overviewOf(s, spaceId))?.items ?? [];
   const { open: tasks } = await tasksIn(s, spaceId);
   const assignees = await peopleNames(s, tasks.map((task) => task.assignee));
@@ -557,6 +566,13 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
           '\n## Waiting for approval',
           'Changes the user hasn\'t decided yet. Nothing changes until they approve them.',
           ...waiting.map((proposal) => `- ${describeProposal(proposal)} (${ref('proposal', proposal.id)}, ${proposal.request ? 'send' : 'approve'} at ${links.proposal(proposal.id)})`),
+        ]
+      : []),
+    ...(ended.length
+      ? [
+          '\n## Ended lately',
+          'How the changes you proposed here ended in the last day. Go by this, not by what you said before.',
+          ...ended.map((proposal) => `- ${describeProposal(proposal)} (${ref('proposal', proposal.id)}): ${outcome(proposal, links)}`),
         ]
       : []),
     ...(sent.length
@@ -1102,6 +1118,22 @@ async function suggestArchiving(s: Session, links: Links, input: z.infer<typeof 
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
+/** Withdraws a proposal or request of the user's that still waits. It ends, and nothing changes. */
+async function withdrawFor(s: Session, input: z.infer<typeof withdrawInput>, card: boolean): Promise<string | Answer> {
+  const proposalId = parseRef(input.proposal, 'proposal');
+  let withdrawn: ProposalView | undefined;
+  try {
+    withdrawn = await s.tx.savepoint((sp) => withdraw({ ...s, tx: sp }, proposalId));
+  } catch (error) {
+    if (error instanceof Undecidable) throw new Refused(`${error.message} Read it for how it ended.`);
+    throw error;
+  }
+  if (!withdrawn) throw new Refused('There is no proposal of the user\'s with that reference.');
+  const text = `Withdrawn: ${describeProposal(withdrawn)} (${ref('proposal', proposalId)}). It ended, and nothing changed.`;
+  const done = { heading: 'Withdrawn', detail: 'It ended, and nothing changed.' };
+  return card ? { text, structuredContent: { done, note: text } } : text;
+}
+
 /** Proposes sharing one of the user's private tasks with its space, for them to approve. */
 async function proposeTaskSharing(s: Session, links: Links, input: z.infer<typeof taskShareInput>, card: boolean): Promise<string | Answer> {
   let proposal: Proposal;
@@ -1249,6 +1281,8 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       return proposal.request && !proposal.requestedAt
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
+    case 'withdrawn':
+      return `Withdrawn on ${day(proposal.decidedAt!)}, so it ended and nothing changed.`;
     case 'expired':
       return proposal.action === 'add space'
         ? `Nobody decided it before ${day(proposal.expiresAt)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again unless the user asks."}`

@@ -22,6 +22,15 @@ export function ProposalPage({ id }: { id: string }) {
     <Confirm
       key={proposal.id}
       proposal={proposal}
+      withdraw={async () => {
+        try {
+          await api<Loaded>(`${path}/withdraw`, {});
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+        } finally {
+          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
+        }
+      }}
       decide={async (approve, onlyHere, space, share) => {
         try {
           await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : proposal.conversion?.shown), space, share });

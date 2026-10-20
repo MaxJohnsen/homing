@@ -170,6 +170,7 @@ function SampleConfirm({ proposal, message }: { proposal: ProposalData; message?
       <Confirm
         proposal={shown}
         message={message}
+        withdraw={async () => void setShown({ ...shown, state: 'withdrawn' })}
         decide={async (approve, onlyHere) => {
           if (approve && shown.request && !shown.request.sent) setShown({ ...shown, state: 'requested', request: { ...shown.request, sent: true } });
           else setShown({ ...shown, onlyHere, state: approve ? 'approved' : 'rejected', rule: shown.rule && { ...shown.rule, current: shown.action !== 'remove' } });

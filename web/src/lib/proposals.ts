@@ -23,7 +23,7 @@ export interface ProposalData {
   shared: boolean;
   onlyHere: boolean;
   /** Requested means a member sent it to the space's admins, and it waits for one of them. */
-  state: 'open' | 'requested' | 'approved' | 'rejected' | 'expired';
+  state: 'open' | 'requested' | 'approved' | 'rejected' | 'withdrawn' | 'expired';
   /**
    * For a request to the space's admins: who asked, or null when it's yours, why, whether it's
    * sent, and the admins who can decide it.
@@ -114,7 +114,7 @@ export interface TaskShareData {
 /** A request you sent to a space's admins, as Home shows it under your requests. */
 export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within' | 'action' | 'kind'> {
   text: string | null;
-  state: 'requested' | 'approved' | 'rejected' | 'expired';
+  state: 'requested' | 'approved' | 'rejected' | 'withdrawn' | 'expired';
   requestedAt: string;
   /** Whether Homing could email the admins. */
   emailed: boolean | null;
@@ -246,6 +246,8 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const { action, assistant, state, request, decidedBy, suggestion, member } = proposal;
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
+  // Withdrawn by you or your assistant: it ended without being decided.
+  if (state === 'withdrawn') return { kind: 'gone', heading: 'Withdrawn', detail: 'It ended before anyone decided it, and nothing changed.' };
   if (action === 'publish') {
     if (state === 'approved') {
       return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees it now, and that you shared it.${proposal.publication?.copy ? ' Where it came from stays only yours.' : ''}` };

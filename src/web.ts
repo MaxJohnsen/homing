@@ -12,7 +12,7 @@ import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
 import { afterDecision } from './notify.ts';
-import { decide, proposalData, readProposal, Undecidable } from './proposals.ts';
+import { decide, proposalData, readProposal, Undecidable, withdraw } from './proposals.ts';
 import { accountFinder } from './people.ts';
 import { SpaceRefused, type Who } from './spaces.ts';
 
@@ -163,6 +163,22 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
   }
 
   if (await handleAppApi(app, req, res, path, headers)) return;
+
+  const withdrawing = /^\/api\/proposals\/([0-9a-f-]{36})\/withdraw$/i.exec(path);
+  if (withdrawing && req.method === 'POST') {
+    const session = await app.auth.api.getSession({ headers });
+    if (!session) return json(res, 401, { message: 'Sign in first.' });
+    const person = session.user.id;
+    try {
+      // The person themselves, directly: withdrawing ends it and never decides it.
+      const withdrawn = await withPrincipal(app.sql, { person, direct: true }, (s) => withdraw(s, withdrawing[1].toLowerCase()));
+      if (!withdrawn) return json(res, 404, { message: 'There’s nothing of yours to withdraw here.' });
+      return json(res, 200, { person: session.user.name, proposal: proposalData(withdrawn) });
+    } catch (error) {
+      if (error instanceof Undecidable) return json(res, error.reason === 'expired' ? 410 : 409, { code: error.reason.toUpperCase(), message: error.message });
+      throw error;
+    }
+  }
 
   const proposal = /^\/api\/proposals\/([0-9a-f-]{36})(\/decide)?$/i.exec(path);
   if (proposal && (req.method === 'GET' ? !proposal[2] : req.method === 'POST' && proposal[2])) {

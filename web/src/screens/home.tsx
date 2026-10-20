@@ -173,6 +173,7 @@ function statusOf(request: RequestData, now?: Date): string {
   if (request.state === 'approved') return request.decidedBy ? `${request.decidedBy} approved it.` : 'Approved.';
   if (request.state === 'rejected') return request.decidedBy ? `${request.decidedBy} didn’t approve it. Nothing changed.` : 'Not approved. Nothing changed.';
   if (request.state === 'expired') return 'Nobody decided it in time, so nothing changed.';
+  if (request.state === 'withdrawn') return 'Withdrawn, so nothing changed.';
   return request.emailed === false
     ? `Waiting for ${eitherOf(request.admins)}. Homing couldn’t email them, so let them know.`
     : `Waiting for ${eitherOf(request.admins)}, sent ${ago(request.requestedAt, now)}.`;
