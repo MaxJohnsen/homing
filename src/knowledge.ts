@@ -40,6 +40,8 @@ export interface Page {
   spaceId: string;
   type: string | null;
   title: string;
+  /** When anything the viewer sees on it last changed. */
+  updatedAt: Date;
   /** The current items, each with its sources and the earlier item it replaced, if any. */
   items: (Item & { sources: Citation[]; replaced: Replaced | null })[];
 }
@@ -179,18 +181,30 @@ export async function supersedeItem(
   return insertItem(s, { ...input, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
 }
 
-/** A page as the viewer sees it: the current shared items plus their own, with their sources. */
+/**
+ * A page as the viewer sees it: the current shared items plus their own, with their sources. An
+ * item that replaced another stands where the first of them stood.
+ */
 export async function readPage(s: Session, pageId: string): Promise<Page | undefined> {
   const items = await s.tx<Page['items']>`
-    select ${itemColumns(s)}, ${citationsOf(s)} as sources, (
+    with recursive chain (id, first) as (
+      select c.id, c.id from content c
+      where c.page_id = ${pageId}::uuid and c.supersedes is null and ${visibleContent(s, 'c')}
+      union all
+      select c.id, chain.first from content c join chain on c.supersedes = chain.id
+      where c.page_id = ${pageId}::uuid and ${visibleContent(s, 'c')}
+    )
+    select ${itemColumns(s, 'content')}, ${citationsOf(s)} as sources, (
       -- Whoever can see a replacement can see what it replaced.
       select json_build_object('id', r.id, 'body', r.body, 'shared', r.private_to is null)
       from content r
       where r.id = content.supersedes
     ) as replaced
     from content
-    where page_id = ${pageId}::uuid and kind <> 'removed' and ${visibleContent(s, 'content')} and ${current(s, 'content')}
-    order by created_at
+    left join chain on chain.id = content.id
+    left join content first on first.id = chain.first
+    where content.page_id = ${pageId}::uuid and content.kind <> 'removed' and ${visibleContent(s, 'content')} and ${current(s, 'content')}
+    order by coalesce(first.created_at, content.created_at), content.created_at
   `;
   if (items.length === 0) return undefined;
   const [{ type }] = await s.tx`select type from pages where id = ${pageId}::uuid`;
@@ -201,6 +215,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     spaceId: items[0].spaceId,
     type,
     title: titles[0]?.body ?? 'Untitled',
+    updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
     items: items.filter((item) => item.kind !== 'title'),
   };
 }
@@ -234,6 +249,98 @@ export async function listPages(s: Session, spaceId: string) {
   `;
 }
 
+/** A knowledge page in a list, as the viewer sees it. */
+export interface PageSummary {
+  id: string;
+  type: string | null;
+  title: string;
+  /** Its first item, for a glimpse of what it says. */
+  excerpt: string | null;
+  updatedAt: Date;
+  /** Nobody else sees any of it. */
+  onlyYou: boolean;
+}
+
+export type PageOrder = 'recent' | 'name' | 'match';
+
+/**
+ * The knowledge pages in a space, as the viewer sees them, fifty at a time: optionally only those
+ * matching a search or of one type. Everything, counts and dates included, comes only from what
+ * the viewer can see. Also says how many pages there are in all, and of each type for filtering;
+ * pages without a type show only unfiltered.
+ */
+export async function pagesIn(
+  s: Session,
+  spaceId: string,
+  options: { query?: string; type?: string; order?: PageOrder; offset?: number; limit?: number } = {},
+): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[] }> {
+  const terms = termsOf(options.query ?? '');
+  const limit = options.limit ?? 50;
+  const order = options.order === 'match' && !terms ? 'recent' : (options.order ?? (terms ? 'match' : 'recent'));
+  // Each page's title, first item, last change and best match, from the items the viewer sees now.
+  const here = s.tx`
+    select c.page_id as id,
+           coalesce((array_agg(c.body order by c.private_to is null) filter (where c.kind = 'title'))[1], 'Untitled') as title,
+           -- A replacement stands where what it replaced stood.
+           (array_agg(c.body order by coalesce((select r.created_at from content r where r.id = c.supersedes), c.created_at))
+             filter (where c.kind = 'text'))[1] as excerpt,
+           max(c.updated_at) as updated_at,
+           bool_and(c.private_to is not null) as only_you,
+           ${terms ? s.tx`bool_or(c.search @@ to_tsquery('simple', ${terms}))` : s.tx`true`} as hit,
+           ${terms
+             ? s.tx`max(ts_rank(c.search, to_tsquery('simple', ${terms}), 1)) + coalesce(max(ts_rank(c.search, to_tsquery('simple', ${terms}), 1)) filter (where c.kind = 'title'), 0)`
+             : s.tx`0`} as rank
+    from content c
+    join pages p on p.id = c.page_id
+    where c.space_id = ${spaceId}::uuid and c.kind in ('title', 'text')
+      and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
+    group by c.page_id
+  `;
+  const typed = options.type === undefined ? s.tx`true` : s.tx`p.type = ${options.type}`;
+  const sorted = { recent: s.tx`h.updated_at desc`, name: s.tx`lower(h.title), h.updated_at desc`, match: s.tx`h.rank desc, h.updated_at desc` }[order];
+  const list = (offset: number) => s.tx<(PageSummary & { total: number })[]>`
+    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, count(*) over ()::int as total
+    from (${here}) h
+    join pages p on p.id = h.id
+    where h.hit and ${typed}
+    order by ${sorted}, h.id
+    limit ${limit} offset ${offset}
+  `;
+  let rows = await list(Math.max(0, options.offset ?? 0));
+  // Past the end, such as after the list got shorter, it starts again from the top.
+  if (rows.length === 0 && (options.offset ?? 0) > 0) rows = await list(0);
+  const types = await s.tx<{ type: string | null; count: number }[]>`
+    select p.type, count(*)::int as count
+    from (${here}) h
+    join pages p on p.id = h.id
+    group by p.type
+    order by count(*) desc, p.type
+  `;
+  return {
+    pages: rows.map(({ total: _, ...page }) => page),
+    total: rows[0]?.total ?? 0,
+    all: types.reduce((sum, { count }) => sum + count, 0),
+    types: types.filter((entry): entry is { type: string; count: number } => entry.type !== null),
+  };
+}
+
+/** Earlier versions of these items that the viewer can see, oldest first. */
+export async function historyOf(s: Session, itemIds: string[]): Promise<(Revision & { itemId: string })[]> {
+  if (itemIds.length === 0) return [];
+  return s.tx<(Revision & { itemId: string })[]>`
+    select content_id as item_id, body, written_by, agent, written_at, replaced_at
+    from revisions
+    where content_id in ${s.tx(itemIds)} and ${visible(s, 'revisions')}
+    order by replaced_at
+  `;
+}
+
+/** Search terms for full-text search: longer words match by how they start, so "launch" finds "launches". */
+function termsOf(query: string): string | undefined {
+  const words = query.match(/[\p{L}\p{N}]+/gu);
+  return words ? words.map((word) => (word.length >= 4 ? `${word}:*` : word)).join(' | ') : undefined;
+}
+
 /**
  * Searches items and sources the viewer can see, optionally within a space
  * and the spaces below it, and optionally only knowledge, without guidance.
@@ -247,9 +354,8 @@ export async function search(
   query: string,
   options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean } = {},
 ): Promise<Hit[]> {
-  const words = query.match(/[\p{L}\p{N}]+/gu);
-  if (!words) return [];
-  const terms = words.map((word) => (word.length >= 4 ? `${word}:*` : word)).join(' | ');
+  const terms = termsOf(query);
+  if (!terms) return [];
   const within = (table: string) =>
     options.spaceId
       ? s.tx`and ${s.tx(table)}.space_id in (select space_subtree(${options.spaceId}::uuid))`
@@ -287,8 +393,10 @@ export async function search(
   `;
 }
 
-export function itemColumns(s: Session) {
-  return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, created_at, updated_at`;
+export function itemColumns(s: Session, table?: string) {
+  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, created_at, updated_at`;
+  const t = s.tx(table);
+  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.created_at, ${t}.updated_at`;
 }
 
 function sourceColumns(s: Session) {
@@ -405,7 +513,7 @@ export function current(s: Session, table: string) {
 }
 
 /** Knowledge pages, not guidance or skills. */
-function knowledge(s: Session, table: string) {
+export function knowledge(s: Session, table: string) {
   return s.tx`coalesce(${s.tx(table)}.type, '') not in ('guidance', 'skill')`;
 }
 

@@ -5,11 +5,13 @@ import { Link, type SpaceView } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
 /**
- * A space: where it sits and who it's shared with, then its parts. Guidance holds its rules and
- * skills, and Members who can open it. A space in your personal tree has no members but you.
+ * A space: where it sits and who it's shared with, then its parts. Knowledge holds its pages,
+ * Guidance its rules and skills, and Members who can open it. A space in your personal tree has no
+ * members but you.
  */
 export function Space({ space, view, children }: { space: SpaceData; view: SpaceView; children: ReactNode }) {
   const tabs = [
+    { label: 'Knowledge', href: `/spaces/${space.id}`, current: view === 'pages' },
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
   ];
@@ -19,24 +21,22 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
         title={space.name}
         meta={<Where space={space} />}
         below={
-          tabs.length > 1 && (
-            <nav aria-label={`${space.name}’s parts`} className="-mx-1 mt-4 flex gap-1 overflow-x-auto pb-1">
-              {tabs.map((tab) => (
-                <Link
-                  key={tab.label}
-                  href={tab.href}
-                  aria-current={tab.current ? 'page' : undefined}
-                  className={cn(
-                    'shrink-0 rounded-full px-4 py-2 text-base font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
-                    focusRing,
-                    tab.current && 'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground',
-                  )}
-                >
-                  {tab.label}
-                </Link>
-              ))}
-            </nav>
-          )
+          <nav aria-label={`${space.name}’s parts`} className="-mx-1 mt-4 flex gap-1 overflow-x-auto pb-1">
+            {tabs.map((tab) => (
+              <Link
+                key={tab.label}
+                href={tab.href}
+                aria-current={tab.current ? 'page' : undefined}
+                className={cn(
+                  'shrink-0 rounded-full px-4 py-2 text-base font-semibold text-muted-foreground transition-colors hover:bg-muted hover:text-foreground',
+                  focusRing,
+                  tab.current && 'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground',
+                )}
+              >
+                {tab.label}
+              </Link>
+            ))}
+          </nav>
         }
       />
       {(view === 'rules' || view === 'skills') && (

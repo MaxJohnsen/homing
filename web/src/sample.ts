@@ -1,4 +1,5 @@
 import type { AccountData } from '@/screens/account';
+import type { PageData, PagesData } from '@/lib/knowledge';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
@@ -229,3 +230,65 @@ export const sampleRequests: RequestData[] = [
   { id: 'r1', space: 'Website', within: 'Fonn Water', action: 'add', kind: 'requirement', text: 'Check every page with a screen reader before it goes live.', state: 'requested', requestedAt: minutesAgo(90), emailed: true, admins: ['Jon Dahl', 'Mia Bakke'], decidedBy: null },
   { id: 'r2', space: 'Berg family', within: null, action: 'change', kind: 'preference', text: 'Plan holidays a year ahead.', state: 'approved', requestedAt: minutesAgo(60 * 30), emailed: true, admins: ['Ola Berg'], decidedBy: 'Ola Berg' },
 ];
+
+const daysAgo = (days: number, hours = 0) => new Date(Date.now() - days * 86_400_000 - hours * 3_600_000).toISOString();
+
+/** Northwind's pages, as Ana sees them. */
+export const samplePages: PagesData = {
+  total: 1240,
+  all: 1240,
+  types: [
+    { type: 'meeting', count: 412 },
+    { type: 'person', count: 268 },
+    { type: 'decision', count: 151 },
+    { type: 'project', count: 37 },
+  ],
+  pages: [
+    { id: '7d1c2a40-0000-4000-8000-000000000001', type: 'project', title: 'Website relaunch', excerpt: 'Northwind’s public website is being rebuilt with a new design system and a **booking flow**, so customers can book service appointments online.', updatedAt: daysAgo(0, 5), onlyYou: false },
+    { id: '7d1c2a40-0000-4000-8000-000000000002', type: 'person', title: 'Gunnar Holm', excerpt: 'Head of digital at Northwind, and our main contact for the relaunch.', updatedAt: daysAgo(0, 9), onlyYou: false },
+    { id: '7d1c2a40-0000-4000-8000-000000000003', type: null, title: 'Pricing thoughts before the renewal', excerpt: 'They will push for a lower day rate. Start at 1,450 and settle at 1,350 at the lowest.', updatedAt: daysAgo(1), onlyYou: true },
+    { id: '7d1c2a40-0000-4000-8000-000000000004', type: 'decision', title: 'Launch moved to November 14', excerpt: 'Decided at the steering group: the launch moves two weeks, to November 14, so the booking flow can be tested properly.', updatedAt: daysAgo(3), onlyYou: false },
+    { id: '7d1c2a40-0000-4000-8000-000000000005', type: 'meeting', title: 'Steering group, October 9', excerpt: '- Design is signed off\n- Content is late\n- Next meeting October 23', updatedAt: daysAgo(11), onlyYou: false },
+    { id: '7d1c2a40-0000-4000-8000-000000000006', type: 'person', title: 'Marte Lunde', excerpt: 'Marte works on the payment provider at Northwind.', updatedAt: daysAgo(40), onlyYou: false },
+  ],
+};
+
+/** A page with a little of everything: an update only Ana sees, a correction, sources and Markdown. */
+export const samplePage: PageData = {
+  id: '7d1c2a40-0000-4000-8000-000000000001',
+  title: 'Website relaunch',
+  type: 'project',
+  updatedAt: daysAgo(0, 5),
+  space: { id: 'northwind', name: 'Northwind', personal: false, private: false },
+  items: [
+    {
+      id: 'item-1', text: 'Northwind’s public website is being rebuilt with a new design system and a **booking flow**, so customers can book service appointments online. Acme designs and builds it; Northwind’s own team writes the content.',
+      shared: true, by: { name: 'Cara Lund', you: false }, agent: 'Claude', writtenAt: daysAgo(30),
+      sources: [{ id: 'source-1', reference: 'Kickoff deck, September 2', excerpt: 'Goal: customers book service appointments online. Acme: design and build. Northwind: content.' }],
+      replaced: null, earlier: [],
+    },
+    {
+      id: 'item-2', text: 'The launch is planned for **November 20**.',
+      shared: false, by: { name: 'Ana Berg', you: true }, agent: null, writtenAt: daysAgo(0, 5),
+      sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'Gunnar wants another week for content. New launch date November 20, but he hasn’t told his team yet.' }],
+      replaced: { text: 'The launch is planned for **November 14**.', shared: true, until: daysAgo(0, 5) }, earlier: [],
+    },
+    {
+      id: 'item-3', text: 'Status: design is signed off and development is under way.',
+      shared: true, by: { name: 'Gunnar Holm', you: false }, agent: null, writtenAt: daysAgo(4),
+      sources: [], replaced: null,
+      earlier: [{ text: 'Status: design is waiting for sign-off.', by: { name: 'Gunnar Holm', you: false }, agent: null, writtenAt: daysAgo(20), until: daysAgo(4) }],
+    },
+    {
+      id: 'item-4', text: '## Who does what\n\n- **Gunnar Holm** leads the project at Northwind. See [Gunnar Holm](page:7d1c2a40-0000-4000-8000-000000000002).\n- Cara Lund runs design at Acme.\n- Jon Dahl builds the booking flow.',
+      shared: true, by: { name: 'Cara Lund', you: false }, agent: null, writtenAt: daysAgo(12),
+      sources: [], replaced: null, earlier: [],
+    },
+    {
+      id: 'item-5', text: 'Gunnar wants a call before anything about scope goes in writing.',
+      shared: false, by: { name: 'Ana Berg', you: true }, agent: 'Claude', writtenAt: daysAgo(2),
+      sources: [{ id: 'source-3', reference: 'Teams chat with Gunnar', excerpt: 'Can we talk before you send anything on scope? I’d rather not have it in writing yet.' }],
+      replaced: null, earlier: [],
+    },
+  ],
+};
