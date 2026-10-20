@@ -168,7 +168,10 @@ export interface ChangeData {
   agent: string | null;
   at: string;
   onlyYou: boolean;
-  space: { id: string | null; name: string | null; within: string | null; private?: boolean };
+  /** On a page that's archived. */
+  pageArchived?: boolean;
+  /** Where it changed, and whether that space is archived, as you see it. */
+  space: { id: string | null; name: string | null; within: string | null; private?: boolean; archived?: boolean };
 }
 
 /** A space's overview: what people wrote about where it stands, and the map Homing keeps beside it. */

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AccessDenied, personOf, type Session } from './db.ts';
-import { accessibleSpaces } from './spaces.ts';
+import { accessibleSpaces, listSpaces, type Space } from './spaces.ts';
 
 export interface Item {
   id: string;
@@ -632,6 +632,8 @@ export interface Change {
   newPage: boolean;
   /** On the space's overview rather than a page. */
   overview: boolean;
+  /** On a page that's archived. */
+  pageArchived: boolean;
   writtenBy: string | null;
   agent: string | null;
   at: Date;
@@ -640,15 +642,36 @@ export interface Change {
 
 /**
  * What changed lately in everything the viewer can see, newest first: knowledge added, updated or
- * corrected, never rules, skills or what's no longer true. Says whether there's more after these.
+ * corrected, never rules, skills or what's no longer true. Archived spaces and pages are out of
+ * everyday attention, so what changed in them shows only on request. Says whether there's more
+ * after these, and whether archived spaces and pages that were left out have changes.
  */
-export async function recentChanges(s: Session, options: { offset?: number; limit?: number } = {}): Promise<{ changes: Change[]; more: boolean }> {
+export async function recentChanges(
+  s: Session,
+  options: {
+    offset?: number;
+    limit?: number;
+    /** With archived spaces and pages too. */
+    archived?: boolean;
+    /** The spaces the viewer can open, when they're at hand already. */
+    spaces?: Space[];
+  } = {},
+): Promise<{ changes: Change[]; more: boolean; archived: boolean }> {
   const offset = Math.max(0, options.offset ?? 0);
   const limit = options.limit ?? 50;
+  // Archived as the viewer sees it: a space archived with one above it only when they can open that
+  // one. A page's archiving is one state for everyone who sees it.
+  const shelved = options.archived ? [] : (options.spaces ?? (await listSpaces(s))).filter((space) => space.archived).map((space) => space.id);
+  const archivedPages = s.tx`(select p.id from pages p where p.archived_at is not null)`;
+  const active = options.archived
+    ? s.tx``
+    : s.tx`and c.page_id not in ${archivedPages} ${shelved.length ? s.tx`and c.space_id not in ${s.tx(shelved)}` : s.tx``}`;
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
-    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, at, only_you, overview from (
+    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, at, only_you, overview,
+           exists (select from pages p where p.id = recent.page_id and p.archived_at is not null) as page_archived
+    from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
              -- Corrected means it has an earlier version; its timestamps alone can differ by a moment when it's written.
              case when c.supersedes is not null then 'updated'
@@ -663,7 +686,7 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
              ${current(s, 'c')} as is_current,
              ${agreesWithShared(s, 'c')} as agrees_with_shared
       from content c
-      where c.kind = 'text' and ${visible(s, 'c')}
+      where c.kind = 'text' and ${visible(s, 'c')} ${active}
       order by greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) desc
       limit ${offset + limit * 2 + 50}
       offset 0
@@ -672,7 +695,18 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
     order by at desc
     limit ${limit + 1} offset ${offset}
   `;
-  return { changes: rows.slice(0, limit), more: rows.length > limit };
+  // Only what the viewer sees there now counts, so the way to it shows only when there's something.
+  const [{ archived }] = options.archived
+    ? [{ archived: false }]
+    : await s.tx<{ archived: boolean }[]>`
+        select exists (
+          select from content c
+          where c.page_id in ${archivedPages} and c.kind = 'text' and ${visible(s, 'c')} and ${current(s, 'c')}
+        ) ${shelved.length
+          ? s.tx`or exists (select from content c where c.space_id in ${s.tx(shelved)} and c.kind = 'text' and ${visible(s, 'c')} and ${current(s, 'c')})`
+          : s.tx``} as archived
+      `;
+  return { changes: rows.slice(0, limit), more: rows.length > limit, archived };
 }
 
 /** A source in a list, as the viewer sees it. */

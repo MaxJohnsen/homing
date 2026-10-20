@@ -106,16 +106,38 @@ function Screen({ route, me, spaces, waiting, recent }: { route: Route; me: Acco
   }
 }
 
+type ChangesAnswer = { changes: ChangeData[]; more: boolean; archived: boolean };
+
+/**
+ * The changes at an address, and whether archived ones are in them. While the next answer is on
+ * its way, the last one stays, as it was, so the list swaps in place.
+ */
+function useChanges(path: string, withArchived: boolean) {
+  const { data, error } = useLoad<ChangesAnswer>(path);
+  const last = useRef<{ data: ChangesAnswer; withArchived: boolean }>(undefined);
+  if (data) last.current = { data, withArchived };
+  return { shown: last.current, updating: !data, error };
+}
+
 function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
   const { data, error } = useLoad<{ requests: RequestData[] }>('/api/requests');
-  const changes = useLoad<{ changes: ChangeData[]; more: boolean }>('/api/changes?limit=5');
+  // What changed in archived spaces and pages shows only when asked for, which the address keeps.
+  const withArchived = new URLSearchParams(location.search).get('archived') === '1';
+  const path = `/api/changes?limit=5${withArchived ? '&archived=1' : ''}`;
+  const changes = useChanges(path, withArchived);
   const requests = data?.requests;
-  if (failed(error, changes.error)) return <LoadFailed paths={['/api/requests', '/api/waiting', '/api/changes?limit=5']} />;
-  if (!waiting || !requests || !changes.data) return null;
+  if (failed(error, changes.error)) return <LoadFailed paths={['/api/requests', '/api/waiting', path]} />;
+  if (!waiting || !requests || !changes.shown) return null;
+  const { data: shown } = changes.shown;
   return (
     <Home
-      data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl, requests, changes: changes.data.changes, moreChanges: changes.data.more }}
+      data={{
+        name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl, requests,
+        changes: shown.changes, moreChanges: shown.more, archivedChanges: shown.archived, withArchived: changes.shown.withArchived,
+      }}
       recent={recent}
+      onArchived={(include) => navigate(include ? '/?archived=1' : '/')}
+      updating={changes.updating}
     />
   );
 }
@@ -338,19 +360,33 @@ function PagePage({ id }: { id: string }) {
 
 /** Everything that changed, fifty at a time, with the place in the list in the address. */
 function ChangesPage() {
-  const from = Math.max(0, Number.parseInt(new URLSearchParams(location.search).get('from') ?? '0', 10) || 0);
-  const path = `/api/changes${from ? `?offset=${from}` : ''}`;
-  const { data, error } = useLoad<{ changes: ChangeData[]; more: boolean }>(path);
+  const search = new URLSearchParams(location.search);
+  const from = Math.max(0, Number.parseInt(search.get('from') ?? '0', 10) || 0);
+  // What changed in archived spaces and pages shows only when asked for, which the address keeps too.
+  const withArchived = search.get('archived') === '1';
+  const path = `/api/changes?offset=${from}${withArchived ? '&archived=1' : ''}`;
+  const { shown, updating, error } = useChanges(path, withArchived);
   if (failed(error)) return <LoadFailed paths={[path]} />;
+  const data = shown?.data;
+  const go = (from: number, archived: boolean) => {
+    const next = new URLSearchParams();
+    if (from) next.set('from', String(from));
+    if (archived) next.set('archived', '1');
+    navigate(`/changes${next.size ? `?${next}` : ''}`);
+  };
   return (
     <Changes
       changes={data?.changes}
       more={data?.more ?? false}
       from={from}
       onFrom={(next) => {
-        navigate(next ? `/changes?from=${next}` : '/changes');
+        go(next, withArchived);
         scrollTo({ top: 0 });
       }}
+      archived={data?.archived}
+      withArchived={shown?.withArchived ?? withArchived}
+      onArchived={(include) => go(0, include)}
+      updating={updating}
     />
   );
 }

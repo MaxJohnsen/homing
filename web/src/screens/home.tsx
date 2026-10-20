@@ -7,7 +7,7 @@ import { eitherOf, placeOf, wantsTo, type RequestData, type WaitingData } from '
 import { Link } from '@/lib/router';
 import type { SpaceSummary } from '@/lib/spaces';
 import { CopyAddress } from '@/screens/account';
-import { ChangeList } from '@/screens/changes';
+import { ArchivedNote, ChangeList, IncludeArchived, onlyArchived, useArchivedToggle, type ArchivedChanges } from '@/screens/changes';
 
 /** What Home needs: what waits for you, and whether an assistant is connected yet. */
 export interface HomeData {
@@ -21,6 +21,10 @@ export interface HomeData {
   /** The latest changes to what Homing knows, and whether there are more. */
   changes?: ChangeData[];
   moreChanges?: boolean;
+  /** Archived spaces and pages were left out, and something changed in them. */
+  archivedChanges?: boolean;
+  /** What changed in archived spaces and pages shows too. */
+  withArchived?: boolean;
 }
 
 const shown = 3;
@@ -30,15 +34,23 @@ const shown = 3;
  * who has just joined is helped to connect their assistant. The sidebar is the way to your spaces,
  * so Home doesn't list them.
  */
-export function Home({ data, recent = [], now }: { data: HomeData; recent?: SpaceSummary[]; now?: Date }) {
+export function Home({ data, recent = [], now, onArchived, updating = false }: {
+  data: HomeData;
+  recent?: SpaceSummary[];
+  now?: Date;
+  onArchived?: (include: boolean) => void;
+  /** The changes shown are the last ones, while the next are on their way. */
+  updating?: boolean;
+}) {
   const { waiting } = data;
+  const archived = useArchivedToggle({ archived: data.archivedChanges, withArchived: data.withArchived, onArchived }, updating);
   if (waiting.length > 0) {
     return (
       <>
         <ScreenHeader title={waiting.length === 1 ? 'One change is waiting for you' : `${count(waiting.length, 'change', 'changes')} are waiting for you`} />
         <WaitingList waiting={waiting} now={now} />
         <RecentSpaces spaces={recent} />
-        <WhatChanged changes={data.changes ?? []} more={data.moreChanges} now={now} />
+        <WhatChanged changes={data.changes ?? []} more={data.moreChanges} now={now} {...archived} />
         <YourRequests requests={data.requests ?? []} now={now} />
       </>
     );
@@ -48,9 +60,9 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
   if (data.changes?.length) {
     return (
       <>
-        <ScreenHeader title="What changed" meta="Nothing is waiting for you. This is what’s new in your spaces." />
+        <ScreenHeader title="What changed" meta="Nothing is waiting for you. This is what’s new in your spaces." below={<ArchivedNote {...archived} />} />
         <RecentSpaces spaces={recent} />
-        <WhatChanged changes={data.changes} more={data.moreChanges} now={now} heading={false} />
+        <WhatChanged changes={data.changes} more={data.moreChanges} now={now} heading={false} {...archived} />
         <YourRequests requests={data.requests ?? []} now={now} />
       </>
     );
@@ -60,6 +72,7 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
       <ScreenHeader
         title="Nothing is waiting for you"
         meta="When your assistant proposes a change that needs your approval, it waits here."
+        below={<IncludeArchived {...archived} />}
       />
       <RecentSpaces spaces={recent} />
       <YourRequests requests={data.requests ?? []} now={now} />
@@ -67,17 +80,27 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
   );
 }
 
-/** The latest few changes, with the way to all of them. */
-function WhatChanged({ changes, more, now, heading = true }: { changes: ChangeData[]; more?: boolean; now?: Date; heading?: boolean }) {
-  if (changes.length === 0) return null;
+/** The latest few changes, with the way to all of them, and to those in archived spaces and pages. */
+function WhatChanged({ changes, more, now, heading = true, ...archived }: { changes: ChangeData[]; more?: boolean; now?: Date; heading?: boolean } & ArchivedChanges) {
+  if (changes.length === 0 && !(archived.archived && archived.onArchived)) return null;
   return (
     <section aria-labelledby={heading ? 'what-changed' : undefined} aria-label={heading ? undefined : 'What changed'} className="flex flex-col gap-4">
-      {heading && <h2 id="what-changed" className="text-lg leading-snug font-semibold">What changed</h2>}
-      <ChangeList changes={changes} now={now} />
-      {more && (
-        <Link href="/changes" className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
-          See everything that changed
-        </Link>
+      {heading && (
+        <div className="flex flex-col gap-2">
+          <h2 id="what-changed" className="text-lg leading-snug font-semibold">What changed</h2>
+          <ArchivedNote {...archived} />
+        </div>
+      )}
+      {changes.length > 0 ? <ChangeList changes={changes} now={now} /> : <p className="text-base text-muted-foreground">{onlyArchived}</p>}
+      {(more || archived.archived) && (
+        <div className="flex flex-col gap-2">
+          {more && (
+            <Link href={archived.withArchived ? '/changes?archived=1' : '/changes'} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+              See everything that changed
+            </Link>
+          )}
+          <IncludeArchived {...archived} />
+        </div>
       )}
     </section>
   );

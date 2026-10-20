@@ -16,12 +16,12 @@ let homing: Homing;
 let ana: Member, cara: Member;
 let acme: string, northwind: string;
 
-type ChangeBody = { title: string; text: string; kind: string; newPage: boolean; by: { name: string | null; you: boolean } | null; agent: string | null; onlyYou: boolean; space: { name: string | null } };
+type ChangeBody = { title: string; text: string; kind: string; newPage: boolean; by: { name: string | null; you: boolean } | null; agent: string | null; onlyYou: boolean; pageArchived: boolean; space: { name: string | null; archived: boolean } };
 
 const changes = async (who: Member, query = '') => {
   const { status, body } = await who.browser.json(`/api/changes${query}`);
   assert.equal(status, 200, JSON.stringify(body));
-  return body as { changes: ChangeBody[]; more: boolean };
+  return body as { changes: ChangeBody[]; more: boolean; archived: boolean };
 };
 
 before(async () => {
@@ -87,4 +87,83 @@ test('nobody sees changes in a space they can’t open', async () => {
   });
   assert.ok((await changes(ana, '?limit=5')).changes.some((change) => change.text === 'Northwind pays 1,450 a day.'));
   assert.doesNotMatch(JSON.stringify(await changes(cara)), /Northwind|1,450/);
+});
+
+test('what changed leaves out archived spaces, as each person sees them, until they ask for them', async () => {
+  const dave = await member(homing.url, 'Dave');
+  // Cara has the campaign and its ads through Acme. Dave has only the booth, closed inside it.
+  const { campaign, ads } = await as({ ...ana, direct: true }, async (s) => {
+    const campaign = await createSpace(s, { name: 'Summer campaign', parentId: acme });
+    const ads = await createSpace(s, { name: 'Ads', parentId: campaign });
+    const booth = await createSpace(s, { name: 'Fair booth', parentId: campaign, closed: true });
+    await addMember(s, booth, dave.id);
+    for (const [spaceId, title, body] of [[campaign, 'Wrap-up', 'The final invoice was paid on 12 October.'], [ads, 'Ad results', 'The ads reached 40,000 people.'], [booth, 'Booth', 'The booth is booked for the fair.']]) {
+      await writeItem(s, { pageId: await createPage(s, { spaceId, title, shared: true }), body, shared: true });
+    }
+    return { campaign, ads };
+  });
+  const texts = async (who: Member, query = '') => (await changes(who, query)).changes.map((change) => change.text);
+  assert.ok((await texts(cara)).includes('The final invoice was paid on 12 October.'));
+  assert.equal((await changes(cara)).archived, false, 'nothing is left out yet');
+  assert.equal((await ana.browser.json(`/api/spaces/${campaign}/archive`, { archived: true })).status, 200);
+
+  // Out of everyday attention: gone from what changed, the spaces in it too, with a way to them.
+  for (const who of [ana, cara]) {
+    const everyday = await changes(who);
+    assert.doesNotMatch(JSON.stringify(everyday.changes), /final invoice|40,000|booth/);
+    assert.equal(everyday.archived, true);
+  }
+  // Asked for, they're back, and each says its space is archived.
+  const included = (await changes(cara, '?archived=1')).changes;
+  assert.deepEqual(
+    included.filter((change) => change.space.archived).map((change) => [change.text, change.space.name]),
+    [['The ads reached 40,000 people.', 'Ads'], ['The final invoice was paid on 12 October.', 'Summer campaign']],
+  );
+  assert.ok(included.some((change) => !change.space.archived), 'and everything else with them');
+  assert.ok((await texts(ana, '?archived=1')).includes('The booth is booked for the fair.'));
+  // The archived space itself still shows what changed there.
+  assert.deepEqual(((await cara.browser.json(`/api/spaces/${ads}/overview`)).body.active as { title: string }[]).map((page) => page.title), ['Ad results']);
+
+  // Dave can't open the campaign, so for him the booth isn't archived, and its changes stay.
+  const forDave = await changes(dave);
+  assert.deepEqual(forDave.changes.map((change) => [change.text, change.space.archived]), [['The booth is booked for the fair.', false]]);
+  assert.equal(forDave.archived, false);
+  assert.doesNotMatch(JSON.stringify(forDave), /Summer campaign/);
+
+  assert.equal((await ana.browser.json(`/api/spaces/${campaign}/archive`, { archived: false })).status, 200);
+  assert.ok((await texts(cara)).includes('The ads reached 40,000 people.'));
+});
+
+test('what changed leaves out archived pages too, and offers what’s archived only when the person would see something', async () => {
+  const texts = async (who: Member, query = '') => (await changes(who, query)).changes.map((change) => change.text);
+  // Only Ana's own note is in an archived space, so Cara isn't offered a way to it.
+  const offsite = await as({ ...ana, direct: true }, async (s) => {
+    const offsite = await createSpace(s, { name: 'Offsite', parentId: acme });
+    await writeItem(s, { pageId: await createPage(s, { spaceId: offsite, title: 'Offsite notes' }), body: 'My notes from the offsite.' });
+    return offsite;
+  });
+  assert.equal((await ana.browser.json(`/api/spaces/${offsite}/archive`, { archived: true })).status, 200);
+  assert.equal((await changes(ana)).archived, true);
+  assert.equal((await changes(cara)).archived, false);
+
+  // Archiving a page is one state for everyone who sees it: Cara archives it, and it leaves what changed for both.
+  const minutes = await as({ ...ana, direct: true }, async (s) => {
+    const minutes = await createPage(s, { spaceId: acme, title: 'Kickoff minutes', shared: true });
+    await writeItem(s, { pageId: minutes, body: 'The kickoff was on 3 March.', shared: true });
+    return minutes;
+  });
+  assert.ok((await texts(ana)).includes('The kickoff was on 3 March.'));
+  assert.equal((await cara.browser.json(`/api/pages/${minutes}/archive`, { archived: true })).status, 200);
+  for (const who of [ana, cara]) {
+    const everyday = await changes(who);
+    assert.ok(!everyday.changes.some((change) => change.text === 'The kickoff was on 3 March.'));
+    assert.equal(everyday.archived, true);
+    // Asked for, it's back, and says it's on an archived page.
+    const included = (await changes(who, '?archived=1')).changes.find((change) => change.text === 'The kickoff was on 3 March.');
+    assert.deepEqual([included?.pageArchived, included?.space.archived], [true, false]);
+  }
+  assert.equal((await ana.browser.json(`/api/pages/${minutes}/archive`, { archived: false })).status, 200);
+  assert.ok((await texts(cara)).includes('The kickoff was on 3 March.'));
+  assert.equal((await changes(cara)).archived, false);
+  assert.equal((await ana.browser.json(`/api/spaces/${offsite}/archive`, { archived: false })).status, 200);
 });
