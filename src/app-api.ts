@@ -587,7 +587,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (typeof body.archived !== 'boolean') return answer(res, 400, { message: 'Archive it or reopen it.' });
         const done = await write((s) => archivePage(s, route.id, body.archived as boolean));
         if (done === undefined) return answer(res, 404, noPage);
-        if (!done) return answer(res, 400, { message: 'Rules, skills and the overview aren’t archived.' });
+        if (done === 'reserved') return answer(res, 400, { message: 'Rules, skills and the overview aren’t archived.' });
         json(res, 200, { id: route.id, archived: body.archived });
         break;
       }

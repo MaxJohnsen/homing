@@ -481,6 +481,8 @@ export const pageArchiveProposal: ProposalData = {
     id: '7d1c2a40-0000-4000-8000-000000000006',
     title: 'Old print vendor',
     archived: false,
+    shared: true,
+    stands: true,
     shown: 'Old print vendor\n',
     asked: false,
     why: 'Trykkeriet AS closed in 2026, and the brochures moved to Grafisk Hus.',

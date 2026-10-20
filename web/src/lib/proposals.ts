@@ -59,12 +59,14 @@ export interface ProposalData {
   /** Sharing a space from your personal tree: what it would do, while it's still there, and why. */
   conversion?: (ConversionData & { why: string | null }) | null;
   /** Archiving the space: how many spaces in it go with it, whether only you have it, whether it's archived now, and why. */
-  archive?: { spaces: number; private: boolean; archived: boolean; asked?: boolean; why: string | null } | null;
+  archive?: { spaces: number; private: boolean; archived: boolean; asked?: boolean; why: string | null; /** Nothing archived or reopened it since it was proposed. */ stands?: boolean } | null;
   /**
-   * Archiving or reopening a page others see: the page as you see it now, untitled when you can't see
-   * it anymore, whether it's archived now, what approving checks it against, why, and whether you asked.
+   * Archiving or reopening a page in a space others can open: the page as you see it now, untitled
+   * when you can't see it anymore, whether it's archived now, whether everyone in the space sees it,
+   * whether it still stands (nobody archived or reopened it since), what approving checks it
+   * against, why, and whether you asked.
    */
-  page?: { id: string; title: string | null; archived: boolean; shown: string; asked: boolean; why: string | null } | null;
+  page?: { id: string; title: string | null; archived: boolean; shared: boolean; stands: boolean; shown: string; asked: boolean; why: string | null } | null;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -215,9 +217,9 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publica
   if (proposal.action === 'convert') return proposal.state === 'open' && !proposal.conversion;
   // A page you can't see anymore, or one archived or reopened another way, has nothing left to decide.
   if (proposal.action === 'archive page' || proposal.action === 'reopen page') {
-    return proposal.state === 'open' && (!proposal.page?.title || proposal.page.archived === (proposal.action === 'archive page'));
+    return proposal.state === 'open' && (!proposal.page?.title || proposal.page.archived === (proposal.action === 'archive page') || !proposal.page.stands);
   }
-  if (proposal.action === 'archive') return proposal.state === 'open' && Boolean(proposal.archive?.archived);
+  if (proposal.action === 'archive') return proposal.state === 'open' && Boolean(proposal.archive?.archived || proposal.archive?.stands === false);
   if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
   if (proposal.action === 'task') return proposal.state === 'open' && (!proposal.task || proposal.task.shared || proposal.task.done);
   return (proposal.action === 'change' || proposal.action === 'remove') && !proposal.rule?.current;
@@ -292,7 +294,11 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     }
     if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: proposal.archive?.asked ? 'Nothing was archived.' : `${assistant} won’t suggest archiving it again.` };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: 'Nothing was archived.' };
-    if (isGone(proposal)) return { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' };
+    if (isGone(proposal)) {
+      return proposal.archive?.archived
+        ? { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' }
+        : { kind: 'gone', heading: 'Nothing to decide', detail: 'It was archived and reopened since, so there’s nothing to decide.' };
+    }
     return undefined;
   }
   if (action === 'archive page' || action === 'reopen page') {
@@ -311,6 +317,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: archive ? 'Nothing was archived.' : 'Nothing was reopened.' };
     if (isGone(proposal)) {
       if (!page?.title) return { kind: 'gone', heading: 'Nothing to decide', detail: 'You can’t see this page anymore.' };
+      if (page.archived !== archive) return { kind: 'gone', heading: 'Nothing to decide', detail: `It was ${archive ? 'archived and reopened' : 'reopened and archived again'} since, so there’s nothing to decide.` };
       return archive
         ? { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' }
         : { kind: 'gone', heading: 'Already open', detail: 'It was reopened since, so there’s nothing to decide.' };

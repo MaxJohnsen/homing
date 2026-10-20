@@ -88,9 +88,10 @@ export interface ProposalView extends Proposal {
   audience: { people: number; above: boolean } | null;
   /**
    * For archiving a space: how many spaces in it would go with it, as the reader sees them, whether
-   * only the reader has it, and whether it's archived now.
+   * only the reader has it, whether it's archived now, and whether it still stands: nothing archived
+   * or reopened it, or a space above it, since it was proposed.
    */
-  archive: { spaces: number; private: boolean; archived: boolean } | null;
+  archive: { spaces: number; private: boolean; archived: boolean; stands: boolean } | null;
   /**
    * For sharing a space from the person's personal tree: what sharing it would do, while it's still
    * there, as Settings shows it. Null once it's shared, or for anyone else.
@@ -104,9 +105,10 @@ export interface ProposalView extends Proposal {
   } | null;
   /**
    * For archiving or reopening a page: its title as the reader sees it now, whether it's archived,
-   * and what approving checks it against. Null when the reader can't see it anymore.
+   * whether everyone in its space sees it, whether it still stands (nobody archived or reopened it
+   * since it was proposed), and what approving checks it against. Null when the reader can't see it.
    */
-  page: { title: string; archived: boolean; shown: string } | null;
+  page: { title: string; archived: boolean; shared: boolean; stands: boolean; shown: string } | null;
   /** For sharing a task: the task as it is now, if the reader can see it, and whether it's still theirs alone. */
   task: { title: string; description: string | null; due: string | null; done: boolean; shared: boolean; shown: string } | null;
   /** For a suggested space: where the person may put it, and the space it became, if they can open it. */
@@ -345,11 +347,11 @@ export async function suggestArchive(s: Session, input: { spaceId: string; why?:
 }
 
 /**
- * Proposes archiving a page others see, or reopening one, for the person to approve (spec §3). An
- * assistant's own suggestion to archive one is rare, as suggesting to archive a space is: one
- * waiting at a time, never again for a page the person kept open, and only with a reason, which is
- * the evidence that it's no longer active. A few wait at a time when the person asked, and reopening
- * is always theirs to ask for.
+ * Proposes archiving a page in a space others can open, or reopening one, for the person to approve
+ * (spec §3). An assistant's own suggestion to archive one is rare, as suggesting to archive a space
+ * is: one waiting at a time, never again for a page the person kept open, and only with a reason,
+ * which is the evidence that it's no longer active. A few wait at a time when the person asked, and
+ * reopening is always theirs to ask for.
  */
 export async function proposePageArchive(s: Session, input: { pageId: string; reopen?: boolean; why?: string; asked?: boolean }): Promise<Proposal> {
   // One person's suggestions are made one at a time, so two at once can't both pass the checks.
@@ -376,13 +378,17 @@ export async function proposePageArchive(s: Session, input: { pageId: string; re
     if (!why) throw new SpaceRefused('where', 'Say why the page is no longer active, such as a finished project or someone who has left. Age is not evidence.');
     const own = waiting.find((proposal) => !proposal.asked);
     if (own) throw new NotSuggested(`Archiving a page already waits for the user (proposal:${own.id}). Don't suggest another until they decide it.`, own.id);
-    // Kept open: turned down, or archived on a suggestion and reopened since, as it's open now.
-    const [kept] = await s.tx<{ id: string; at: Date }[]>`
-      select id, decided_at as at from proposals
-      where ${yours(s)} and action = 'archive page' and page_id = ${page.id}::uuid and state in ('rejected', 'approved', 'withdrawn')
+    // Kept open: a suggestion of the assistant's own that was turned down, or an archive the person
+    // approved and that was reopened since, as it's open now.
+    const [kept] = await s.tx<{ id: string; at: Date; approved: boolean }[]>`
+      select id, decided_at as at, state = 'approved' as approved from proposals
+      where ${yours(s)} and action = 'archive page' and page_id = ${page.id}::uuid
+        and (state = 'approved' or (state in ('rejected', 'withdrawn') and not coalesce((change->>'asked')::boolean, false)))
       order by decided_at desc limit 1
     `;
-    if (kept) throw new NotSuggested(`The user kept “${page.title}” open after archiving it was suggested on ${kept.at.toISOString().slice(0, 10)}. Don't suggest it again unless they ask.`, kept.id);
+    const on = kept?.at.toISOString().slice(0, 10);
+    if (kept?.approved) throw new NotSuggested(`“${page.title}” was reopened after the user archived it on ${on}. Don't suggest archiving it again unless they ask.`, kept.id);
+    if (kept) throw new NotSuggested(`The user turned down archiving “${page.title}” when it was suggested on ${on}. Don't suggest it again unless they ask.`, kept.id);
   }
   return insertProposal(s, {
     spaceId: page.spaceId,
@@ -396,12 +402,23 @@ export async function proposePageArchive(s: Session, input: { pageId: string; re
 }
 
 /** A page as deciding to archive or reopen it shows it, or null when the reader can't see it. */
-async function pageNow(s: Session, pageId: string): Promise<ProposalView['page']> {
-  const page = await readPage(s, pageId);
+async function pageNow(s: Session, proposal: Pick<Proposal, 'id' | 'pageId'>): Promise<ProposalView['page']> {
+  const page = await readPage(s, proposal.pageId!);
   if (!page) return null;
-  // Its title and when it was last archived or reopened, so approving runs on the page as it was shown.
-  const [{ at }] = await s.tx<{ at: Date | null }[]>`select max(at) as at from page_archives where page_id = ${pageId}::uuid`;
-  return { title: page.title, archived: page.archived !== null, shown: `${page.title}\n${at?.toISOString() ?? ''}` };
+  // When it was last archived or reopened, so approving runs on the page as it was shown, and a
+  // proposal it changed under no longer stands.
+  const [{ at, since }] = await s.tx<{ at: Date | null; since: boolean }[]>`
+    select max(at) as at, coalesce(max(at) > (select created_at from proposals where id = ${proposal.id}::uuid), false) as since
+    from page_archives where page_id = ${proposal.pageId}::uuid
+  `;
+  return {
+    title: page.title,
+    archived: page.archived !== null,
+    // Anything shared on it, its title included, is seen by everyone in the space.
+    shared: page.shared || page.items.some((item) => item.privateTo === null),
+    stands: !since,
+    shown: `${page.title}\n${at?.toISOString() ?? ''}`,
+  };
 }
 
 /**
@@ -504,9 +521,9 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     admins,
     publication,
     conversion: await conversionFor(s, proposal),
-    archive: proposal.action === 'archive space' ? { spaces: spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length, private: space.privateTo !== null, archived: space.archived } : null,
+    archive: proposal.action === 'archive space' ? { spaces: spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length, private: space.privateTo !== null, archived: space.archived, stands: await spaceStands(s, proposal) } : null,
     task: task ? { title: task.title, description: task.description, due: task.due, done: task.doneAt !== null, shared: task.privateTo === null, shown: taskShown(task) } : null,
-    page: proposal.pageId ? await pageNow(s, proposal.pageId) : null,
+    page: proposal.pageId ? await pageNow(s, proposal) : null,
     audience: audienceOf ? { people: audienceOf.members.length, above: audienceOf.reachedFromAbove } : null,
     places: proposal.action === 'add space' && proposal.state === 'open' && proposal.privateTo === personOf(s.principal) ? await placesFor(s, spaces) : [],
     created: created ? { id: created.id, name: created.name, where: whereItIs(created, spaces) } : null,
@@ -717,23 +734,42 @@ function taskStands(s: Session, table: string) {
   ))`;
 }
 
-/** Archiving a space waits only while it's open; archived another way, there's nothing to decide. */
+/**
+ * Archiving a space waits only while it's open, and while nothing archived or reopened it, or a
+ * space above it, since it was proposed: archived another way, there's nothing to decide, and
+ * reopened again, it doesn't come back.
+ */
 function spaceOpen(s: Session, table: string) {
   const p = s.tx(table);
-  return s.tx`(${p}.action <> 'archive space' or not exists (select from archived_since(${p}.space_id)))
+  return s.tx`(${p}.action <> 'archive space' or (
+      not exists (select from archived_since(${p}.space_id))
+      and coalesce(archive_changed(${p}.space_id) <= ${p}.created_at, true)
+    ))
     and (${p}.action <> 'share space' or (
       exists (select from spaces x where x.id = ${p}.space_id and x.private_to is not null)
       and not exists (select from archived_since(${p}.space_id))
     ))`;
 }
 
-/** Archiving or reopening a page waits only while the person sees it, and it isn't archived, or open, already. */
+/**
+ * Archiving or reopening a page waits only while the person sees it, it isn't archived, or open,
+ * already, and nobody archived or reopened it since it was proposed, so it never comes back.
+ */
 function pageStands(s: Session, table: string) {
   const p = s.tx(table);
   return s.tx`(${p}.page_id is null or exists (
     select from pages pg where pg.id = ${p}.page_id and (pg.archived_at is null) = (${p}.action = 'archive page')
       and exists (select from content c where c.page_id = pg.id and ${visible(s, 'c')})
+      and not exists (select from page_archives l where l.page_id = pg.id and l.at > ${p}.created_at)
   ))`;
+}
+
+/** Whether archiving a space still stands: nothing archived or reopened it, or a space above it, since it was proposed. */
+async function spaceStands(s: Session, proposal: Pick<Proposal, 'id' | 'spaceId'>): Promise<boolean> {
+  const [{ stands }] = await s.tx<{ stands: boolean }[]>`
+    select coalesce(archive_changed(${proposal.spaceId}::uuid) <= (select created_at from proposals where id = ${proposal.id}::uuid), true) as stands
+  `;
+  return stands;
 }
 
 function ruleStands(s: Session, table: string) {
@@ -807,6 +843,7 @@ export async function decide(
       const spaces = await listSpaces(s);
       const space = spaces.find((candidate) => candidate.id === proposal.spaceId);
       if (space?.archived) throw new Undecidable('changed', 'It was archived after you opened this page, so there’s nothing to decide.');
+      if (!(await spaceStands(s, proposal))) throw new Undecidable('changed', 'It was archived and reopened since this was proposed, so there’s nothing to decide.');
       if (decision.shown !== String(spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length)) {
         throw new Undecidable('changed', 'Spaces went in or out of it after you opened this page. Check it again before archiving it.');
       }
@@ -815,11 +852,14 @@ export async function decide(
       // As the person, directly, on the page as it was shown: one archived or reopened meanwhile, or
       // that they can no longer see, has nothing left to decide.
       const archive = proposal.action === 'archive page';
-      const page = await pageNow(s, proposal.pageId!);
+      const page = await pageNow(s, proposal);
+      const already = `It was ${archive ? 'archived' : 'reopened'} after you opened this, so there’s nothing to decide.`;
       if (!page) throw new Undecidable('changed', 'You can’t see this page anymore, so there’s nothing to decide.');
-      if (page.archived === archive) throw new Undecidable('changed', `It was ${archive ? 'archived' : 'reopened'} after you opened this, so there’s nothing to decide.`);
+      if (page.archived === archive) throw new Undecidable('changed', already);
+      if (!page.stands) throw new Undecidable('changed', `It was ${archive ? 'archived and reopened' : 'reopened and archived again'} since this was proposed, so there’s nothing to decide.`);
       if (decision.shown !== page.shown) throw new Undecidable('changed', `The page changed after you opened this. Check it again before ${archive ? 'archiving' : 'reopening'} it.`);
-      await archivePage(s, proposal.pageId!, archive);
+      // Someone else may have got there first while this waited for the page: then nothing changes.
+      if ((await archivePage(s, proposal.pageId!, archive)) !== 'changed') throw new Undecidable('changed', already);
     } else if (proposal.action === 'share task') {
       // Only while it's still the person's own and open, and exactly as it was shown.
       await s.tx`select id from tasks where id = ${proposal.taskId}::uuid for update`;
@@ -1001,7 +1041,16 @@ export function proposalData(proposal: ProposalView) {
     task: proposal.task ? { ...proposal.task, why: proposal.reason, audience: proposal.audience } : null,
     // Archiving or reopening a page: the page as it is now, untitled when the reader can't see it anymore, why, and whether the user asked.
     page: proposal.pageId
-      ? { id: proposal.pageId, title: proposal.page?.title ?? null, archived: proposal.page?.archived ?? false, shown: proposal.page?.shown ?? '', asked: proposal.change.asked ?? false, why: proposal.reason }
+      ? {
+          id: proposal.pageId,
+          title: proposal.page?.title ?? null,
+          archived: proposal.page?.archived ?? false,
+          shared: proposal.page?.shared ?? false,
+          stands: proposal.page?.stands ?? false,
+          shown: proposal.page?.shown ?? '',
+          asked: proposal.change.asked ?? false,
+          why: proposal.reason,
+        }
       : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
