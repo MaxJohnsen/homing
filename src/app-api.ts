@@ -279,6 +279,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
                 collections: query.get('collections') === '1',
                 in: collection ?? undefined,
                 archived: query.get('archived') === '1',
+                countArchived: true,
               })
             : undefined,
         );
@@ -431,6 +432,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             text: hit.kind === 'item' ? hit.text : null,
             onlyYou: hit.private,
             superseded: hit.superseded,
+            archived: hit.archived,
             updatesShared: hit.updatesShared,
             space: where(hit.spaceId),
           });

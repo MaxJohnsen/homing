@@ -9,7 +9,7 @@ export interface Where {
 /** Everything you can see that matches a search, the same results your assistant gets, by kind. */
 export interface SearchData {
   spaces: (Where & { id: string; name: string })[];
-  pages: { id: string; title: string; type: string | null; text: string | null; onlyYou: boolean; superseded: boolean; updatesShared: boolean; overview?: boolean; space: Where }[];
+  pages: { id: string; title: string; type: string | null; text: string | null; onlyYou: boolean; superseded: boolean; archived?: boolean; updatesShared: boolean; overview?: boolean; space: Where }[];
   rules: { id: string; text: string; kind: 'requirement' | 'preference'; onlyYou: boolean; space: Where }[];
   skills: { id: string; name: string; onlyYou: boolean; space: Where }[];
   sources: { id: string; reference: string | null; excerpt: string; onlyYou: boolean; space: Where }[];

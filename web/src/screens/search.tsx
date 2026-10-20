@@ -131,6 +131,7 @@ function kinds(data: SearchData): { kind: Exclude<SearchKind, 'all'>; title: str
           detail={[
             page.overview ? `What someone wrote about where ${placeName(page.space)} stands` : `${page.type ? capitalize(page.type) : 'A page'} in ${placeName(page.space)}`,
             page.superseded && 'What it says matched is no longer true',
+            page.archived && !page.superseded && 'Archived',
             page.updatesShared && 'Your update, which others don’t see yet',
           ].filter(Boolean).join('. ')}
         />

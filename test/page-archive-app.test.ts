@@ -6,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { createPage, writeItem, writeOverview } from '../src/knowledge.ts';
+import { createPage, gather, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -95,4 +95,37 @@ test('an assistant archives at once only a page nobody else has anything on', as
   await assert.rejects(as(ana, (s) => s.tx`select archive_page(${notes}::uuid, true)`), refused);
   await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`select archive_page(${carasDraft}::uuid, true)`), refused);
   await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`update pages set archived_at = now() where id = ${vendor}::uuid`), refused);
+});
+
+test('a subject keeps one page when it is archived, and archived pages still show where they are gathered', async () => {
+  assert.equal((await archive(ana, vendor)).status, 200);
+  // Remembering under its title writes on the archived page, and says so, instead of starting another.
+  const saved = await claude.call('remember', { space: `space:${acme}`, text: 'Trykkeriet AS closed in 2026.', page: 'Old print vendor' });
+  assert.match(saved.text, new RegExp(`on the archived page "Old print vendor" \\(page:${vendor}\\)\\. It stays out of everyday context`));
+  assert.equal((await titles(ana, '?archived=1')).pages.length, 1);
+  assert.ok(!(await titles(ana)).pages.some((page) => page.title === 'Old print vendor'));
+
+  // A collection still lists it, marked.
+  const collection = await as({ ...ana, direct: true }, async (s) => {
+    const collection = await createPage(s, { spaceId: acme, title: 'Suppliers', shared: true });
+    await gather(s, { collectionId: collection, pageId: vendor, shared: true });
+    return collection;
+  });
+  const gathered = (await ana.browser.json(`/api/spaces/${acme}/pages?in=${collection}`)).body.pages as { title: string; archived: boolean }[];
+  assert.deepEqual(gathered.map((page) => [page.title, page.archived]), [['Old print vendor', true]]);
+  assert.match((await claude.call('read', { ref: `page:${collection}` })).text, /Old print vendor \(page:[0-9a-f-]+, archived\)/);
+
+  // Who archived it is seen only by those who see the page.
+  assert.equal((await as(ben, (s) => s.tx`select from page_archives where page_id = ${vendor}::uuid`)).length, 0);
+  assert.equal((await archive(ana, vendor, false)).status, 200);
+});
+
+test('an assistant may archive a shared page in a space nobody else can open', async () => {
+  const solo = await as({ ...ana, direct: true }, async (s) => {
+    const solo = await createSpace(s, { name: 'Solo' });
+    const page = await createPage(s, { spaceId: solo, title: 'Ideas', shared: true });
+    await writeItem(s, { pageId: page, body: 'A podcast about printing.', shared: true });
+    return page;
+  });
+  assert.match((await claude.call('act', { action: 'page.archive', input: { page: `page:${solo}` } })).text, /^Archived "Ideas"/);
 });

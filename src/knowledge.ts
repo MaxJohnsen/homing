@@ -353,14 +353,15 @@ export async function readItem(s: Session, itemId: string) {
 }
 
 /** The knowledge pages in a space that the viewer can see, most recently changed first. */
-export async function listPages(s: Session, spaceId: string) {
-  return s.tx<{ id: string; type: string | null; title: string | null; updatedAt: Date }[]>`
-    select c.page_id as id, p.type, ${titleOf(s, s.tx`c.page_id`)} as title, max(c.updated_at) as updated_at
+export async function listPages(s: Session, spaceId: string, options: { withArchived?: boolean } = {}) {
+  return s.tx<{ id: string; type: string | null; title: string | null; updatedAt: Date; archived: boolean }[]>`
+    select c.page_id as id, p.type, ${titleOf(s, s.tx`c.page_id`)} as title, max(c.updated_at) as updated_at, p.archived_at is not null as archived
     from content c
     join pages p on p.id = c.page_id
-    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and p.archived_at is null and ${visible(s, 'c')} and ${current(s, 'c')}
-    group by c.page_id, p.type
-    order by updated_at desc
+    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and ${options.withArchived ? s.tx`true` : s.tx`p.archived_at is null`}
+      and ${visible(s, 'c')} and ${current(s, 'c')}
+    group by c.page_id, p.type, p.archived_at
+    order by p.archived_at is not null, updated_at desc
   `;
 }
 
@@ -400,6 +401,8 @@ export interface PageSummary {
   gathers: number;
   /** Listing a collection's pages: whether it's in the collection for everyone, or only for the viewer. */
   gatheredShared?: boolean;
+  /** Archived, which a collection still lists. */
+  archived: boolean;
 }
 
 export type PageOrder = 'recent' | 'name' | 'match';
@@ -425,6 +428,8 @@ export async function pagesIn(
     in?: string;
     /** Only archived pages, instead of only the others. A collection lists both. */
     archived?: boolean;
+    /** Also how many archived pages there are, for the way to them. */
+    countArchived?: boolean;
   } = {},
 ): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[]; archived: number }> {
   const terms = termsOf(options.query ?? '');
@@ -460,7 +465,7 @@ export async function pagesIn(
       : s.tx`true`;
   const sorted = { recent: s.tx`h.updated_at desc`, name: s.tx`lower(h.title), h.updated_at desc`, match: s.tx`h.rank desc, h.updated_at desc` }[order];
   const list = (offset: number) => s.tx<(Omit<PageSummary, 'gathers'> & { total: number })[]>`
-    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, count(*) over ()::int as total
+    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, p.archived_at is not null as archived, count(*) over ()::int as total
     from (${here}) h
     join pages p on p.id = h.id
     where h.hit and ${typed} and ${kept}
@@ -479,7 +484,7 @@ export async function pagesIn(
     order by count(*) desc, p.type
   `;
   const gathers = await gatheredCounts(s, rows.map((row) => row.id));
-  const archived = options.in || options.archived ? 0 : await archivedPages(s, spaceId);
+  const archived = options.countArchived && !options.in && !options.archived ? await archivedPages(s, spaceId) : 0;
   const sides = options.in && rows.length > 0
     ? new Map((await s.tx<{ pageId: string; shared: boolean }[]>`
         select g.page_id, bool_or(g.private_to is null) as shared from gathered g
@@ -772,7 +777,7 @@ function termsOf(query: string): string | undefined {
 export async function search(
   s: Session,
   query: string,
-  options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources' } = {},
+  options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources'; active?: boolean } = {},
 ): Promise<Hit[]> {
   const terms = termsOf(query);
   if (!terms) return [];
@@ -811,6 +816,7 @@ export async function search(
     -- A skill's file that's no longer current doesn't find it. Only knowledge leaves out rules and skills.
     -- Your own original shows as one with what you shared from it while they agree.
     where not (${options.current ?? false} and superseded) and not (item_kind = 'file' and superseded) and not agrees_with_shared
+      and not (${options.active ?? false} and archived)
       and not (${options.knowledge ?? false} and coalesce(page_type, '') in ('guidance', 'skill'))
     order by kind, id, superseded, rank desc
     ) best

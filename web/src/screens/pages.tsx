@@ -89,9 +89,15 @@ export function Pages({ space, data, filters, onFilters, create, collections = f
     return <div className="flex flex-col gap-4">{archivedNote}<p className="text-base text-muted-foreground">No archived pages in {where}.</p></div>;
   }
   if (data.all === 0) {
+    // Every page archived isn't the same as nothing written yet.
     return (
       <div className="flex flex-col gap-4">
-        {form || <EmptyKnowledge space={space} onWrite={create && (() => setCreating(true))} />}
+        {form || (toArchived ? (
+          <div className="flex flex-col items-start gap-3">
+            <p className="text-base text-muted-foreground">Every page in {where} is archived.</p>
+            {create && <Button variant="outline" size="lg" onClick={() => setCreating(true)}>New page</Button>}
+          </div>
+        ) : <EmptyKnowledge space={space} onWrite={create && (() => setCreating(true))} />)}
         {toArchived}
       </div>
     );
@@ -156,9 +162,12 @@ export function Pages({ space, data, filters, onFilters, create, collections = f
           {toArchived}
         </div>
       ) : (
-        <p className="text-base text-muted-foreground">
-          {searching ? `No ${noun[1]} in ${space.name} match “${filters.q.trim()}”.` : `No ${noun[1]} in ${space.name} are of that type.`}
-        </p>
+        <div className="flex flex-col gap-3">
+          <p className="text-base text-muted-foreground">
+            {searching ? `No ${filters.archived ? 'archived ' : ''}${noun[1]} in ${space.name} match “${filters.q.trim()}”.` : `No ${noun[1]} in ${space.name} are of that type.`}
+          </p>
+          {toArchived}
+        </div>
       )}
     </div>
   );
@@ -185,7 +194,7 @@ function PageRow({ page, space, now, aside }: { page: PageSummary; space: Pick<S
             {(page.onlyYou || page.gatheredShared === false) && !space.private && <OnlyYou />}
           </span>
           {page.excerpt && <span className="line-clamp-2 text-sm text-muted-foreground">{plain(page.excerpt)}</span>}
-          <span className="text-sm text-muted-foreground">{kind ? `${kind}, ${updated}` : capitalize(updated)}</span>
+          <span className="text-sm text-muted-foreground">{kind ? `${kind}, ${updated}` : capitalize(updated)}{page.archived && '. Archived'}</span>
         </div>
         {!aside && <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />}
       </Link>

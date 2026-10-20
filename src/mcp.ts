@@ -481,7 +481,8 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
   const spaces = await listSpaces(s);
   // An archived space is out of everyday context, unless the request names it.
   const named = spaces.filter((space) => mentions(request, space.name));
-  const matched = new Set((await search(s, request, { limit: 50, current: true, knowledge: true })).map((hit) => hit.spaceId));
+  // Picking a space rests on what's active there, not on archived pages.
+  const matched = new Set((await search(s, request, { limit: 50, current: true, knowledge: true, active: true })).map((hit) => hit.spaceId));
   const candidates = named.length ? named : spaces.filter((space) => matched.has(space.id) && !space.archived);
   const archived = spaces.filter((space) => space.archived).length;
 
@@ -676,7 +677,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ? [
             '',
             `## Pages in this collection (${gathered.total})`,
-            ...gathered.pages.map((p) => `- ${oneLine(p.title)} (${ref('page', p.id)}${p.gatheredShared ? '' : ', private'})`),
+            ...gathered.pages.map((p) => `- ${oneLine(p.title)} (${ref('page', p.id)}${p.gatheredShared ? '' : ', private'}${p.archived ? ', archived' : ''})`),
             ...(gathered.total > gathered.pages.length ? [`- …and ${gathered.total - gathered.pages.length} more. Search finds them.`] : []),
           ]
         : []),
@@ -782,7 +783,9 @@ async function remember(
 
   const page = await pageFor(s, spaceId, input.page, input.type);
   const item = await writeItem(s, { pageId: page.id, body: input.text, sources });
-  const saved = `Saved on your private side as ${ref('item', item.id)}, on ${page.created ? 'the new page' : 'the page'} "${page.title}" (${ref('page', page.id)}).`;
+  const saved =
+    `Saved on your private side as ${ref('item', item.id)}, on ${page.created ? 'the new page' : page.archived ? 'the archived page' : 'the page'} "${page.title}" (${ref('page', page.id)}).` +
+    (page.archived ? ' It stays out of everyday context; if the subject is active again, ask the user and reopen it with page.archive.' : '');
   return input.gatherInto || input.removeFrom ? `${saved} ${await collect(s, spaceId, { ...input, page: ref('page', page.id) })}` : saved;
 }
 
@@ -791,7 +794,7 @@ async function collect(s: Session, spaceId: string, input: { page?: string; gath
   if (!input.page) throw new Refused('Say which page, with page: and a page reference or its title.');
   const page = /^page:/i.test(input.page)
     ? { id: parseRef(input.page, 'page') }
-    : (await listPages(s, spaceId)).find((candidate) => candidate.title?.toLowerCase() === input.page!.toLowerCase());
+    : (await listPages(s, spaceId, { withArchived: true })).find((candidate) => candidate.title?.toLowerCase() === input.page!.toLowerCase());
   if (!page) throw new Refused('There is no page with that title in this space that you can see.');
   const said: string[] = [];
   if (input.gatherInto) {
@@ -814,12 +817,13 @@ async function pageFor(s: Session, spaceId: string, page?: string, type?: string
     const found = await readPage(s, id);
     if (found?.spaceId !== spaceId) throw new Refused('There is no page with that reference in this space that you can see.');
     if (found.type === 'guidance' || found.type === 'skill') throw new Refused(onlyPeople);
-    return { id, title: found.title, created: false };
+    return { id, title: found.title, created: false, archived: found.archived !== null };
   }
   const title = page ?? 'Notes';
-  const existing = (await listPages(s, spaceId)).find((candidate) => candidate.title?.toLowerCase() === title.toLowerCase());
-  if (existing) return { id: existing.id, title: existing.title!, created: false };
-  return { id: await createPage(s, { spaceId, title, type: page ? type : 'notes' }), title, created: true };
+  // A subject keeps one page, archived or not: an active one with the title first.
+  const existing = (await listPages(s, spaceId, { withArchived: true })).find((candidate) => candidate.title?.toLowerCase() === title.toLowerCase());
+  if (existing) return { id: existing.id, title: existing.title!, created: false, archived: existing.archived };
+  return { id: await createPage(s, { spaceId, title, type: page ? type : 'notes' }), title, created: true, archived: false };
 }
 
 async function proposeGuidance(

@@ -1,9 +1,9 @@
 -- Archiving a page (#6, spec §3). It leaves everyday context and the space's
 -- list of pages, and stays searchable and can be reopened. Anyone who can see
 -- the page archives it directly, for everyone who sees it. An assistant may
--- only archive or reopen a page nobody else has anything on, at most 20 an
--- hour. Every archive and reopening is recorded, for everyone who sees the
--- page. Nothing is deleted.
+-- only archive or reopen a page nobody else sees, at most 20 an hour. Every
+-- archive and reopening is recorded, for everyone who sees the page. Nothing
+-- is deleted.
 
 alter table pages
   add column archived_at timestamptz,
@@ -52,7 +52,10 @@ begin
     raise exception 'rules, skills and overviews aren''t archived' using errcode = 'check_violation';
   end if;
   if current_agent() is not null then
-    if exists (select from content c where c.page_id = target.id and (c.private_to is null or c.private_to <> me)) then
+    -- Nobody else sees it: nothing on it is anyone else's, and what's shared is in a space only the person can open.
+    if exists (select from content c where c.page_id = target.id and c.private_to <> me)
+       or (exists (select from content c where c.page_id = target.id and c.private_to is null)
+           and exists (select from space_access a where a.space_id = target.space_id and a.person_id <> me)) then
       raise exception 'others see that page, so a person archives it' using errcode = 'insufficient_privilege';
     end if;
     if (

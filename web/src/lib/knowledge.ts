@@ -2,6 +2,8 @@ import type { PublicationData } from '@/lib/proposals';
 
 /** A page in a space's list of pages, as the person sees it. */
 export interface PageSummary {
+  /** Archived, which a collection still lists. */
+  archived?: boolean;
   id: string;
   type: string | null;
   title: string;
