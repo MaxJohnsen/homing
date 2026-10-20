@@ -33,7 +33,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
   const space = draft && suggestion ? spaceOf(draft, suggestion.places) : undefined;
   const sending = isSending(proposal);
   const outcome = outcomeOf(proposal);
-  const buttons = buttonsOf(action, sending, proposal.member?.change);
+  const buttons = buttonsOf(action, sending, proposal.member?.change, placeOf(proposal));
   // An email nobody uses Homing with can't be added until they're invited.
   const blocked = (action === 'space' && !space?.name) || proposal.member?.found === false;
   const place = placeOf(proposal);
@@ -53,7 +53,9 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why ?? proposal.member?.why) && <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why}”</p>}
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why) && (
+                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why}”</p>
+              )}
             </div>
             <ProposalDetails
               proposal={proposal}
@@ -82,6 +84,8 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             <p className="text-sm text-muted-foreground">
               {action === 'members'
                 ? `Only you can approve this. ${assistant} can’t do it for you.`
+                : action === 'publish'
+                ? `Only you can share it. ${assistant} can’t do it for you, and until you do, it stays only yours.`
                 : action === 'space'
                 ? suggestion?.asked
                   ? `Everyone in ${place} would see its name, so it waits for you. ${assistant} can’t create it without you.`
@@ -103,6 +107,11 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
               </div>
             </div>
             <SettledChange proposal={proposal} />
+            {proposal.action === 'publish' && proposal.state === 'approved' && proposal.publication && (
+              <Link href={`/pages/${proposal.publication.pageId}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+                Open {proposal.publication.page}
+              </Link>
+            )}
             {suggestion?.created && (
               <Link href={`/spaces/${suggestion.created.id}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
                 Open {suggestion.created.name}

@@ -11,8 +11,8 @@ export interface ProposalData {
   personal: boolean;
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
-  /** A rule to add, change or remove, a space an assistant suggests, or a change of who is in a space. */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members';
+  /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, or sharing an item. */
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -50,6 +50,7 @@ export interface ProposalData {
    * A change of who is in the space: who, by name when known, or the email given, and for an email,
    * whether someone uses Homing with it.
    */
+  publication?: PublicationData | null;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -64,6 +65,29 @@ export interface ProposalData {
 }
 
 export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
+
+/** Sharing one of your private items with everyone in its space, as the decision page and the card show it. */
+export interface PublicationData {
+  text: string;
+  /** The page it's on, by its title. */
+  page: string;
+  pageId: string;
+  /** What it rests on that the space can't see: another space, by name, or one of your own sources. */
+  hidden: { space: string | null; reference: string | null }[];
+  /** Sources it cites that you can no longer open. */
+  hiddenUnseen: number;
+  /** Shared as a copy, citing only what everyone there sees, rather than moving. */
+  copy: boolean;
+  /** The page has no shared title yet, so yours is shared with it. */
+  sharesTitle: boolean;
+  /** What everyone sees now from your earlier share, which this updates, if you shared it before. */
+  sharedText: string | null;
+  /** Still your current item, so it can be shared. */
+  current: boolean;
+  why: string | null;
+  /** Who would see it: how many people, and whether people above it you can't open too. */
+  audience: { people: number; above: boolean } | null;
+}
 
 /** A request you sent to a space's admins, as Home shows it under your requests. */
 export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within' | 'action' | 'kind'> {
@@ -105,6 +129,7 @@ export function wantsTo(
   withPlace = true,
 ): string {
   const { assistant, action, kind, request } = proposal;
+  if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
   if (action === 'members') {
     const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
     const who = typeof proposal.member === 'object' && proposal.member ? (proposal.member.name ?? proposal.member.email) : proposal.text;
@@ -141,13 +166,16 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 }
 
 /** Whether a change or removal lost its rule before anyone decided. */
-export function isGone(proposal: Pick<ProposalData, 'action' | 'rule'>): boolean {
+export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'state'>): boolean {
+  if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
   return (proposal.action === 'change' || proposal.action === 'remove') && !proposal.rule?.current;
 }
 
 /** The buttons for deciding it, or for a request you haven't sent, for sending it. */
-export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange): { approve: string; reject: string } {
+export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange, place?: string): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
+  // The button names who will see it.
+  if (action === 'publish') return { approve: place ? `Share with ${place}` : 'Share', reject: 'Don’t share' };
   if (action === 'members') {
     return member === 'remove'
       ? { approve: 'Remove', reject: 'Keep them' }
@@ -183,6 +211,15 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const { action, assistant, state, request, decidedBy, suggestion, member } = proposal;
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
+  if (action === 'publish') {
+    if (state === 'approved') {
+      return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees it now, and that you shared it.${proposal.publication?.copy ? ' Where it came from stays only yours.' : ''}` };
+    }
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
+    if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
+    return undefined;
+  }
   if (action === 'members' && member) {
     const who = member.name ?? member.email ?? 'They';
     if (state === 'approved') {

@@ -21,6 +21,11 @@ export interface Item {
   supersedes: string | null;
   /** Guidance that also applies in the spaces below its own. Knowledge never does. */
   reachesDown: boolean;
+  /** For shared knowledge published from someone's private side: the private original, which only they see. */
+  publishedFrom: string | null;
+  /** Who shared it from their private side, and when. */
+  publishedBy: string | null;
+  publishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -198,7 +203,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
       select c.id, chain.first from content c join chain on c.supersedes = chain.id
       where c.page_id = ${pageId}::uuid and ${visibleContent(s, 'c')}
     )
-    select ${itemColumns(s, 'content')}, ${citationsOf(s)} as sources, (
+    select ${itemColumns(s, 'content')}, ${citationsOf(s, true)} as sources, (
       -- Whoever can see a replacement can see what it replaced. For your own update to something
       -- shared, however many times you updated it since, that's what the others still see.
       select json_build_object('id', r.id, 'body', r.body, 'shared', r.private_to is null)
@@ -210,6 +215,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     left join chain on chain.id = content.id
     left join content first on first.id = chain.first
     where content.page_id = ${pageId}::uuid and content.kind <> 'removed' and ${visibleContent(s, 'content')} and ${current(s, 'content')}
+      and not ${agreesWithShared(s, 'content')}
     order by coalesce(first.created_at, content.created_at), content.created_at
   `;
   if (items.length === 0) return undefined;
@@ -225,6 +231,81 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
     items: items.filter((item) => item.kind !== 'title'),
   };
+}
+
+/** What sharing one of your private items with its space would do, for you to decide. */
+export interface Publication {
+  item: Item;
+  /** The page's title as the others will see it: its shared title, or yours, which is then shared too. */
+  pageTitle: string;
+  /** Whether the page has no shared title yet, so yours is shared with the item. */
+  sharesTitle: boolean;
+  /**
+   * What it rests on that the space's members can't see: your own sources, or another space's,
+   * by the space's name. Ones you can no longer open are counted, not named.
+   */
+  hidden: { reference: string | null; excerpt: string; space: string | null }[];
+  hiddenUnseen: number;
+  /** Whether it's shared as a copy citing only what everyone there sees, rather than moving. */
+  copy: boolean;
+  /** What everyone sees now from your earlier share, which this updates, if you shared it before. */
+  sharedText: string | null;
+  /** Whether it's still your current item, so it can be shared. */
+  current: boolean;
+}
+
+/** What sharing the item would do, if it's one of your own private items. */
+export async function publicationOf(s: Session, itemId: string): Promise<Publication | undefined> {
+  const me = personOf(s.principal) ?? null;
+  const [item] = await s.tx<Item[]>`
+    select ${itemColumns(s)} from content
+    where id = ${itemId}::uuid and private_to = ${me}::uuid and kind = 'text' and ${visible(s, 'content')}
+  `;
+  if (!item) return undefined;
+  const hidden = await s.tx<{ reference: string | null; excerpt: string; space: string | null }[]>`
+    select src.reference, src.excerpt, case when src.private_to is null then sp.name end as space
+    from citations ci
+    join sources src on src.id = ci.source_id
+    left join spaces sp on sp.id = src.space_id
+    where ci.content_id = ${itemId}::uuid and ${visible(s, 'src')}
+      and (src.private_to is not null or src.space_id <> ${item.spaceId}::uuid)
+    order by src.created_at
+  `;
+  const [facts] = await s.tx<{ hiddenCount: number; base: string | null; sharedText: string | null; current: boolean; sharedTitle: string | null; ownTitle: string | null }[]>`
+    select hidden_sources(${itemId}::uuid) as hidden_count,
+           shared_base(${itemId}::uuid) as base,
+           (select body from content where id = shared_copy(${itemId}::uuid)) as shared_text,
+           not exists (select from content r where r.supersedes = ${itemId}::uuid and ${visible(s, 'r')}) as current,
+           (select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and private_to is null) as shared_title,
+           (select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and private_to = ${me}::uuid) as own_title
+  `;
+  // Moving is for what was written without anything hidden, as the first update of what's shared, if any.
+  const moves = facts.hiddenCount === 0 && facts.sharedText === null && (item.supersedes === null || item.supersedes === facts.base);
+  return {
+    item,
+    pageTitle: facts.sharedTitle ?? facts.ownTitle ?? 'Untitled',
+    sharesTitle: facts.sharedTitle === null,
+    hidden,
+    hiddenUnseen: Math.max(0, facts.hiddenCount - hidden.length),
+    copy: !moves,
+    sharedText: facts.sharedText,
+    current: facts.current,
+  };
+}
+
+/**
+ * Shares one of your private items with everyone in its space (spec §5), exactly the text you were
+ * shown: directly, as a person, or by approving what your assistant proposed. Returns the shared
+ * item, or undefined if it changed since it was shown.
+ */
+export async function publishItem(s: Session, itemId: string, shown: string): Promise<string | undefined> {
+  try {
+    const [{ id }] = await s.tx<{ id: string }[]>`select publish_item(${itemId}::uuid, ${shown}) as id`;
+    return id;
+  } catch (error) {
+    if (error instanceof Error && error.message === 'it changed since it was shown') return undefined;
+    throw error;
+  }
 }
 
 /** An item with its sources, its earlier versions, and what replaced it, if anything. */
@@ -516,16 +597,18 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
              c.supersedes is null and not exists (
                select from content o where o.page_id = c.page_id and o.kind = 'text' and o.created_at < c.created_at and ${visible(s, 'o')}
              ) as new_page,
-             c.written_by, c.agent, c.updated_at as at, c.private_to is not null as only_you,
+             -- Shared from someone's own side, it's new when it was shared.
+             c.written_by, c.agent, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
              (select p.type from pages p where p.id = c.page_id) is not distinct from 'overview' as overview,
-             ${current(s, 'c')} as is_current
+             ${current(s, 'c')} as is_current,
+             ${agreesWithShared(s, 'c')} as agrees_with_shared
       from content c
       where c.kind = 'text' and ${visible(s, 'c')}
-      order by c.updated_at desc
+      order by greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) desc
       limit ${offset + limit * 2 + 50}
       offset 0
     ) recent
-    where is_current
+    where is_current and not agrees_with_shared
     order by at desc
     limit ${limit + 1} offset ${offset}
   `;
@@ -655,21 +738,23 @@ export async function search(
              c.private_to is not null and c.supersedes is not null and exists (
                select from content r where r.id = first_of(c.id) and r.private_to is null and ${visible(s, 'r')}
              ) as updates_shared,
-             ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind
+             ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
+             ${agreesWithShared(s, 'c')} as agrees_with_shared
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${within('c')}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.
       offset 0
     ) hits
     -- A skill's file that's no longer current doesn't find it. Only knowledge leaves out rules and skills.
-    where not (${options.current ?? false} and superseded) and not (item_kind = 'file' and superseded)
+    -- Your own original shows as one with what you shared from it while they agree.
+    where not (${options.current ?? false} and superseded) and not (item_kind = 'file' and superseded) and not agrees_with_shared
       and not (${options.knowledge ?? false} and coalesce(page_type, '') in ('guidance', 'skill'))
     order by kind, id, superseded, rank desc
     ) best
@@ -679,9 +764,9 @@ export async function search(
 }
 
 export function itemColumns(s: Session, table?: string) {
-  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, created_at, updated_at`;
+  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at`;
   const t = s.tx(table);
-  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.created_at, ${t}.updated_at`;
+  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at`;
 }
 
 function sourceColumns(s: Session) {
@@ -789,6 +874,16 @@ export function visibleContent(s: Session, table: string) {
   )`;
 }
 
+/** Your private original, which shows as one with what you shared from it while they agree (spec §5). */
+export function agreesWithShared(s: Session, table: string) {
+  const t = s.tx(table);
+  return s.tx`(${t}.private_to is not null and exists (
+    select from content shared
+    where shared.published_from = ${t}.id and shared.private_to is null and shared.body = ${t}.body
+      and ${visible(s, 'shared')} and ${current(s, 'shared')}
+  ))`;
+}
+
 /** Items that nothing the viewer can see has replaced or removed. */
 export function current(s: Session, table: string) {
   return s.tx`not exists (
@@ -812,12 +907,18 @@ function titleOf(s: Session, pageId: ReturnType<Session['tx']>) {
   )`;
 }
 
-function citationsOf(s: Session) {
+/**
+ * The sources an item rests on, as the viewer can see them. With its origin, what you shared also
+ * shows the sources of your own private original, which only you see (spec §5).
+ */
+function citationsOf(s: Session, withOrigin = false) {
   return s.tx`coalesce((
-    select json_agg(json_build_object('id', src.id, 'reference', src.reference, 'excerpt', src.excerpt)
+    select json_agg(json_build_object('id', src.id, 'reference', src.reference, 'excerpt', src.excerpt, 'shared', src.private_to is null)
                     order by src.created_at)
-    from citations ci
-    join sources src on src.id = ci.source_id
-    where ci.content_id = content.id and ${visible(s, 'src')}
+    from sources src
+    where src.id in (
+      select ci.source_id from citations ci
+      where ci.content_id = content.id ${withOrigin ? s.tx`or ci.content_id = content.published_from` : s.tx``}
+    ) and ${visible(s, 'src')}
   ), '[]')`;
 }

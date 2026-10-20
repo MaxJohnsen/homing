@@ -2,7 +2,7 @@ import { Wordmark } from '@/components/wordmark';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 
 /** The real card build, shown in frames styled like the assistants it runs in. */
-export function CardPreview({ sample }: { sample?: 'long' | 'request' | 'space' | 'members' | 'done' | 'refused' }) {
+export function CardPreview({ sample }: { sample?: 'long' | 'request' | 'space' | 'members' | 'publish' | 'done' | 'refused' }) {
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-10">
       <div className="flex flex-col gap-1">

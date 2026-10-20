@@ -168,6 +168,7 @@ function Details({ item, yourUpdate, onCorrect }: { item: ItemData; yourUpdate: 
       <p className="text-muted-foreground">
         {wrote(item.by, item.agent)} on {dateOf(item.writtenAt)}.{byPerson && ' Assistants never rewrite it.'}
       </p>
+      {item.sharedBy && item.sharedAt && <p className="text-muted-foreground">{nameOf(item.sharedBy)} shared it with everyone here on {dateOf(item.sharedAt)}.</p>}
       {item.sources.map((source) => (
         <figure key={source.id} className="flex flex-col gap-0.5">
           <figcaption className="text-muted-foreground">
@@ -175,11 +176,12 @@ function Details({ item, yourUpdate, onCorrect }: { item: ItemData; yourUpdate: 
             <Link href={`/sources/${source.id}`} className={cn('rounded-sm font-semibold text-foreground underline decoration-foreground/25 underline-offset-[3px] hover:decoration-foreground', focusRing)}>
               {source.reference ?? 'a source'}
             </Link>
+            {item.shared && source.shared === false && <OnlyYou className="ml-2" />}
           </figcaption>
           <blockquote className="max-w-[60ch] text-base leading-relaxed whitespace-pre-line">“{source.excerpt}”</blockquote>
         </figure>
       ))}
-      {item.sources.length === 0 && !byPerson && <p className="text-muted-foreground">No sources are kept for it.</p>}
+      {item.sources.length === 0 && !byPerson && !item.sharedBy && <p className="text-muted-foreground">No sources are kept for it.</p>}
       {earlier.map((entry, index) => (
         <p key={index} className="text-muted-foreground">
           Until {dateOf(entry.until)}, it said <span className="text-foreground">“{plain(entry.text)}”</span>

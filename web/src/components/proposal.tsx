@@ -26,6 +26,7 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
 }) {
   const { action, kind, rule, shared, personal, space } = proposal;
   if (action === 'members') return proposal.member ? <MemberChangeDetails proposal={proposal} member={proposal.member} /> : null;
+  if (action === 'publish') return proposal.publication ? <PublishDetails proposal={proposal} publication={proposal.publication} /> : null;
   if (action === 'space') {
     if (!draft || !onDraftChange || !proposal.suggestion) return null;
     // Who has the shared space it would go in, from Homing, since the card can't ask for it.
@@ -69,6 +70,7 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
 export function SettledChange({ proposal }: { proposal: ProposalData }) {
   const { action, kind, state, rule, suggestion, member } = proposal;
   if (action === 'members') return member && <Who member={member} settled />;
+  if (action === 'publish') return proposal.publication && <ProposedChange kind="preference" label={`On ${proposal.publication.page}`} text={proposal.publication.text} settled />;
   if (action === 'space') {
     return suggestion && <p className="rounded-xl bg-muted px-4 py-3 text-base text-muted-foreground">{suggestion.created?.name ?? suggestion.name}</p>;
   }
@@ -108,6 +110,45 @@ function MemberChangeDetails({ proposal, member }: { proposal: ProposalData; mem
                   ? `${who} will no longer be a member of ${place}, but still has access through ${member.through}.`
                   : `${who} loses access to ${place} and the spaces in it at once.`}
         </p>
+      )}
+    </>
+  );
+}
+
+/**
+ * Sharing one of your private items: exactly what everyone in the space would see, on which page,
+ * how many people that is, and what it rests on that they can't see, which stays yours.
+ */
+function PublishDetails({ proposal, publication }: { proposal: ProposalData; publication: NonNullable<ProposalData['publication']> }) {
+  const place = placeOf(proposal);
+  const others = publication.audience ? publication.audience.people - 1 : 0;
+  const count = (n: number) => (n === 1 ? '1 other person' : `${n.toLocaleString('en-US')} other people`);
+  const who = publication.audience?.above
+    ? `Everyone in ${place} will see it: ${others > 0 ? `${count(others)} now, ` : ''}everyone who can open the space above it, and anyone who joins later.`
+    : `Everyone in ${place} will see it: ${others > 0 ? count(others) : 'only you'} now, and anyone who joins later.`;
+  const sources = [
+    ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your source “${source.reference}”`)),
+    ...(publication.hiddenUnseen > 0 ? [publication.hiddenUnseen === 1 ? 'a source you can no longer open' : `${publication.hiddenUnseen} sources you can no longer open`] : []),
+  ];
+  const listed = sources.length > 1 ? `${sources.slice(0, -1).join(', ')} and ${sources.at(-1)}` : sources[0];
+  return (
+    <>
+      {publication.sharedText !== null && publication.sharedText !== publication.text ? (
+        <div className="flex flex-col gap-3">
+          <ProposedChange kind="preference" label="Everyone sees now" text={publication.sharedText} settled />
+          <ProposedChange kind="preference" label={`Changed to, on ${publication.page}`} text={publication.text} />
+        </div>
+      ) : (
+        <ProposedChange kind="preference" label={`On ${publication.page}`} text={publication.text} />
+      )}
+      <p className="text-base">{who}</p>
+      {sources.length > 0 && (
+        <p className="rounded-xl bg-muted px-4 py-3 text-base">
+          It’s based on {listed}. Everyone in {place} will see what it says and that you shared it, but not {sources.length === 1 ? 'that source' : 'those sources'}.
+        </p>
+      )}
+      {publication.sharesTitle && (
+        <p className="text-base">Only you have the page “{publication.page}”, so its title is shared too. The rest of it stays yours.</p>
       )}
     </>
   );

@@ -141,6 +141,8 @@ for (const [layer, sql] of [
         for (const item of target.items) {
           assert.equal(await as(intruder.person, (s) => updateItem(s, item.id, { body: 'Changed' }), sql), undefined);
           assert.equal(await as(intruder.person, (s) => supersedeItem(s, item.id, { body: 'Changed' }), sql), undefined);
+          // Nor share it, even as a person editing directly.
+          await assert.rejects(as({ ...intruder.person, direct: true }, (s) => s.tx`select publish_item(${item.id}::uuid, ${item.body})`, sql), refused);
         }
       }
       await assertUntouched();
