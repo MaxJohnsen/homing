@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronRight, Home, Lock, Menu, Search, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Home, Lock, Menu, Plus, Search, X } from 'lucide-react';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing } from '@/components/screen';
@@ -215,6 +215,10 @@ function Spaces({ spaces, recent, current, address }: { spaces: SpaceSummary[]; 
           <div className="flex flex-col gap-1">
             <h2 className="px-3 text-sm font-semibold text-muted-foreground">{crowded ? 'All spaces' : 'Your spaces'}</h2>
             <SpaceTree spaces={spaces} current={current} crowded={crowded} />
+            <NavLink href="/spaces/new" active={address === '/spaces/new'} className={cn('mt-1', address !== '/spaces/new' && 'text-muted-foreground hover:text-foreground')}>
+              <Plus aria-hidden="true" className="size-[18px]" />
+              New space
+            </NavLink>
           </div>
         </>
       )}

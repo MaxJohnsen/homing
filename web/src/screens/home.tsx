@@ -191,6 +191,11 @@ function Welcome({ data }: { data: HomeData }) {
             In Claude, ChatGPT or another assistant, add Homing as a connector with this address. Then sign in and connect it.
           </p>
           <CopyAddress value={data.mcpUrl} />
+          <p className="max-w-[60ch] text-base text-muted-foreground">
+            Your personal space is ready for anything that’s just yours.{' '}
+            <Link href="/spaces/new" className={cn('rounded-sm font-semibold text-primary-ink hover:underline', focusRing)}>Start a space</Link>{' '}
+            for a client, a project or anything you share with others.
+          </p>
         </div>
         <img src={welcome} alt="" width={960} height={640} className="hidden w-full sm:block" />
       </section>

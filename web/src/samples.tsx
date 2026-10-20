@@ -25,7 +25,8 @@ import { Overview } from '@/screens/overview';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
-import { Members, Space } from '@/screens/space';
+import { NewSpace, type CreateSpace } from '@/screens/new-space';
+import { Members, Space, SpaceSettings } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 // Every screen with sample data, for `npm run dev:web`. Each state has its own address for review.
@@ -85,6 +86,9 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/open': { label: 'Members of a space open to everyone above it', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="members"><Members space={sampleSpace.open} /></Space></InApp> },
   '/spaces/root': { label: 'Members of a space at the top', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="members"><Members space={sampleSpace.root} /></Space></InApp> },
   '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="rules"><Rules space={sampleSpace.kitchen} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/new': { label: 'Starting a space', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
+  '/spaces/new/in': { label: 'Starting a space in Acme', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} start="acme" create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
+  '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} /></Space></InApp> },
   '/spaces/from-above': { label: 'Members of a space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="members"><Members space={sampleSpace.fromAbove} /></Space></InApp> },
   '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
   '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }} looksAfterHoming><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },
@@ -149,6 +153,9 @@ const recentMany = ['client-0', 'client-14-Data platform', 'client-5', 'family']
 const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined };
 
 /** A screen inside the app, with Ana's spaces on the shelf. */
+/** Samples show the form, and say so when asked to create something. */
+const notCreated: CreateSpace = async () => ({ problem: 'Samples don’t create spaces.' });
+
 function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces, recent = [], looksAfterHoming = false }: {
   children: ReactNode;
   looksAfterHoming?: boolean;

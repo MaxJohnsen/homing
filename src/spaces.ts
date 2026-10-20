@@ -37,6 +37,83 @@ export async function createSpace(
   return id;
 }
 
+/** Who a new space is for, which decides where it can go (spec §1). */
+export type Who = 'just me' | 'with others';
+
+export const spaceNameLength = 100;
+
+/** A space Homing won't create or rename as asked, with the reason in words for the person. */
+export class SpaceRefused extends Error {
+  /** What's wrong: the name, where the space would go, rights the person lacks, or a space they can't open. */
+  reason: 'name' | 'where' | 'admin' | 'missing';
+  /** A space the person can open that already has the name, where the new one would go. */
+  existing?: Space;
+
+  constructor(reason: SpaceRefused['reason'], message: string, existing?: Space) {
+    super(message);
+    this.reason = reason;
+    this.existing = existing;
+  }
+}
+
+/**
+ * Creates a space for the person (spec §1). Just for them, it goes in their personal tree: in their
+ * personal space, or in a space inside it. With others, it's a space of its own, or goes in a shared
+ * space they're an admin of, where everyone in that space has access unless it's closed. A space
+ * with the same name in the same place is refused, so a subject keeps one space.
+ */
+export async function newSpace(s: Session, input: { name: string; who: Who; in?: string; closed?: boolean }): Promise<Space> {
+  const name = cleanName(input.name);
+  const spaces = await listSpaces(s);
+  const personal = spaces.find((space) => space.privateTo !== null && space.parentId === null);
+  let parent = input.in ? spaces.find((space) => space.id === input.in) : undefined;
+  if (input.in && !parent) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+
+  if (input.who === 'just me') {
+    parent ??= personal;
+    if (!parent?.privateTo) {
+      throw new SpaceRefused('where', `A space just for you goes in your personal space. A space in ${parent?.name} is for the people in it.`);
+    }
+  } else if (parent?.privateTo) {
+    throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours. To share one, create it on its own, or in a shared space.');
+  } else if (parent && !parent.admin) {
+    throw new SpaceRefused('admin', `Only ${parent.name}’s admins create spaces in it.`);
+  }
+
+  const there = spaces.find((space) => space !== personal && space.parentId === (parent?.id ?? null) && sameName(space.name, name));
+  if (there) {
+    const where = parent ? `in ${parent === personal ? 'your personal space' : parent.name}` : 'on its own';
+    throw new SpaceRefused('name', `There’s already a space called ${there.name} ${where}.`, there);
+  }
+
+  const closed = input.who === 'with others' && parent !== undefined && input.closed === true;
+  const id = await createSpace(s, { name, parentId: parent?.id, closed });
+  return { id, name, parentId: parent?.id ?? null, closed, privateTo: parent?.privateTo ?? null, admin: true };
+}
+
+/** Renames a space the person is an admin of. A personal space keeps its name. */
+export async function renameSpace(s: Session, spaceId: string, name: string): Promise<Space> {
+  const clean = cleanName(name);
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === spaceId);
+  if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (space.privateTo && !space.parentId) throw new SpaceRefused('admin', 'Your personal space keeps its name.');
+  if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins rename it.`);
+  const there = spaces.find((other) => other.id !== space.id && other.parentId === space.parentId && sameName(other.name, clean));
+  if (there) throw new SpaceRefused('name', `There’s already a space called ${there.name} there.`, there);
+  await s.tx`select rename_space(${spaceId}::uuid, ${clean})`;
+  return { ...space, name: clean };
+}
+
+function cleanName(name: string): string {
+  const clean = name.replace(/\s+/g, ' ').trim();
+  if (!clean) throw new SpaceRefused('name', 'Give the space a name.');
+  if (clean.length > spaceNameLength) throw new SpaceRefused('name', `Keep the name under ${spaceNameLength} characters.`);
+  return clean;
+}
+
+const sameName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' }) === 0;
+
 /** Adds a person to a space, or changes their role. Needs admin rights. */
 export async function addMember(s: Session, spaceId: string, personId: string, role: Role = 'member') {
   await s.tx`select add_member(${spaceId}::uuid, ${personId}::uuid, ${role})`;

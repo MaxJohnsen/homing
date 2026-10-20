@@ -514,6 +514,10 @@ describe('through the app’s endpoints', () => {
         [`/api/pages/${target.pages.collection}/gather`, { pageId: target.pages.own }],
         [`/api/pages/${target.pages.collection}/gather/remove`, { pageId: target.pages.shared, shared: true }],
         [`/api/pages/${intruder.pages.collection}/gather`, { pageId: target.pages.shared }],
+        [`/api/spaces`, { name: 'Hello', who: 'with others', in: target.space }],
+        [`/api/spaces`, { name: 'Hello', who: 'just me', in: target.personalSpaceId }],
+        [`/api/spaces/${target.space}`, { name: 'Hello' }],
+        [`/api/spaces/${target.personalSpaceId}`, { name: 'Hello' }],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.ok([403, 404].includes(changed.status), path);

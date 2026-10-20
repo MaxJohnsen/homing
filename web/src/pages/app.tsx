@@ -23,7 +23,8 @@ import { Overview } from '@/screens/overview';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
-import { Members, Space } from '@/screens/space';
+import { NewSpace } from '@/screens/new-space';
+import { Members, Space, SpaceSettings } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 /** The signed-in app: the shelf with your spaces, and the screen you're on beside it. */
@@ -70,12 +71,12 @@ export function AppPage() {
       }}
     >
       {/* A new screen for each address; searching and filtering within one keeps it. */}
-      <Screen key={address.split('?')[0]} route={route} me={me} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
+      <Screen key={address.split('?')[0]} route={route} me={me} spaces={spaces} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
     </Shell>
   );
 }
 
-function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
+function Screen({ route, me, spaces, waiting, recent }: { route: Route; me: AccountData; spaces: SpaceSummary[]; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
   switch (route.name) {
     case 'home':
       return <Titled title="Home"><HomePage me={me} waiting={waiting} recent={recent} /></Titled>;
@@ -91,6 +92,8 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
       return <Titled title="Looking after Homing"><AdminPage /></Titled>;
     case 'proposal':
       return <Titled title="A decision"><ProposalPage id={route.id} /></Titled>;
+    case 'new space':
+      return <Titled title="New space"><NewSpacePage spaces={spaces} /></Titled>;
     case 'space':
       return <SpacePage id={route.id} view={route.view ?? 'overview'} />;
     case 'page':
@@ -116,8 +119,45 @@ function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingD
   );
 }
 
-function SpacePage({ id, view }: { id: string; view: SpaceView }) {
+/** Starting a space, from the sidebar or from the space it goes in, then opening it. */
+function NewSpacePage({ spaces }: { spaces: SpaceSummary[] }) {
+  const start = new URLSearchParams(location.search).get('in') ?? undefined;
+  return (
+    <NewSpace
+      spaces={spaces}
+      start={start}
+      create={async (input) => {
+        try {
+          return await api<{ id: string }>('/api/spaces', input);
+        } catch (error) {
+          return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.', field: error instanceof ApiError ? error.field : undefined };
+        }
+      }}
+      onCreated={async (id) => {
+        await reload('/api/spaces');
+        navigate(`/spaces/${id}`);
+      }}
+      onCancel={() => (history.length > 1 ? history.back() : navigate('/'))}
+    />
+  );
+}
+
+/** Renaming a space, then showing it, and the sidebar, with its new name. */
+function renameSpace(spaceId: string) {
+  return async (name: string) => {
+    try {
+      await api(`/api/spaces/${spaceId}`, { name });
+      await Promise.all([reload(`/api/spaces/${spaceId}`), reload('/api/spaces')]);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
+}
+
+function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
+  // Settings are only for a space's admins, and a personal space has none.
+  const view = asked === 'settings' && space && (!space.admin || space.personal) ? 'overview' : asked;
   const rulesLoad = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '');
   const skillsLoad = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '');
   const rules = rulesLoad.data?.rules;
@@ -142,6 +182,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
           {view === 'members' && !space.private && <Members space={space} />}
+          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} />}
         </Space>
       )}
     </Titled>

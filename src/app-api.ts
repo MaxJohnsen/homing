@@ -5,7 +5,7 @@ import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidan
 import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
-import { listSpaces, peopleNames, spaceView } from './spaces.ts';
+import { listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -51,6 +51,24 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             admin,
           })),
         });
+        break;
+      }
+
+      case 'create space': {
+        const body = await readJson(req);
+        const who = body.who === 'just me' || body.who === 'with others' ? body.who : undefined;
+        if (!who) return answer(res, 400, { field: 'who', message: 'Choose who the space is for.' });
+        const parent = typeof body.in === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.in) ? body.in.toLowerCase() : undefined;
+        if (body.in !== undefined && body.in !== null && !parent) return answer(res, 400, { field: 'in', message: 'Choose where the space goes.' });
+        const space = await write((s) => newSpace(s, { name: typeof body.name === 'string' ? body.name : '', who, in: parent, closed: body.closed === true }));
+        json(res, 200, { id: space.id });
+        break;
+      }
+
+      case 'rename space': {
+        const body = await readJson(req);
+        const space = await write((s) => renameSpace(s, route.id, typeof body.name === 'string' ? body.name : ''));
+        json(res, 200, { id: space.id, name: space.name });
         break;
       }
 
@@ -523,6 +541,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
     }
   } catch (error) {
+    if (error instanceof SpaceRefused) {
+      const status = { name: 400, where: 400, admin: 403, missing: 404 }[error.reason];
+      return answer(res, status, { ...(status === 400 && { field: error.reason === 'name' ? 'name' : 'in' }), message: error.message });
+    }
     // The store refuses what the person may not do, such as a member changing a shared rule.
     if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
       return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t make that change here.' });
@@ -563,8 +585,8 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' }
-  | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
+  | { name: 'space' | 'rename space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -591,7 +613,9 @@ function routeOf(method: string, path: string): Route | undefined {
     }
   }
   if (method === 'POST') {
+    if (path === '/api/spaces') return { name: 'create space' };
     for (const [name, pattern] of [
+      ['rename space', `/api/spaces/${uuid}`],
       ['add page', `/api/spaces/${uuid}/pages`],
       ['write overview', `/api/spaces/${uuid}/overview`],
       ['add item', `/api/pages/${uuid}/items`],

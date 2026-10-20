@@ -1,6 +1,9 @@
-import { Fragment, type ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
+import { Button } from '@/components/ui/button';
+import { FieldError } from '@/components/ui/field';
+import { Input } from '@/components/ui/input';
 import { Link, type SpaceView } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
@@ -15,6 +18,8 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
     { label: 'Knowledge', href: `/spaces/${space.id}/pages`, current: view === 'pages' || view === 'collections' || view === 'sources' },
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
+    // Settings appear once there's something to set: so far, the name, which admins change.
+    ...(space.admin && !space.personal ? [{ label: 'Settings', href: `/spaces/${space.id}/settings`, current: view === 'settings' }] : []),
   ];
   return (
     <>
@@ -108,6 +113,51 @@ function Where({ space }: { space: SpaceData }) {
 
 function members(n: number) {
   return n === 1 ? '1 member' : `${n} members`;
+}
+
+/** A space's own settings, for its admins: its name, so far. */
+export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (name: string) => Promise<string | undefined> }) {
+  const [name, setName] = useState(space.name);
+  const [problem, setProblem] = useState<string>();
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const changed = name.trim() !== space.name;
+
+  const save = async () => {
+    setBusy(true);
+    const answer = await rename(name.trim());
+    setBusy(false);
+    setProblem(answer);
+    setSaved(!answer);
+  };
+
+  return (
+    <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? undefined : `Everyone who can open ${space.name} sees the new name.`}>
+      <form
+        className="flex flex-col gap-3 sm:flex-row"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (changed && name.trim()) void save();
+        }}
+      >
+        <Input
+          aria-label="Name"
+          className="h-11 text-base sm:max-w-sm"
+          value={name}
+          maxLength={100}
+          onChange={(event) => {
+            setName(event.target.value);
+            setSaved(false);
+          }}
+          aria-invalid={Boolean(problem) || undefined}
+          disabled={busy}
+        />
+        <Button type="submit" size="lg" className="h-11" disabled={busy || !changed || !name.trim()}>Rename</Button>
+      </form>
+      {problem && <FieldError>{problem}</FieldError>}
+      {saved && <p role="status" className="text-sm text-muted-foreground">Renamed.</p>}
+    </Section>
+  );
 }
 
 /** Who can open the space, and who looks after it. */
