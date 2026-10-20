@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, isSending, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, isSending, outcomeOf, placeOf, wantsTo, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
@@ -35,7 +35,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
   const [draft, setDraft] = useState(() => (proposal?.suggestion ? draftOf(proposal.suggestion.places, proposal.suggestion) : undefined));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<{ field?: string; message: string }>();
-  const space = draft ? spaceOf(draft) : undefined;
+  const space = draft && proposal?.suggestion ? spaceOf(draft, proposal.suggestion.places) : undefined;
   const outcome = proposal && outcomeOf(proposal);
   const sending = proposal ? isSending(proposal) : false;
 
@@ -84,7 +84,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
         <>
           <p className="text-base font-medium">
             {proposal.action === 'space'
-              ? `${proposal.assistant} suggests a new space`
+              ? wantsTo(proposal)
               : sending
               ? `Ask the admins of ${placeOf(proposal)} for this change?`
               : proposal.action === 'add'

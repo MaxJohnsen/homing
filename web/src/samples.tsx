@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -109,6 +109,10 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/changed': { label: 'Confirm: the rule changed meanwhile', render: () => <SampleConfirm proposal={changeProposal} message="This rule changed after you opened this page. Check the change again." /> },
   '/confirm/added': { label: 'Rule added', render: () => <SampleConfirm proposal={{ ...proposal, state: 'approved' }} /> },
   '/confirm/declined': { label: 'Rule not added', render: () => <SampleConfirm proposal={{ ...proposal, state: 'rejected' }} /> },
+  '/confirm/space': { label: 'Confirm a space Claude suggests', render: () => <SampleConfirm proposal={suggestedSpace} /> },
+  '/confirm/space/asked': { label: 'Confirm a space you asked for that others would see', render: () => <SampleConfirm proposal={{ ...suggestedSpace, suggestion: { ...suggestedSpace.suggestion!, name: 'Intranet', who: 'with others', in: 'acme', asked: true, why: null } }} /> },
+  '/confirm/space/created': { label: 'Suggested space created', render: () => <SampleConfirm proposal={{ ...suggestedSpace, state: 'approved', suggestion: { ...suggestedSpace.suggestion!, created: { id: 'kitchen', name: 'Home renovation' } } }} /> },
+  '/confirm/space/declined': { label: 'Suggested space declined', render: () => <SampleConfirm proposal={{ ...suggestedSpace, state: 'rejected' }} /> },
   '/confirm/removed': { label: 'Rule removed', render: () => <SampleConfirm proposal={{ ...removeProposal, state: 'approved', rule: { ...removeProposal.rule!, current: false } }} /> },
   '/confirm/expired': { label: 'Request expired', render: () => <SampleConfirm proposal={{ ...proposal, state: 'expired' }} /> },
   '/confirm/gone': { label: 'Rule removed before deciding', render: () => <SampleConfirm proposal={{ ...changeProposal, rule: { ...changeProposal.rule!, current: false } }} /> },
@@ -122,6 +126,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/request/not-sent': { label: 'A request you didn’t send', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'rejected' }} /> },
   '/card-preview/request': { label: 'Approval card for a request', render: () => <CardPreview sample="request" /> },
   '/card-preview/long': { label: 'Approval card with a longer rule', render: () => <CardPreview sample="long" /> },
+  '/card-preview/space': { label: 'The card for a space Claude suggests', render: () => <CardPreview sample="space" /> },
   '/card-preview/done': { label: 'The card after a change that needed no approval', render: () => <CardPreview sample="done" /> },
   '/card-preview/refused': { label: 'The card when Homing refused a change', render: () => <CardPreview sample="refused" /> },
 };

@@ -11,6 +11,8 @@ export interface SpaceChange {
   who: Who;
   in: string | null;
   closed: boolean;
+  /** The person asked for it, and approves it because others would see it. Otherwise it's the assistant's own suggestion. */
+  asked?: boolean;
 }
 
 /**
@@ -148,31 +150,39 @@ export class NotSuggested extends Error {
 /**
  * Suggests a space for the person to create (spec §1), checked the way creating it is, so it can be
  * created as suggested. Suggestions are rare: while one waits, there's no other, and a space the
- * person declined, or let expire, isn't suggested again by name.
+ * person declined, or let expire, isn't suggested again by name. A space the person asked for that
+ * others would see waits for their approval the same way, since its name is shared, but it's theirs
+ * to ask for as often as they like.
  */
-export async function suggestSpace(s: Session, input: { name: string; who: Who; in?: string; closed?: boolean; why: string }): Promise<Proposal> {
+export async function suggestSpace(s: Session, input: { name: string; who: Who; in?: string; closed?: boolean; why?: string; asked?: boolean }): Promise<Proposal> {
   const place = await placeSpace(s, input);
+  const asked = input.asked === true;
+  if (!asked) await rare(s, place.name);
+  return insertProposal(s, {
+    spaceId: (place.parent ?? place.personal).id,
+    action: 'add space',
+    itemId: null,
+    change: { name: place.name, who: input.who, in: place.parent?.id ?? null, closed: place.closed, ...(asked && { asked }) },
+    request: false,
+    reason: input.why?.trim() || null,
+  });
+}
+
+/** Whether a suggestion is rare enough: none waiting, and not one the person already turned down. */
+async function rare(s: Session, name: string) {
   const [waiting] = await s.tx<{ id: string; name: string }[]>`
     select id, change->>'name' as name from proposals
-    where ${yours(s)} and action = 'add space' and state = 'open' and expires_at > now()
+    where ${yours(s)} and action = 'add space' and state = 'open' and expires_at > now() and not coalesce((change->>'asked')::boolean, false)
     limit 1
   `;
   if (waiting) throw new NotSuggested(`A suggested space, ${waiting.name}, is already waiting for the user.`, waiting.id);
   const [declined] = await s.tx<{ id: string; at: Date }[]>`
     select id, coalesce(decided_at, expires_at) as at from proposals
-    where ${yours(s)} and action = 'add space' and lower(change->>'name') = lower(${place.name})
+    where ${yours(s)} and action = 'add space' and lower(change->>'name') = lower(${name})
       and (state = 'rejected' or (state = 'open' and expires_at <= now()))
     limit 1
   `;
-  if (declined) throw new NotSuggested(`The user didn’t create a space called ${place.name} when it was suggested on ${declined.at.toISOString().slice(0, 10)}.`, declined.id);
-  return insertProposal(s, {
-    spaceId: (place.parent ?? place.personal).id,
-    action: 'add space',
-    itemId: null,
-    change: { name: place.name, who: input.who, in: place.parent?.id ?? null, closed: place.closed },
-    request: false,
-    reason: input.why.trim() || null,
-  });
+  if (declined) throw new NotSuggested(`The user didn’t create a space called ${name} when it was suggested on ${declined.at.toISOString().slice(0, 10)}.`, declined.id);
 }
 
 /** A proposal the person can see, with what they need to decide it. */
@@ -300,6 +310,8 @@ export interface Waiting {
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
   text: string | null;
   agent: string | null;
+  /** For a space: whether the person asked for it, rather than the assistant suggesting it. */
+  asked: boolean;
   /** For a request: whether it's sent, whether the person asked themselves, and who asked when it's someone else they know. */
   request: boolean;
   sent: boolean;
@@ -318,7 +330,8 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', p.change->>'name', rule.body) as text, p.agent, p.request, p.state = 'requested' as sent, p.private_to,
+           coalesce(p.change->>'text', p.change->>'name', rule.body) as text, p.agent,
+           coalesce((p.change->>'asked')::boolean, false) as asked, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
     join spaces s on s.id = p.space_id
@@ -450,6 +463,7 @@ export function proposalData(proposal: ProposalView) {
             who: proposal.change.who!,
             in: proposal.change.in ?? null,
             closed: proposal.change.closed ?? false,
+            asked: proposal.change.asked ?? false,
             why: proposal.reason,
             places: proposal.places,
             created: proposal.created,

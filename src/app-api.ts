@@ -104,6 +104,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             action: shortAction[item.action],
             kind: item.kind,
             text: item.text,
+            asked: item.asked,
             // For a request: who asked, unless it's the person, and whether it's sent.
             request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null,
             createdAt: item.createdAt,

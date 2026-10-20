@@ -30,7 +30,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<{ field?: string; message: string } | undefined>(initialMessage ? { message: initialMessage } : undefined);
   const { assistant, action, request, suggestion } = proposal;
-  const space = draft ? spaceOf(draft) : undefined;
+  const space = draft && suggestion ? spaceOf(draft, suggestion.places) : undefined;
   const sending = isSending(proposal);
   const outcome = outcomeOf(proposal);
   const buttons = buttonsOf(action, sending);
@@ -74,7 +74,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
             <p className="text-sm text-muted-foreground">
               {action === 'space'
-                ? `Only you can create it. ${assistant} can’t do it for you, and if you don’t, it won’t be suggested again.`
+                ? `Only you can create it. ${assistant} can’t do it for you${suggestion?.asked ? '.' : ', and if you don’t, it won’t be suggested again.'}`
                 : sending
                 ? `Only the admins of ${place} change its shared rules, so this asks them. Nothing changes until one of them approves it.`
                 : request && !request.yours

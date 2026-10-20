@@ -151,11 +151,12 @@ test('an assistant creates the space the user asks for, and Homing records that 
   assert.match((await chat.call('context', { request: 'Plan the Globex kickoff' })).text, /Globex Corporation/);
 });
 
-test('an assistant never names a space others see: the user creates or renames it in Homing', async () => {
+test('an assistant never names a space others see: the user approves it, or renames it in Homing', async () => {
   const acme = (await spacesOf(ana)).find((space) => space.name === 'Acme')!.id;
   const open = await act('space.create', { name: 'Intranet', who: 'with others', in: `space:${acme}` });
-  assert.ok(open.failed);
-  assert.match(open.text, new RegExp(`Everyone in Acme would see this space, so the user creates it in Homing\\. Nothing was created\\. Give them this link, which opens it filled in: ${homing.url}spaces/new\\?in=${acme}&name=Intranet`));
+  assert.ok(!open.failed, open.text);
+  assert.match(open.text, /^Everyone in Acme would see this space, so it waits for the user to approve it \(proposal:.+\)\. Nothing has been created yet\./);
+  assert.equal((await spacesOf(cara)).some((space) => space.name === 'Intranet'), false);
   const rename = await act('space.rename', { space: `space:${acme}`, name: 'Acme Group' });
   assert.ok(rename.failed);
   assert.match(rename.text, new RegExp(`Others can open Acme, so the user renames it in Homing\\. Nothing changed\\. Give them this link: ${homing.url}spaces/${acme}/settings`));

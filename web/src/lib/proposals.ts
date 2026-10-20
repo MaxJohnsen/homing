@@ -35,7 +35,17 @@ export interface ProposalData {
    * A suggested space: as the assistant suggested it and why, where you can put it instead while
    * it waits, and the space it became once created, if you can open it.
    */
-  suggestion?: { name: string; who: Who; in: string | null; closed: boolean; why: string | null; places: Place[]; created: { id: string; name: string } | null } | null;
+  suggestion?: {
+    name: string;
+    who: Who;
+    in: string | null;
+    closed: boolean;
+    /** The person asked for it, and it waits because others would see it. Otherwise it's the assistant's own idea. */
+    asked: boolean;
+    why: string | null;
+    places: Place[];
+    created: { id: string; name: string } | null;
+  } | null;
 }
 
 /** A request you sent to a space's admins, as Home shows it under your requests. */
@@ -52,6 +62,8 @@ export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within
 /** A change waiting for you, as Home and the list of everything waiting show it. */
 export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind'> {
   spaceId: string;
+  /** For a space: whether you asked for it. */
+  asked?: boolean;
   /** For a request: whether it's yours, who asked when it's someone you know, and whether it's sent. */
   request?: { by: string | null; yours: boolean; sent: boolean } | null;
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
@@ -63,9 +75,9 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
  * Who wants what, where: "Claude wants to add a rule to Acme", "Claude wants to ask the admins of Acme
  * to add a rule", or "Cara Lund asks to add a rule to Acme". Under a heading that names the place, without it.
  */
-export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null; yours: boolean } | null }, withPlace = true): string {
+export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null; yours: boolean } | null; asked?: boolean; suggestion?: { asked: boolean } | null }, withPlace = true): string {
   const { assistant, action, kind, request } = proposal;
-  if (action === 'space') return `${assistant} suggests a new space`;
+  if (action === 'space') return proposal.asked || proposal.suggestion?.asked ? `${assistant} wants to create a space you asked for` : `${assistant} suggests a new space`;
   const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
   const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
   if (request && !request.yours) return `${request.by ?? 'A member'} asks to ${what}${place}`;
@@ -121,8 +133,12 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const yours = Boolean(request?.yours);
   if (action === 'space' && suggestion) {
     if (state === 'approved') return { kind: 'approved', heading: `Created ${suggestion.created?.name ?? suggestion.name}`, detail: 'It’s with your spaces now.' };
-    if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: 'Nothing was created, and it won’t be suggested again.' };
-    if (state === 'expired') return { kind: 'expired', heading: 'This suggestion expired', detail: `Nothing was created, and it won’t be suggested again. Ask ${assistant} for it if you want it after all.` };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: suggestion.asked ? 'Nothing was created.' : 'Nothing was created, and it won’t be suggested again.' };
+    if (state === 'expired') {
+      return suggestion.asked
+        ? { kind: 'expired', heading: 'This expired', detail: `Nothing was created. Ask ${assistant} again if you still want it.` }
+        : { kind: 'expired', heading: 'This suggestion expired', detail: `Nothing was created, and it won’t be suggested again. Ask ${assistant} for it if you want it after all.` };
+    }
     return undefined;
   }
   if (state === 'requested') {

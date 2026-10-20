@@ -4,7 +4,7 @@ import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type 
 import { ApprovalCard, type Done } from '@/approval-card';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 import type { ProposalData } from '@/lib/proposals';
-import { longProposal, proposal as sample, requestProposal } from '@/sample';
+import { longProposal, proposal as sample, requestProposal, suggestedSpace } from '@/sample';
 import './card.css';
 
 // Inside Claude, the card shows the proposal the assistant just made and lets the person decide
@@ -75,7 +75,9 @@ function applyHost(context: McpUiHostContext) {
 
 /** The card outside an assistant, deciding on sample data, or showing a change made without a decision. */
 function Preview() {
-  const [shown, setShown] = useState(params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : sample);
+  const [shown, setShown] = useState(
+    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : sample,
+  );
   const sending = Boolean(shown.request && !shown.request.sent);
   if (params.get('sample') === 'done') {
     return <ApprovalCard done={{ heading: 'Space created', name: 'Globex', detail: 'A space of its own. Only you have it so far.', link: '/' }} onOpen={() => {}} />;

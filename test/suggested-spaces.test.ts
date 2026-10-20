@@ -16,7 +16,7 @@ let ana: Member, cara: Member;
 let acme: string;
 let claude: Awaited<ReturnType<Assistant['open']>>;
 
-type Suggestion = { name: string; who: string; in: string | null; closed: boolean; why: string | null; places: { id: string; label: string; mine: boolean }[]; created: { id: string; name: string } | null };
+type Suggestion = { name: string; who: string; in: string | null; closed: boolean; asked: boolean; why: string | null; places: { id: string; label: string; mine: boolean }[]; created: { id: string; name: string } | null };
 
 const act = async (action: string, input: Record<string, unknown>) => {
   const result = await claude.client.callTool({ name: 'act', arguments: { action, input } });
@@ -139,6 +139,22 @@ test('on the card, the person creates the suggested space as they set it, and th
   await assert.rejects(
     as({ person: ana.id, direct: true }, (s) => s.tx`update proposals set space_created = ${decision.spaceCreated} where id = ${later.proposal!}`),
   );
+});
+
+test('a space the user asks for that others would see waits for their approval, however often they ask', async () => {
+  const asked = await act('space.create', { name: 'Intranet', who: 'with others', in: `space:${acme}` });
+  assert.ok(!asked.failed, asked.text);
+  const again = await act('space.create', { name: 'Handbook', who: 'with others', in: `space:${acme}` });
+  assert.ok(!again.failed, 'asking isn’t suggesting, so two can wait');
+  const { proposal: shown } = await proposal(ana, asked.proposal!);
+  assert.deepEqual([shown.suggestion.asked, shown.suggestion.in], [true, acme]);
+  const waiting = (await ana.browser.json('/api/waiting')).body.waiting as { id: string; asked: boolean }[];
+  assert.equal(waiting.find((item) => item.id === asked.proposal)?.asked, true);
+
+  assert.equal((await decide(ana, asked.proposal!, { approve: true })).status, 200);
+  assert.ok((await cara.browser.json('/api/spaces')).body.spaces.some((space: { name: string }) => space.name === 'Intranet'));
+  assert.equal((await decide(ana, again.proposal!, { approve: false })).status, 200);
+  assert.match((await claude.call('read', { ref: `proposal:${again.proposal}` })).text, /The user declined it on .+, so nothing was created\.$/m);
 });
 
 async function spaceNamed(name: string) {

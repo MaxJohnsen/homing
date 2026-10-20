@@ -114,7 +114,6 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
     proposal: (id) => new URL(`/proposals/${id}`, url).toString(),
     space: (id) => new URL(`/spaces/${id}`, url).toString(),
     settings: (id) => new URL(`/spaces/${id}/settings`, url).toString(),
-    newSpace: (parentId, name) => new URL(`/spaces/new?${new URLSearchParams({ in: parentId, name })}`, url).toString(),
   };
 
   server.registerTool(
@@ -209,7 +208,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         "A member's change to a space's shared rules becomes a request to its admins, which the user sends first. " +
         "Don't offer a rule only for the user instead, since that isn't the same thing. Give the user the link it returns. " +
         "space.create creates a space the user asks for, once they've said whether it's just for them or with others. " +
-        'A space that others would see, such as one open to everyone in a shared space, waits for the user to approve it in Homing. ' +
+        "A space that others would see, such as one open to everyone in a shared space, waits for the user's approval. " +
         'space.suggest suggests a space that is your own idea, which the user can change and create, or decline: ' +
         'only when a project or part of their life keeps coming up and nothing they have fits. ' +
         "space.rename renames a space they're an admin of that only they can open.",
@@ -334,8 +333,6 @@ interface Links {
   proposal(id: string): string;
   space(id: string): string;
   settings(id: string): string;
-  /** New space, filled in with where it goes and its name. */
-  newSpace(parentId: string, name: string): string;
 }
 
 const onlyPeople = 'Only people change guidance. To add, change or remove a rule, propose it with `act`, and the user approves it in Homing.';
@@ -752,10 +749,10 @@ async function createSpaceFor(
   let space: Space;
   try {
     const place = await placeSpace(s, { name: input.name, who: input.who, in: parentId, closed: input.closed });
-    // Its name is shared with everyone there, so the user creates it themselves (guarantee 1).
+    // Its name is shared with everyone there, so it waits for the user to approve it (guarantee 1).
     if (place.parent && !place.parent.privateTo && !place.closed) {
-      const link = links.newSpace(place.parent.id, place.name);
-      throw new Refused(`Everyone in ${place.parent.name} would see this space, so the user creates it in Homing. Nothing was created. Give them this link, which opens it filled in: ${link}`);
+      const proposal = await suggestSpace(s, { name: input.name, who: input.who, in: parentId, closed: input.closed, asked: true });
+      return waitingForSpace(proposal, links, card, `Everyone in ${place.parent.name} would see this space, so it waits for the user to approve it (${ref('proposal', proposal.id)}). Nothing has been created yet.`);
     }
     space = await newSpace(s, { name: input.name, who: input.who, in: parentId, closed: input.closed });
   } catch (error) {
@@ -798,13 +795,18 @@ async function suggestSpaceFor(
     }
     throw error;
   }
+  return waitingForSpace(proposal, links, card, `Suggested to the user (${ref('proposal', proposal.id)}). Nothing has been created yet.`);
+}
+
+/** A space waiting for the user to create it: where they decide, and what to say until they have. */
+function waitingForSpace(proposal: Proposal, links: Links, card: boolean, first: string): Answer | string {
   const where = card
-    ? `Homing shows them the suggestion in a card here, where they can change its name and where it goes, then create it or not. ` +
+    ? `Homing shows them the space in a card here, where they can change its name and where it goes, then create it or not. ` +
       `If they can't see the card, give them this link instead: ${links.proposal(proposal.id)}`
     : `Give them this link to look at it in Homing, where they can change its name and where it goes, then create it or not: ${links.proposal(proposal.id)}`;
   const text =
-    `Suggested to the user (${ref('proposal', proposal.id)}). Nothing has been created yet. ${where}\n\n` +
-    'Only they can decide, so never say the space exists until `read` shows it was created. If they decline, Homing won\'t let it be suggested again.';
+    `${first} ${where}\n\n` +
+    `Only they can decide, so never say the space exists until \`read\` shows it was created.${proposal.change.asked ? '' : " If they decline, Homing won't let it be suggested again."}`;
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
@@ -858,7 +860,7 @@ function outcome(proposal: Proposal, links: Links): string {
       }
       return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
-      if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created. Don't suggest it again.`;
+      if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again."}`;
       return proposal.request && !proposal.requestedAt
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
