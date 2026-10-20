@@ -72,7 +72,7 @@ Figtree is the only typeface, and it ships with the app. A screen in the app has
 [shadcn/ui](https://ui.shadcn.com) in its Maia style, on [Base UI](https://base-ui.com), lives in `web/src/components/ui` and takes its colors from the tokens in `web/src/styles.css`. Add one with `npx shadcn@latest add <name>` from the repository root. Homing's own components sit next to it: the wordmark, the proposed change, "Only you", where a rule applies, and the rules that already apply.
 
 - One primary button per view, for the main action. Everything else is an outline button. A list where each row is a decision of its own, such as what's waiting on Home, gives each row its own primary Review.
-- Main buttons on pages are 44 px tall and fill the width on a phone, with the main action on top.
+- Main buttons on pages are 44 px tall and fill the width on a phone, with the main action on top. A label with a long name in it, such as a space's, wraps inside the button instead of running past its edge, and a button too long to share its row takes a line of its own, the main action still on top.
 - "Only you" is always a label. Color supports it but never carries it alone.
 - Writing says who will see it before you save: "Only you", or "Everyone in Northwind", with how many people that is now and that anyone who joins later sees it too. New writing starts as only yours, and the button names who will see it, such as "Share with Northwind".
 - A long list shows fifty at a time and says where you are: "Showing 1–50 of 1,240 pages".

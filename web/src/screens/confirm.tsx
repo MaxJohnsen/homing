@@ -4,7 +4,7 @@ import { OutcomeIcon, ProposalDetails, SettledChange } from '@/components/propos
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { cn } from 'cn';
-import { focusRing } from '@/components/screen';
+import { focusRing, wrapsLabel } from '@/components/screen';
 import { draftOf, spaceOf, type SpaceSet } from '@/components/space-fields';
 import { buttonsOf, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, wantsTo, type ProposalData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
@@ -82,12 +82,13 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
               share={choice}
               onShareChange={setChoice}
             />
-            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            {/* A long button, such as one naming a space, takes a line of its own, still above the other. */}
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
               <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>
                 {buttons.reject}
               </Button>
               {!declineOnly && (
-                <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy || blocked} onClick={() => choose(true)}>
+                <Button size="lg" className={cn('min-h-11 text-base sm:px-5', wrapsLabel)} disabled={busy || blocked} onClick={() => choose(true)}>
                   {buttons.approve}
                 </Button>
               )}
