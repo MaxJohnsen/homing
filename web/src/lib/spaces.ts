@@ -31,6 +31,8 @@ export interface SpaceData extends SpaceSummary {
   /** Whether people in a space above it that you can't open have access too. */
   reachedFromAbove: boolean;
   members: SpaceMember[];
+  /** Where you moved it from in your personal space, when you shared it from there. Only you see it. */
+  movedFrom?: { id: string; name: string } | null;
 }
 
 /** Your personal space first, then the others in the order they were made. */

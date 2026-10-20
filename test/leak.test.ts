@@ -154,6 +154,9 @@ for (const [layer, sql] of [
         await assert.rejects(as(me, (s) => addMember(s, target.space, me.id), sql), refused);
         await assert.rejects(as(me, (s) => createSpace(s, { name: 'Way in', parentId: target.space }), sql), refused);
         await assert.rejects(as(me, (s) => s.tx`select rename_space(${target.space}::uuid, 'Way in')`, sql), refused);
+        // Nor move the other client's space, or anyone's personal space, as their own.
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select make_collaborative(${target.space}::uuid, null, false)`, sql), refused);
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select make_collaborative(${target.person.personalSpaceId}::uuid, null, false)`, sql), refused);
         await assert.rejects(as(me, (s) => s.tx`select rename_space(${target.person.personalSpaceId}::uuid, 'Way in')`, sql), refused);
       }
       assert.equal((await admin`select name from spaces where name = 'Way in'`).length, 0);

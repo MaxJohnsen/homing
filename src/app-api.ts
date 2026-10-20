@@ -6,6 +6,7 @@ import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pag
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
+import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
 
@@ -72,7 +73,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (!isEmail(email)) return answer(res, 400, { field: 'email', message: 'Write their email address.' });
         const space = await read((s) => spaceView(s, route.id));
         if (!space) return answer(res, 404, noSpace);
-        if (!space.admin || space.privateTo) return answer(res, 403, { message: space.privateTo ? 'Spaces in your personal space are only ever yours, so nobody can be added.' : `Only ${space.name}’s admins change who’s in it.` });
+        if (!space.admin || space.privateTo) return answer(res, 403, { message: space.privateTo ? 'Spaces in your personal space are only yours. To add people, share the space first, from its Settings.' : `Only ${space.name}’s admins change who’s in it.` });
         // Signed in, an admin learns whether someone uses Homing with that email.
         const account = await accountFinder(app.authPool)(email);
         if (!account) {
@@ -92,6 +93,29 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'conversion': {
+        // What sharing a space from your personal tree would do, for you to decide.
+        const conversion = await read((s) => conversionOf(s, route.id));
+        if (!conversion) return answer(res, 404, noSpace);
+        json(res, 200, {
+          rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName })),
+          skillsLeaving: conversion.skillsLeaving,
+          places: conversion.places,
+        });
+        break;
+      }
+
+      case 'convert space': {
+        const body = await readJson(req);
+        const rules = (['keep', 'share', 'drop'] as const).find((choice) => choice === body.rules);
+        if (!rules) return answer(res, 400, { message: 'Choose what becomes of the rules that stop applying.' });
+        const parent = typeof body.in === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.in) ? body.in.toLowerCase() : undefined;
+        if (body.in !== undefined && body.in !== null && !parent) return answer(res, 400, { field: 'in', message: 'Choose where the space goes.' });
+        const space = await write((s) => makeCollaborative(s, route.id, { in: parent, closed: body.closed === true, rules }));
+        json(res, 200, { id: space.id });
+        break;
+      }
+
       case 'rename space': {
         const body = await readJson(req);
         const space = await write((s) => renameSpace(s, route.id, typeof body.name === 'string' ? body.name : ''));
@@ -100,7 +124,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'space': {
-        const found = await read((s) => spaceView(s, route.id));
+        const found = await read(async (s) => {
+          const view = await spaceView(s, route.id);
+          return view && { ...view, movedFrom: await movedFrom(s, route.id) };
+        });
         if (!found) return answer(res, 404, noSpace);
         const { id, name, parentId, closed, privateTo, admin, path: above, reachedFromAbove, members } = found;
         json(res, 200, {
@@ -114,6 +141,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           path: above,
           reachedFromAbove,
           members: members.map((member) => ({ ...member, you: member.id === person })),
+          // Where it was in your personal space before you shared it, which only you can open.
+          movedFrom: found.movedFrom,
         });
         break;
       }
@@ -639,7 +668,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'add member' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'add member' | 'conversion' | 'convert space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -657,6 +686,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['publication', `/api/items/${uuid}/publication`],
       ['sources', `/api/spaces/${uuid}/sources`],
       ['overview', `/api/spaces/${uuid}/overview`],
+      ['conversion', `/api/spaces/${uuid}/conversion`],
       ['source', `/api/sources/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],
       ['skills', `/api/spaces/${uuid}/skills`],
@@ -673,6 +703,7 @@ function routeOf(method: string, path: string): Route | undefined {
     for (const [name, pattern] of [
       ['rename space', `/api/spaces/${uuid}`],
       ['add member', `/api/spaces/${uuid}/members`],
+      ['convert space', `/api/spaces/${uuid}/conversion`],
       ['add page', `/api/spaces/${uuid}/pages`],
       ['write overview', `/api/spaces/${uuid}/overview`],
       ['add item', `/api/pages/${uuid}/items`],

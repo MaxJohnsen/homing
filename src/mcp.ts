@@ -106,6 +106,10 @@ const publishInput = z.strictObject({
   why: text().optional().describe("Why it should be shared, in the user's words, shown when they decide"),
 }).describe('For knowledge.publish');
 
+const shareSpaceInput = z.strictObject({
+  space: text().describe("The space in the user's personal space to share, such as space:…"),
+}).describe('For space.share');
+
 /** The input of one action of `act`, checked against that action's own fields. */
 function inputFor<T extends z.ZodType>(action: string, schema: T, input: unknown): z.infer<T> {
   const parsed = schema.safeParse(input);
@@ -232,11 +236,12 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'members.change proposes adding someone to a space, making them an admin or a member, or removing them, which shares or stops sharing the space with them: ' +
         'the user approves it in Homing. Name someone the user shares a space with by name, and anyone else by email. ' +
         "knowledge.publish proposes sharing one of the user's private items with everyone in its space, when they want it shared: " +
-        'they approve exactly what is shared.',
+        'they approve exactly what is shared. ' +
+        "space.share, for a space in the user's personal space they want to share with others, gives them the link where they decide it in Homing.",
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'space.share']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, shareSpaceInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -256,6 +261,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             return proposeMembers(s, links, inputFor(action, membersInput, input), card);
           case 'knowledge.publish':
             return proposePublishing(s, links, inputFor(action, publishInput, input), card);
+          case 'space.share':
+            return shareSpaceLink(s, links, inputFor(action, shareSpaceInput, input));
         }
       }),
   );
@@ -846,7 +853,7 @@ async function proposeMembers(s: Session, links: Links, input: z.infer<typeof me
   // Whether the user may change who's in it comes first, before anyone is looked for.
   const view = await spaceView(s, spaceId);
   if (!view) throw new Refused('There’s no space there that you can open.');
-  if (view.privateTo) throw new Refused('Spaces in your personal space are only ever yours, so nobody can be added.');
+  if (view.privateTo) throw new Refused(`${view.name} is in the user's personal space, so only they have it. To add people, it's shared first: use space.share for the link.`);
   // Anyone may leave a space; everything else is for its admins.
   if (!view.admin && change !== 'remove') throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
   let person: { id: string; name: string } | undefined;
@@ -922,6 +929,18 @@ async function proposePublishing(s: Session, links: Links, input: z.infer<typeof
     `Waiting for the user's approval (${ref('proposal', proposal.id)}). Nothing is shared yet. ${where}\n\n` +
     'Only they can decide, so never say it is shared until `read` shows it is approved.';
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
+}
+
+/**
+ * Sharing a space from the user's personal space is theirs to decide in Homing, where they see who
+ * would have it and what becomes of the rules it had there. The assistant gives them the link.
+ */
+async function shareSpaceLink(s: Session, links: Links, input: z.infer<typeof shareSpaceInput>): Promise<string> {
+  const spaceId = parseRef(input.space, 'space');
+  const space = (await listSpaces(s)).find((candidate) => candidate.id === spaceId);
+  if (!space) throw new Refused('There’s no space there that you can open.');
+  if (!space.privateTo || !space.parentId) throw new Refused(space.privateTo ? 'The personal space itself stays the user’s own; share a space inside it.' : `${space.name} is already shared: add people to it with members.change.`);
+  return `The user shares ${space.name} in Homing, where they see who would have it and what becomes of the rules it had in their personal space. Nothing has changed yet. Give them this link: ${links.settings(spaceId)}`;
 }
 
 /** Renames a space the user looks after. */

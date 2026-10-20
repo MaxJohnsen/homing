@@ -65,7 +65,7 @@ test('a space just for you goes in your personal space, and nobody else can open
   // Nobody else can ever be added there, so it can't be made with others.
   const shared = await create(ana, { name: 'Builders', who: 'with others', in: home });
   assert.deepEqual([shared.status, shared.body.field], [400, 'in']);
-  assert.match(shared.body.message, /only ever yours/);
+  assert.match(shared.body.message, /are only yours/);
 });
 
 test('a space with others is one of its own, or goes in a shared space you’re an admin of, open or closed', async () => {

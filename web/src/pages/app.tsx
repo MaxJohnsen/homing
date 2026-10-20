@@ -24,7 +24,7 @@ import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { NewSpace } from '@/screens/new-space';
-import { Members, Space, SpaceSettings, type MemberActions } from '@/screens/space';
+import { Members, Space, SpaceSettings, type ConversionData, type MemberActions, type ShareSpaceActions } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 /** The signed-in app: the shelf with your spaces, and the screen you're on beside it. */
@@ -143,6 +143,27 @@ function NewSpacePage({ spaces }: { spaces: SpaceSummary[] }) {
   );
 }
 
+/** Sharing a space from your personal tree, then showing it, and the sidebar, as they are now. */
+function shareSpace(spaceId: string): ShareSpaceActions {
+  return {
+    conversion: async () => {
+      try {
+        return await api<ConversionData>(`/api/spaces/${spaceId}/conversion`);
+      } catch {
+        return undefined;
+      }
+    },
+    convert: async (input) => {
+      try {
+        await api(`/api/spaces/${spaceId}/conversion`, input);
+        await Promise.all([reload(`/api/spaces/${spaceId}`), reload('/api/spaces')]);
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+      }
+    },
+  };
+}
+
 /** Changing who is in a space directly, then showing its members as they are now. */
 function memberActions(spaceId: string): MemberActions {
   const fresh = () => Promise.all([reload(`/api/spaces/${spaceId}`), reload('/api/spaces')]);
@@ -209,7 +230,7 @@ function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
           {view === 'members' && !space.private && <Members space={space} actions={memberActions(id)} />}
-          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} />}
+          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} />}
         </Space>
       )}
     </Titled>
