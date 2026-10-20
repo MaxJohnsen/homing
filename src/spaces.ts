@@ -63,16 +63,29 @@ export class SpaceRefused extends Error {
  * with the same name in the same place is refused, so a subject keeps one space.
  */
 export async function newSpace(s: Session, input: { name: string; who: Who; in?: string; closed?: boolean }): Promise<Space> {
+  // Held to the end of the transaction, so two requests can't both create the same name.
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.space_access'))`;
+  const { name, parent, closed } = await placeSpace(s, input);
+  const id = await createSpace(s, { name, parentId: parent?.id, closed });
+  return { id, name, parentId: parent?.id ?? null, closed, privateTo: parent?.privateTo ?? null, admin: true };
+}
+
+/** Where a new space would go, checked the way newSpace checks it, without creating it. */
+export async function placeSpace(
+  s: Session,
+  input: { name: string; who: Who; in?: string; closed?: boolean },
+): Promise<{ name: string; parent: Space | undefined; personal: Space; closed: boolean }> {
   const name = cleanName(input.name);
   const spaces = await listSpaces(s);
   const personal = spaces.find((space) => space.privateTo !== null && space.parentId === null);
+  if (!personal) throw new SpaceRefused('missing', 'Only a person creates spaces.');
   let parent = input.in ? spaces.find((space) => space.id === input.in) : undefined;
   if (input.in && !parent) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
 
   if (input.who === 'just me') {
     parent ??= personal;
-    if (!parent?.privateTo) {
-      throw new SpaceRefused('where', `A space just for you goes in your personal space. A space in ${parent?.name} is for the people in it.`);
+    if (!parent.privateTo) {
+      throw new SpaceRefused('where', `A space just for you goes in your personal space. A space in ${parent.name} is for the people in it.`);
     }
   } else if (parent?.privateTo) {
     throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours. To share one, create it on its own, or in a shared space.');
@@ -81,38 +94,45 @@ export async function newSpace(s: Session, input: { name: string; who: Who; in?:
   }
 
   const there = spaces.find((space) => space !== personal && space.parentId === (parent?.id ?? null) && sameName(space.name, name));
-  if (there) {
-    const where = parent ? `in ${parent === personal ? 'your personal space' : parent.name}` : 'on its own';
-    throw new SpaceRefused('name', `There’s already a space called ${there.name} ${where}.`, there);
-  }
-
-  const closed = input.who === 'with others' && parent !== undefined && input.closed === true;
-  const id = await createSpace(s, { name, parentId: parent?.id, closed });
-  return { id, name, parentId: parent?.id ?? null, closed, privateTo: parent?.privateTo ?? null, admin: true };
+  if (there) throw new SpaceRefused('name', `There’s already a space called ${there.name} ${placeName(parent, personal)}.`, there);
+  return { name, parent, personal, closed: input.who === 'with others' && parent !== undefined && input.closed === true };
 }
 
 /** Renames a space the person is an admin of. A personal space keeps its name. */
 export async function renameSpace(s: Session, spaceId: string, name: string): Promise<Space> {
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.space_access'))`;
   const clean = cleanName(name);
   const spaces = await listSpaces(s);
   const space = spaces.find((candidate) => candidate.id === spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
-  if (space.privateTo && !space.parentId) throw new SpaceRefused('admin', 'Your personal space keeps its name.');
+  const personal = spaces.find((candidate) => candidate.privateTo !== null && candidate.parentId === null);
+  if (space === personal) throw new SpaceRefused('admin', 'Your personal space keeps its name.');
   if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins rename it.`);
-  const there = spaces.find((other) => other.id !== space.id && other.parentId === space.parentId && sameName(other.name, clean));
-  if (there) throw new SpaceRefused('name', `There’s already a space called ${there.name} there.`, there);
+  const there = spaces.find((other) => other !== space && other !== personal && other.parentId === space.parentId && sameName(other.name, clean));
+  if (there) throw new SpaceRefused('name', `There’s already a space called ${there.name} ${placeName(spaces.find((above) => above.id === space.parentId), personal)}.`, there);
   await s.tx`select rename_space(${spaceId}::uuid, ${clean})`;
   return { ...space, name: clean };
 }
 
+/** "in Acme", "in your personal space" or "on its own": where a space sits. */
+function placeName(parent: Space | undefined, personal: Space | undefined): string {
+  return parent ? `in ${parent === personal ? 'your personal space' : parent.name}` : 'on its own';
+}
+
+/**
+ * A name as Homing keeps it: one line, single spaces, composed the usual way, and without
+ * characters nobody can see, which could hide or reverse what the name says to others.
+ */
 function cleanName(name: string): string {
-  const clean = name.replace(/\s+/g, ' ').trim();
+  const clean = name.normalize('NFC').replace(/\s+/g, ' ').trim();
+  if (/[\p{Cc}\p{Cf}]/u.test(clean.replaceAll('\u200d', ''))) throw new SpaceRefused('name', 'Leave out invisible characters.');
   if (!clean) throw new SpaceRefused('name', 'Give the space a name.');
-  if (clean.length > spaceNameLength) throw new SpaceRefused('name', `Keep the name under ${spaceNameLength} characters.`);
+  if (clean.length > spaceNameLength) throw new SpaceRefused('name', `Keep the name to ${spaceNameLength} characters or fewer.`);
   return clean;
 }
 
-const sameName = (a: string, b: string) => a.localeCompare(b, undefined, { sensitivity: 'base' }) === 0;
+/** Whether two names are the same name: case doesn't count, accents do, so Ås and As are two names. */
+const sameName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'accent' }) === 0;
 
 /** Adds a person to a space, or changes their role. Needs admin rights. */
 export async function addMember(s: Session, spaceId: string, personId: string, role: Role = 'member') {

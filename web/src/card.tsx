@@ -45,6 +45,7 @@ function Card() {
       key={proposal?.id}
       proposal={proposal}
       done={done}
+      onOpen={(link) => void app.openLink({ url: link }).catch(() => {})}
       message={message}
       decide={async (approve, onlyHere) => {
         if (!proposal) return;
@@ -72,10 +73,14 @@ function applyHost(context: McpUiHostContext) {
   if (context.styles?.css?.fonts) applyHostFonts(context.styles.css.fonts);
 }
 
-/** The card outside an assistant, deciding on sample data. */
+/** The card outside an assistant, deciding on sample data, or showing a change made without a decision. */
 function Preview() {
   const [shown, setShown] = useState(params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : sample);
   const sending = Boolean(shown.request && !shown.request.sent);
+  if (params.get('sample') === 'done') {
+    return <ApprovalCard done={{ heading: 'Space created', name: 'Globex', detail: 'A space of its own. Only you have it so far.', link: '/' }} onOpen={() => {}} />;
+  }
+  if (params.get('sample') === 'refused') return <ApprovalCard message="Nothing changed in Homing." />;
   return (
     <ApprovalCard
       proposal={shown}

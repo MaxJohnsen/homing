@@ -88,7 +88,7 @@ Figtree is the only typeface, and it ships with the app. A screen in the app has
 - Home leads with what needs you: at most three changes waiting, and the rest in a list grouped by space. Then what changed, each leading with the change itself, grouped by day, a few at a time with a way to all of them. Your own requests come last. The sidebar lists your spaces, so Home doesn't; on a phone it shows the ones you opened lately.
 - Someone who has just joined sees a welcome on Home instead, with the welcome drawing. It helps them connect an assistant first, then write something or start a space.
 - A space says under its name where it sits and who it's shared with: "In Acme. Shared with its 4 members, not with everyone in Acme." Its parts are Overview, Knowledge, Guidance, Tasks and Members, and Settings for its admins, starting with its name.
-- Starting a space asks its name and who it's for. Just for you, it goes in your personal space, where nobody else can ever be added. With others, it's a space of its own, or goes in a shared space you look after, open to everyone there or only to the people you add. It says what that means before it's created, then opens the new space. Admins also start one from the space it goes in.
+- Starting a space asks its name and who it's for. Just for you, it goes in your personal space, where nobody else can ever be added. With others, it's a space of its own, or goes in a shared space you're an admin of, open to everyone there, with how many people that is, or only to the people you add. It says what that means before it's created, then opens the new space. Admins also start one from the space it goes in.
 - The overview is a map: what someone wrote about the space, its collections and what's active, with what's waiting there, recent decisions, what's next and the spaces inside it alongside.
 - Knowledge has three views: pages, collections and sources. Pages can be searched within the space, filtered by the types that exist and sorted, and archived ones show on request.
 - A page leads with what's known and says under its title who sees it. Each item opens, when you ask, to its sources, earlier versions and who wrote it. When sources disagree, the reading view says so. When your private update replaces a shared item for you, it stands in that item's place and the page says what others still see. Long pages can be searched within. The collections a page is in, and the pages that mention it, sit beside it.
@@ -135,7 +135,7 @@ On the sign-in page the bird flies in over the top right of the sign-in card, ca
 
 Inside an assistant the approval card takes the host's colors, font and corners, and keeps sage for the main action. In a dark host the sage turns lighter and more saturated, so the main action never looks disabled. It shows the same parts as the decision page, sized for a chat, and is built as one self-contained HTML file.
 
-- A change that needs no approval, such as a space the person asked their assistant for, shows what was done instead.
+- A change that needs no approval, such as a space only the person will have, which they asked their assistant for, shows what was done, with the space's name set apart, and opens it in Homing. A refused change says nothing changed.
 - The assistant can draw the card again later, so it always shows how things stand now, and a decided change stays greyed with its outcome.
 - Only assistants checked to keep the model from pressing its buttons show it, Claude first. The others give the person a link to the decision page.
 

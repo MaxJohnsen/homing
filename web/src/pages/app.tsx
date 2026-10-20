@@ -71,7 +71,7 @@ export function AppPage() {
       }}
     >
       {/* A new screen for each address; searching and filtering within one keeps it. */}
-      <Screen key={address.split('?')[0]} route={route} me={me} spaces={spaces} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
+      <Screen key={route.name === 'new space' ? address : address.split('?')[0]} route={route} me={me} spaces={spaces} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
     </Shell>
   );
 }
@@ -121,11 +121,12 @@ function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingD
 
 /** Starting a space, from the sidebar or from the space it goes in, then opening it. */
 function NewSpacePage({ spaces }: { spaces: SpaceSummary[] }) {
-  const start = new URLSearchParams(location.search).get('in') ?? undefined;
+  const search = new URLSearchParams(location.search);
   return (
     <NewSpace
       spaces={spaces}
-      start={start}
+      start={search.get('in') ?? undefined}
+      name={search.get('name')?.slice(0, 100) ?? undefined}
       create={async (input) => {
         try {
           return await api<{ id: string }>('/api/spaces', input);

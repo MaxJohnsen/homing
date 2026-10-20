@@ -122,6 +122,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/request/not-sent': { label: 'A request you didn’t send', render: () => <SampleConfirm proposal={{ ...requestProposal, state: 'rejected' }} /> },
   '/card-preview/request': { label: 'Approval card for a request', render: () => <CardPreview sample="request" /> },
   '/card-preview/long': { label: 'Approval card with a longer rule', render: () => <CardPreview sample="long" /> },
+  '/card-preview/done': { label: 'The card after a change that needed no approval', render: () => <CardPreview sample="done" /> },
+  '/card-preview/refused': { label: 'The card when Homing refused a change', render: () => <CardPreview sample="refused" /> },
 };
 
 /** The decision page, deciding on the sample instead of the server. */

@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from 'react';
+import { useSyncExternalStore, type ComponentProps, type MouseEvent } from 'react';
 
 /** A screen inside the app. Each has an address of its own, so links from assistants and the back button work. */
 export type Route =
@@ -94,7 +94,7 @@ export function navigate(to: string, options: { replace?: boolean } = {}) {
  * new tab, or a link to anywhere else, works as usual. The development server shows each screen at
  * an address of its own, so there every link loads the page.
  */
-export function Link({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) {
+export function Link({ href, onClick, ...rest }: ComponentProps<'a'> & { href: string }) {
   const follow = (event: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);
     if (import.meta.env.DEV || event.defaultPrevented || event.button !== 0) return;

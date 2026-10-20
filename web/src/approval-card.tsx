@@ -11,14 +11,25 @@ const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired',
 /** A change made without a decision, such as a new space: what was done, and where. */
 export interface Done {
   heading: string;
+  /** The space's name, which the assistant chose, so it's set apart from what Homing says. */
+  name?: string;
   detail?: string;
+  /** Where it opens in Homing. */
+  link?: string;
 }
 
 /**
  * The approval shown inside the conversation. Same parts as the page, sized for a chat. A change
  * that needed no approval shows what was done instead.
  */
-export function ApprovalCard({ proposal, done, decide, message: initialMessage }: { proposal?: ProposalData; done?: Done; decide?: Decide; message?: string }) {
+export function ApprovalCard({ proposal, done, decide, onOpen, message: initialMessage }: {
+  proposal?: ProposalData;
+  done?: Done;
+  decide?: Decide;
+  /** Opens a page of Homing's, outside the conversation. */
+  onOpen?: (link: string) => void;
+  message?: string;
+}) {
   const [onlyHere, setOnlyHere] = useState(proposal?.onlyHere ?? false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState(initialMessage);
@@ -36,19 +47,27 @@ export function ApprovalCard({ proposal, done, decide, message: initialMessage }
     return (
       <section aria-label="Done in Homing" className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
         <Wordmark className="text-sm text-foreground" />
-        <div className="flex items-start gap-2" role="status">
-          <OutcomeIcon kind="approved" className="mt-0.5 size-5" />
-          <div className="flex flex-col gap-0.5">
-            <p className="text-base font-medium">{done.heading}</p>
-            {done.detail && <p className="text-sm text-muted-foreground">{done.detail}</p>}
+        <div className="flex flex-col gap-3" role="status">
+          <div className="flex items-start gap-2">
+            <OutcomeIcon kind="approved" className="mt-0.5 size-5" />
+            <div className="flex flex-col gap-0.5">
+              <p className="text-base font-medium">{done.heading}</p>
+              {done.detail && <p className="text-sm text-muted-foreground">{done.detail}</p>}
+            </div>
           </div>
+          {done.name && <p className="rounded-xl bg-muted px-4 py-3 text-base break-words">{done.name}</p>}
         </div>
+        {done.link && onOpen && (
+          <div>
+            <Button variant="outline" className="h-10 px-4" onClick={() => onOpen(done.link!)}>Open in Homing</Button>
+          </div>
+        )}
       </section>
     );
   }
 
   return (
-    <section aria-label="Approve a change" className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
+    <section aria-label={proposal || !initialMessage ? 'Approve a change' : 'Homing'} className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
       <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
         <Wordmark className="text-sm text-foreground" />
         {proposal && <span>{outcome ? status[outcome.kind] : 'Waiting for you'}</span>}

@@ -7,13 +7,23 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
 import { startServer, type Homing } from '../src/server.ts';
-import { addMember } from '../src/spaces.ts';
+import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { admin, as, db, member, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
 let ana: Member, cara: Member;
+let chat: Awaited<ReturnType<Assistant['open']>>;
+
+const act = async (action: string, input: Record<string, unknown>) => {
+  const result = await chat.client.callTool({ name: 'act', arguments: { action, input } });
+  return {
+    failed: Boolean(result.isError),
+    text: result.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
+    done: (result.structuredContent as { done?: Record<string, string> } | undefined)?.done,
+  };
+};
 
 type SpaceRow = { id: string; name: string; parentId: string | null; closed: boolean; private: boolean; admin: boolean };
 
@@ -35,6 +45,9 @@ before(async () => {
     cardClients: [assistants.claude.client_id],
   });
   [ana, cara] = [await member(homing.url, 'Ana'), await member(homing.url, 'Cara')];
+  const claude = new Assistant(homing.url, assistants.claude);
+  await claude.connect(ana.browser);
+  chat = await claude.open();
 });
 
 after(() => homing.close());
@@ -55,7 +68,7 @@ test('a space just for you goes in your personal space, and nobody else can open
   assert.match(shared.body.message, /only ever yours/);
 });
 
-test('a space with others is one of its own, or goes in a shared space you look after, open or closed', async () => {
+test('a space with others is one of its own, or goes in a shared space you’re an admin of, open or closed', async () => {
   const acme = await created(ana, { name: 'Acme', who: 'with others' });
   await as(ana, (s) => addMember(s, acme, cara.id));
   const website = await created(ana, { name: 'Website', who: 'with others', in: acme });
@@ -110,41 +123,83 @@ test('admins rename a space for everyone, and a personal space keeps its name', 
 });
 
 test('an assistant creates the space the user asks for, and Homing records that it did', async () => {
-  const claude = new Assistant(homing.url, assistants.claude);
-  await claude.connect(ana.browser);
-  const chat = await claude.open();
-  const act = async (action: string, input: Record<string, unknown>) => {
-    const result = await chat.client.callTool({ name: 'act', arguments: { action, input } });
-    return {
-      failed: Boolean(result.isError),
-      text: result.content.map((block) => (block.type === 'text' ? block.text : '')).join('\n'),
-      done: (result.structuredContent as { done?: { heading: string; detail: string } } | undefined)?.done,
-    };
-  };
-
   const globex = await act('space.create', { name: 'Globex', who: 'with others' });
   assert.ok(!globex.failed, globex.text);
   const id = /space:([0-9a-f-]{36})/.exec(globex.text)![1];
   assert.match(globex.text, /^Created Globex \(space:.+\)\. A space of its own\. Only the user has it so far\./);
-  // The card shows what was done, in the person's words.
-  assert.deepEqual(globex.done, { heading: 'Created Globex', detail: 'A space of its own. Only you have it so far.', link: new URL(`/spaces/${id}`, homing.url).toString() });
+  // The card shows what was done, with the name the assistant chose set apart.
+  assert.deepEqual(globex.done, { heading: 'Space created', name: 'Globex', detail: 'A space of its own. Only you have it so far.', link: new URL(`/spaces/${id}`, homing.url).toString() });
   const [row] = await admin`select created_by, agent from spaces where id = ${id}`;
   assert.deepEqual([row.createdBy, row.agent], [ana.id, 'Claude']);
 
+  // Closed, a space in Globex is still only Ana's.
   const inside = await act('space.create', { name: 'Billing', who: 'with others', in: `space:${id}`, closed: true });
-  assert.match(inside.text, /In Globex\. Only the people added to it have access, and Globex’s rules apply in it\./);
+  assert.match(inside.text, /In Globex\. Only the people added to it have access, and Globex’s shared rules apply in it\./);
+  const kitchen = (await spacesOf(ana)).find((space) => space.name === 'Kitchen plans')!.id;
+  assert.ok(!(await act('space.create', { name: 'Tiles', who: 'just me', in: `space:${kitchen}` })).failed);
   const twice = await act('space.create', { name: 'globex', who: 'with others' });
   assert.ok(twice.failed);
   assert.match(twice.text, new RegExp(`There’s already a space called Globex on its own\\. Use it \\(space:${id}\\), or choose another name\\.`));
-  const personal = await act('space.create', { name: 'Diary', who: 'with others', in: `space:${ana.personalSpaceId}` });
-  assert.ok(personal.failed);
+  assert.ok((await act('space.create', { name: 'Diary', who: 'with others', in: `space:${ana.personalSpaceId}` })).failed);
 
   const renamed = await act('space.rename', { space: `space:${id}`, name: 'Globex Corporation' });
   assert.equal(renamed.text, `Renamed Globex to Globex Corporation (space:${id}).`);
-  assert.deepEqual(renamed.done, { heading: 'Renamed to Globex Corporation', detail: 'It was called Globex.' });
-  const mixed = await act('space.create', { space: `space:${id}`, name: 'Hello' });
-  assert.ok(mixed.failed);
-  assert.match(mixed.text, /doesn't fit space\.create/);
+  assert.deepEqual(renamed.done, { heading: 'Space renamed', name: 'Globex Corporation', detail: 'It was called Globex.', link: new URL(`/spaces/${id}`, homing.url).toString() });
+  const [kept] = await admin`select name, agent from space_names where space_id = ${id}`;
+  assert.deepEqual([kept.name, kept.agent], ['Globex', 'Claude']);
   // The user's new space is where the assistant looks next.
   assert.match((await chat.call('context', { request: 'Plan the Globex kickoff' })).text, /Globex Corporation/);
+});
+
+test('an assistant never names a space others see: the user creates or renames it in Homing', async () => {
+  const acme = (await spacesOf(ana)).find((space) => space.name === 'Acme')!.id;
+  const open = await act('space.create', { name: 'Intranet', who: 'with others', in: `space:${acme}` });
+  assert.ok(open.failed);
+  assert.match(open.text, new RegExp(`Everyone in Acme would see this space, so the user creates it in Homing\\. Nothing was created\\. Give them this link, which opens it filled in: ${homing.url}spaces/new\\?in=${acme}&name=Intranet`));
+  const rename = await act('space.rename', { space: `space:${acme}`, name: 'Acme Group' });
+  assert.ok(rename.failed);
+  assert.match(rename.text, new RegExp(`Others can open Acme, so the user renames it in Homing\\. Nothing changed\\. Give them this link: ${homing.url}spaces/${acme}/settings`));
+  assert.equal((await spacesOf(cara)).find((space) => space.id === acme)?.name, 'Acme');
+
+  // The database holds to it too, whatever an assistant's session asks for.
+  const claude = { person: ana.id, agent: 'Claude' };
+  await assert.rejects(as(claude, (s) => createSpace(s, { name: 'Intranet', parentId: acme })), /others would see that space/);
+  await assert.rejects(as(claude, (s) => s.tx`select rename_space(${acme}::uuid, 'Acme Group')`), /others can open that space/);
+  // And an assistant creates at most twenty spaces an hour.
+  const made = (await admin`select count(*)::int as n from spaces where created_by = ${ana.id} and agent is not null`)[0].n as number;
+  for (let n = made; n < 20; n++) await as(claude, (s) => createSpace(s, { name: `Note ${n}`, parentId: ana.personalSpaceId }));
+  await assert.rejects(as(claude, (s) => createSpace(s, { name: 'One more', parentId: ana.personalSpaceId })), /at most 20 spaces an hour/);
+  assert.equal((await create(ana, { name: 'One more', who: 'just me' })).status, 200, 'people aren’t limited');
+});
+
+test('act says what doesn’t fit the action it was asked for', async () => {
+  const who = await act('space.create', { name: 'Initech', who: 'just us' });
+  assert.ok(who.failed);
+  assert.match(who.text, /^That input doesn't fit space\.create\. who: invalid option/);
+  const extra = await act('space.create', { name: 'Initech', who: 'with others', space: 'space:00000000-0000-0000-0000-000000000000' });
+  assert.match(extra.text, /doesn't fit space\.create\. input: unrecognized key: "space"/);
+  const change = await act('guidance.propose', { space: `space:${ana.personalSpaceId}`, change: 'edit', text: 'Hello' });
+  assert.match(change.text, /doesn't fit guidance\.propose\. change: invalid option/);
+  assert.equal((await spacesOf(ana)).filter((space) => space.name === 'Initech').length, 0);
+});
+
+test('names are one line of visible text, and two at once can’t take the same name', async () => {
+  for (const name of ['\u200b', 'Acme\u202e', 'Tab\tbed\u0000']) {
+    const refused = await create(ana, { name, who: 'just me' });
+    assert.equal(refused.status, 400, name);
+  }
+  // Accents make another name; case doesn't.
+  assert.equal((await create(ana, { name: 'Ås', who: 'just me' })).status, 200);
+  assert.equal((await create(ana, { name: 'As', who: 'just me' })).status, 200);
+  assert.equal((await create(ana, { name: 'ÅS', who: 'just me' })).status, 400);
+  // A top-level space may be called Personal; Ana's personal space is hers alone.
+  assert.equal((await create(ana, { name: 'Personal', who: 'with others' })).status, 200);
+
+  const raced = await Promise.all([1, 2, 3].map(() => create(ana, { name: 'Race', who: 'with others' })));
+  assert.deepEqual(raced.map((answer) => answer.status).sort(), [200, 400, 400]);
+});
+
+test('the app serves new space and settings as screens of its own', async () => {
+  const acme = (await spacesOf(ana)).find((space) => space.name === 'Acme')!.id;
+  for (const path of ['/spaces/new', `/spaces/${acme}/settings`]) assert.equal((await fetch(new URL(path, homing.url))).status, 200, path);
 });

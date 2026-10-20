@@ -1,4 +1,4 @@
-import { Fragment, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
 import { Button } from '@/components/ui/button';
@@ -31,6 +31,8 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
             {tabs.map((tab) => (
               <Link
                 key={tab.label}
+                // On a phone the tabs scroll sideways, so the one you're on is brought into view.
+                ref={tab.current ? (link) => link?.scrollIntoView({ block: 'nearest', inline: 'nearest' }) : undefined}
                 href={tab.href}
                 aria-current={tab.current ? 'page' : undefined}
                 className={cn(
@@ -121,7 +123,9 @@ export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (na
   const [problem, setProblem] = useState<string>();
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
-  const changed = name.trim() !== space.name;
+  // Shows the name as it is now, after a rename here or anywhere else.
+  useEffect(() => setName(space.name), [space.name]);
+  const changed = name.replace(/\s+/g, ' ').trim() !== space.name;
 
   const save = async () => {
     setBusy(true);
@@ -132,7 +136,7 @@ export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (na
   };
 
   return (
-    <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? undefined : `Everyone who can open ${space.name} sees the new name.`}>
+    <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? 'Only you see it.' : `Everyone who can open ${space.name} sees the new name.`}>
       <form
         className="flex flex-col gap-3 sm:flex-row"
         onSubmit={(event) => {
@@ -150,11 +154,12 @@ export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (na
             setSaved(false);
           }}
           aria-invalid={Boolean(problem) || undefined}
+          aria-describedby={problem ? 'space-name-problem' : undefined}
           disabled={busy}
         />
-        <Button type="submit" size="lg" className="h-11" disabled={busy || !changed || !name.trim()}>Rename</Button>
+        <Button type="submit" size="lg" className="h-11 text-base sm:px-5" disabled={busy || !changed || !name.trim()}>Rename</Button>
       </form>
-      {problem && <FieldError>{problem}</FieldError>}
+      {problem && <FieldError id="space-name-problem">{problem}</FieldError>}
       {saved && <p role="status" className="text-sm text-muted-foreground">Renamed.</p>}
     </Section>
   );

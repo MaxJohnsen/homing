@@ -215,7 +215,7 @@ function Spaces({ spaces, recent, current, address }: { spaces: SpaceSummary[]; 
           <div className="flex flex-col gap-1">
             <h2 className="px-3 text-sm font-semibold text-muted-foreground">{crowded ? 'All spaces' : 'Your spaces'}</h2>
             <SpaceTree spaces={spaces} current={current} crowded={crowded} />
-            <NavLink href="/spaces/new" active={address === '/spaces/new'} className={cn('mt-1', address !== '/spaces/new' && 'text-muted-foreground hover:text-foreground')}>
+            <NavLink href="/spaces/new" active={address.split('?')[0] === '/spaces/new'} className={cn('mt-1', address.split('?')[0] !== '/spaces/new' && 'text-muted-foreground hover:text-foreground')}>
               <Plus aria-hidden="true" className="size-[18px]" />
               New space
             </NavLink>
