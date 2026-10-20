@@ -1,4 +1,5 @@
 import { ShareSpaceFields, type ShareChoice } from '@/components/share-space-fields';
+import { FieldError } from '@/components/ui/field';
 import { CircleCheck, CircleSlash, Clock, Send } from 'lucide-react';
 import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
@@ -35,6 +36,8 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
       <>
         <p className="text-base">{space} is in your personal space, so only you have it. Shared, it leaves your personal space and you can add people. Everything in it stays only yours until you share it.</p>
         <ShareSpaceFields name={space} conversion={proposal.conversion} choice={share} onChange={onShareChange} disabled={disabled} idPrefix={`${idPrefix}-share`} />
+        {/* A name that's taken where it would go is said here, as the other problems are under the buttons. */}
+        {problem?.field === 'name' && <FieldError>{problem.message}</FieldError>}
       </>
     );
   }

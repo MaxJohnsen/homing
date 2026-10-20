@@ -259,7 +259,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'approved') return { kind: 'approved', heading: `Shared ${proposal.space}`, detail: 'It’s out of your personal space. Add people to it, and share what’s in it when you want others to see it.' };
     if (state === 'rejected') return { kind: 'rejected', heading: 'Kept only yours', detail: 'It stays in your personal space.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want to share it.` };
-    if (isGone(proposal)) return { kind: 'gone', heading: 'Shared already', detail: 'It left your personal space since, so there’s nothing to decide.' };
+    if (isGone(proposal)) return { kind: 'gone', heading: 'Nothing to decide', detail: 'It was shared or archived since.' };
     return undefined;
   }
   if (action === 'archive') {

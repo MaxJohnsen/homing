@@ -9,6 +9,8 @@ export interface ConversionData {
   rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null }[];
   skillsLeaving: { name: string; from: string | null }[];
   places: { id: string; name: string; label: string; people: number; above: boolean }[];
+  /** On a proposal: the rules leaving as shown, which approving sends back. */
+  shown?: string;
 }
 
 /** Where it goes, whether only the people you add have it there, and what becomes of the rules leaving. */

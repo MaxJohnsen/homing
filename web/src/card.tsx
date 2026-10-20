@@ -50,7 +50,7 @@ function Card() {
       decide={async (approve, onlyHere, space, share) => {
         if (!proposal) return;
         const result = await app
-          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : undefined), ...(space && { space }), ...(share && { share }) } })
+          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : proposal.conversion?.shown), ...(space && { space }), ...(share && { share }) } })
           .catch(() => undefined);
         if (!result) return 'Homing couldn’t be reached. Try again.';
         const decided = (result.structuredContent as Shown | undefined)?.proposal;

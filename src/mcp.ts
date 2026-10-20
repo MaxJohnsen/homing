@@ -123,6 +123,7 @@ const archiveInput = z.strictObject({
 const shareSpaceInput = z.strictObject({
   space: text().describe("The space in the user's personal space to share, such as space:…"),
   why: text().optional().describe("Why, in the user's words, shown when they decide"),
+  asked: z.boolean().optional().describe('True when the user asked to share it. Homing never suggests sharing a space in the personal space'),
 }).describe('For space.share');
 
 /** The input of one action of `act`, checked against that action's own fields. */
@@ -274,7 +275,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'space.archive takes a space whose work is done, such as a finished project or a past trip, and the spaces in it out of everyday context; nothing is deleted. ' +
         'Suggest it only when the user says so or it clearly is. A space only the user has is archived, or reopened, as soon as they ask; ' +
         'one others have, or your own idea, waits for their approval. ' +
-        "space.share, for a space in the user's personal space they want to share with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once.",
+        "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once.",
       inputSchema: z.object({
         action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'space.share']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
@@ -935,7 +936,7 @@ async function proposeMembers(s: Session, links: Links, input: z.infer<typeof me
   // Whether the user may change who's in it comes first, before anyone is looked for.
   const view = await spaceView(s, spaceId);
   if (!view) throw new Refused('There’s no space there that you can open.');
-  if (view.privateTo) throw new Refused(`${view.name} is in the user's personal space, so only they have it. To add people, it's shared first: use space.share for the link.`);
+  if (view.privateTo) throw new Refused(`${view.name} is in the user's personal space, so only they have it. To add people, it's shared first: if the user wants that, propose it with space.share.`);
   // Anyone may leave a space; everything else is for its admins.
   if (!view.admin && change !== 'remove') throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
   let person: { id: string; name: string } | undefined;
@@ -1106,6 +1107,7 @@ async function proposeTaskSharing(s: Session, links: Links, input: z.infer<typeo
 async function proposeSpaceSharing(s: Session, links: Links, input: z.infer<typeof shareSpaceInput>, card: boolean): Promise<string | Answer> {
   let proposal: Proposal;
   try {
+    if (!input.asked) throw new Refused('Homing never suggests sharing a space in the personal space. Propose it only when the user asks, with asked: true.');
     proposal = await proposeSpaceShare(s, { spaceId: parseRef(input.space, 'space'), why: input.why });
   } catch (error) {
     if (error instanceof SpaceRefused) throw new Refused(error.message);
@@ -1171,7 +1173,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     return task?.shared ? 'The task is shared with the space already, so there is nothing to decide.' : 'The task was done or removed since, so there is nothing to decide.';
   }
   if (proposal.state === 'open' && 'archive' in proposal && proposal.archive?.archived) return 'The space is archived already, so there is nothing to decide.';
-  if (proposal.state === 'open' && proposal.action === 'share space' && 'conversion' in proposal && !proposal.conversion) return 'The space is shared already, so there is nothing to decide.';
+  if (proposal.state === 'open' && proposal.action === 'share space' && 'conversion' in proposal && !proposal.conversion) return 'The space was shared or archived since, so there is nothing to decide.';
   switch (proposal.state) {
     case 'open':
       return proposal.request
@@ -1197,7 +1199,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     case 'rejected':
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. Don't propose sharing it again unless they ask.`;
       if (proposal.action === 'archive space') return `The user kept it open, on ${day(proposal.decidedAt!)}. Don't suggest archiving it again unless they ask.`;
-      if (proposal.action === 'share space') return `The user kept it in their personal space, on ${day(proposal.decidedAt!)}. Nothing changed.`;
+      if (proposal.action === 'share space') return `The user kept it in their personal space, on ${day(proposal.decidedAt!)}. Nothing changed. Don't propose sharing it again unless they ask.`;
       if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again."}`;
       return proposal.request && !proposal.requestedAt
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`

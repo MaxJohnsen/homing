@@ -95,6 +95,8 @@ export interface ProposalView extends Proposal {
     rulesLeaving: { kind: RuleKind; text: string; from: string | null }[];
     skillsLeaving: { name: string; from: string | null }[];
     places: { id: string; name: string; label: string; people: number; above: boolean }[];
+    /** The rules leaving as shown, which approving sends back, so only those are kept or shared. */
+    shown: string;
   } | null;
   /** For sharing a task: the task as it is now, if the reader can see it, and whether it's still theirs alone. */
   task: { title: string; description: string | null; due: string | null; done: boolean; shared: boolean; shown: string } | null;
@@ -338,6 +340,8 @@ export async function suggestArchive(s: Session, input: { spaceId: string; why?:
  * where it goes, who has it and what becomes of its rules. One waits at a time for each space.
  */
 export async function proposeSpaceShare(s: Session, input: { spaceId: string; why?: string }): Promise<Proposal> {
+  // One person's proposals are made one at a time, so two at once can't both pass the check for one waiting.
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.suggest:' || ${personOf(s.principal)!}))`;
   const spaces = await listSpaces(s);
   const space = spaces.find((candidate) => candidate.id === input.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
@@ -456,12 +460,19 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
 async function conversionFor(s: Session, proposal: Proposal): Promise<ProposalView['conversion']> {
   if (proposal.action !== 'share space' || proposal.privateTo !== personOf(s.principal)) return null;
   const conversion = await conversionOf(s, proposal.spaceId);
-  if (!conversion) return null;
+  // Shared since, or archived, it can't be shared from here.
+  if (!conversion || conversion.space.archived) return null;
   return {
     rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName })),
     skillsLeaving: conversion.skillsLeaving,
     places: conversion.places,
+    shown: rulesShown(conversion.rulesLeaving),
   };
+}
+
+/** The rules leaving a space as they're shown, so approving keeps or shares only those. */
+function rulesShown(rules: { id: string; kind: RuleKind; body: string }[]): string {
+  return rules.map((rule) => `${rule.id}:${rule.kind}:${rule.body}`).join('\n');
 }
 
 /** "In Acme. Everyone in Acme has it.": where a space is and who has it, for its creator. */
@@ -637,7 +648,10 @@ function taskStands(s: Session, table: string) {
 function spaceOpen(s: Session, table: string) {
   const p = s.tx(table);
   return s.tx`(${p}.action <> 'archive space' or not exists (select from archived_since(${p}.space_id)))
-    and (${p}.action <> 'share space' or exists (select from spaces x where x.id = ${p}.space_id and x.private_to is not null))`;
+    and (${p}.action <> 'share space' or (
+      exists (select from spaces x where x.id = ${p}.space_id and x.private_to is not null)
+      and not exists (select from archived_since(${p}.space_id))
+    ))`;
 }
 
 function ruleStands(s: Session, table: string) {
@@ -697,6 +711,11 @@ export async function decide(
       }
     } else if (proposal.action === 'share space') {
       if (!decision.share) throw new Undecidable('changed', 'Choose where it goes and what becomes of its rules.');
+      const conversion = await conversionOf(s, proposal.spaceId);
+      if (!conversion || conversion.space.archived) throw new Undecidable('changed', 'It was shared or archived after you opened this page, so there’s nothing to decide.');
+      if (decision.shown !== rulesShown(conversion.rulesLeaving)) {
+        throw new Undecidable('changed', 'The rules that stop applying in it changed after you opened this page. Check them again before sharing it.');
+      }
       // Checked again as it moves, as in Settings: where it may go, the name there, and the rules leaving.
       await makeCollaborative(s, proposal.spaceId, { in: decision.share.in ?? undefined, closed: decision.share.closed, rules: decision.share.rules });
     } else if (proposal.action === 'archive space') {
