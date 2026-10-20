@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Shell } from '@/components/app-shell';
 import { failed, LoadFailed, ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
-import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
+import type { IncludableData, IncludeSummary, RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 import type { ChangeData, NewPage, OverviewData, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData, WriteOverview } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
 import type { PublicationData, RequestData, WaitingData } from '@/lib/proposals';
@@ -257,8 +257,11 @@ function archiveSpace(spaceId: string) {
 
 function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
-  const rulesLoad = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '');
-  const skillsLoad = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '');
+  const guidance = view === 'rules' || view === 'skills' || (space?.private && view === 'members');
+  const rulesLoad = useLoad<{ rules: RuleData[]; includes: IncludeSummary[] }>(view === 'rules' || (space?.private && view === 'members') ? `/api/spaces/${id}/rules` : '');
+  const skillsLoad = useLoad<{ skills: SkillSummary[]; hidden: IncludeSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '');
+  // What the person could include here, for the form that includes it.
+  const includable = useLoad<IncludableData>(guidance ? `/api/spaces/${id}/includable` : '').data;
   const rules = rulesLoad.data?.rules;
   const skills = skillsLoad.data?.skills;
   const overview = useLoad<OverviewData>(view === 'overview' ? `/api/spaces/${id}/overview` : '');
@@ -279,8 +282,8 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
           {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} create={newPage(id)} />}
           {view === 'collections' && <Pages space={space} data={collections.data} filters={collections.filters} onFilters={collections.change} collections />}
           {view === 'sources' && <Sources space={space} data={sources.data} filters={sources.filters} onFilters={sources.change} />}
-          {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
-          {view === 'skills' && skills && <Skills space={space} skills={skills} />}
+          {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} includes={rulesLoad.data?.includes} includable={includable} actions={ruleActions(id)} />}
+          {view === 'skills' && skills && <Skills space={space} skills={skills} hidden={skillsLoad.data?.hidden} includable={includable} actions={ruleActions(id)} />}
           {view === 'members' && !space.private && <Members space={space} actions={memberActions(id)} />}
           {view === 'tasks' && failed(tasks.error) && <LoadFailed paths={[`/api/spaces/${id}/tasks`]} />}
           {view === 'tasks' && tasks.data && <Tasks space={space} data={tasks.data} actions={taskActions(id)} />}
@@ -472,14 +475,15 @@ function pageActions(page: PageData, gatheredPath: string): PageActions {
   };
 }
 
-/** Changing rules directly, then showing them as they are now. */
+/** Changing rules and what's included directly, then showing the rules and skills as they are now. */
 function ruleActions(spaceId: string): RuleActions {
+  const fresh = () => Promise.all([reload(`/api/spaces/${spaceId}/rules`), reload(`/api/spaces/${spaceId}/skills`), reload(`/api/spaces/${spaceId}/includable`)]);
   const run = async (action: () => Promise<unknown>) => {
     try {
       await action();
-      await reload(`/api/spaces/${spaceId}/rules`);
+      await fresh();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) await reload(`/api/spaces/${spaceId}/rules`);
+      if (error instanceof ApiError && error.status === 404) await fresh();
       return error instanceof Error ? error.message : 'Something went wrong. Try again.';
     }
   };
@@ -487,6 +491,8 @@ function ruleActions(spaceId: string): RuleActions {
     add: (input) => run(() => api(`/api/spaces/${spaceId}/rules`, input)),
     edit: (id, text) => run(() => api(`/api/rules/${id}`, { text })),
     remove: (id) => run(() => api(`/api/rules/${id}/remove`, {})),
+    include: (input) => run(() => api(`/api/spaces/${spaceId}/includes`, input)),
+    stopIncluding: (id) => run(() => api(`/api/includes/${id}/remove`, {})),
   };
 }
 

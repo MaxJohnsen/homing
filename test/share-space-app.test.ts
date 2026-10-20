@@ -1,12 +1,13 @@
 // Issue #32, making a space in your personal tree collaborative (spec §1). The space and everything
 // under it leave the personal tree, as a space of its own or in a shared space you're an admin of.
 // It exposes nothing by itself: everything in it stays yours. The rules it had from your personal
-// tree stop applying, and you keep them there for yourself, add them for everyone, or let them go.
+// tree stop applying, and you keep them there for yourself, by including where they're set, add
+// them for everyone, or let them go.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { addRule } from '../src/guidance.ts';
+import { addInclude, addRule } from '../src/guidance.ts';
 import { addSource, createPage, gather, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
@@ -48,7 +49,7 @@ after(() => homing.close());
 test('sharing a space says where it can go, who would have it, and which rules stop applying', async () => {
   const { status, body } = await conversion(ana, kitchen);
   assert.equal(status, 200);
-  assert.deepEqual(body.rulesLeaving, [{ kind: 'preference', text: 'Keep renovation notes in Norwegian.', from: 'Home' }]);
+  assert.deepEqual(body.rulesLeaving, [{ kind: 'preference', text: 'Keep renovation notes in Norwegian.', from: 'Home', elsewhere: false }]);
   assert.deepEqual(body.places.map((place: { name: string; people: number }) => [place.name, place.people]), [['Acme', 2]]);
   // Only for a space in your own personal tree, below the personal space itself.
   assert.equal((await conversion(cara, kitchen)).status, 404);
@@ -75,6 +76,12 @@ test('shared in Acme, the space and the spaces under it leave the personal tree,
   const rulesFor = async (who: Member) => ((await who.browser.json(`/api/spaces/${kitchen}/rules`)).body.rules as { text: string; shared: boolean }[]).map((rule) => [rule.text, rule.shared]);
   assert.deepEqual(await rulesFor(ana), [['Keep renovation notes in Norwegian.', false]]);
   assert.deepEqual(await rulesFor(cara), []);
+  // It's kept by link: Home is included in the kitchen only for her, so changing it there changes it here.
+  const [kept] = (await ana.browser.json(`/api/spaces/${kitchen}/rules`)).body.rules;
+  assert.deepEqual([kept.spaceName, kept.includedIn?.spaceName, kept.includedIn?.shared], ['Home', 'Kitchen', false]);
+  assert.equal((await ana.browser.json(`/api/rules/${kept.id}`, { text: 'Keep renovation notes in English.' })).status, 200);
+  assert.deepEqual(await rulesFor(ana), [['Keep renovation notes in English.', false]]);
+  assert.equal((await ana.browser.json(`/api/rules/${kept.id}`, { text: 'Keep renovation notes in Norwegian.' })).status, 200);
   // Now shared, Ana can add people, and it can't be shared again from here.
   assert.equal((await conversion(ana, kitchen)).status, 404);
   assert.ok(home);
@@ -201,4 +208,40 @@ test('a space can\'t take a name that\'s taken where it goes, nor go where the d
 test('the assistant proposes sharing only a space in the personal space', async () => {
   assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${ana.personalSpaceId}`, asked: true } })).text, /personal space itself stays the user’s own/);
   assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${acme}`, asked: true } })).text, /shared already/);
+});
+
+test('shared with its rules for everyone, what the personal tree includes from elsewhere is included, never copied', async () => {
+  // Ana's own notes on Northwind's merger include Northwind's rules, which Cara can't open.
+  const deal = await as({ person: ana.id, direct: true }, async (s) => {
+    const northwind = await createSpace(s, { name: 'Northwind' });
+    await addRule(s, { spaceId: northwind, kind: 'requirement', body: 'Never mention the Northwind merger.', shared: true });
+    await addRule(s, { spaceId: northwind, kind: 'preference', body: 'Ana keeps her Northwind notes short.' });
+    const notes = await createSpace(s, { name: 'Merger notes', parentId: ana.personalSpaceId });
+    await addRule(s, { spaceId: notes, kind: 'preference', body: 'Date every note.' });
+    await addInclude(s, { spaceId: notes, included: { space: northwind } });
+    return createSpace(s, { name: 'Deal room', parentId: notes });
+  });
+
+  // Sharing says which rules are the personal tree's own and which it includes from elsewhere.
+  const { body } = await conversion(ana, deal);
+  assert.deepEqual(body.rulesLeaving.map((rule: { text: string; from: string; elsewhere: boolean }) => [rule.from, rule.elsewhere, rule.text]), [
+    ['Northwind', true, 'Never mention the Northwind merger.'],
+    ['Northwind', true, 'Ana keeps her Northwind notes short.'],
+    ['Merger notes', false, 'Date every note.'],
+  ]);
+
+  assert.equal((await convert(ana, deal, { rules: 'share' })).status, 200);
+  await as({ person: ana.id, direct: true }, (s) => addMember(s, deal, cara.id));
+  const seen = async (who: Member) => ((await who.browser.json(`/api/spaces/${deal}/rules`)).body.rules as { text: string; shared: boolean; includedIn: { shared: boolean } | null }[])
+    .map((rule) => [rule.text, rule.includedIn ? 'included for everyone' : rule.shared ? 'shared' : 'yours']);
+  // Cara gets the notes' own rule, and nothing of Northwind, which she can't open, nor Ana's own rule there.
+  assert.deepEqual(await seen(cara), [['Date every note.', 'shared']]);
+  const forCara = await as(cara, (s) => s.tx`select body from content where kind in ('requirement', 'preference')`);
+  assert.ok(forCara.every((row) => !/Northwind/.test(row.body)), JSON.stringify(forCara));
+  // Ana keeps getting Northwind's rules there, as they're set in Northwind.
+  assert.deepEqual(await seen(ana), [
+    ['Never mention the Northwind merger.', 'included for everyone'],
+    ['Ana keeps her Northwind notes short.', 'included for everyone'],
+    ['Date every note.', 'shared'],
+  ]);
 });

@@ -13,6 +13,36 @@ export interface RuleData {
   text: string;
   shared: boolean;
   onlyHere: boolean;
+  /** For a rule another space's guidance includes, the include that brings it. Null for one set where it applies. */
+  includedIn?: InclusionData | null;
+}
+
+/** Where an included rule or skill is included: the space, unnamed if you can't open it, and for whom. */
+export interface InclusionData {
+  id: string;
+  spaceId: string | null;
+  spaceName: string | null;
+  /** Included for everyone in that space, or only for you. */
+  shared: boolean;
+}
+
+/**
+ * Another space whose rules a space's guidance includes, even before it has any. For an admin, one
+ * for everyone that they can't open shows only that it's there: no space, but who added it and when.
+ */
+export interface IncludeSummary {
+  id: string;
+  spaceId: string | null;
+  spaceName: string | null;
+  shared: boolean;
+  addedBy?: string | null;
+  addedAt?: string;
+}
+
+/** What you could include in a space: other spaces you can open, and the skills in them. Only yours can be included only for you. */
+export interface IncludableData {
+  spaces: { id: string; name: string; label: string; onlyYours: boolean }[];
+  skills: { id: string; name: string; description: string; from: string; onlyYours: boolean }[];
 }
 
 /** What changing rules does. Each resolves to a message to show, or nothing when it worked. */
@@ -20,6 +50,10 @@ export interface RuleActions {
   add(input: { kind: RuleKind; text: string; shared: boolean; onlyHere: boolean }): Promise<string | undefined>;
   edit(id: string, text: string): Promise<string | undefined>;
   remove(id: string): Promise<string | undefined>;
+  /** Includes another space's rules, or a skill, for everyone or only for you. */
+  include(input: { space?: string; skill?: string; shared: boolean }): Promise<string | undefined>;
+  /** Stops including it. */
+  stopIncluding(id: string): Promise<string | undefined>;
 }
 
 /** A skill that applies in a space, and whether another with its name is used there instead. */
@@ -35,6 +69,8 @@ export interface SkillSummary {
   used: boolean;
   /** For one that's used, the ones it replaces; for one that isn't, the one used instead. */
   others: { id: string; spaceName: string | null }[];
+  /** For a skill another space's guidance includes, the include that brings it. */
+  includedIn?: InclusionData | null;
 }
 
 /** A skill as its own page shows it. */

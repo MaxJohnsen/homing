@@ -36,7 +36,7 @@ You can see a space's shared side if you have access to the space, and you alway
 
 - Access comes from memberships, parents and closed spaces. Homing keeps it in a derived access table, updated in the same transaction as the change, so removing someone takes effect immediately. Every query, search and job checks it.
 - Only a space's admins create spaces under it. A child space passes the parent's shared guidance on to its own members, so creating one, and choosing its admins, delegates who receives that guidance.
-- Guidance is the one exception. A shared rule is also visible in every space below its own that it reaches, rule by rule, never the whole guidance page. Private and *only here* rules stay where they are, private guidance reaches down only for its owner, and knowledge never reaches down. Because the exception is part of the rule, `context`, `search` and `read` always agree.
+- Guidance is the one exception. A shared rule is also visible in every space below its own that it reaches, rule by rule, never the whole guidance page. Private and *only here* rules stay where they are, private guidance reaches down only for its owner, and knowledge never reaches down. An include (§2) doesn't widen it: what it brings in is seen only by those who can access where it's set. Because the exception is part of the rule, `context`, `search` and `read` always agree.
 
 **Knowledge is shared with a space, not with individual members.** Published knowledge is seen by current and future members.
 
@@ -80,18 +80,28 @@ Homing picks the rules that apply and puts them in order, and requirements alway
 - Guidance applies to its space and everything below it, unless it is marked *only here*.
 - It reaches everyone in a child space, including people who can't access the parent. A closed space blocks inherited membership, not guidance. When you edit shared guidance, Homing tells you it also applies to child spaces, including closed ones you can't access, and that *only here* prevents it. It reveals nothing about those spaces.
 - Your personal space's own guidance follows you everywhere. Spaces under your personal space behave like any other.
-- An include pulls in other guidance by link. It expands only for readers who can access what it points to, and never grants access.
+- An include pulls in guidance from elsewhere by link, below.
+
+**Includes.** A space's guidance can include another space's rules, or a single skill, by link instead of by copy, so what it brings in stays as it's set where it lives.
+
+- Including a space brings in its rules that reach beyond it: its shared rules, and the reader's own private rules there, never those marked *only here*. Including a skill brings that one skill. Single rules aren't included.
+- It brings in what is set in that space, not what the space inherits or includes itself. Includes don't chain, so two spaces that include each other each get the other's own rules once, and nothing loops.
+- It expands for each reader when guidance is read, only if they can access what it points to. Someone who can't sees nothing of it, not even that it's there. It never grants access, and a change where it's set applies everywhere it's included.
+- The one exception is the space's admins, who look after its shared guidance: for an include for everyone that they can't access, they see that it's there, whether it's rules or a skill, and who added it when, never what it points to, and they can stop including it. So an include never outlives everyone who could remove it.
+- An include is for everyone in the space or only for you, and like a skill it applies in its space and the spaces below. One for everyone can point only to shared guidance, so what only you have can be included only for you. Something included for everyone isn't included again just for you, and including it for everyone replaces your own include of it. Guidance that already applies, such as a space above or your personal space, isn't included again.
+- An include is guidance, changed like a rule. Proposing one shows the rules or skill it would bring in, as they are now, and approving it runs exactly that. An admin deciding a request who can't access what it points to sees nothing of it: they can only decline one to include it, and can approve one to stop including it.
 
 **Precedence.**
 
 - Homing picks the rules that apply and orders them from least to most specific, with requirements marked. Personal-space guidance counts as the least specific.
+- An included rule counts as set in the space that includes it, after the rules inherited from above and before the space's own: inherited, then included, then local. A rule that reaches a space more than one way counts once, where it is most specific.
 - The more specific preference wins, and between equally specific preferences the private one wins. A preference never wins over a requirement.
 - Homing doesn't judge whether two rules contradict each other, because that means interpreting their text. The agent does, and Homing can't guarantee it notices every contradiction.
 - If two requirements conflict, the agent stops the affected action, tells the user which rules conflict, and can propose a fix.
 - When someone adds a rule, they see the rules that already apply there.
-- Skills are matched by name. A skill in a more specific space replaces an inherited one with the same name, personal skills are the least specific, and between equally specific skills the private one wins.
+- Skills are matched by name. A skill in a more specific space replaces an inherited one with the same name, personal skills are the least specific, and between equally specific skills the private one wins. An included skill counts as set in the space that includes it, and a skill with its name set there wins.
 
-**Only people change guidance.** Agents act in your name through MCP, so your identity alone doesn't prove that *you* decided. Every write to a guidance or skill page, including its files and settings, passes one check in the store: it must be a direct edit by an authorized person, or an approved proposal (§6). That covers imports, MCP, background workers and any path added later. When you ask an agent to add a rule, you confirm the exact text.
+**Only people change guidance.** Agents act in your name through MCP, so your identity alone doesn't prove that *you* decided. Every write to a guidance or skill page, including its files, settings and includes, passes one check in the store: it must be a direct edit by an authorized person, or an approved proposal (§6). That covers imports, MCP, background workers and any path added later. When you ask an agent to add a rule, you confirm the exact text.
 
 Shared guidance is changed by the space's admins, and other members can propose changes. Private guidance is changed by its owner.
 

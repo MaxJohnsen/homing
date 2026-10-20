@@ -3,11 +3,12 @@ import { FieldError } from '@/components/ui/field';
 import { CircleCheck, CircleSlash, Clock, Send } from 'lucide-react';
 import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
+import { OnlyYou } from '@/components/only-you';
 import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar, dateOf } from '@/components/screen';
-import { placeOf, precedenceOf, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
+import { placeOf, precedenceOf, type IncludeData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -46,6 +47,7 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
   if (action === 'task') return proposal.task ? <TaskShareDetails place={placeOf(proposal)} task={proposal.task} /> : null;
   if (action === 'archive') return proposal.archive ? <ArchiveDetails proposal={proposal} archive={proposal.archive} /> : null;
   if (action === 'archive page' || action === 'reopen page') return proposal.page?.title ? <PageArchiveDetails proposal={proposal} title={proposal.page.title} shared={proposal.page.shared} /> : null;
+  if (action === 'include' || action === 'exclude') return proposal.include ? <IncludeDetails proposal={proposal} include={proposal.include} /> : null;
   if (action === 'space') {
     if (!draft || !onDraftChange || !proposal.suggestion) return null;
     // Who has the shared space it would go in, from Homing, since the card can't ask for it.
@@ -93,6 +95,11 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
   if (action === 'task') return proposal.task && <ProposedChange kind="preference" label="Task" text={proposal.task.title} settled />;
   if (action === 'archive' || action === 'convert') return <ProposedChange kind="preference" label="Space" text={proposal.space} settled />;
   if (action === 'archive page' || action === 'reopen page') return proposal.page?.title && <ProposedChange kind="preference" label="Page" text={proposal.page.title} settled />;
+  if (action === 'include' || action === 'exclude') {
+    const { include } = proposal;
+    const name = include?.skill?.name ?? include?.space?.name;
+    return name ? <ProposedChange kind="preference" label={include?.skill ? 'Skill' : 'Rules from'} text={name} settled /> : null;
+  }
   if (action === 'space') {
     return suggestion && <p className="rounded-xl bg-muted px-4 py-3 text-base text-muted-foreground">{suggestion.created?.name ?? suggestion.name}</p>;
   }
@@ -219,6 +226,77 @@ function PageArchiveDetails({ proposal, title, shared }: { proposal: ProposalDat
           ? `For ${who}, it leaves everyday context and ${list}, and stays searchable. Nothing is deleted, and it can be reopened on the page.`
           : `For ${who}, it comes back into everyday context and ${list}.`}
       </p>
+    </>
+  );
+}
+
+/**
+ * Including another space's rules or a skill, or no longer: what it points to, set apart, where it
+ * applies and who gets it, and what it brings in now. Someone who can't open what it points to
+ * learns nothing of it, and can only decline.
+ */
+function IncludeDetails({ proposal, include }: { proposal: ProposalData; include: IncludeData }) {
+  const place = placeOf(proposal);
+  const removing = proposal.action === 'exclude';
+  if (!include.open) {
+    // An admin can stop including what they can't open, knowing only that it's there.
+    if (removing && include.current) {
+      return (
+        <>
+          <ProposedChange kind="preference" label="Stop including" text={proposal.included === 'skill' ? 'A skill from a space you can’t open' : 'Rules from a space you can’t open'} />
+          <p className="text-sm text-muted-foreground">{proposal.included === 'skill' ? 'It stops' : 'They stop'} applying in {place} and the spaces under it, for everyone.</p>
+        </>
+      );
+    }
+    return <p className="rounded-xl bg-muted px-4 py-3 text-base">It’s about guidance from a space you can’t open, so you can only decline it.</p>;
+  }
+  const from = include.space?.name ?? include.skill?.from ?? 'another space';
+  const who = proposal.shared ? `everyone in ${place} who can open ${from}` : 'you';
+  if (include.skill) {
+    return (
+      <>
+        <ProposedChange kind="preference" label={removing ? 'Stop including the skill' : 'Include the skill'} text={include.skill.name} onlyYou={!proposal.shared} />
+        {include.skill.description && <p className="text-base">{include.skill.description}</p>}
+        <p className="text-sm text-muted-foreground">
+          {removing
+            ? `It stops applying in ${place} and the spaces under it, for ${who}.`
+            : `It’s set in ${from}, and stays as it’s set there. It applies in ${place} and the spaces under it, for ${who}, unless a skill with its name is set closer.`}
+        </p>
+      </>
+    );
+  }
+  return (
+    <>
+      <ProposedChange kind="preference" label={removing ? 'Stop including the rules from' : 'Include the rules from'} text={from} onlyYou={!proposal.shared} />
+      <p className="text-sm text-muted-foreground">
+        {removing
+          ? `They stop applying in ${place} and the spaces under it, for ${who}.`
+          : proposal.shared
+            ? `In ${place} and the spaces under it, everyone who can open ${from} gets them, before ${place}’s own rules, and nobody else learns of them. They stay as they’re set in ${from}.`
+            : `In ${place} and the spaces under it, you get them before ${place}’s own rules. They stay as they’re set in ${from}.`}
+      </p>
+      {!removing && (
+        <div className="flex flex-col gap-3 rounded-xl bg-muted px-4 py-3">
+          {include.rules.length ? (
+            <>
+              <p className="text-base">{include.rules.length === 1 ? 'The rule it brings in now:' : `The ${include.rules.length} rules it brings in now:`}</p>
+              <ul className="flex flex-col gap-3">
+                {include.rules.map((rule, index) => (
+                  <li key={index} className="flex flex-col gap-0.5">
+                    <span className="text-base whitespace-pre-line">{rule.text}</span>
+                    <span className="flex items-center gap-2 text-sm text-muted-foreground">
+                      {rule.kind === 'requirement' ? 'Requirement' : 'Preference'}
+                      {rule.yours && <OnlyYou />}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <p className="text-base">{from} has no rules for other spaces yet. Any it gets later apply here too.</p>
+          )}
+        </div>
+      )}
     </>
   );
 }

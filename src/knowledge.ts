@@ -868,6 +868,20 @@ export async function search(
     options.spaceId
       ? s.tx`and ${s.tx(table)}.space_id in (select space_subtree(${options.spaceId}::uuid))`
       : s.tx``;
+  // Within a space, the rules and skills its guidance includes, and the spaces' below it, count as
+  // there too. Knowledge alone leaves guidance out, so it doesn't look.
+  const includedThere = (target: 'space_included' | 'skill_included') => s.tx`
+    select i.${s.tx(target)} from includes i
+    where i.space_id in (select space_subtree(${options.spaceId ?? null}::uuid)) and i.removed_at is null
+      and i.space_id in (${accessibleSpaces(s)}) and (i.private_to is null or i.private_to = ${personOf(s.principal) ?? null}::uuid)
+      and include_open(i.space_included, i.skill_included)
+  `;
+  const contentWithin = options.spaceId && !options.knowledge
+    ? s.tx`and (c.space_id in (select space_subtree(${options.spaceId}::uuid)) or (c.reaches_down and ${visible(s, 'c')} and (
+        (c.kind in ('requirement', 'preference') and c.space_id in (${includedThere('space_included')}))
+        or c.page_id in (${includedThere('skill_included')})
+      )))`
+    : within('c');
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
@@ -888,7 +902,7 @@ export async function search(
              ${sharedAsCopy(s, 'c')} as shared_as_copy
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
-      where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${within('c')}
+      where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,

@@ -6,7 +6,7 @@ import { FieldError } from '@/components/ui/field';
 import { cn } from 'cn';
 import { focusRing } from '@/components/screen';
 import { draftOf, spaceOf, type SpaceSet } from '@/components/space-fields';
-import { buttonsOf, isSending, outcomeOf, placeOf, wantsTo, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, wantsTo, type ProposalData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 
 /**
@@ -43,8 +43,9 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
   const buttons = proposal.conversion
     ? { approve: shareButton(proposal.space, choice, proposal.conversion), reject: 'Keep it only mine' }
     : buttonsOf(action, sending, proposal.member?.change, placeOf(proposal));
-  // An email nobody uses Homing with can't be added until they're invited.
-  const blocked = (action === 'space' && !space?.name) || proposal.member?.found === false;
+  // An email nobody uses Homing with can't be added until they're invited, and what you can't open can't be included.
+  const declineOnly = onlyDecline(proposal);
+  const blocked = (action === 'space' && !space?.name) || declineOnly;
   const place = placeOf(proposal);
 
   const choose = async (approve: boolean) => {
@@ -85,7 +86,7 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
               <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>
                 {buttons.reject}
               </Button>
-              {proposal.member?.found !== false && (
+              {!declineOnly && (
                 <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy || blocked} onClick={() => choose(true)}>
                   {buttons.approve}
                 </Button>

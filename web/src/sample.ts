@@ -4,7 +4,7 @@ import type { SearchData } from '@/lib/search';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
-import type { RuleData, SkillData, SkillSummary } from '@/lib/guidance';
+import type { IncludableData, IncludeSummary, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 
 // Claude proposes a preference for Acme, where two rules already apply.
 export const proposal: ProposalData = {
@@ -164,18 +164,48 @@ export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitc
 };
 
 // The rules Ana's assistant gets in Northwind, from least to most specific, as the server lists them.
+// Acme includes the company's security rules for everyone, and Northwind includes Standards for
+// everyone and Ana's own writing rules for her.
 export const sampleRules: RuleData[] = [
   { id: 'r1', spaceId: 'personal', spaceName: 'Personal', personal: true, kind: 'preference', text: 'Keep answers short, with the most important point first.', shared: false, onlyHere: false },
+  { id: 'r8', spaceId: 'security', spaceName: 'Security', personal: false, kind: 'requirement', text: 'Lock your screen when you leave your desk.', shared: true, onlyHere: false, includedIn: { id: 'i0', spaceId: 'acme', spaceName: 'Acme', shared: true } },
   { id: 'r2', spaceId: 'acme', spaceName: 'Acme', personal: false, kind: 'requirement', text: 'Never name other clients in documents for a client.', shared: true, onlyHere: false },
   { id: 'r3', spaceId: 'acme', spaceName: 'Acme', personal: false, kind: 'preference', text: 'Write status reports in English.', shared: true, onlyHere: false },
   { id: 'r4', spaceId: 'acme', spaceName: 'Acme', personal: false, kind: 'preference', text: 'Put the date first in file names.', shared: false, onlyHere: false },
+  { id: 'r9', spaceId: 'standards', spaceName: 'Standards', personal: false, kind: 'preference', text: 'Write dates as 1 March 2027.', shared: true, onlyHere: false, includedIn: { id: 'i1', spaceId: 'northwind', spaceName: 'Northwind', shared: true } },
+  { id: 'r10', spaceId: 'standards', spaceName: 'Standards', personal: false, kind: 'requirement', text: 'Send invoices only from the finance system.', shared: true, onlyHere: false, includedIn: { id: 'i1', spaceId: 'northwind', spaceName: 'Northwind', shared: true } },
+  { id: 'r11', spaceId: 'writing', spaceName: 'Writing', personal: false, kind: 'preference', text: 'Use plain words, and explain any term the reader may not know.', shared: false, onlyHere: false, includedIn: { id: 'i2', spaceId: 'northwind', spaceName: 'Northwind', shared: false } },
   { id: 'r5', spaceId: 'northwind', spaceName: 'Northwind', personal: false, kind: 'requirement', text: 'Send Northwind prices only through their procurement portal, never by email.', shared: true, onlyHere: false },
   { id: 'r6', spaceId: 'northwind', spaceName: 'Northwind', personal: false, kind: 'preference', text: 'Write Northwind’s status reports in Norwegian.', shared: true, onlyHere: true },
   { id: 'r7', spaceId: 'northwind', spaceName: 'Northwind', personal: false, kind: 'preference', text: 'Call Gunnar before sending anything big.', shared: false, onlyHere: false },
 ];
 
+// What Northwind includes, as its Rules lists them: Standards for everyone, and Ana's writing rules for her.
+export const sampleIncludes: IncludeSummary[] = [
+  { id: 'i1', spaceId: 'standards', spaceName: 'Standards', shared: true },
+  { id: 'i2', spaceId: 'writing', spaceName: 'Writing', shared: false },
+  { id: 'i4', spaceId: null, spaceName: null, shared: true, addedBy: 'Jon Dahl', addedAt: '2026-10-12T10:00:00+02:00' },
+];
+
+// A skill Northwind includes for everyone that Ana, an admin, can't open.
+export const sampleHiddenSkills: IncludeSummary[] = [{ id: 'i5', spaceId: null, spaceName: null, shared: true, addedBy: 'Jon Dahl', addedAt: '2026-10-12T10:00:00+02:00' }];
+
+// What Ana could include in Northwind.
+export const sampleIncludable: IncludableData = {
+  spaces: [
+    { id: 'security', name: 'Security', label: 'Security', onlyYours: false },
+    { id: 'website', name: 'Website', label: 'Website, in Acme', onlyYours: false },
+    { id: 'writing', name: 'Writing', label: 'Writing, in your personal space', onlyYours: true },
+  ],
+  skills: [
+    { id: 's4', name: 'invoice', description: 'How invoices go out from the finance system.', from: 'Standards', onlyYours: false },
+    { id: 's5', name: 'blog-post', description: 'Ana’s way of drafting a blog post.', from: 'Writing, in your personal space', onlyYours: true },
+  ],
+};
+
 export const sampleSkills: SkillSummary[] = [
   { id: 's1', name: 'estimate', description: 'Estimates work in days, with a range and what it depends on.', spaceId: 'acme', spaceName: 'Acme', shared: true, used: true, others: [] },
+  { id: 's4', name: 'invoice', description: 'How invoices go out from the finance system.', spaceId: 'standards', spaceName: 'Standards', shared: true, used: true, others: [], includedIn: { id: 'i3', spaceId: 'northwind', spaceName: 'Northwind', shared: true } },
   { id: 's2', name: 'status-report', description: 'The weekly status report for Northwind, in their template and in Norwegian.', spaceId: 'northwind', spaceName: 'Northwind', shared: true, used: true, others: [{ id: 's3', spaceName: 'Acme' }] },
   { id: 's3', name: 'status-report', description: 'The weekly status report Acme sends every client.', spaceId: 'acme', spaceName: 'Acme', shared: true, used: false, others: [{ id: 's2', spaceName: 'Northwind' }] },
 ];
@@ -225,6 +255,55 @@ export const requestProposal: ProposalData = {
   text: 'Copy the CFO on every invoice to Northwind.',
   request: { by: null, yours: true, why: 'Their CFO asked for it at Monday’s meeting.', sent: false, admins: ['Ana Berg', 'Jon Dahl'] },
   alreadyApplies: [{ kind: 'requirement', text: 'Send Northwind prices only through their procurement portal.', from: 'Northwind' }],
+};
+
+// Claude proposes including the company's Standards in Acme, for everyone there.
+export const includeProposal: ProposalData = {
+  ...proposal,
+  action: 'include',
+  included: 'rules',
+  text: null,
+  shared: true,
+  alreadyApplies: [],
+  include: {
+    open: true,
+    space: { id: 'standards', name: 'Standards' },
+    rules: [
+      { kind: 'requirement', text: 'Send invoices only from the finance system.', yours: false },
+      { kind: 'preference', text: 'Write dates as 1 March 2027.', yours: false },
+      { kind: 'preference', text: 'Ana signs off with her first name.', yours: true },
+    ],
+    skill: null,
+    current: true,
+    shown: 'sample',
+  },
+};
+
+// Claude proposes including a skill from Standards in Acme.
+export const includeSkillProposal: ProposalData = {
+  ...includeProposal,
+  included: 'skill',
+  include: { ...includeProposal.include!, space: null, rules: [], skill: { pageId: 's4', name: 'invoice', description: 'How invoices go out from the finance system.', from: 'Standards' } },
+};
+
+// Claude proposes no longer including Standards in Acme.
+export const excludeProposal: ProposalData = { ...includeProposal, action: 'exclude' };
+
+// Cara asks to stop including a space Jon, an admin, can't open: he learns nothing of it, and can approve it.
+export const closedExcludeProposal: ProposalData = {
+  ...includeProposal,
+  action: 'exclude',
+  state: 'requested',
+  request: { by: 'Cara Lund', yours: false, why: 'Those rules don’t fit this client.', sent: true, admins: ['Ana Berg', 'Jon Dahl'] },
+  include: { open: false, space: null, rules: [], skill: null, current: true, shown: 'include:sample' },
+};
+
+// Cara asks to include a space Jon, an admin, can't open: he learns nothing of it, and can only decline.
+export const closedIncludeProposal: ProposalData = {
+  ...includeProposal,
+  state: 'requested',
+  request: { by: 'Cara Lund', yours: false, why: 'Clients get the same rules as us.', sent: true, admins: ['Ana Berg', 'Jon Dahl'] },
+  include: { open: false, space: null, rules: [], skill: null, current: true, shown: '' },
 };
 
 // Requests Ana sent to admins of spaces she's a member of.
@@ -449,7 +528,10 @@ export const convertProposal: ProposalData = {
   text: null,
   alreadyApplies: [],
   conversion: {
-    rulesLeaving: [{ kind: 'preference', text: 'Keep answers short, with the most important point first.', from: 'your personal space' }],
+    rulesLeaving: [
+      { kind: 'requirement', text: 'Get three quotes for anything over 50,000.', from: 'Berg family', elsewhere: true },
+      { kind: 'preference', text: 'Keep answers short, with the most important point first.', from: 'Home' },
+    ],
     skillsLeaving: [],
     places: [{ id: 'family', name: 'Berg family', label: 'Berg family', people: 4, above: false }],
     why: 'Jonas should see the quotes and the plan too.',

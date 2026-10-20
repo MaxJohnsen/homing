@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal } from '@/sample';
+import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -84,12 +84,12 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/page/long': { label: 'A long page, searchable within', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Meeting notes, all of 2026', type: 'meeting', items: Array.from({ length: 16 }, (_, index) => ({ ...samplePage.items[index % 5], id: `item-${index}` })) }} /></InApp> },
   '/page/personal': { label: 'A page in your personal space', render: () => <InApp spaceId="kitchen"><Page page={{ ...samplePage, title: 'Kitchen quotes', type: null, shared: false, space: { id: 'kitchen', name: 'Kitchen renovation', personal: false, private: true, people: 1, above: false }, items: samplePage.items.filter((item) => !item.shared).map((item) => ({ ...item, replaced: null })) }} /></InApp> },
   '/page/empty': { label: 'A page with nothing on it yet', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Marte Lunde', type: 'person', items: [] }} actions={samplePageActions} /></InApp> },
-  '/spaces/rules': { label: 'A space’s rules, as an admin', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="rules"><Rules space={sampleSpace.closed} rules={sampleRules} actions={sampleRuleActions} /></Space></InApp> },
-  '/spaces/rules/member': { label: 'A space’s rules, as a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="rules"><Rules space={sampleSpace.open} rules={sampleRules.filter((rule) => rule.spaceId !== 'northwind').map((rule) => ({ ...rule, spaceId: rule.spaceId === 'acme' && !rule.shared ? 'website' : rule.spaceId }))} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/rules': { label: 'A space’s rules, as an admin', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="rules"><Rules space={sampleSpace.closed} rules={sampleRules} includes={sampleIncludes} includable={sampleIncludable} actions={sampleRuleActions} /></Space></InApp> },
+  '/spaces/rules/member': { label: 'A space’s rules, as a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="rules"><Rules space={sampleSpace.open} rules={sampleRules.filter((rule) => rule.spaceId !== 'northwind' && rule.includedIn?.spaceId !== 'northwind').map((rule) => ({ ...rule, spaceId: rule.spaceId === 'acme' && !rule.shared ? 'website' : rule.spaceId }))} includable={sampleIncludable} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/from-above': { label: 'Rules from a space you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="rules"><Rules space={sampleSpace.fromAbove} rules={sampleRules.filter((rule) => rule.spaceId === 'acme' && rule.shared).map((rule) => ({ ...rule, spaceName: null }))} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/personal': { label: 'Your personal rules', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="rules"><Rules space={sampleSpace.personal} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/new': { label: 'Rules in a new space', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="rules"><Rules space={sampleSpace.root} rules={[]} actions={sampleRuleActions} /></Space></InApp> },
-  '/spaces/skills': { label: 'A space’s skills', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="skills"><Skills space={sampleSpace.closed} skills={sampleSkills} /></Space></InApp> },
+  '/spaces/skills': { label: 'A space’s skills', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="skills"><Skills space={sampleSpace.closed} skills={sampleSkills} hidden={sampleHiddenSkills} includable={sampleIncludable} actions={sampleRuleActions} /></Space></InApp> },
   '/skill': { label: 'A skill', render: () => <InApp spaceId="northwind"><Skill skill={sampleSkill} /></InApp> },
   '/spaces/tasks': { label: 'A space’s tasks', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="tasks"><Tasks space={sampleSpace.closed} data={sampleTasks} actions={{ add: notSaved, done: notSaved, share: notSaved }} now={new Date('2026-10-20T10:00:00+02:00')} /></Space></InApp> },
   '/spaces/tasks/empty': { label: 'A space with no tasks', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="tasks"><Tasks space={sampleSpace.root} data={{ open: [], done: [] }} actions={{ add: notSaved, done: notSaved, share: notSaved }} /></Space></InApp> },
@@ -130,6 +130,12 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/changed': { label: 'Confirm: the rule changed meanwhile', render: () => <SampleConfirm proposal={changeProposal} message="This rule changed after you opened this page. Check the change again." /> },
   '/confirm/added': { label: 'Rule added', render: () => <SampleConfirm proposal={{ ...proposal, state: 'approved' }} /> },
   '/confirm/declined': { label: 'Rule not added', render: () => <SampleConfirm proposal={{ ...proposal, state: 'rejected' }} /> },
+  '/confirm/include': { label: 'Confirm including another space’s rules', render: () => <SampleConfirm proposal={includeProposal} /> },
+  '/confirm/include/skill': { label: 'Confirm including a skill', render: () => <SampleConfirm proposal={includeSkillProposal} /> },
+  '/confirm/include/stop': { label: 'Confirm no longer including a space’s rules', render: () => <SampleConfirm proposal={excludeProposal} /> },
+  '/confirm/include/closed': { label: 'A member’s include, for an admin who can’t open it', render: () => <SampleConfirm proposal={closedIncludeProposal} /> },
+  '/confirm/include/stop/closed': { label: 'A member asks to stop including what an admin can’t open', render: () => <SampleConfirm proposal={closedExcludeProposal} /> },
+  '/confirm/include/added': { label: 'Rules included', render: () => <SampleConfirm proposal={{ ...includeProposal, state: 'approved' }} /> },
   '/confirm/space': { label: 'Confirm a space Claude suggests', render: () => <SampleConfirm proposal={suggestedSpace} /> },
   '/confirm/space/asked': { label: 'Confirm a space you asked for that others would see', render: () => <SampleConfirm proposal={{ ...suggestedSpace, suggestion: { ...suggestedSpace.suggestion!, name: 'Intranet', who: 'with others', in: 'acme', asked: true, why: null } }} /> },
   '/confirm/space/created': { label: 'Suggested space created', render: () => <SampleConfirm proposal={{ ...suggestedSpace, state: 'approved', suggestion: { ...suggestedSpace.suggestion!, created: { id: 'kitchen', name: 'Home renovation', where: 'In your personal space. Only you have it.' } } }} /> },
@@ -168,6 +174,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview/long': { label: 'Approval card with a longer rule', render: () => <CardPreview sample="long" /> },
   '/card-preview/publish': { label: 'The card for sharing something', render: () => <CardPreview sample="publish" /> },
   '/card-preview/convert': { label: 'The card for sharing a space from your personal space', render: () => <CardPreview sample="convert" /> },
+  '/card-preview/include': { label: 'The card for including another space’s rules', render: () => <CardPreview sample="include" /> },
   '/card-preview/archive': { label: 'The card for archiving a space', render: () => <CardPreview sample="archive" /> },
   '/card-preview/page-archive': { label: 'The card for archiving a page others see', render: () => <CardPreview sample="page-archive" /> },
   '/card-preview/task': { label: 'The card for sharing a task', render: () => <CardPreview sample="task" /> },
@@ -204,13 +211,13 @@ const sampleInvite: MakeInvite = async (email) =>
 const recentMany = ['client-0', 'client-14-Data platform', 'client-5', 'family'];
 
 /** Changing rules on the sample does nothing, so the forms can be tried. */
-const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined };
+const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined, include: async () => undefined, stopIncluding: async () => undefined };
 
 /** A screen inside the app, with Ana's spaces on the shelf. */
 /** Sharing a space from your personal tree, in samples: what it would do, and nothing done. */
 const sampleShareSpace: ShareSpaceActions = {
   conversion: async () => ({
-    rulesLeaving: [{ kind: 'preference', text: 'Keep renovation notes in Norwegian.', from: 'Home' }],
+    rulesLeaving: [{ kind: 'preference', text: 'Keep renovation notes in Norwegian.', from: 'Home' }, { kind: 'requirement', text: 'Get three quotes for anything over 50,000.', from: 'Berg family', elsewhere: true }],
     skillsLeaving: [{ name: 'Quote checker', from: 'Home' }],
     places: [{ id: 'acme', name: 'Acme', label: 'Acme', people: 5, above: false }],
   }),

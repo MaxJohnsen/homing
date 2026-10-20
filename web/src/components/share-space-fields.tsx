@@ -6,7 +6,8 @@ import { Label } from '@/components/ui/label';
 
 /** What sharing a space from your personal tree would do: the rules that stop applying, and where it can go. */
 export interface ConversionData {
-  rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null }[];
+  /** Elsewhere: set outside your personal tree, in a space it includes. */
+  rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null; elsewhere?: boolean }[];
   skillsLeaving: { name: string; from: string | null }[];
   places: { id: string; name: string; label: string; people: number; above: boolean }[];
   /** On a proposal: the rules leaving as shown, which approving sends back. */
@@ -50,6 +51,8 @@ export function ShareSpaceFields({ name, conversion, choice, onChange, disabled,
   const parent = conversion.places.find((place) => place.id === choice.inside);
   const others = parent ? parent.people - 1 : 0;
   const set = (change: Partial<ShareChoice>) => onChange({ ...choice, ...change });
+  const own = conversion.rulesLeaving.filter((rule) => !rule.elsewhere);
+  const elsewhere = conversion.rulesLeaving.filter((rule) => rule.elsewhere);
   return (
     <div className="flex flex-col gap-4">
       {conversion.places.length > 0 && (
@@ -95,14 +98,8 @@ export function ShareSpaceFields({ name, conversion, choice, onChange, disabled,
       </p>
       {conversion.rulesLeaving.length > 0 && (
         <div className="flex flex-col gap-3">
-          <p className="text-base font-medium">These rules from your personal space stop applying in it:</p>
-          <ul className="flex flex-col gap-2">
-            {conversion.rulesLeaving.map((rule, index) => (
-              <li key={index}>
-                <ProposedChange kind={rule.kind} label={`${rule.kind === 'requirement' ? 'Requirement' : 'Preference'} from ${rule.from ?? 'a space above'}`} text={rule.text} settled />
-              </li>
-            ))}
-          </ul>
+          {own.length > 0 && <LeavingRules title="These rules from your personal space stop applying in it:" rules={own} />}
+          {elsewhere.length > 0 && <LeavingRules title="These rules your personal space includes from other spaces stop applying in it too:" rules={elsewhere} />}
           <RadioCards
             label="What becomes of them?"
             surface="muted"
@@ -110,18 +107,40 @@ export function ShareSpaceFields({ name, conversion, choice, onChange, disabled,
             onChange={(rules) => set({ rules })}
             disabled={disabled}
             options={[
-              { value: 'keep', label: 'Keep them for me', detail: `In ${name}, only for you.`, private: true },
-              { value: 'share', label: 'Add them for everyone', detail: `In ${name}, for everyone who has it.` },
-              { value: 'drop', label: 'Let them go', detail: 'They stay in your personal space.' },
+              { value: 'keep', label: 'Keep them for me', detail: `In ${name}, only for you, and still changed where they’re set.`, private: true },
+              {
+                value: 'share',
+                label: 'Add them for everyone',
+                detail: elsewhere.length
+                  ? `In ${name}, for everyone who has it, and those from other spaces only for people who can open them.`
+                  : `In ${name}, for everyone who has it.`,
+              },
+              { value: 'drop', label: 'Let them go', detail: 'They stay where they’re set.' },
             ]}
           />
         </div>
       )}
       {conversion.skillsLeaving.length > 0 && (
         <p className="text-base">
-          {conversion.skillsLeaving.length === 1 ? 'The skill' : 'The skills'} {conversion.skillsLeaving.map((skill) => `“${skill.name}”`).join(', ')} from your personal space stop applying in it too. Add {conversion.skillsLeaving.length === 1 ? 'it' : 'them'} to {name}’s Guidance afterwards if you need {conversion.skillsLeaving.length === 1 ? 'it' : 'them'}.
+          {conversion.skillsLeaving.length === 1 ? 'The skill' : 'The skills'} {conversion.skillsLeaving.map((skill) => `“${skill.name}”`).join(', ')} from your personal space stop applying in it too. Include {conversion.skillsLeaving.length === 1 ? 'it' : 'them'} in {name}’s Guidance afterwards if you need {conversion.skillsLeaving.length === 1 ? 'it' : 'them'}.
         </p>
       )}
     </div>
+  );
+}
+
+/** Rules that stop applying, under what they are. */
+function LeavingRules({ title, rules }: { title: string; rules: ConversionData['rulesLeaving'] }) {
+  return (
+    <>
+      <p className="text-base font-medium">{title}</p>
+      <ul className="flex flex-col gap-2">
+        {rules.map((rule, index) => (
+          <li key={index}>
+            <ProposedChange kind={rule.kind} label={`${rule.kind === 'requirement' ? 'Requirement' : 'Preference'} from ${rule.from ?? 'a space above'}`} text={rule.text} settled />
+          </li>
+        ))}
+      </ul>
+    </>
   );
 }

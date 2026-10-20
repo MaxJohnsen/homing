@@ -1,12 +1,13 @@
 import { AccessDenied, personOf, type Session } from './db.ts';
-import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } from './guidance.ts';
+import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, current, itemColumns, publicationOf, publishItem, readPage, visible, type Publication } from './knowledge.ts';
+import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
 import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
 import { readTask, shareTask, type Task } from './tasks.ts';
 import { accessibleSpaces, archiveSpace, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page' | 'add include' | 'remove include';
 
 /**
  * A change of who is in a space: about someone the user shares a space with, by their id, or about
@@ -47,7 +48,15 @@ export interface Proposal {
   taskId: string | null;
   /** The page it archives or reopens. */
   pageId: string | null;
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean } & Partial<SpaceChange> & Partial<MembersChange>;
+  /** The include it removes. */
+  includeId: string | null;
+  /** For an include, what it points to, as the reader can see it: null when they can't open it. */
+  target: Included | null;
+  /**
+   * The exact change: a new rule's kind, text and reach, or for an include whether it's for
+   * everyone and whether it's a space's rules or a skill, but never what it points to.
+   */
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange>;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -97,7 +106,7 @@ export interface ProposalView extends Proposal {
    * there, as Settings shows it. Null once it's shared, or for anyone else.
    */
   conversion: {
-    rulesLeaving: { kind: RuleKind; text: string; from: string | null }[];
+    rulesLeaving: { kind: RuleKind; text: string; from: string | null; elsewhere: boolean }[];
     skillsLeaving: { name: string; from: string | null }[];
     places: { id: string; name: string; label: string; people: number; above: boolean }[];
     /** The rules leaving as shown, which approving sends back, so only those are kept or shared. */
@@ -111,6 +120,8 @@ export interface ProposalView extends Proposal {
   page: { title: string; archived: boolean; shared: boolean; stands: boolean; shown: string } | null;
   /** For sharing a task: the task as it is now, if the reader can see it, and whether it's still theirs alone. */
   task: { title: string; description: string | null; due: string | null; done: boolean; shared: boolean; shown: string } | null;
+  /** For adding or removing an include: what it brings in, as the reader can see it now. */
+  include: IncludeView | null;
   /** For a suggested space: where the person may put it, and the space it became, if they can open it. */
   places: Place[];
   /** The space approving it created, if the person can open it: its name now, and where it is and who has it. */
@@ -129,6 +140,25 @@ export interface ProposalView extends Proposal {
     through: string | null;
     why: string | null;
   } | null;
+}
+
+/**
+ * What an include brings in, for the person reading the proposal: the rules set in the space it
+ * points to that reach beyond it, theirs among them, or the skill. Someone who can't open what it
+ * points to sees none of it, not even its name.
+ */
+export interface IncludeView {
+  /** Whether the reader can open what it points to. */
+  open: boolean;
+  /** For another space's rules: the space, and its rules the reader would get, as they are now. */
+  space: { id: string; name: string } | null;
+  rules: { kind: RuleKind; text: string; yours: boolean }[];
+  /** For a skill: its name, what it does, and the space it's set in. */
+  skill: { pageId: string; name: string; description: string; from: string | null } | null;
+  /** For a removal, whether it's still included. */
+  current: boolean;
+  /** What approving sends back, so it runs only what was shown. */
+  shown: string;
 }
 
 /** A space a new one can go in. */
@@ -203,6 +233,37 @@ export async function proposeRule(
     request: rule.shared && !space.admin,
     reason,
   });
+}
+
+/**
+ * Proposes including another space's rules, or a skill, in a space's guidance, or no longer
+ * including it, like a change to a rule: the person approves it, and for a member a shared one
+ * becomes a request to the space's admins. Only something the person can open is included, and
+ * only an include in the space itself is removed there. What a new one would include is kept
+ * beside the proposal, where only those who can open it see it.
+ */
+export async function proposeInclude(
+  s: Session,
+  input: ({ action: 'add include'; spaceId: string; included: Included; shared?: boolean } | { action: 'remove include'; spaceId: string; includeId: string }) & { why?: string },
+): Promise<Proposal> {
+  if (!personOf(s.principal)) throw new AccessDenied('Only a person can approve changes to rules.');
+  const reason = input.why?.trim() || null;
+  if (input.action === 'add include') {
+    const shared = input.shared ?? false;
+    const { space } = await checkInclude(s, { spaceId: input.spaceId, included: input.included, shared });
+    const what = input.included.skill ? 'skill' : 'rules';
+    const proposal = await insertProposal(s, { spaceId: space.id, action: input.action, itemId: null, change: { shared, what }, request: shared && !space.admin, reason });
+    await s.tx`
+      insert into proposal_includes (proposal_id, space_included, skill_included)
+      values (${proposal.id}::uuid, ${input.included.space ?? null}::uuid, ${input.included.skill ?? null}::uuid)
+    `;
+    return { ...proposal, target: input.included };
+  }
+  const include = await includeOf(s, input.includeId);
+  const space = (await listSpaces(s)).find((candidate) => candidate.id === input.spaceId);
+  if (!include || !space || include.spaceId !== space.id) throw new IncludeRefused('missing', 'There is no include with that reference in this space that you can see.');
+  // What it says about the include, the store takes from the include itself.
+  return insertProposal(s, { spaceId: space.id, action: input.action, itemId: null, includeId: include.id, change: {}, request: include.privateTo === null && !space.admin, reason });
 }
 
 /** Why Homing won't make a suggestion: one is already waiting, or the person declined this one. */
@@ -533,6 +594,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     archive: proposal.action === 'archive space' ? { spaces: spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length, private: space.privateTo !== null, archived: space.archived, stands: await spaceStands(s, proposal) } : null,
     task: task ? { title: task.title, description: task.description, due: task.due, done: task.doneAt !== null, shared: task.privateTo === null, shown: taskShown(task) } : null,
     page: proposal.pageId ? await pageNow(s, proposal) : null,
+    include: await includeFor(s, proposal),
     audience: audienceOf ? { people: audienceOf.members.length, above: audienceOf.reachedFromAbove } : null,
     places: proposal.action === 'add space' && proposal.state === 'open' && proposal.privateTo === personOf(s.principal) ? await placesFor(s, spaces) : [],
     created: created ? { id: created.id, name: created.name, where: whereItIs(created, spaces) } : null,
@@ -559,10 +621,56 @@ async function conversionFor(s: Session, proposal: Proposal): Promise<ProposalVi
   // Shared since, or archived, it can't be shared from here.
   if (!conversion || conversion.space.archived) return null;
   return {
-    rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName })),
+    rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName, elsewhere: rule.elsewhere })),
     skillsLeaving: conversion.skillsLeaving,
     places: conversion.places,
     shown: rulesShown(conversion.rulesLeaving),
+  };
+}
+
+/**
+ * What adding or removing an include brings in, for the reader, as it is now: the rules set in the
+ * space it points to that would reach them, or the skill. Nothing at all for a reader who can't open
+ * what it points to, though an admin of the space still learns whether an include for everyone that
+ * they can't open is there, so they can stop it.
+ */
+async function includeFor(s: Session, proposal: Proposal): Promise<IncludeView | null> {
+  if (proposal.action !== 'add include' && proposal.action !== 'remove include') return null;
+  const target = proposal.target;
+  const removal = proposal.action === 'remove include' ? `include:${proposal.includeId}` : undefined;
+  let current = true;
+  if (removal) {
+    const [row] = target
+      ? await s.tx<{ there: boolean }[]>`
+          select removed_at is null as there from includes where id = ${proposal.includeId}::uuid and include_open(space_included, skill_included)
+        `
+      : await s.tx<{ there: boolean }[]>`select true as there from includes_not_open(${proposal.spaceId}::uuid) where id = ${proposal.includeId}::uuid`;
+    current = row?.there === true;
+  }
+  const closed: IncludeView = { open: false, space: null, rules: [], skill: null, current, shown: removal && current ? removal : '' };
+  if (!target) return closed;
+  if (target.space !== undefined) {
+    const space = (await listSpaces(s)).find((candidate) => candidate.id === target.space);
+    if (!space) return closed;
+    const rules = await rulesIncludedFrom(s, space.id);
+    return {
+      open: true,
+      space: { id: space.id, name: space.name },
+      rules: rules.map((rule) => ({ kind: rule.kind, text: rule.body, yours: rule.privateTo !== null })),
+      skill: null,
+      current,
+      shown: removal ?? [`space:${space.id}`, ...rules.map((rule) => `${rule.id}:${rule.kind}:${rule.body}`)].join('\n'),
+    };
+  }
+  const skill = await readSkill(s, target.skill);
+  if (!skill) return closed;
+  return {
+    open: true,
+    space: null,
+    rules: [],
+    skill: { pageId: skill.pageId, name: skill.name, description: skill.description, from: skill.spaceName },
+    current,
+    shown: removal ?? `skill:${skill.pageId}:${skill.name}:${skill.description}`,
   };
 }
 
@@ -622,7 +730,7 @@ async function placesFor(s: Session, spaces: Space[]): Promise<Place[]> {
 export async function openProposals(s: Session, spaceId: string): Promise<Proposal[]> {
   return s.tx<Proposal[]>`
     select ${columns(s)} from proposals
-    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')} and ${spaceOpen(s, 'proposals')}
+    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')} and ${includeStands(s, 'proposals')} and ${spaceOpen(s, 'proposals')}
       and ${pageStands(s, 'proposals')}
     order by created_at
   `;
@@ -646,8 +754,10 @@ export interface SentRequest extends Proposal {
   space: string;
   within: string | null;
   kind: RuleKind;
-  /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
+  /** The new rule or the rule's new wording, or for a removal the rule as it is now. For an include, what it includes. */
   text: string | null;
+  /** For an include: whether it's a space's rules or a skill. */
+  included: 'rules' | 'skill' | null;
   admins: string[];
   decider: string | null;
 }
@@ -655,7 +765,7 @@ export interface SentRequest extends Proposal {
 /** The requests the person sent: those still waiting, and those settled in the last two weeks, newest first. */
 export async function requestsSent(s: Session): Promise<SentRequest[]> {
   const me = personOf(s.principal) ?? null;
-  const sent = await s.tx<(Proposal & Pick<SentRequest, 'space' | 'within' | 'kind' | 'text'>)[]>`
+  const sent = await s.tx<(Proposal & Pick<SentRequest, 'space' | 'within' | 'kind' | 'text' | 'included'>)[]>`
     with sent as (
       select ${columns(s)} from proposals
       where private_to = ${me}::uuid and space_id in (${accessibleSpaces(s)}) and requested_at is not null
@@ -663,11 +773,13 @@ export async function requestsSent(s: Session): Promise<SentRequest[]> {
     )
     select sent.*, s.name as space,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
-           coalesce(sent.change->>'kind', rule.kind, 'preference') as kind, coalesce(sent.change->>'text', rule.body) as text
+           coalesce(sent.change->>'kind', rule.kind, 'preference') as kind, coalesce(sent.change->>'text', rule.body, included.name) as text,
+           included.kind as included
     from sent
     join spaces s on s.id = sent.space_id
     left join spaces above on above.id = s.parent_id and above.id in (${accessibleSpaces(s)})
     left join content rule on rule.id = sent.item_id and ${visible(s, 'rule')}
+    ${includedName(s, 'sent')}
     order by sent.requested_at desc
   `;
   const admins = new Map<string, string[]>();
@@ -696,6 +808,8 @@ export interface Waiting {
   asked: boolean;
   /** For a change of members: what changes. The text is who it's about, by name or the email given. */
   member: MemberChange | null;
+  /** For an include: whether it's a space's rules or a skill. The text is its name, if the person can open it. */
+  included: 'rules' | 'skill' | null;
   /** For a request: whether it's sent, whether the person asked themselves, and who asked when it's someone else they know. */
   request: boolean;
   sent: boolean;
@@ -716,7 +830,8 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
            coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body, task.title,
                     (select t.body from content t where t.page_id = p.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1),
-                    case when p.action in ('archive space', 'share space') then s.name end) as text, p.agent,
+                    case when p.action in ('archive space', 'share space') then s.name end, included.name) as text,
+           included.kind as included, p.agent,
            coalesce((p.change->>'asked')::boolean, false) as asked, p.change->>'member' as member, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
@@ -725,13 +840,46 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
     left join tasks task on task.id = p.task_id
     left join people who on who.id = (p.change->>'person')::uuid
-    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')} and ${taskStands(s, 'p')} and ${spaceOpen(s, 'p')} and ${pageStands(s, 'p')}
+    ${includedName(s, 'p')}
+    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')} and ${taskStands(s, 'p')} and ${includeStands(s, 'p')} and ${spaceOpen(s, 'p')} and ${pageStands(s, 'p')}
       and ((p.private_to = ${me}::uuid and p.state = 'open')
            or (p.state = 'requested' and p.private_to <> ${me}::uuid and admin_of(p.space_id)))
     order by coalesce(p.requested_at, p.created_at)
   `;
   const names = await peopleNames(s, waiting.map((item) => item.privateTo));
   return waiting.map(({ privateTo, ...item }) => ({ ...item, yours: privateTo === me, askedBy: privateTo === me ? null : (names.get(privateTo) ?? null) }));
+}
+
+/**
+ * For an include, whether it's a space's rules or a skill, and what it points to by name as the
+ * reader can see it, or null when they can't open it. Joined as included.
+ */
+function includedName(s: Session, table: string) {
+  const p = s.tx(table);
+  return s.tx`left join lateral (
+    select coalesce(${p}.change->>'what', 'rules') as kind, (
+      select coalesce(t.body, x.name) from (
+        select pi.space_included, pi.skill_included from proposal_includes pi where ${p}.action = 'add include' and pi.proposal_id = ${p}.id
+        union all
+        select i.space_included, i.skill_included from includes i where ${p}.action = 'remove include' and i.id = ${p}.include_id
+      ) target
+      left join spaces x on x.id = target.space_included and x.id in (${accessibleSpaces(s)})
+      left join lateral (
+        select t.body from content t
+        where t.page_id = target.skill_included and t.kind = 'title' and ${visible(s, 't')} and ${current(s, 't')}
+        order by t.private_to is null limit 1
+      ) t on true
+      where include_open(target.space_included, target.skill_included)
+      limit 1
+    ) as name
+    where ${p}.action in ('add include', 'remove include')
+  ) included on true`;
+}
+
+/** Removing an include waits only while it's there, as far as the reader can see. */
+function includeStands(s: Session, table: string) {
+  const p = s.tx(table);
+  return s.tx`(${p}.include_id is null or not exists (select from includes i where i.id = ${p}.include_id and i.removed_at is not null))`;
 }
 
 /** A change or removal waits only while its rule is still there; one whose rule was removed has nothing left to decide. */
@@ -901,6 +1049,21 @@ export async function decide(
           closed: set.closed ?? change.closed,
         })
       ).id;
+    } else if (proposal.action === 'add include' || proposal.action === 'remove include') {
+      // Exactly what was shown: what it brings in, or the include itself. Including needs the person
+      // to open it; stopping one an admin can't open is theirs to do too.
+      const include = await includeFor(s, proposal);
+      if (proposal.action === 'add include' && !include?.open) throw new AccessDenied('You can’t open what this includes, so you can’t approve it.');
+      if (!include?.current) throw new Undecidable('changed', 'It isn’t included any more, so there’s nothing to remove.');
+      if (decision.shown !== include.shown) throw new Undecidable('changed', 'What it brings in changed after you opened this page. Check it again.');
+      try {
+        if (proposal.action === 'add include') await addInclude(s, { spaceId: proposal.spaceId, included: proposal.target!, shared: change.shared });
+        else if (!(await removeInclude(s, proposal.includeId!))) throw new Undecidable('changed', 'It isn’t included any more, so there’s nothing to remove.');
+      } catch (error) {
+        if (!(error instanceof IncludeRefused)) throw error;
+        if (error.reason === 'admin' || error.reason === 'missing') throw new AccessDenied(error.message);
+        throw new Undecidable('changed', error.message);
+      }
     } else if (proposal.action === 'add rule') {
       await addRule(s, {
         spaceId: proposal.spaceId,
@@ -986,6 +1149,7 @@ export function publicationData(publication: Publication, audience: { people: nu
 export const shortAction = {
   'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task',
   'archive space': 'archive', 'share space': 'convert', 'archive page': 'archive page', 'reopen page': 'reopen page',
+  'add include': 'include', 'remove include': 'exclude',
 } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
@@ -1062,6 +1226,9 @@ export function proposalData(proposal: ProposalView) {
           why: proposal.reason,
         }
       : null,
+    // Including another space's rules or a skill, or no longer: what it brings in for the reader, as it is now.
+    include: proposal.include,
+    included: proposal.change.what ?? null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,
@@ -1072,12 +1239,12 @@ export function proposalData(proposal: ProposalView) {
 
 async function insertProposal(
   s: Session,
-  proposal: Pick<Proposal, 'spaceId' | 'action' | 'itemId' | 'change' | 'request' | 'reason'> & { taskId?: string; pageId?: string },
+  proposal: Pick<Proposal, 'spaceId' | 'action' | 'itemId' | 'change' | 'request' | 'reason'> & { taskId?: string; pageId?: string; includeId?: string },
 ): Promise<Proposal> {
   const [inserted] = await s.tx<Proposal[]>`
-    insert into proposals (space_id, private_to, action, item_id, task_id, page_id, change, request, reason)
+    insert into proposals (space_id, private_to, action, item_id, task_id, page_id, include_id, change, request, reason)
     values (${proposal.spaceId}::uuid, ${personOf(s.principal)!}::uuid, ${proposal.action},
-            ${proposal.itemId}::uuid, ${proposal.taskId ?? null}::uuid, ${proposal.pageId ?? null}::uuid, ${s.tx.json(proposal.change)}, ${proposal.request}, ${proposal.reason})
+            ${proposal.itemId}::uuid, ${proposal.taskId ?? null}::uuid, ${proposal.pageId ?? null}::uuid, ${proposal.includeId ?? null}::uuid, ${s.tx.json(proposal.change)}, ${proposal.request}, ${proposal.reason})
     returning ${columns(s)}
   `;
   return inserted;
@@ -1108,7 +1275,17 @@ function seen(s: Session) {
 
 function columns(s: Session) {
   return s.tx`
-    id, space_id, private_to, action, item_id, task_id, page_id, change, agent, request, reason,
+    id, space_id, private_to, action, item_id, task_id, page_id, include_id, change, agent, request, reason,
+    -- What an include points to, only for someone who can open it: a new one's beside the proposal, and one removed says it itself.
+    (
+      select jsonb_strip_nulls(jsonb_build_object('space', x.space_included, 'skill', x.skill_included)) from (
+        select pi.space_included, pi.skill_included from proposal_includes pi where proposals.action = 'add include' and pi.proposal_id = proposals.id
+        union all
+        select i.space_included, i.skill_included from includes i where proposals.action = 'remove include' and i.id = proposals.include_id
+      ) x
+      where include_open(x.space_included, x.skill_included)
+      limit 1
+    ) as target,
     case when state in ('open', 'requested') and expires_at <= now() then 'expired' else state end as state,
     created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at, decided_in, space_created
   `;
