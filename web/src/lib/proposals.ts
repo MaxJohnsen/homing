@@ -13,7 +13,7 @@ export interface ProposalData {
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
   /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, or sharing an item or a task. */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task';
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -53,6 +53,8 @@ export interface ProposalData {
    */
   publication?: PublicationData | null;
   task?: TaskShareData | null;
+  /** Archiving the space: how many spaces in it go with it, whether only you have it, whether it's archived now, and why. */
+  archive?: { spaces: number; private: boolean; archived: boolean; why: string | null } | null;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -148,6 +150,7 @@ export function wantsTo(
   const { assistant, action, kind, request } = proposal;
   if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
   if (action === 'task') return withPlace ? `${assistant} wants to share a task with ${placeOf(proposal)}` : `${assistant} wants to share a task`;
+  if (action === 'archive') return withPlace ? `${assistant} suggests archiving ${placeOf(proposal)}` : `${assistant} suggests archiving it`;
   if (action === 'members') {
     const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
     const who = typeof proposal.member === 'object' && proposal.member ? (proposal.member.name ?? proposal.member.email) : proposal.text;
@@ -184,7 +187,8 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 }
 
 /** Whether a change or removal lost its rule before anyone decided. */
-export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'state'>): boolean {
+export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'state'>): boolean {
+  if (proposal.action === 'archive') return proposal.state === 'open' && Boolean(proposal.archive?.archived);
   if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
   if (proposal.action === 'task') return proposal.state === 'open' && (!proposal.task || proposal.task.shared || proposal.task.done);
   return (proposal.action === 'change' || proposal.action === 'remove') && !proposal.rule?.current;
@@ -205,6 +209,7 @@ export function buttonsOf(action: ProposalData['action'], sending = false, membe
           : { approve: 'Add', reject: 'Don’t add' };
   }
   if (action === 'space') return { approve: 'Create space', reject: 'Don’t create' };
+  if (action === 'archive') return { approve: 'Archive', reject: 'Keep it open' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
     : action === 'change'
@@ -237,6 +242,13 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
     if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
+    return undefined;
+  }
+  if (action === 'archive') {
+    if (state === 'approved') return { kind: 'approved', heading: `Archived ${place}`, detail: 'It’s out of everyday context, and still searchable. You can reopen it in its Settings.' };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: `${assistant} won’t suggest archiving it again.` };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was archived, and ${assistant} won’t suggest it again.` };
+    if (isGone(proposal)) return { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' };
     return undefined;
   }
   if (action === 'task') {

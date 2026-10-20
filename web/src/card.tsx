@@ -4,7 +4,7 @@ import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type 
 import { ApprovalCard, type Done } from '@/approval-card';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 import type { ProposalData } from '@/lib/proposals';
-import { longProposal, memberProposal, proposal as sample, publishProposal, requestProposal, suggestedSpace, taskProposal } from '@/sample';
+import { longProposal, memberProposal, proposal as sample, publishProposal, requestProposal, suggestedSpace, taskProposal, archiveProposal } from '@/sample';
 import './card.css';
 
 // Inside Claude, the card shows the proposal the assistant just made and lets the person decide
@@ -76,7 +76,7 @@ function applyHost(context: McpUiHostContext) {
 /** The card outside an assistant, deciding on sample data, or showing a change made without a decision. */
 function Preview() {
   const [shown, setShown] = useState(
-    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : params.get('sample') === 'members' ? memberProposal : params.get('sample') === 'publish' ? publishProposal : params.get('sample') === 'task' ? taskProposal : sample,
+    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : params.get('sample') === 'members' ? memberProposal : params.get('sample') === 'publish' ? publishProposal : params.get('sample') === 'task' ? taskProposal : params.get('sample') === 'archive' ? archiveProposal : sample,
   );
   const sending = Boolean(shown.request && !shown.request.sent);
   if (params.get('sample') === 'done') {

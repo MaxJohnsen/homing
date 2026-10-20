@@ -172,7 +172,7 @@ export interface OverviewData {
   pages: number;
   collections: PageSummary[];
   decisions: PageSummary[];
-  waiting: { id: string; action: 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task'; kind: string; text: string | null; asked?: boolean; member?: 'add' | 'make admin' | 'make member' | 'remove' | null; assistant: string; request: { by: string | null; yours: boolean; sent: boolean } | null }[];
+  waiting: { id: string; action: 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space'; kind: string; text: string | null; asked?: boolean; member?: 'add' | 'make admin' | 'make member' | 'remove' | null; assistant: string; request: { by: string | null; yours: boolean; sent: boolean } | null }[];
   spaces: { id: string; name: string; closed: boolean; archived?: boolean }[];
 }
 

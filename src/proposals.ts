@@ -3,9 +3,9 @@ import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } fro
 import { current, itemColumns, publicationOf, publishItem, visible, type Publication } from './knowledge.ts';
 import type { FindAccount } from './people.ts';
 import { readTask, shareTask, type Task } from './tasks.ts';
-import { accessibleSpaces, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
+import { accessibleSpaces, archiveSpace, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space';
 
 /**
  * A change of who is in a space: about someone the user shares a space with, by their id, or about
@@ -81,6 +81,11 @@ export interface ProposalView extends Proposal {
   publication: Publication | null;
   /** For sharing an item: how many people would see it, as Members shows them, and whether people above too. */
   audience: { people: number; above: boolean } | null;
+  /**
+   * For archiving a space: how many spaces in it would go with it, as the reader sees them, whether
+   * only the reader has it, and whether it's archived now.
+   */
+  archive: { spaces: number; private: boolean; archived: boolean } | null;
   /** For sharing a task: the task as it is now, if the reader can see it, and whether it's still theirs alone. */
   task: { title: string; description: string | null; due: string | null; done: boolean; shared: boolean; shown: string } | null;
   /** For a suggested space: where the person may put it, and the space it became, if they can open it. */
@@ -280,6 +285,41 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
 }
 
 /**
+ * Suggests archiving a space whose work is done (spec §1), for the person to approve as one of its
+ * admins. Rare by design: one waiting at a time, and never again for a space the person kept open,
+ * unless they ask.
+ */
+export async function suggestArchive(s: Session, input: { spaceId: string; why?: string; asked?: boolean }): Promise<Proposal> {
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === input.spaceId);
+  if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (space.privateTo !== null && space.parentId === null) throw new SpaceRefused('where', 'The personal space stays open.');
+  if (space.archived) throw new SpaceRefused('where', space.archivedAt ? `${space.name} is archived already.` : `${space.name} is archived already, with the space above it.`);
+  if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins archive it. The user can ask one of them.`);
+  const [waiting] = await s.tx<{ id: string }[]>`
+    select id from proposals where ${yours(s)} and action = 'archive space' and state = 'open' and expires_at > now() limit 1
+  `;
+  if (waiting) throw new NotSuggested(`Archiving a space already waits for the user (proposal:${waiting.id}). Don't suggest another until they decide it.`, waiting.id);
+  if (!input.asked) {
+    const [kept] = await s.tx<{ id: string; at: Date }[]>`
+      select id, coalesce(decided_at, expires_at) as at from proposals
+      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid
+        and (state = 'rejected' or (state = 'open' and expires_at <= now()))
+      limit 1
+    `;
+    if (kept) throw new NotSuggested(`The user kept ${space.name} open when archiving it was suggested on ${kept.at.toISOString().slice(0, 10)}. Don't suggest it again unless they ask.`, kept.id);
+  }
+  return insertProposal(s, { spaceId: space.id, action: 'archive space', itemId: null, change: input.asked ? { asked: true } : {}, request: false, reason: input.why?.trim() || null });
+}
+
+/** Whether a space is somewhere inside another, as far as the person can see. */
+function isInside(space: Space, ancestorId: string, spaces: Space[]): boolean {
+  const byId = new Map(spaces.map((candidate) => [candidate.id, candidate]));
+  for (let at = space.parentId; at; at = byId.get(at)?.parentId ?? null) if (at === ancestorId) return true;
+  return false;
+}
+
+/**
  * Proposes sharing one of the person's private tasks with everyone in its space (spec §7), for
  * them to approve. Only their own open tasks, never in their personal tree.
  */
@@ -351,6 +391,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     },
     admins,
     publication,
+    archive: proposal.action === 'archive space' ? { spaces: spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length, private: space.privateTo !== null, archived: space.archived } : null,
     task: task ? { title: task.title, description: task.description, due: task.due, done: task.doneAt !== null, shared: task.privateTo === null, shown: taskShown(task) } : null,
     audience: audienceOf ? { people: audienceOf.members.length, above: audienceOf.reachedFromAbove } : null,
     places: proposal.action === 'add space' && proposal.state === 'open' && proposal.privateTo === personOf(s.principal) ? await placesFor(s, spaces) : [],
@@ -422,7 +463,7 @@ async function placesFor(s: Session, spaces: Space[]): Promise<Place[]> {
 export async function openProposals(s: Session, spaceId: string): Promise<Proposal[]> {
   return s.tx<Proposal[]>`
     select ${columns(s)} from proposals
-    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')}
+    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')} and ${spaceOpen(s, 'proposals')}
     order by created_at
   `;
 }
@@ -513,7 +554,7 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body, task.title) as text, p.agent,
+           coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body, task.title, case when p.action = 'archive space' then s.name end) as text, p.agent,
            coalesce((p.change->>'asked')::boolean, false) as asked, p.change->>'member' as member, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
@@ -522,7 +563,7 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
     left join tasks task on task.id = p.task_id
     left join people who on who.id = (p.change->>'person')::uuid
-    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')} and ${taskStands(s, 'p')}
+    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')} and ${taskStands(s, 'p')} and ${spaceOpen(s, 'p')}
       and ((p.private_to = ${me}::uuid and p.state = 'open')
            or (p.state = 'requested' and p.private_to <> ${me}::uuid and admin_of(p.space_id)))
     order by coalesce(p.requested_at, p.created_at)
@@ -538,6 +579,12 @@ function taskStands(s: Session, table: string) {
   return s.tx`(${p}.task_id is null or exists (
     select from tasks t where t.id = ${p}.task_id and t.private_to is not null and t.done_at is null
   ))`;
+}
+
+/** Archiving a space waits only while it's open; archived another way, there's nothing to decide. */
+function spaceOpen(s: Session, table: string) {
+  const p = s.tx(table);
+  return s.tx`(${p}.action <> 'archive space' or not exists (select from archived_since(${p}.space_id)))`;
 }
 
 function ruleStands(s: Session, table: string) {
@@ -586,6 +633,11 @@ export async function decide(
       if (decision.shown === undefined || !(await publishItem(s, proposal.itemId!, decision.shown))) {
         throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
       }
+    } else if (proposal.action === 'archive space') {
+      // As one of its admins, now; a space archived meanwhile has nothing left to archive.
+      const space = (await listSpaces(s)).find((candidate) => candidate.id === proposal.spaceId);
+      if (space?.archived) throw new Undecidable('changed', 'It was archived after you opened this page, so there’s nothing to decide.');
+      await archiveSpace(s, proposal.spaceId, true);
     } else if (proposal.action === 'share task') {
       // Only while it's still the person's own and open, and exactly as it was shown.
       await s.tx`select id from tasks where id = ${proposal.taskId}::uuid for update`;
@@ -664,7 +716,7 @@ export function publicationData(publication: Publication, audience: { people: nu
 }
 
 /** An action as the app names it. */
-export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task' } as const;
+export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task', 'archive space': 'archive' } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
 export function proposalData(proposal: ProposalView) {
@@ -719,6 +771,8 @@ export function proposalData(proposal: ProposalView) {
     member: proposal.member,
     // Sharing an item: what it says, on which page, what of it others won't see, and who will see it.
     publication: proposal.publication ? publicationData(proposal.publication, proposal.audience, proposal.reason) : null,
+    // Archiving a space: how many spaces in it go with it, who has it, whether it's archived now, and why.
+    archive: proposal.archive ? { ...proposal.archive, why: proposal.reason } : null,
     // Sharing a task: the task as it is now, why, and who will see it.
     task: proposal.task ? { ...proposal.task, why: proposal.reason, audience: proposal.audience } : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({

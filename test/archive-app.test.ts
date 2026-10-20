@@ -112,3 +112,40 @@ test('archiving shows only through spaces you can open, and nothing new goes in 
   assert.match(sharing.body.message, /archived/);
   assert.equal((await archive(ana, globex, false)).status, 200);
 });
+
+test('an assistant suggests archiving a finished space, rarely, and the user archives it by approving', async () => {
+  const done = await as({ ...ana, direct: true }, async (s) => {
+    const done = await createSpace(s, { name: 'Summer campaign' });
+    await createSpace(s, { name: 'Ads', parentId: done });
+    return done;
+  });
+  const act = (input: Record<string, unknown>) => claude.call('act', { action: 'space.archive', input });
+  const proposalOf = (text: string) => /proposal:([0-9a-f-]{36})/.exec(text)![1];
+
+  const suggested = await act({ space: `space:${done}`, why: 'The campaign ended in August.' });
+  assert.match(suggested.text, /Waiting for the user's approval .+ Nothing is archived yet/);
+  const proposal = proposalOf(suggested.text);
+  assert.match((await act({ space: `space:${globex}` })).text, /already waits for the user/, 'one at a time');
+  const shown = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal;
+  assert.deepEqual([shown.action, shown.archive.spaces, shown.archive.why], ['archive', 1, 'The campaign ended in August.']);
+  assert.ok(!(await spacesAs(ana)).find((space) => space.id === done)?.archived, 'nothing changes before Ana decides');
+
+  assert.equal((await ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: true })).status, 200);
+  assert.ok((await spacesAs(ana)).find((space) => space.id === done)?.archived);
+  assert.match((await claude.call('read', { ref: `proposal:${proposal}` })).text, /The user archived it on .+ out of everyday context now/);
+
+  // Kept open once, it isn't suggested again unless the user asks.
+  const kept = proposalOf((await act({ space: `space:${globex}` })).text);
+  assert.equal((await ana.browser.json(`/api/proposals/${kept}/decide`, { approve: false })).status, 200);
+  assert.match((await act({ space: `space:${globex}` })).text, /kept Globex open .+ Don't suggest it again/);
+  const asked = proposalOf((await act({ space: `space:${globex}`, asked: true })).text);
+  // Archived another way meanwhile, it leaves what's waiting.
+  assert.equal((await archive(ana, globex)).status, 200);
+  assert.ok(!((await ana.browser.json('/api/waiting')).body.waiting as { id: string }[]).some((item) => item.id === asked));
+  assert.match((await claude.call('read', { ref: `proposal:${asked}` })).text, /archived already, so there is nothing to decide/);
+  assert.equal((await archive(ana, globex, false)).status, 200);
+
+  // Only for a space the user looks after, never their personal space, and not one archived already.
+  assert.match((await act({ space: `space:${ana.personalSpaceId}` })).text, /personal space stays open/);
+  assert.match((await act({ space: `space:${done}` })).text, /archived already/);
+});
