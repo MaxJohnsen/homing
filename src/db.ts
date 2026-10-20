@@ -48,11 +48,16 @@ export async function withPrincipal<T>(
   const space = 'space' in principal ? principal.space : '';
   const direct = 'person' in principal && principal.direct ? 'true' : '';
   return (await sql.begin(snapshot ? 'isolation level repeatable read read only' : '', async (tx) => {
+    // Also how PostgreSQL plans, per transaction so it works through any pooler. Row-level security
+    // makes the planner overestimate costs, so JIT compiled queries that take milliseconds, for up to a
+    // second. And plans cached for any values ran 2 to 3 times slower than plans for the values at hand.
     await tx`
       select set_config('homing.person_id', ${person}, true),
              set_config('homing.space_id', ${space}, true),
              set_config('homing.agent', ${principal.agent ?? ''}, true),
-             set_config('homing.direct', ${direct}, true)
+             set_config('homing.direct', ${direct}, true),
+             set_config('jit', 'off', true),
+             set_config('plan_cache_mode', 'force_custom_plan', true)
     `;
     return fn({ tx, principal });
   })) as T;
