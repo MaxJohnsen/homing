@@ -2,6 +2,7 @@ import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
 import { MoreHorizontal } from 'lucide-react';
+import { ProposedChange } from '@/components/proposed-change';
 import { RadioCards } from '@/components/radio-cards';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
@@ -121,12 +122,28 @@ function members(n: number) {
   return n === 1 ? '1 member' : `${n} members`;
 }
 
-/** A space's own settings, for its admins: its name, so far. */
-export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (name: string) => Promise<string | undefined> }) {
+/** What sharing a space from your personal tree would do: the rules that stop applying, and where it can go. */
+export interface ConversionData {
+  rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null }[];
+  places: { id: string; name: string; label: string; people: number; above: boolean }[];
+}
+
+/** Sharing a space from your personal tree. Resolves to what went wrong, if anything. */
+export interface ShareSpaceActions {
+  conversion: () => Promise<ConversionData | undefined>;
+  convert: (input: { in: string | null; closed: boolean; rules: 'keep' | 'share' | 'drop' }) => Promise<string | undefined>;
+}
+
+/**
+ * A space's own settings, for its admins: its name, and for a space in your personal tree, sharing
+ * it with others. A shared space you moved from your personal tree says where it came from, to you.
+ */
+export function SpaceSettings({ space, rename, share }: { space: SpaceData; rename: (name: string) => Promise<string | undefined>; share?: ShareSpaceActions }) {
   const [name, setName] = useState(space.name);
   const [problem, setProblem] = useState<string>();
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState(false);
   // Shows the name as it is now, after a rename here or anywhere else.
   useEffect(() => setName(space.name), [space.name]);
   const changed = name.replace(/\s+/g, ' ').trim() !== space.name;
@@ -140,31 +157,166 @@ export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (na
   };
 
   return (
-    <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? 'Only you see it.' : `Everyone who can open ${space.name} sees the new name.`}>
-      <form
-        className="flex flex-col gap-3 sm:flex-row"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (changed && name.trim()) void save();
-        }}
-      >
-        <Input
-          aria-label="Name"
-          className="h-11 text-base md:text-base sm:max-w-sm"
-          value={name}
-          maxLength={100}
-          onChange={(event) => {
-            setName(event.target.value);
-            setSaved(false);
+    <div className="flex flex-col gap-10">
+      <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? 'Only you see it.' : `Everyone who can open ${space.name} sees the new name.`}>
+        <form
+          className="flex flex-col gap-3 sm:flex-row"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (changed && name.trim()) void save();
           }}
-          aria-invalid={Boolean(problem) || undefined}
-          aria-describedby={problem ? 'space-name-problem' : undefined}
-          disabled={busy}
-        />
-        <Button type="submit" size="lg" className="h-11 text-base sm:px-5" disabled={busy || !changed || !name.trim()}>Rename</Button>
-      </form>
-      {problem && <FieldError id="space-name-problem">{problem}</FieldError>}
-      {saved && <p role="status" className="text-sm text-muted-foreground">Renamed.</p>}
+        >
+          <Input
+            aria-label="Name"
+            className="h-11 text-base md:text-base sm:max-w-sm"
+            value={name}
+            maxLength={100}
+            onChange={(event) => {
+              setName(event.target.value);
+              setSaved(false);
+            }}
+            aria-invalid={Boolean(problem) || undefined}
+            aria-describedby={problem ? 'space-name-problem' : undefined}
+            disabled={busy}
+          />
+          {/* One main action at a time: while sharing, that's the one. */}
+          <Button type="submit" variant={sharing ? 'outline' : 'default'} size="lg" className="h-11 text-base sm:px-5" disabled={busy || !changed || !name.trim()}>Rename</Button>
+        </form>
+        {problem && <FieldError id="space-name-problem">{problem}</FieldError>}
+        {saved && <p role="status" className="text-sm text-muted-foreground">Renamed.</p>}
+        {space.movedFrom && (
+          <p className="text-sm text-muted-foreground">
+            You moved it here from {space.movedFrom.name === 'your personal space' ? 'your personal space' : `${space.movedFrom.name}, in your personal space`}. Only you see this.
+          </p>
+        )}
+      </Section>
+      {share && space.private && !space.personal && (
+        <ShareSpace space={space} share={share} open={sharing} onOpen={setSharing} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Sharing a space from your personal tree with others (spec §1): it leaves your personal space as
+ * a space of its own, or goes in a shared space you're an admin of. It says who will have it, that
+ * everything in it stays yours until you share it, and what becomes of the rules it had there.
+ */
+function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: ShareSpaceActions; open: boolean; onOpen: (open: boolean) => void }) {
+  const [conversion, setConversion] = useState<ConversionData | null>();
+  const [inside, setInside] = useState('');
+  const [closed, setClosed] = useState(false);
+  const [rules, setRules] = useState<'keep' | 'share' | 'drop'>('keep');
+  const [problem, setProblem] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!open || conversion !== undefined) return;
+    let live = true;
+    share.conversion().then((found) => live && setConversion(found ?? null));
+    return () => {
+      live = false;
+    };
+  }, [open, conversion, share]);
+  const parent = conversion?.places.find((place) => place.id === inside);
+  const others = parent ? parent.people - 1 : 0;
+
+  const convert = async () => {
+    setBusy(true);
+    const answer = await share.convert({ in: parent?.id ?? null, closed: Boolean(parent) && closed, rules });
+    setBusy(false);
+    if (answer) setProblem(answer);
+    else navigate(`/spaces/${space.id}/members`);
+  };
+
+  return (
+    <Section
+      title="Share with others"
+      tone="raised"
+      className="max-w-2xl"
+      description={`${space.name} is in your personal space, so only you have it. Shared, it leaves your personal space and you can add people. Everything in it, and in the spaces under it, stays only yours until you share it.`}
+    >
+      {!open ? (
+        <div>
+          <Button variant="outline" onClick={() => onOpen(true)}>Share {space.name}</Button>
+        </div>
+      ) : conversion === undefined ? (
+        <p className="text-sm text-muted-foreground">Getting what would change…</p>
+      ) : conversion === null ? (
+        <p className="text-base">{space.name} can’t be shared from here.</p>
+      ) : (
+        <div className="flex flex-col gap-4">
+          {conversion.places.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="share-space-in" className="text-base">Where does it go?</Label>
+              <select
+                id="share-space-in"
+                value={inside}
+                onChange={(event) => setInside(event.target.value)}
+                disabled={busy}
+                className={cn('h-11 w-full rounded-4xl border border-input bg-card px-3.5 text-base disabled:opacity-50 sm:max-w-md', focusRing)}
+              >
+                <option value="">On its own</option>
+                {conversion.places.map((place) => <option key={place.id} value={place.id}>{place.label}</option>)}
+              </select>
+            </div>
+          )}
+          {parent && (
+            <RadioCards
+              label="Who has access?"
+              surface="muted"
+              value={closed ? 'closed' : 'open'}
+              onChange={(value) => setClosed(value === 'closed')}
+              disabled={busy}
+              options={[
+                {
+                  value: 'open',
+                  label: `Everyone in ${parent.name}`,
+                  detail: parent.above
+                    ? `${others > 0 ? `${others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`}, ` : ''}everyone who can open the space above it, and anyone who joins later.`
+                    : `${others > 0 ? `${others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`} now, and ` : ''}anyone who joins ${parent.name} later.`,
+                },
+                { value: 'closed', label: 'Only people you add', detail: `Others in ${parent.name} don’t see it.` },
+              ]}
+            />
+          )}
+          <p className="text-base">
+            {!parent
+              ? `A space of its own, with you as its admin. Only you have it until you add people.`
+              : closed
+                ? `In ${parent.name}, with you as its admin. Only the people you add have it, and ${parent.name}’s shared rules apply in it.`
+                : `In ${parent.name}, with you as its admin. Everyone there sees its name and the spaces under it, and ${parent.name}’s shared rules apply in it.`}
+          </p>
+          {conversion.rulesLeaving.length > 0 && (
+            <div className="flex flex-col gap-3">
+              <p className="text-base font-medium">These rules from your personal space stop applying in it:</p>
+              <ul className="flex flex-col gap-2">
+                {conversion.rulesLeaving.map((rule, index) => (
+                  <li key={index}>
+                    <ProposedChange kind={rule.kind} label={`${rule.kind === 'requirement' ? 'Requirement' : 'Preference'} from ${rule.from ?? 'a space above'}`} text={rule.text} settled />
+                  </li>
+                ))}
+              </ul>
+              <RadioCards
+                label="What becomes of them?"
+                surface="muted"
+                value={rules}
+                onChange={setRules}
+                disabled={busy}
+                options={[
+                  { value: 'keep', label: 'Keep them for me', detail: `In ${space.name}, only for you.`, private: true },
+                  { value: 'share', label: 'Add them for everyone', detail: `In ${space.name}, for everyone who has it.` },
+                  { value: 'drop', label: 'Let them go', detail: 'They stay in your personal space.' },
+                ]}
+              />
+            </div>
+          )}
+          {problem && <FieldError>{problem}</FieldError>}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => onOpen(false)}>Cancel</Button>
+            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={convert}>Share {space.name}</Button>
+          </div>
+        </div>
+      )}
     </Section>
   );
 }

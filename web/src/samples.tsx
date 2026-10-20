@@ -26,7 +26,7 @@ import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { NewSpace, type CreateSpace } from '@/screens/new-space';
-import { Members, Space, SpaceSettings, type MemberActions } from '@/screens/space';
+import { Members, Space, SpaceSettings, type MemberActions, type ShareSpaceActions } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 // Every screen with sample data, for `npm run dev:web`. Each state has its own address for review.
@@ -88,6 +88,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/kitchen': { label: 'A space in your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="rules"><Rules space={sampleSpace.kitchen} rules={sampleRules.filter((rule) => rule.personal)} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/new': { label: 'Starting a space', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/new/in': { label: 'Starting a space in Acme', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} start="acme" create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
+  '/spaces/settings/personal': { label: 'Sharing a space from your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="settings"><SpaceSettings space={sampleSpace.kitchen} rename={async () => 'Samples don’t save anything.'} share={sampleShareSpace} /></Space></InApp> },
   '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} /></Space></InApp> },
   '/spaces/from-above': { label: 'Members of a space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="members"><Members space={sampleSpace.fromAbove} /></Space></InApp> },
   '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
@@ -170,6 +171,15 @@ const recentMany = ['client-0', 'client-14-Data platform', 'client-5', 'family']
 const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async () => undefined, remove: async () => undefined };
 
 /** A screen inside the app, with Ana's spaces on the shelf. */
+/** Sharing a space from your personal tree, in samples: what it would do, and nothing done. */
+const sampleShareSpace: ShareSpaceActions = {
+  conversion: async () => ({
+    rulesLeaving: [{ kind: 'preference', text: 'Keep renovation notes in Norwegian.', from: 'Home' }],
+    places: [{ id: 'acme', name: 'Acme', label: 'Acme', people: 5, above: false }],
+  }),
+  convert: async () => 'Samples don’t share anything.',
+};
+
 /** Samples change nobody's access, and say so. */
 const sampleMemberActions: MemberActions = {
   add: async () => ({ problem: 'Samples don’t add anyone.' }),
