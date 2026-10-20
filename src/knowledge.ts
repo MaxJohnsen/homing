@@ -176,10 +176,17 @@ export async function updateItem(
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
-  const copy = original.privateTo ? await copyOf(s, itemId) : undefined;
-  if (copy) {
+  const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
+  if (shared === itemId) {
+    // Shared meanwhile by moving it: everyone sees it now, so yours is an update of it.
     const kept = await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid`;
-    return supersedeItem(s, copy, { body: input.body, sources: [...new Set([...kept.map((row) => row.sourceId), ...(input.sources ?? [])])] });
+    return supersedeItem(s, itemId, { body: input.body, sources: [...new Set([...kept.map((row) => row.sourceId), ...(input.sources ?? [])])] });
+  }
+  if (shared) {
+    const update = await supersedeItem(s, shared, input);
+    // It rests on what yours did, sources you can no longer open included, so sharing it says so.
+    if (update) await s.tx`select carry_citations(${itemId}::uuid, ${update.id}::uuid)`;
+    return update;
   }
   const [item] = await s.tx<Item[]>`
     update content set body = ${input.body}
@@ -204,8 +211,8 @@ export async function supersedeItem(
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
-  const copy = original.privateTo ? await copyOf(s, itemId) : undefined;
-  const old = copy ? await changeableItem(s, copy) : original;
+  const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
+  const old = shared && shared !== itemId ? await changeableItem(s, shared) : original;
   if (!old) return undefined;
   const privateTo = sideOf(s, input.shared);
   return insertItem(s, { ...input, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
@@ -282,7 +289,7 @@ export interface Publication {
   sharedText: string | null;
   /** Whether it's still your current item, and not shared already, so it can be shared. */
   current: boolean;
-  /** The copy it was shared as, if it was, which stands for it from then on. */
+  /** If it was shared as a copy, what everyone sees of it now: the copy, or what replaced that since. */
   sharedAs: string | null;
 }
 
@@ -305,7 +312,8 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
       and (src.private_to is not null or src.space_id <> ${item.spaceId}::uuid)
     order by src.created_at
   `;
-  const sharedAs = (await copyOf(s, itemId)) ?? null;
+  const copy = await copyOf(s, itemId);
+  const sharedAs = copy ? await everyoneSees(s, copy) : null;
   const [facts] = await s.tx<{ hiddenCount: number; base: string | null; sharedText: string | null; current: boolean; sharedTitle: string | null; ownTitle: string | null }[]>`
     select hidden_sources(${itemId}::uuid) as hidden_count,
            shared_base(${itemId}::uuid) as base,
@@ -350,7 +358,8 @@ export async function publishItem(s: Session, itemId: string, shown: string): Pr
 
 /**
  * An item with its sources, its earlier versions, and what replaced it, if anything. Your private
- * update of something shared also says which shared item it updates, which the others still see.
+ * update of something shared also says which shared item it updates, which the others still see,
+ * and your original of something you shared as a copy says which copy stands for it.
  */
 export async function readItem(s: Session, itemId: string) {
   const [item] = await s.tx<(Item & { sources: Citation[]; updates: string | null })[]>`
@@ -366,7 +375,10 @@ export async function readItem(s: Session, itemId: string) {
     where content_id = ${itemId}::uuid and ${visible(s, 'revisions')}
     order by replaced_at
   `;
-  return { ...item, history, replacedBy: await replacementOf(s, itemId) };
+  // Your original of something you shared as a copy: the copy stands for it, and may have been replaced since.
+  const copy = item.privateTo ? await copyOf(s, itemId) : undefined;
+  const sharedAs = copy ? { id: copy, replacedBy: (await replacementOf(s, copy)) ?? null } : null;
+  return { ...item, history, replacedBy: await replacementOf(s, itemId), sharedAs };
 }
 
 /** The knowledge pages in a space that the viewer can see, most recently changed first. */
@@ -459,9 +471,9 @@ export async function pagesIn(
   const here = s.tx`
     select c.page_id as id,
            coalesce((array_agg(c.body order by c.private_to is null) filter (where c.kind = 'title'))[1], 'Untitled') as title,
-           -- A replacement stands where what it replaced stood, and your original of something you shared shows as the copy.
+           -- A replacement stands where what it replaced stood.
            (array_agg(c.body order by coalesce((select r.created_at from content r where r.id = c.supersedes), c.created_at))
-             filter (where c.kind = 'text' and not ${sharedAsCopy(s, 'c')}))[1] as excerpt,
+             filter (where c.kind = 'text'))[1] as excerpt,
            max(c.updated_at) as updated_at,
            bool_and(c.private_to is not null) as only_you,
            ${terms ? s.tx`bool_or(c.search @@ to_tsquery('simple', ${terms}))` : s.tx`true`} as hit,
@@ -472,6 +484,12 @@ export async function pagesIn(
     join pages p on p.id = c.page_id
     where c.space_id = ${spaceId}::uuid and c.kind in ('title', 'text')
       and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')} and ${shelved}
+      -- Your original of something you shared shows as the copy. The space's copies are few, and
+      -- found through their own index, rather than looked for behind every item.
+      and not (c.private_to is not null and c.id in (
+        select x.published_from from content x
+        where x.published_from is not null and x.space_id = ${spaceId}::uuid and x.private_to is null and ${visible(s, 'x')}
+      ))
     group by c.page_id
   `;
   const typed = options.type === undefined ? s.tx`true` : s.tx`p.type = ${options.type}`;
@@ -789,13 +807,21 @@ export async function sourceView(s: Session, sourceId: string) {
     select ${sourceColumns(s)}, written_by, agent, created_at from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
   `;
   if (!source) return undefined;
+  // Your original of something you shared as a copy shows as the copy, as it does on its page.
   const uses = await s.tx<{ pageId: string; title: string | null; itemId: string; body: string; privateTo: string | null }[]>`
-    select c.page_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.id as item_id, c.body, c.private_to
-    from citations ci
-    join content c on c.id = ci.content_id
-    join pages p on p.id = c.page_id
-    where ci.source_id = ${sourceId}::uuid and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
-    order by c.created_at
+    select page_id, ${titleOf(s, s.tx`page_id`)} as title, item_id, body, private_to from (
+      select distinct c.page_id, c.id as item_id, c.body, c.private_to, c.created_at
+      from citations ci
+      join content cited on cited.id = ci.content_id
+      join content c on c.id = coalesce((
+        select copy.id from content copy
+        where copy.published_from is not null and copy.published_from = cited.id and copy.private_to is null and ${visible(s, 'copy')}
+        order by copy.published_at desc limit 1
+      ), cited.id)
+      join pages p on p.id = c.page_id
+      where ci.source_id = ${sourceId}::uuid and ${knowledge(s, 'p')} and ${visible(s, 'cited')} and ${visible(s, 'c')} and ${current(s, 'c')}
+    ) uses
+    order by created_at
   `;
   return { ...source, uses };
 }
@@ -940,6 +966,36 @@ async function replacementOf(s: Session, itemId: string): Promise<{ id: string; 
   return replacement;
 }
 
+/**
+ * What your private item is now if you shared it: itself once it moved to the shared side, or the
+ * copy it was shared as. It's locked first until the transaction ends, so sharing it at the same
+ * moment happens wholly before or after a change to it.
+ */
+async function sharedNowAs(s: Session, itemId: string): Promise<string | undefined> {
+  const [item] = await s.tx<{ privateTo: string | null }[]>`
+    select private_to from content where id = ${itemId}::uuid and ${visible(s, 'content')} for update
+  `;
+  if (item && item.privateTo === null) return itemId;
+  return copyOf(s, itemId);
+}
+
+/**
+ * What everyone sees now of a shared item: the item, or what replaced it for everyone since, as far
+ * as the viewer can see.
+ */
+async function everyoneSees(s: Session, itemId: string): Promise<string> {
+  const [latest] = await s.tx<{ id: string }[]>`
+    with recursive line (id, depth) as (
+      select ${itemId}::uuid, 0
+      union all
+      select r.id, line.depth + 1 from content r join line on r.supersedes = line.id
+      where r.private_to is null and ${visible(s, 'r')} and line.depth < 100
+    )
+    select id from line order by depth desc limit 1
+  `;
+  return latest.id;
+}
+
 /** The shared copy your private item was shared as, if it was, which stands for it from then on (spec §5). */
 async function copyOf(s: Session, itemId: string): Promise<string | undefined> {
   const [copy] = await s.tx<{ id: string }[]>`
@@ -1011,8 +1067,9 @@ export function visibleContent(s: Session, table: string) {
 export function sharedAsCopy(s: Session, table: string) {
   const t = s.tx(table);
   return s.tx`(${t}.private_to is not null and exists (
+    -- Only copies, which the index on published_from keeps few to look through.
     select from content shared
-    where shared.published_from = ${t}.id and shared.private_to is null and ${visible(s, 'shared')}
+    where shared.published_from is not null and shared.published_from = ${t}.id and shared.private_to is null and ${visible(s, 'shared')}
   ))`;
 }
 

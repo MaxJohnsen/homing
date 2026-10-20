@@ -7,38 +7,40 @@
 -- update of the copy, which supersedes it. Sharing that update replaces the
 -- copy for everyone, so the copy is never rewritten from a private original.
 
--- An original changed after it was last shared becomes its owner's update of
--- the copy, with the original's sources, unless something replaced the copy.
--- Each is written as its owner, so the store checks it as theirs.
+-- Nothing anyone saw goes out of sight. An original that says something
+-- other than what it was shared as, such as one rewritten since, stays with
+-- its owner as an item of its own beside the copy, replacing nothing, with
+-- its sources, authors and earlier versions: when it's unclear, both show.
+-- Someone who can no longer open the space doesn't see it either way, and a
+-- private item that replaced an original keeps showing as it is.
 do $$
 declare
   o record;
-  update_id uuid;
+  kept uuid;
 begin
   for o in
-    select original.*, c.id as copy from content original
-    join content c on c.published_from = original.id and c.private_to is null
-    where original.private_to is not null and original.body <> c.body and original.updated_at > c.published_at
-      and not exists (select from content r where r.supersedes = c.id)
+    select original.* from content original
+    where original.private_to is not null and original.kind = 'text'
+      and exists (select from content c where c.published_from = original.id and c.private_to is null)
+      and original.body <> (
+        select c.body from content c where c.published_from = original.id and c.private_to is null
+        order by c.published_at desc limit 1
+      )
       and not exists (select from content r where r.supersedes = original.id)
+      and exists (select from space_access a where a.space_id = original.space_id and a.person_id = original.private_to)
   loop
+    -- Written as its owner, who can still open the space, so the store checks it as theirs.
     perform set_config('homing.person_id', o.private_to::text, true);
-    insert into content (space_id, page_id, kind, body, private_to, supersedes, written_by, agent, created_at, updated_at)
-    values (o.space_id, o.page_id, 'text', o.body, o.private_to, o.copy, o.written_by, o.agent, o.updated_at, o.updated_at)
-    returning id into update_id;
-    insert into citations (content_id, source_id) select update_id, ci.source_id from citations ci where ci.content_id = o.id;
+    insert into content (space_id, page_id, kind, body, private_to, written_by, agent, created_at, updated_at)
+    values (o.space_id, o.page_id, 'text', o.body, o.private_to, o.written_by, o.agent, o.created_at, o.updated_at)
+    returning id into kept;
+    insert into citations (content_id, source_id) select kept, source_id from citations where content_id = o.id;
+    insert into revisions (content_id, space_id, private_to, body, written_by, agent, written_at, replaced_at)
+    select kept, space_id, private_to, body, written_by, agent, written_at, replaced_at from revisions where content_id = o.id;
   end loop;
   perform set_config('homing.person_id', '', true);
 end
 $$;
-
--- An original replaced by its owner after it was shared: the update replaces
--- the copy instead, unless something replaced the copy.
-update content s set supersedes = c.id
-from content o, content c
-where s.supersedes = o.id and s.private_to = o.private_to and o.private_to is not null
-  and c.published_from = o.id and c.private_to is null
-  and not exists (select from content r where r.supersedes = c.id);
 
 -- Shares one of the person's own private items with its space, exactly as
 -- they were shown it, and the page's title with it if the page has no shared
@@ -109,4 +111,23 @@ begin
 end
 $$;
 
-drop function if exists shared_copy(uuid);
+drop function shared_copy(uuid);
+
+-- Keeps the sources of one of the person's own items on their update of it
+-- on the same page, ones they can no longer open included, so sharing the
+-- update still says what it rests on.
+create function carry_citations(from_item uuid, to_item uuid) returns void
+language sql security definer set search_path = public, pg_temp
+as $$
+  insert into citations (content_id, source_id)
+  select to_item, ci.source_id from citations ci
+  join content f on f.id = ci.content_id
+  join content t on t.id = to_item and t.page_id = f.page_id
+  where ci.content_id = from_item
+    and f.private_to = current_person_id() and t.private_to = current_person_id()
+    and f.space_id in (select accessible_spaces())
+  on conflict do nothing
+$$;
+
+revoke execute on function carry_citations from public;
+grant execute on function carry_citations to homing_app;

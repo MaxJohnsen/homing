@@ -4,14 +4,13 @@
 // newer, and the others see no trace of it, in the app or through their assistant.
 
 import assert from 'node:assert/strict';
-import { readdir, readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { addSource, createPage, writeItem } from '../src/knowledge.ts';
+import { addSource, createPage, supersedeItem, updateItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
-import { addMember, createSpace } from '../src/spaces.ts';
+import { addMember, createSpace, removeMember } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, type Member } from './helpers.ts';
+import { admin, as, db, member, until, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -19,10 +18,13 @@ let ana: Member, cara: Member;
 let acme: string;
 let anas: Awaited<ReturnType<Assistant['open']>>, caras: Awaited<ReturnType<Assistant['open']>>;
 
-type PageItem = { id: string; text: string; shared: boolean; sharedBy: { you: boolean } | null; sources: { reference: string }[]; replaced: { text: string; shared: boolean } | null };
+type PageItem = { id: string; text: string; shared: boolean; sharedBy: { you: boolean } | null; sources: { id: string; reference: string }[]; replaced: { text: string; shared: boolean } | null };
 
 const pageAs = async (who: Member, page: string) => (await who.browser.json(`/api/pages/${page}`)).body as { items: PageItem[] };
 const refIn = (text: string, kind: string) => new RegExp(`${kind}:([0-9a-f-]{36})`).exec(text)![1];
+/** The items resting on a source, as its own view lists them for the person. */
+const usesOf = async (who: Member, source: string) =>
+  ((await who.browser.json(`/api/sources/${source}`)).body.pages as { items: { id: string; text: string }[] }[]).flatMap((page) => page.items.map((item) => [item.id, item.text]));
 /** Approves a proposal as the decision page does, sending the text Ana was shown. */
 const approve = async (proposal: string) => {
   const shown = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal.publication;
@@ -71,6 +73,10 @@ test('Ana’s update of what she shared stands in its place for her, and the oth
   const before = await seenByCara();
   assert.deepEqual(before.page.items.map((item) => [item.text, item.sharedBy?.you]), [['The launch is on 14 November.', false]]);
   const shared = before.page.items[0].id;
+  // For Ana, what she shared stands for her original wherever she looks: reading it and its email say so.
+  assert.match((await anas.call('read', { ref: `item:${original}` })).text, new RegExp(`The user shared it as item:${shared}, which stands for it from then on\\. Read and change that one\\.`));
+  const email = (await pageAs(ana, page)).items[0].sources[0].id;
+  assert.deepEqual(await usesOf(ana, email), [[shared, 'The launch is on 14 November.']]);
 
   // Gunnar moves the launch. Ana's Claude updates what it saved, which is now her update of what she shared.
   const updated = await anas.call('remember', {
@@ -79,6 +85,8 @@ test('Ana’s update of what she shared stands in its place for her, and the oth
   });
   assert.match(updated.text, /The user shared item:\S+ as item:\S+, so for you this replaces that, and others in the space still see the shared version\./);
   const update = refIn(updated.text, 'item');
+  assert.match((await anas.call('read', { ref: `item:${original}` })).text, new RegExp(`and the user's private update item:${update} replaces that for them\\.`));
+  assert.deepEqual(await usesOf(ana, email), [[update, 'The launch is on 21 November.']]);
 
   // Ana sees only her update, still resting on both emails, and what the others still see is there to look at.
   assert.deepEqual((await pageAs(ana, page)).items.map((item) => [item.id, item.text, item.shared, item.replaced?.text, item.replaced?.shared, item.sources.map((source) => source.reference)]), [
@@ -151,29 +159,74 @@ test('a newer private item doesn’t hide a shared one unless it says it replace
   assert.deepEqual((await pageAs(cara, page)).items.map((item) => item.id), [budget]);
 });
 
-test('an original changed before this, after it was shared, becomes its owner’s update of what was shared', async () => {
-  const pageAndItems = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Venue' });
-    const email = await addSource(s, { spaceId: acme, reference: 'Email from the venue', excerpt: 'Doors open at 18, the bar at 19.' });
-    const doors = (await writeItem(s, { pageId: page, body: 'Doors open at 18.', sources: [email.id] })).id;
-    const bar = (await writeItem(s, { pageId: page, body: 'The bar opens at 19.', sources: [email.id] })).id;
-    return { page, doors, bar };
+test('changing what she shared as she shares it never rewrites the original out of sight', async () => {
+  const { page, item } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Catering', shared: true });
+    const email = await addSource(s, { spaceId: acme, reference: 'Email from the caterer', excerpt: 'Lunch for 40.' });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'Lunch is for 40 people.', sources: [email.id] })).id };
   });
-  const { page, doors, bar } = pageAndItems;
-  for (const [item, text] of [[doors, 'Doors open at 18.'], [bar, 'The bar opens at 19.']]) {
-    await as({ person: ana.id, direct: true }, (s) => s.tx`select publish_item(${item}::uuid, ${text})`);
+  // Ana shares it while her assistant changes it: the change waits for the sharing, then updates what was shared.
+  let published!: () => void, release!: () => void;
+  const isShared = new Promise<void>((resolve) => (published = resolve));
+  const released = new Promise<void>((resolve) => (release = resolve));
+  const sharing = as({ person: ana.id, direct: true }, async (s) => {
+    await s.tx`select publish_item(${item}::uuid, 'Lunch is for 40 people.')`;
+    published();
+    await released;
+  });
+  await isShared;
+  const changing = as({ person: ana.id, agent: 'Claude' }, (s) => updateItem(s, item, { body: 'Lunch is for 45 people.' }));
+  try {
+    await until(async () => (await admin`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like '%content%'`)[0].n > 0);
+  } finally {
+    release();
   }
-  // As Homing used to allow: one original rewritten after it was shared, and the other replaced by a private item.
-  await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Doors open at 17.' where id = ${doors}::uuid`, admin);
-  await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`insert into content (space_id, page_id, kind, body, private_to, supersedes) values (${acme}::uuid, ${page}::uuid, 'text', 'The bar opens at 20.', ${ana.id}::uuid, ${bar}::uuid)`, admin);
+  await sharing;
+  const update = (await changing)!;
 
-  const migration = (await readdir('migrations')).find((file) => file.endsWith('_private_updates.sql'))!;
-  await admin.unsafe(await readFile(`migrations/${migration}`, 'utf8'));
+  const [original] = await admin`select body from content where id = ${item}`;
+  assert.equal(original.body, 'Lunch is for 40 people.', 'the shared original is never rewritten');
+  assert.deepEqual((await pageAs(ana, page)).items.map((entry) => [entry.id, entry.text, entry.replaced?.text]), [[update.id, 'Lunch is for 45 people.', 'Lunch is for 40 people.']]);
+  assert.deepEqual((await pageAs(cara, page)).items.map((entry) => entry.text), ['Lunch is for 40 people.']);
+});
 
-  assert.deepEqual((await pageAs(ana, page)).items.map((item) => [item.text, item.shared, item.replaced?.text, item.replaced?.shared]), [
-    ['Doors open at 17.', false, 'Doors open at 18.', true],
-    ['The bar opens at 20.', false, 'The bar opens at 19.', true],
-  ]);
-  assert.deepEqual((await pageAs(ana, page)).items[0].sources.map((source) => source.reference), ['Email from the venue']);
-  assert.deepEqual((await pageAs(cara, page)).items.map((item) => item.text), ['Doors open at 18.', 'The bar opens at 19.']);
+test('an update still rests on a source Ana can no longer open, and sharing it says so', async () => {
+  // Beta is Cara's space, where Ana kept its price list for everyone there.
+  const beta = await as({ person: cara.id, direct: true }, async (s) => {
+    const beta = await createSpace(s, { name: 'Beta' });
+    await addMember(s, beta, ana.id);
+    return beta;
+  });
+  const { page, item } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const prices = await addSource(s, { spaceId: beta, reference: 'Beta’s price list', excerpt: 'Beta pays 1,200 a day.', shared: true });
+    const page = await createPage(s, { spaceId: acme, title: 'Rates', shared: true });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [prices.id] })).id };
+  });
+  await approve(refIn((await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${item}` } })).text, 'proposal'));
+  await as({ person: cara.id, direct: true }, (s) => removeMember(s, beta, ana.id));
+
+  // Ana's assistant updates what she shared, without naming any sources.
+  const updated = await anas.call('remember', { space: `space:${acme}`, updates: `item:${item}`, text: 'Our rate is 1,250 a day.' });
+  assert.ok(!updated.failed, updated.text);
+  const update = refIn(updated.text, 'item');
+  assert.deepEqual((await pageAs(ana, page)).items.map((entry) => entry.id), [update]);
+  // Sharing it is a copy that says it rests on a source she can no longer open.
+  const publication = (await ana.browser.json(`/api/items/${update}/publication`)).body;
+  assert.deepEqual([publication.copy, publication.hiddenUnseen, publication.sharedText], [true, 1, 'Our rate is about 1,200 a day.']);
+});
+
+test('asking to share an original again names what everyone sees now', async () => {
+  const { page, item } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Parking', shared: true });
+    const note = await addSource(s, { spaceId: acme, reference: 'Note from the landlord', excerpt: 'Ten spaces.' });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'There are ten parking spaces.', sources: [note.id] })).id };
+  });
+  await approve(refIn((await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${item}` } })).text, 'proposal'));
+  const copy = (await pageAs(cara, page)).items[0].id;
+  // Cara replaces it for everyone.
+  const now = (await as({ person: cara.id, direct: true }, (s) => supersedeItem(s, copy, { body: 'There are twelve parking spaces.', shared: true })))!.id;
+
+  const again = await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${item}` } });
+  assert.ok(again.failed);
+  assert.match(again.text, new RegExp(`The user shared it already: everyone sees item:${now} now\\.`));
 });

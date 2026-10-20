@@ -298,7 +298,7 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (space.privateTo) throw new SpaceRefused('where', 'Your personal space has no shared side: what’s in it stays yours.');
   if (publication.sharedAs) {
-    throw new SpaceRefused('person', `The user shared it already: everyone sees item:${publication.sharedAs}. To share a change, save it with \`remember\` first and share what that returns.`);
+    throw new SpaceRefused('person', `The user shared it already: everyone sees item:${publication.sharedAs} now. To share a change, save it with \`remember\` first and share what that returns.`);
   }
   if (!publication.current) throw new SpaceRefused('person', 'That item was replaced since. Share the one that replaced it.');
   const [waiting] = await s.tx<{ id: string }[]>`

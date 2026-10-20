@@ -728,6 +728,17 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
               : `Since ${day(item.replacedBy.at)}, the user's private update ${ref('item', item.replacedBy.id)} replaces it for them. Others in the space still see this.`,
           ]
         : []),
+      // Your original of something you shared shows as the copy, which may have been replaced since.
+      ...(item.sharedAs
+        ? [
+            `The user shared it as ${ref('item', item.sharedAs.id)}, which stands for it from then on` +
+              (item.sharedAs.replacedBy
+                ? item.sharedAs.replacedBy.shared
+                  ? `, and ${ref('item', item.sharedAs.replacedBy.id)} has replaced that for everyone since.`
+                  : `, and the user's private update ${ref('item', item.sharedAs.replacedBy.id)} replaces that for them.`
+                : '. Read and change that one.'),
+          ]
+        : []),
       // Your update of something shared says what the others still see.
       ...(item.updates
         ? [`A private update: for the user it replaces ${ref('item', item.updates)}, which others in the space still see.${item.supersedes !== item.updates ? ` It replaced ${ref('item', item.supersedes!)}.` : ''}`]
