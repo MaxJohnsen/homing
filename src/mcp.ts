@@ -8,12 +8,16 @@ import { rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import {
   addSource,
   createPage,
+  gather,
+  linksOf,
   listPages,
+  pagesIn,
   readItem,
   readPage,
   readSource,
   search,
   supersedeItem,
+  ungather,
   updateItem,
   writeItem,
   type Hit,
@@ -103,7 +107,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'Save each fact that can change, such as a date, an owner or a decision, on its own, on the page for its subject: ' +
         "an existing page with that title is used, or a new one is created. Leave out the page for small things without a clear subject, and they go on the space's Notes page. " +
         'Sources alone, without text, are kept as evidence. ' +
-        'Use replaces when something is no longer true, and updates to correct something you saved.',
+        'Use replaces when something is no longer true, and updates to correct something you saved. ' +
+        'Any page can gather other pages, which makes it a collection, such as "2027 planning": use gatherInto to put the page in one, on your private side.',
       inputSchema: z.object({
         space: text().describe('The space it belongs to, such as space:…'),
         text: text()
@@ -116,6 +121,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         type: text().optional().describe('The type of a new page, such as person, project or decision'),
         replaces: text().optional().describe('An item that is no longer true because of this'),
         updates: text().optional().describe('An item of yours to rewrite with this text'),
+        gatherInto: text().optional().describe('A collection to put the page in, as a page reference. A page can be in several.'),
+        removeFrom: text().optional().describe('A collection to take the page out of, as a page reference. The page itself stays.'),
         sources: z
           .array(z.object({ reference: text().optional(), excerpt: text() }))
           .optional()
@@ -429,9 +436,13 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ),
       ].join('\n');
     }
+    const { collections, mentionedOn } = await linksOf(s, page.id);
+    const gathered = await pagesIn(s, page.spaceId, { in: page.id, order: 'name' });
     return [
       `# ${page.title}`,
       `${page.type ? `A ${page.type} page` : 'A page'} in ${space?.name} (${ref('page', page.id)})`,
+      ...(collections.length ? [`In ${collections.map((c) => `${quote(c.title)} (${ref('page', c.id)}${c.shared ? '' : ', private'})`).join(', ')}.`] : []),
+      ...(mentionedOn.length ? [`Mentioned on ${mentionedOn.map((m) => `${quote(m.title)} (${ref('page', m.id)})`).join(', ')}.`] : []),
       '',
       ...(page.items.length
         ? page.items.flatMap((item) => [
@@ -442,6 +453,14 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
             ...item.sources.map((source) => `  - Source: ${describeSource(source)}`),
           ])
         : ['Nothing on this page yet.']),
+      ...(gathered.total
+        ? [
+            '',
+            `## Pages in this collection (${gathered.total})`,
+            ...gathered.pages.map((p) => `- ${oneLine(p.title)} (${ref('page', p.id)}${p.gatheredShared ? '' : ', private'})`),
+            ...(gathered.total > gathered.pages.length ? [`- …and ${gathered.total - gathered.pages.length} more. Search finds them.`] : []),
+          ]
+        : []),
     ].join('\n');
   }
 
@@ -488,11 +507,14 @@ async function remember(
     type?: string;
     replaces?: string;
     updates?: string;
+    gatherInto?: string;
+    removeFrom?: string;
     sources?: { reference?: string; excerpt: string }[];
   },
 ): Promise<string> {
   const spaceId = parseRef(input.space, 'space');
   if (['guidance', 'skill'].includes(input.type?.toLowerCase() ?? '')) throw new Refused(onlyPeople);
+  if ((input.gatherInto || input.removeFrom) && !input.text && !input.sources?.length) return collect(s, spaceId, input);
   if (!input.text && !input.sources?.length) throw new Refused('Give the text to remember, sources to keep, or both.');
   if (input.replaces && input.updates) throw new Refused('Use either replaces or updates, not both.');
 
@@ -527,7 +549,29 @@ async function remember(
 
   const page = await pageFor(s, spaceId, input.page, input.type);
   const item = await writeItem(s, { pageId: page.id, body: input.text, sources });
-  return `Saved on your private side as ${ref('item', item.id)}, on ${page.created ? 'the new page' : 'the page'} "${page.title}" (${ref('page', page.id)}).`;
+  const saved = `Saved on your private side as ${ref('item', item.id)}, on ${page.created ? 'the new page' : 'the page'} "${page.title}" (${ref('page', page.id)}).`;
+  return input.gatherInto || input.removeFrom ? `${saved} ${await collect(s, spaceId, { ...input, page: ref('page', page.id) })}` : saved;
+}
+
+/** Puts a page in a collection on the user's private side, or takes it out. The page must already exist. */
+async function collect(s: Session, spaceId: string, input: { page?: string; gatherInto?: string; removeFrom?: string }): Promise<string> {
+  if (!input.page) throw new Refused('Say which page, with page: and a page reference or its title.');
+  const page = /^page:/i.test(input.page)
+    ? { id: parseRef(input.page, 'page') }
+    : (await listPages(s, spaceId)).find((candidate) => candidate.title?.toLowerCase() === input.page!.toLowerCase());
+  if (!page) throw new Refused('There is no page with that title in this space that you can see.');
+  const said: string[] = [];
+  if (input.gatherInto) {
+    const collectionId = parseRef(input.gatherInto, 'page');
+    await gather(s, { collectionId, pageId: page.id });
+    said.push(`${ref('page', page.id)} is in the collection ${ref('page', collectionId)} for you.`);
+  }
+  if (input.removeFrom) {
+    const collectionId = parseRef(input.removeFrom, 'page');
+    const removed = await ungather(s, { collectionId, pageId: page.id });
+    said.push(removed ? `${ref('page', page.id)} is out of the collection ${ref('page', collectionId)}.` : `You hadn't put ${ref('page', page.id)} in ${ref('page', collectionId)}. Only people take pages out of what's shared.`);
+  }
+  return said.join(' ');
 }
 
 /** The page a reference points to, the page with that title, or the space's notes, created if needed. */

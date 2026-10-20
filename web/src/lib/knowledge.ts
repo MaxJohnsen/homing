@@ -8,6 +8,10 @@ export interface PageSummary {
   updatedAt: string;
   /** Nobody else sees any of it. */
   onlyYou: boolean;
+  /** How many pages it gathers, which makes it a collection. */
+  gathers: number;
+  /** In a collection's list: whether it's there for everyone, or only for you. */
+  gatheredShared?: boolean;
 }
 
 export type PageOrder = 'recent' | 'name' | 'match';
@@ -49,6 +53,12 @@ export interface PageData {
   /** On the space's shared side, so everyone there sees its title. */
   shared: boolean;
   updatedAt: string;
+  /** How many pages it gathers, which makes it a collection. */
+  gathers: number;
+  /** The collections it's in, each for everyone or only for you. */
+  collections: { id: string; title: string; shared: boolean }[];
+  /** The pages whose items link to it. */
+  mentionedOn: { id: string; title: string }[];
   /** Where it is, and how many people see what's shared there now. */
   space: { id: string; name: string; personal: boolean; private: boolean; people: number };
   items: ItemData[];
@@ -58,6 +68,14 @@ export interface PageData {
 export interface PageActions {
   add: (text: string, shared: boolean) => Promise<string | undefined>;
   correct: (itemId: string, text: string, shared: boolean) => Promise<string | undefined>;
+  /** Puts a page in this one, or takes it out, which makes this a collection. */
+  gather: (pageId: string, shared: boolean) => Promise<string | undefined>;
+  ungather: (pageId: string, shared: boolean) => Promise<string | undefined>;
+  /** Puts this page in a collection, or takes it out. */
+  join: (collectionId: string, shared: boolean) => Promise<string | undefined>;
+  leave: (collectionId: string, shared: boolean) => Promise<string | undefined>;
+  /** Finds pages in the page's space by what they say, or only collections. */
+  find: (query: string, collections?: boolean) => Promise<PageSummary[]>;
 }
 
 /** Starting a page. Answers with the new page, or what went wrong. */

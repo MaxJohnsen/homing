@@ -11,7 +11,7 @@ import type { SpaceData } from '@/lib/spaces';
  */
 export function Space({ space, view, children }: { space: SpaceData; view: SpaceView; children: ReactNode }) {
   const tabs = [
-    { label: 'Knowledge', href: `/spaces/${space.id}`, current: view === 'pages' || view === 'sources' },
+    { label: 'Knowledge', href: `/spaces/${space.id}`, current: view === 'pages' || view === 'collections' || view === 'sources' },
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
   ];
@@ -39,8 +39,15 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
           </nav>
         }
       />
-      {(view === 'pages' || view === 'sources') && (
-        <Parts label="Knowledge" parts={[{ label: 'Pages', href: `/spaces/${space.id}`, current: view === 'pages' }, { label: 'Sources', href: `/spaces/${space.id}/sources`, current: view === 'sources' }]} />
+      {(view === 'pages' || view === 'collections' || view === 'sources') && (
+        <Parts
+          label="Knowledge"
+          parts={[
+            { label: 'Pages', href: `/spaces/${space.id}`, current: view === 'pages' },
+            { label: 'Collections', href: `/spaces/${space.id}/collections`, current: view === 'collections' },
+            { label: 'Sources', href: `/spaces/${space.id}/sources`, current: view === 'sources' },
+          ]}
+        />
       )}
       {(view === 'rules' || view === 'skills') && (
         <Parts label="Guidance" parts={[{ label: 'Rules', href: `/spaces/${space.id}/rules`, current: view === 'rules' }, { label: 'Skills', href: `/spaces/${space.id}/skills`, current: view === 'skills' }]} />
