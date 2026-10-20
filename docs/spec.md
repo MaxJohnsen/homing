@@ -46,6 +46,8 @@ You can see a space's shared side if you have access to the space, and you alway
 
 **Your personal tree is private.** Spaces you create under your personal space are only yours. Nobody else can be given access, everything in them is on your private side, and Homing never suggests sharing there. Creating a space asks: "Just me, or with others?"
 
+**Assistants can suggest a space.** When a project or an area of life keeps coming up and no existing space or collection fits, an assistant can suggest a space for it. The suggestion is a proposal (§6) with the space's name, where it sits and who will see it, and the person can change these before creating it. A space the person asks for is simply created. A declined suggestion isn't made again, and creating a space never moves or shares anything.
+
 **Making a space collaborative** is a deliberate conversion. Inviting someone to a space in your personal tree starts it, or you can start it directly. Homing:
 
 - moves the space and everything under it out of your personal tree, as a new root or under a shared space you choose;
@@ -219,7 +221,7 @@ Whenever Homing needs a person to decide, it creates a proposal: an exact change
 
 Homing is designed to be used through ordinary AI conversations, and everything can be started from any MCP client. Agents save and organize knowledge on their own. Changes to guidance, sharing and access are decided by people: you confirm the exact change in the conversation when the client can support that securely, and otherwise on a small confirmation page.
 
-One concept covers guidance changes, sharing suggestions, publishing approvals, updates to published knowledge, and the catch-up when a space becomes collaborative. A proposal holds the change, why it was made (a correction, new evidence, an agent), its deciders and its state (open, approved, rejected or expired).
+One concept covers guidance changes, sharing suggestions, suggested spaces, publishing approvals, updates to published knowledge, and the catch-up when a space becomes collaborative. A proposal holds the change, why it was made (a correction, new evidence, an agent), its deciders and its state (open, approved, rejected or expired).
 
 - **Approving runs exactly what was shown.** If the underlying thing changes first, the proposal is shown again.
 - **Approval never grants permissions the approver doesn't have.** Every boundary a change crosses needs its own authorization, possibly from different people. Publishing your private knowledge to Acme needs your consent to disclose it and someone's right to publish in Acme. The owner approves disclosure first, so nobody else sees private content before its owner has agreed.
