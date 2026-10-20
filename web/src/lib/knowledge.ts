@@ -143,9 +143,27 @@ export interface ChangeData {
   kind: 'added' | 'updated' | 'corrected';
   /** The first thing on its page, which makes it a new page. */
   newPage: boolean;
+  /** On the space's overview rather than a page. */
+  overview?: boolean;
   by: Author;
   agent: string | null;
   at: string;
   onlyYou: boolean;
   space: { id: string | null; name: string | null; within: string | null; private?: boolean };
 }
+
+/** A space's overview: what people wrote about where it stands, and the map Homing keeps beside it. */
+export interface OverviewData {
+  /** The written overview as you see it: the shared one, your own, or both. */
+  overview: { id: string; text: string; shared: boolean; by: Author; agent: string | null; writtenAt: string; replacesShared: string | null }[];
+  /** The pages changed most recently, and how many there are in all. */
+  active: PageSummary[];
+  pages: number;
+  collections: PageSummary[];
+  decisions: PageSummary[];
+  waiting: { id: string; action: 'add rule' | 'change rule' | 'remove rule'; kind: string; text: string | null; assistant: string; request: { by: string | null; yours: boolean; sent: boolean } | null }[];
+  spaces: { id: string; name: string; closed: boolean }[];
+}
+
+/** Writing a space's overview, for everyone or only you. Answers with what went wrong, or nothing. */
+export type WriteOverview = (text: string, shared: boolean) => Promise<string | undefined>;

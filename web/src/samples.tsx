@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -21,6 +21,7 @@ import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
 import { Changes } from '@/screens/changes';
+import { Overview } from '@/screens/overview';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
@@ -52,6 +53,9 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/home/many-spaces': { label: 'Years in, with a hundred spaces', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} recent={recentMany.map((id) => manySpaces.find((space) => space.id === id)!)} /></InApp> },
   '/spaces/many': { label: 'A space deep among a hundred', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany} spaceId="client-14-Data platform"><Space space={{ ...sampleSpace.root, id: 'client-14-Data platform', name: 'Data platform', parentId: 'client-14', path: [{ id: 'acme', name: 'Acme' }, { id: 'client-14', name: 'Oslo Opera' }] }} view="members"><Members space={sampleSpace.root} /></Space></InApp> },
   '/waiting': { label: 'Everything waiting, by space', render: () => <InApp waiting={5} route={{ name: 'waiting' }}><Waiting waiting={manyWaiting} /></InApp> },
+  '/spaces/overview': { label: 'A space’s overview, with your own over the shared one', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="overview"><Overview space={sampleSpace.closed} data={sampleOverview} write={notSaved} /></Space></InApp> },
+  '/spaces/overview/none': { label: 'A space nobody has written an overview for', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="overview"><Overview space={sampleSpace.root} data={{ ...sampleOverview, overview: [], waiting: [], spaces: [] }} write={notSaved} /></Space></InApp> },
+  '/spaces/overview/empty': { label: 'A new, empty space', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="overview"><Overview space={sampleSpace.root} data={{ overview: [], active: [], pages: 0, collections: [], decisions: [], waiting: [], spaces: [] }} write={notSaved} /></Space></InApp> },
   '/spaces/pages': { label: 'A space’s pages, years in', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages /></Space></InApp> },
   '/spaces/pages/few': { label: 'A space with three pages', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="pages"><SamplePages space={sampleSpace.open} data={{ ...samplePages, pages: samplePages.pages.slice(0, 3), total: 3, all: 3, types: [{ type: 'project', count: 1 }, { type: 'person', count: 1 }] }} /></Space></InApp> },
   '/spaces/pages/search': { label: 'Searching a space’s pages, with nothing found', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages data={{ ...samplePages, pages: [], total: 0 }} filters={{ q: 'sauna', type: '', from: 0 }} /></Space></InApp> },

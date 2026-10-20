@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, gather, historyOf, linksOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, type PageOrder } from './knowledge.ts';
+import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, peopleNames, spaceView } from './spaces.ts';
@@ -141,7 +141,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const found = await read(async (s) => {
           const page = await readPage(s, route.id);
           // Guidance and skills open as rules and skills, never as knowledge.
-          if (!page || page.type === 'guidance' || page.type === 'skill') return undefined;
+          if (!page || page.type === 'guidance' || page.type === 'skill' || page.type === 'overview') return undefined;
           const space = await spaceView(s, page.spaceId);
           if (!space) return undefined;
           const history = await historyOf(s, page.items.map((item) => item.id));
@@ -264,9 +264,12 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         for (const hit of hits) {
           if (!hit.pageId || hit.pageType === 'guidance' || hit.pageType === 'skill' || pages.has(hit.pageId)) continue;
           // One row per page, with the best match on it.
+          const overview = hit.pageType === 'overview';
           pages.set(hit.pageId, {
             id: hit.pageId,
-            title: hit.title ?? 'Untitled',
+            // A space's overview has no title of its own, and opens on the space.
+            title: overview ? `Overview of ${where(hit.spaceId).name ?? 'a space above'}` : (hit.title ?? 'Untitled'),
+            overview,
             type: hit.pageType,
             text: hit.kind === 'item' ? hit.text : null,
             onlyYou: hit.private,
@@ -306,10 +309,11 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           changes: found.changes.map((change) => ({
             itemId: change.itemId,
             pageId: change.pageId,
-            title: change.title,
+            title: change.overview ? 'Overview' : change.title,
             text: change.text,
             kind: change.kind,
             newPage: change.newPage,
+            overview: change.overview,
             by: change.writtenBy === null ? null : { name: names.get(change.writtenBy) ?? null, you: change.writtenBy === person },
             agent: change.agent,
             at: change.at,
@@ -320,6 +324,57 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'overview': {
+        const found = await read(async (s) => {
+          const space = await spaceView(s, route.id);
+          if (!space) return undefined;
+          const overview = await overviewOf(s, route.id);
+          const names = await peopleNames(s, (overview?.items ?? []).map((item) => item.writtenBy));
+          // The map beside it: what's active, its collections, recent decisions, what waits here, and the spaces inside.
+          const [active, collections, decisions, waiting, spaces] = [
+            await pagesIn(s, route.id, { limit: 8 }),
+            await pagesIn(s, route.id, { collections: true, limit: 6 }),
+            await pagesIn(s, route.id, { type: 'decision', limit: 3 }),
+            (await waitingFor(s)).filter((item) => item.spaceId === route.id),
+            (await listSpaces(s)).filter((other) => other.parentId === route.id),
+          ];
+          return { overview, names, active, collections, decisions, waiting, spaces };
+        });
+        if (!found) return answer(res, 404, noSpace);
+        const { overview, names, active, collections, decisions, waiting, spaces } = found;
+        json(res, 200, {
+          overview: (overview?.items ?? []).map((item) => ({
+            id: item.id,
+            text: item.body,
+            shared: item.privateTo === null,
+            by: item.writtenBy === null ? null : { name: names.get(item.writtenBy) ?? null, you: item.writtenBy === person },
+            agent: item.agent,
+            writtenAt: item.updatedAt,
+            // Your own overview that explicitly replaces the shared one, which the others still see.
+            replacesShared: item.privateTo !== null && item.replaced?.shared === true ? item.replaced.body : null,
+          })),
+          active: active.pages,
+          pages: active.all,
+          collections: collections.pages,
+          decisions: decisions.pages,
+          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
+          spaces: spaces.map(({ id, name, closed }) => ({ id, name, closed })),
+        });
+        break;
+      }
+
+      case 'write overview': {
+        const body = await readJson(req);
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text || text.length > overviewLength) {
+          return answer(res, 400, { field: 'text', message: text ? 'Keep the overview short, under 2,000 characters. Details belong on pages.' : 'Write where things stand.' });
+        }
+        if (!(await read((s) => spaceView(s, route.id)))) return answer(res, 404, noSpace);
+        const item = await write((s) => writeOverview(s, { spaceId: route.id, text, shared: body.shared === true }));
+        json(res, 200, { id: item.id });
+        break;
+      }
+
       case 'add page': {
         const body = await readJson(req);
         const title = typeof body.title === 'string' ? body.title.trim() : '';
@@ -327,6 +382,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (!title || title.length > 200) return answer(res, 400, { field: 'title', message: title ? 'Keep the title under 200 characters.' : 'Say what the page is about.' });
         if (type.length > 40) return answer(res, 400, { field: 'type', message: 'Keep the type to a word or two.' });
         if (type === 'guidance' || type === 'skill') return answer(res, 400, { field: 'type', message: 'Rules and skills are written under Guidance.' });
+        if (type === 'overview') return answer(res, 400, { field: 'type', message: 'A space’s overview is written on its Overview.' });
         if (!(await read((s) => spaceView(s, route.id)))) return answer(res, 404, noSpace);
         const id = await write((s) => createPage(s, { spaceId: route.id, title, type: type || undefined, shared: body.shared === true }));
         json(res, 200, { id });
@@ -338,7 +394,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const text = typeof body.text === 'string' ? body.text.trim() : '';
         if (!text || text.length > 20_000) return answer(res, 400, { field: 'text', message: text ? 'Keep it under 20,000 characters, or split it over more items.' : 'Write what you know.' });
         const page = await read((s) => readPage(s, route.id));
-        if (!page || page.type === 'guidance' || page.type === 'skill') return answer(res, 404, noPage);
+        if (!page || page.type === 'guidance' || page.type === 'skill' || page.type === 'overview') return answer(res, 404, noPage);
         // On a page only you can see, everything stays yours. Sharing it is publishing, which comes with approvals.
         if (body.shared === true && !page.shared) {
           return answer(res, 403, { message: 'Only you see this page, so what you add to it stays yours.' });
@@ -508,7 +564,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' }
-  | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -524,6 +580,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['pages', `/api/spaces/${uuid}/pages`],
       ['page', `/api/pages/${uuid}`],
       ['sources', `/api/spaces/${uuid}/sources`],
+      ['overview', `/api/spaces/${uuid}/overview`],
       ['source', `/api/sources/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],
       ['skills', `/api/spaces/${uuid}/skills`],
@@ -536,6 +593,7 @@ function routeOf(method: string, path: string): Route | undefined {
   if (method === 'POST') {
     for (const [name, pattern] of [
       ['add page', `/api/spaces/${uuid}/pages`],
+      ['write overview', `/api/spaces/${uuid}/overview`],
       ['add item', `/api/pages/${uuid}/items`],
       ['gather', `/api/pages/${uuid}/gather`],
       ['ungather', `/api/pages/${uuid}/gather/remove`],

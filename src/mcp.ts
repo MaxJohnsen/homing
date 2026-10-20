@@ -11,6 +11,8 @@ import {
   gather,
   linksOf,
   listPages,
+  overviewLength,
+  overviewOf,
   pagesIn,
   readItem,
   readPage,
@@ -18,6 +20,7 @@ import {
   search,
   supersedeItem,
   ungather,
+  writeOverview,
   updateItem,
   writeItem,
   type Hit,
@@ -122,6 +125,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         type: text().optional().describe('The type of a new page, such as person, project or decision'),
         replaces: text().optional().describe('An item that is no longer true because of this'),
         updates: text().optional().describe('An item of yours to rewrite with this text'),
+        overview: z.boolean().optional().describe('Saves the text as the user\'s own overview of the space: a short summary of where it stands, under 2,000 characters.'),
         gatherInto: text().optional().describe('A collection to put the page in, as a page reference. A page can be in several.'),
         removeFrom: text().optional().describe('A collection to take the page out of, as a page reference. The page itself stays.'),
         sources: z
@@ -350,10 +354,18 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
   const requests = await requestsIn(s, spaceId);
   const sent = requests.filter((request) => request.yours);
   const toDecide = requests.filter((request) => !request.yours && request.state === 'requested');
+  const overview = (await overviewOf(s, spaceId))?.items ?? [];
   const lines = [
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
       'What you save with `remember` stays on your private side.',
+    ...(overview.length
+      ? [
+          '\n## Overview',
+          'Where the space stands, as written by people or assistants. Keep the user\'s own up to date with `remember` and `overview: true`.',
+          ...overview.map((item) => `- ${oneLine(item.body)} (${ref('item', item.id)}, ${item.privateTo ? (item.replaced?.shared ? 'private, replacing the shared overview for the user' : 'private') : 'shared'})`),
+        ]
+      : []),
     ...(rules.length
       ? [
           '\n## Rules',
@@ -516,11 +528,20 @@ async function remember(
     updates?: string;
     gatherInto?: string;
     removeFrom?: string;
+    overview?: boolean;
     sources?: { reference?: string; excerpt: string }[];
   },
 ): Promise<string> {
   const spaceId = parseRef(input.space, 'space');
   if (['guidance', 'skill'].includes(input.type?.toLowerCase() ?? '')) throw new Refused(onlyPeople);
+  if (input.type?.toLowerCase() === 'overview') throw new Refused('Save a space\'s overview with overview: true, not as a page.');
+  if (input.overview) {
+    if (!input.text) throw new Refused('Give the overview\'s text.');
+    if (input.text.length > overviewLength) throw new Refused('Keep the overview under 2,000 characters. Details belong on pages.');
+    const item = await writeOverview(s, { spaceId, text: input.text });
+    const replaced = item.supersedes !== null;
+    return `Saved as the user's own overview of the space (${ref('item', item.id)}). Only they see it${replaced ? '; for them it replaces the shared overview, which the others still see' : ''}.`;
+  }
   if ((input.gatherInto || input.removeFrom) && !input.text && !input.sources?.length) return collect(s, spaceId, input);
   if (!input.text && !input.sources?.length) throw new Refused('Give the text to remember, sources to keep, or both.');
   if (input.replaces && input.updates) throw new Refused('Use either replaces or updates, not both.');

@@ -3,7 +3,7 @@ import { Shell } from '@/components/app-shell';
 import { failed, LoadFailed, ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
-import type { ChangeData, NewPage, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
+import type { ChangeData, NewPage, OverviewData, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData, WriteOverview } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
 import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
@@ -19,6 +19,7 @@ import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
 import { Changes } from '@/screens/changes';
+import { Overview } from '@/screens/overview';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
@@ -91,7 +92,7 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
     case 'proposal':
       return <Titled title="A decision"><ProposalPage id={route.id} /></Titled>;
     case 'space':
-      return <SpacePage id={route.id} view={route.view ?? 'pages'} />;
+      return <SpacePage id={route.id} view={route.view ?? 'overview'} />;
     case 'page':
       return <PagePage id={route.id} />;
     case 'source':
@@ -121,6 +122,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const skillsLoad = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '');
   const rules = rulesLoad.data?.rules;
   const skills = skillsLoad.data?.skills;
+  const overview = useLoad<OverviewData>(view === 'overview' ? `/api/spaces/${id}/overview` : '');
   const pages = useList<PagesData>(view === 'pages' ? `/api/spaces/${id}/pages` : undefined);
   const collections = useList<PagesData>(view === 'collections' ? `/api/spaces/${id}/pages` : undefined, { collections: '1' });
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
@@ -130,9 +132,10 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
       {failed(error) && <LoadFailed paths={[`/api/spaces/${id}`]} />}
       {space && !error && (
         <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
-          {failed(rulesLoad.error, skillsLoad.error, pages.error, collections.error, sources.error) && (
-            <LoadFailed paths={[pages.path, collections.path, sources.path, view === 'rules' ? `/api/spaces/${id}/rules` : '', view === 'skills' ? `/api/spaces/${id}/skills` : ''].filter(Boolean)} />
+          {failed(rulesLoad.error, skillsLoad.error, pages.error, collections.error, sources.error, overview.error) && (
+            <LoadFailed paths={[pages.path, collections.path, sources.path, view === 'rules' ? `/api/spaces/${id}/rules` : '', view === 'skills' ? `/api/spaces/${id}/skills` : '', view === 'overview' ? `/api/spaces/${id}/overview` : ''].filter(Boolean)} />
           )}
+          {view === 'overview' && overview.data && <Overview space={space} data={overview.data} write={writeOverview(id)} />}
           {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} create={newPage(id)} />}
           {view === 'collections' && <Pages space={space} data={collections.data} filters={collections.filters} onFilters={collections.change} collections />}
           {view === 'sources' && <Sources space={space} data={sources.data} filters={sources.filters} onFilters={sources.change} />}
@@ -242,6 +245,18 @@ function SearchPage() {
   };
   if (failed(error)) return <LoadFailed paths={[`/api/search?q=${encodeURIComponent(query)}`]} />;
   return <Search data={data} query={query} kind={kind} from={from} onKind={(next) => go({ kind: next, from: 0 })} onFrom={(next) => go({ from: next })} />;
+}
+
+/** Writing a space's overview, then showing it as it is now. */
+function writeOverview(spaceId: string): WriteOverview {
+  return async (text, shared) => {
+    try {
+      await api(`/api/spaces/${spaceId}/overview`, { text, shared });
+      await reload(`/api/spaces/${spaceId}/overview`);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
 }
 
 /** Starting a page in a space. */

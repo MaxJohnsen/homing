@@ -14,8 +14,8 @@ export type Route =
   | { name: 'skill'; id: string }
   | { name: 'proposal'; id: string };
 
-/** The parts of a space: its pages, collections and sources under Knowledge, its rules and skills under Guidance, and its members. */
-export type SpaceView = 'pages' | 'collections' | 'sources' | 'rules' | 'skills' | 'members';
+/** The parts of a space: its overview, its pages, collections and sources under Knowledge, its rules and skills under Guidance, and its members. */
+export type SpaceView = 'overview' | 'pages' | 'collections' | 'sources' | 'rules' | 'skills' | 'members';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const patterns: [RegExp, (id: string, view?: string) => Route][] = [
