@@ -5,7 +5,7 @@ import { AudienceChoice, type Audience } from '@/components/audience';
 import { Markdown } from '@/components/markdown';
 import { SharingDetails } from '@/components/proposal';
 import { OnlyYou } from '@/components/only-you';
-import { ago, capitalize, dateOf, focusRing, ScreenHeader } from '@/components/screen';
+import { ago, capitalize, dateOf, focusRing, ScreenHeader, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -237,7 +237,7 @@ function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemDa
       {(onCorrect || onShare) && (
         <div className="flex flex-wrap gap-2">
           {onCorrect && <Button variant="outline" size="sm" onClick={onCorrect}>Correct it</Button>}
-          {onShare && <Button variant="outline" size="sm" onClick={onShare}>Share with {space}</Button>}
+          {onShare && <Button variant="outline" size="sm" className={cn(wrapsLabel, 'min-h-8 py-1')} onClick={onShare}>Share with {space}</Button>}
         </div>
       )}
     </div>
@@ -286,9 +286,9 @@ function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: Page
       {publication && !publication.current && <p className="text-base">This changed since. Close this and look at it again.</p>}
       {publication?.current && <SharingDetails place={page.space.name} publication={publication} />}
       {problem && <FieldError>{problem}</FieldError>}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={() => onDone(false)}>Cancel</Button>
-        {publication?.current && <Button size="lg" disabled={busy} onClick={share}>Share with {page.space.name}</Button>}
+        {publication?.current && <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy} onClick={share}>Share with {page.space.name}</Button>}
       </div>
     </section>
   );
@@ -329,9 +329,9 @@ function Correct({ item, page, correct, onDone }: { item: ItemData; page: PageDa
             : 'What it said before stays in its history, and assistants won’t rewrite what you wrote.'}
       </p>
       {problem && <FieldError>{problem}</FieldError>}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
-        <Button size="lg" disabled={busy || !text.trim() || text.trim() === item.text} onClick={save}>
+        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || text.trim() === item.text} onClick={save}>
           {forEveryone ? `Correct it for ${page.space.name}` : shared ? 'Save your version' : 'Save for you'}
         </Button>
       </div>
@@ -385,11 +385,11 @@ function AddToPage({ page, add, initiallyOpen, beside }: { page: PageData; add: 
       />
       {choice && <AudienceChoice space={page.space.name} people={page.space.people} above={page.space.above} value={audience} onChange={setAudience} disabled={busy} />}
       {problem && <FieldError>{problem}</FieldError>}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         {/* A new page can start as a collection instead. */}
         {initiallyOpen && beside && <div className="sm:mr-auto">{beside}</div>}
         {!initiallyOpen && <Button variant="outline" size="lg" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>}
-        <Button size="lg" disabled={busy || !text.trim()} onClick={save}>{shared ? `Share with ${page.space.name}` : 'Save for you'}</Button>
+        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim()} onClick={save}>{shared ? `Share with ${page.space.name}` : 'Save for you'}</Button>
       </div>
     </section>
   );

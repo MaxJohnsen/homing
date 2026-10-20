@@ -4,7 +4,7 @@ import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
 import { Markdown } from '@/components/markdown';
 import { OnlyYou } from '@/components/only-you';
-import { count, dateOf, focusRing, Section } from '@/components/screen';
+import { count, dateOf, focusRing, Section, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
@@ -176,9 +176,9 @@ function OverviewEditor({ space, current, hasShared, write, onDone }: {
         </p>
       )}
       {problem && <FieldError>{problem}</FieldError>}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
-        <Button size="lg" disabled={busy || !text.trim() || left < 0} onClick={save}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
+        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || left < 0} onClick={save}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
       </div>
     </div>
   );

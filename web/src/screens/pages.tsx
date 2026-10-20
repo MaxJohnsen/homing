@@ -4,7 +4,7 @@ import { cn } from 'cn';
 import empty from '@/assets/illustrations/empty.png';
 import { AudienceChoice, type Audience } from '@/components/audience';
 import { OnlyYou } from '@/components/only-you';
-import { ago, capitalize, count, focusRing, Section } from '@/components/screen';
+import { ago, capitalize, count, focusRing, Section, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -287,9 +287,9 @@ function NewPageForm({ space, types, create, onCancel }: { space: SpaceData; typ
       </div>
       {!space.private && <AudienceChoice space={space.name} people={space.members.length} above={space.reachedFromAbove} value={audience} onChange={setAudience} disabled={busy} surface="muted" />}
       {problem && <FieldError>{problem.message}</FieldError>}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onCancel}>Cancel</Button>
-        <Button size="lg" disabled={busy || !title.trim()} onClick={save}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
+        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !title.trim()} onClick={save}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
       </div>
     </Section>
   );

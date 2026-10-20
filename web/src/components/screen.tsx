@@ -7,6 +7,14 @@ import { reload } from '@/lib/load';
 /** The focus ring on links and rows that aren't buttons. */
 export const focusRing = 'focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none';
 
+/**
+ * For a button whose label can be long, as one with a space's name in it: the label wraps inside the
+ * button instead of running past its edge. Follow it with the button's usual height as a minimum,
+ * such as min-h-11, and less padding on a smaller button (py-1.5 by default, py-1 small) so one line
+ * keeps that height.
+ */
+export const wrapsLabel = 'h-auto max-w-full py-2 text-center whitespace-normal text-balance';
+
 /** A screen's title, at the top of the scale, with a line under it saying where it is. */
 export function ScreenHeader({ title, meta, aside, below }: { title: ReactNode; meta?: ReactNode; aside?: ReactNode; below?: ReactNode }) {
   return (

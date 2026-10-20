@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
-import { Avatar, dateOf, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
+import { Avatar, dateOf, focusRing, ScreenHeader, Section, Tag, wrapsLabel } from '@/components/screen';
 import { MoreHorizontal } from 'lucide-react';
 import { ProposedChange } from '@/components/proposed-change';
 import { RadioCards } from '@/components/radio-cards';
@@ -258,7 +258,7 @@ function Export({ space }: { space: SpaceData }) {
         : `A zip of everything you see in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it you can open. What’s only yours comes along, marked as yours. Nobody else’s does.`}
     >
       <div>
-        <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={download}>Download {name}</Button>
+        <Button variant="outline" size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy} onClick={download}>Download {name}</Button>
       </div>
       {busy && <p role="status" className="text-sm text-muted-foreground">Putting the export together. A big space takes a little while.</p>}
       {problem && <FieldError>{problem}</FieldError>}
@@ -309,7 +309,7 @@ function Archive({ space, archive }: { space: SpaceData; archive: (archived: boo
         description={`${state.at ? `Archived on ${dateOf(state.at)}${by}` : 'Archived'}. It’s out of everyday context${space.private ? '' : ' for everyone in it'}, and still searchable.`}
       >
         <div>
-          <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => run(false)} autoFocus={acted}>Reopen {space.name}</Button>
+          <Button size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy} onClick={() => run(false)} autoFocus={acted}>Reopen {space.name}</Button>
         </div>
         {problem && <FieldError>{problem}</FieldError>}
       </Section>
@@ -331,7 +331,7 @@ function Archive({ space, archive }: { space: SpaceData; archive: (archived: boo
         </div>
       ) : (
         <div>
-          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => setAsking(true)} autoFocus={acted}>Archive {space.name}</Button>
+          <Button variant="outline" size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} onClick={() => setAsking(true)} autoFocus={acted}>Archive {space.name}</Button>
         </div>
       )}
       {problem && <FieldError>{problem}</FieldError>}
@@ -385,7 +385,7 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
     >
       {!open ? (
         <div>
-          <Button ref={opener} variant="outline" onClick={() => onOpen(true)}>Share {space.name}</Button>
+          <Button ref={opener} variant="outline" className={cn(wrapsLabel, 'min-h-9 py-1.5')} onClick={() => onOpen(true)}>Share {space.name}</Button>
         </div>
       ) : conversion === undefined ? (
         <p role="status" className="text-sm text-muted-foreground">Getting what would change…</p>
@@ -395,9 +395,10 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
         <div ref={first} className="flex flex-col gap-4">
           <ShareSpaceFields name={space.name} conversion={conversion} choice={choice} onChange={setChoice} disabled={busy} idPrefix="share-space" />
           {problem && <FieldError>{problem}</FieldError>}
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          {/* A long button, such as one naming the space, takes a line of its own, still above Cancel. */}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
             <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={close}>Cancel</Button>
-            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => convert(conversion)}>{shareButton(space.name, choice, conversion)}</Button>
+            <Button size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy} onClick={() => convert(conversion)}>{shareButton(space.name, choice, conversion)}</Button>
           </div>
         </div>
       )}
@@ -554,7 +555,7 @@ function MemberRow({ space, member, change, admin, onChanged }: {
           <p className="text-sm">{ask[confirming].text}</p>
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" disabled={busy} onClick={close} autoFocus>{ask[confirming].keep}</Button>
-            <Button variant={confirming === 'remove' ? 'destructive' : 'default'} disabled={busy} onClick={() => run(confirming)}>{ask[confirming].go}</Button>
+            <Button variant={confirming === 'remove' ? 'destructive' : 'default'} className={cn(wrapsLabel, 'min-h-9 py-1.5')} disabled={busy} onClick={() => run(confirming)}>{ask[confirming].go}</Button>
           </div>
         </div>
       )}
@@ -620,9 +621,9 @@ function AddMember({ space, add, onAdded, onDone }: { space: SpaceData; add: Mem
           ]}
         />
         {problem && <FieldError id="add-member-problem">{problem.message}</FieldError>}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
           <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onDone}>Cancel</Button>
-          <Button type="submit" size="lg" className="h-11 text-base sm:px-5" disabled={busy || !email.trim()}>Add to {space.name}</Button>
+          <Button type="submit" size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy || !email.trim()}>Add to {space.name}</Button>
         </div>
       </form>
     </Section>
