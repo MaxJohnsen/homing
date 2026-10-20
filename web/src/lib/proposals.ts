@@ -1,4 +1,5 @@
 import type { RuleKind } from '@/components/proposed-change';
+import type { Place, Who } from '@/components/space-fields';
 
 /** A change an assistant proposed, as the decision page and the card show it. */
 export interface ProposalData {
@@ -10,7 +11,8 @@ export interface ProposalData {
   personal: boolean;
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
-  action: 'add' | 'change' | 'remove';
+  /** A rule to add, change or remove, or a space an assistant suggests. */
+  action: 'add' | 'change' | 'remove' | 'space';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -29,6 +31,11 @@ export interface ProposalData {
   decidedBy?: string | null;
   /** The rules that already apply where a new one would go. */
   alreadyApplies: { kind: RuleKind; text: string; from: string }[];
+  /**
+   * A suggested space: as the assistant suggested it and why, where you can put it instead while
+   * it waits, and the space it became once created, if you can open it.
+   */
+  suggestion?: { name: string; who: Who; in: string | null; closed: boolean; why: string | null; places: Place[]; created: { id: string; name: string } | null } | null;
 }
 
 /** A request you sent to a space's admins, as Home shows it under your requests. */
@@ -58,6 +65,7 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
  */
 export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null; yours: boolean } | null }, withPlace = true): string {
   const { assistant, action, kind, request } = proposal;
+  if (action === 'space') return `${assistant} suggests a new space`;
   const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
   const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
   if (request && !request.yours) return `${request.by ?? 'A member'} asks to ${what}${place}`;
@@ -79,12 +87,13 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 
 /** Whether a change or removal lost its rule before anyone decided. */
 export function isGone(proposal: Pick<ProposalData, 'action' | 'rule'>): boolean {
-  return proposal.action !== 'add' && !proposal.rule?.current;
+  return (proposal.action === 'change' || proposal.action === 'remove') && !proposal.rule?.current;
 }
 
 /** The buttons for deciding it, or for a request you haven't sent, for sending it. */
 export function buttonsOf(action: ProposalData['action'], sending = false): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
+  if (action === 'space') return { approve: 'Create space', reject: 'Don’t create' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
     : action === 'change'
@@ -107,9 +116,15 @@ export function eitherOf(names: string[]): string {
  * for the reader. A request someone sent waits for the space's admins, so for them it's sent.
  */
 export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejected' | 'expired' | 'gone' | 'sent'; heading: string; detail: string } | undefined {
-  const { action, assistant, state, request, decidedBy } = proposal;
+  const { action, assistant, state, request, decidedBy, suggestion } = proposal;
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
+  if (action === 'space' && suggestion) {
+    if (state === 'approved') return { kind: 'approved', heading: `Created ${suggestion.created?.name ?? suggestion.name}`, detail: 'It’s with your spaces now.' };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: 'Nothing was created, and it won’t be suggested again.' };
+    if (state === 'expired') return { kind: 'expired', heading: 'This suggestion expired', detail: `Nothing was created, and it won’t be suggested again. Ask ${assistant} for it if you want it after all.` };
+    return undefined;
+  }
   if (state === 'requested') {
     if (!yours) return undefined;
     const admins = request!.admins;

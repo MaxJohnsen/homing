@@ -3,6 +3,7 @@ import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
 import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
+import { SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { precedenceOf, type ProposalData } from '@/lib/proposals';
 
 /**
@@ -10,15 +11,23 @@ import { precedenceOf, type ProposalData } from '@/lib/proposals';
  * with where it applies and the rules already there, a change with the rule now above its new
  * wording, or a removal with where it stops applying.
  */
-export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, disabled, idPrefix }: {
+export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, onDraftChange, problem, disabled, idPrefix }: {
   proposal: ProposalData;
   onlyHere: boolean;
   /** Left out where the reach is as asked, such as a request on its way to the admins. */
   onOnlyHereChange?: (value: boolean) => void;
+  /** A suggested space as the person is setting it. */
+  draft?: SpaceDraft;
+  onDraftChange?: (draft: SpaceDraft) => void;
+  problem?: { field?: string; message: string };
   disabled?: boolean;
   idPrefix: string;
 }) {
   const { action, kind, rule, shared, personal, space } = proposal;
+  if (action === 'space') {
+    if (!draft || !onDraftChange || !proposal.suggestion) return null;
+    return <SpaceFields draft={draft} onChange={onDraftChange} places={proposal.suggestion.places} problem={problem} disabled={disabled} />;
+  }
   if (action === 'add') {
     return (
       <>
@@ -53,7 +62,10 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, disabled
 
 /** What was decided, greyed: the new rule or wording, or the rule as it was when it went. */
 export function SettledChange({ proposal }: { proposal: ProposalData }) {
-  const { action, kind, state, rule } = proposal;
+  const { action, kind, state, rule, suggestion } = proposal;
+  if (action === 'space') {
+    return suggestion && <p className="rounded-xl bg-muted px-4 py-3 text-base text-muted-foreground">{suggestion.created?.name ?? suggestion.name}</p>;
+  }
   const shown = action === 'remove' || (state === 'open' && action !== 'add') ? rule?.text : proposal.text;
   if (!shown) return null;
   return <ProposedChange kind={kind} text={shown} label={action === 'change' && state === 'approved' ? 'Changed to' : undefined} settled />;

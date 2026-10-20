@@ -47,10 +47,10 @@ function Card() {
       done={done}
       onOpen={(link) => void app.openLink({ url: link }).catch(() => {})}
       message={message}
-      decide={async (approve, onlyHere) => {
+      decide={async (approve, onlyHere, space) => {
         if (!proposal) return;
         const result = await app
-          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text } })
+          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text, ...(space && { space }) } })
           .catch(() => undefined);
         if (!result) return 'Homing couldn’t be reached. Try again.';
         const decided = (result.structuredContent as Shown | undefined)?.proposal;
@@ -59,7 +59,7 @@ function Card() {
         // So the assistant knows without asking. Hosts that don't take it lose nothing.
         app
           .updateModelContext({
-            content: [{ type: 'text', text: `The user ${approve ? 'approved' : 'rejected'} proposal:${proposal.id} in Homing's card.` }],
+            content: [{ type: 'text', text: `The user ${approve ? (proposal.action === 'space' ? 'created the space in' : 'approved') : 'rejected'} proposal:${proposal.id} in Homing's card.` }],
           })
           .catch(() => {});
       }}

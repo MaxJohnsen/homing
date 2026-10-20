@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
 import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
-import { requestsSent, waitingFor } from './proposals.ts';
+import { requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
@@ -101,7 +101,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             space: item.space,
             personal: item.personal,
             within: item.within,
-            action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[item.action],
+            action: shortAction[item.action],
             kind: item.kind,
             text: item.text,
             // For a request: who asked, unless it's the person, and whether it's sent.
@@ -119,7 +119,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             id: request.id,
             space: request.space,
             within: request.within,
-            action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[request.action],
+            action: shortAction[request.action],
             kind: request.kind,
             text: request.text,
             state: request.state,

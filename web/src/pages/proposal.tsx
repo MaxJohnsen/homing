@@ -22,12 +22,15 @@ export function ProposalPage({ id }: { id: string }) {
     <Confirm
       key={proposal.id}
       proposal={proposal}
-      decide={async (approve, onlyHere) => {
+      decide={async (approve, onlyHere, space) => {
         try {
-          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text });
-          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
+          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text, space });
+          // A created space joins the sidebar.
+          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests'), space && reload('/api/spaces')]);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status === 403) return error instanceof Error ? error.message : undefined;
+          // A space that can't be created as set, such as a name that's taken there: say so by the field.
+          if (error.status === 400) return { field: error.field, message: error.message };
           // It changed, expired or was decided elsewhere: show it as it is now, which says what happened.
           await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
           if (error.code === 'CHANGED') return error.message;
