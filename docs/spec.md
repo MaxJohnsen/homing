@@ -370,7 +370,7 @@ More about the tools:
 - `act` returns one of three outcomes: done, waiting for approval (with a form or a link), or blocked. Approval is never a tool.
 - What a person does only in Homing, such as downloading a space's export, `act` answers with the link to it.
 - Every write can, and should, cite its sources.
-- Every write names its destination: a space, or something already in one, such as an item, a page, a rule or a task, whose reference decides where the write goes. A space given as well must be that space or one whose context shows it, such as a space above it, or nothing changes. A space can also be named by a page in it, or by its name when only one space the person can open has it. None of it reveals anything the person can't see.
+- Every write names its destination: a space, or something already in one, such as an item, a page, a rule or a task, whose reference decides where the write goes. A space given as well must be that space or one whose context shows it, such as a space above it, or nothing changes. A space can also be named by its name when only one space the person can open has it, and where something is read or saved there, by a page in it. None of it reveals anything the person can't see.
 - `search` also finds tasks, and the person's own proposals that are still waiting, with the space each is in.
 - A new system adds actions to `act`, never new tools. `act` validates arguments, authorization and approvals.
 - Whether an action publishes depends on its effect, not its name. A draft in a shared mailbox counts as publishing.

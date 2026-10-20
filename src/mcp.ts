@@ -522,39 +522,53 @@ function parseAnyRef(value: string): { kind: Kind; id: string } {
   return { kind: match[1] as Kind, id: match[2].toLowerCase() };
 }
 
+/** Whether a value is shaped like a reference, such as page:…, rather than a name. */
+const refShaped = (value: string) => /^[a-z]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim());
+
+/** The spaces the user can open with exactly the name a value gives, with or without space: before it. */
+function spacesNamed(spaces: Space[], value: string): Space[] {
+  const name = value.trim().replace(/^space:\s*/i, '').normalize('NFC').replace(/\s+/g, ' ');
+  return spaces.filter((space) => sameName(space.name, name));
+}
+
 /**
- * The space a value names where a space is expected: a space reference, a page's reference for the
- * space it's in, or the exact name of one space the user can open. A page or a name the user can't
- * see gets the same answer as one that doesn't exist.
+ * The space a value names where a space is expected: a space reference, or the exact name of one
+ * space the user can open. Where something is read or saved, a page's reference names the space it's
+ * in too; an action on the space itself is given a hint instead, so a page never stands in for its
+ * space there. A page or a name the user can't see gets the same answer as one that doesn't exist.
  */
-async function spaceIdOf(s: Session, value: string): Promise<string> {
-  if (/^[a-z]+:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.trim())) {
+async function spaceIdOf(s: Session, value: string, options: { page?: string } = {}): Promise<string> {
+  if (refShaped(value)) {
     const { kind, id } = parseAnyRef(value);
     if (kind === 'space') return id;
+    if (kind === 'page' && options.page) throw new Refused(`That's a page, not a space. ${options.page}`);
     if (kind !== 'page') throw new Refused(`Expected a space reference, such as space:…, but got "${value}".`);
     const spaceId = await spaceOfPage(s, id);
     if (!spaceId) throw new Refused('There is no page with that reference in a space the user can open.');
     return spaceId;
   }
-  const name = value.trim().replace(/^space:\s*/i, '').normalize('NFC').replace(/\s+/g, ' ');
   const spaces = await listSpaces(s);
-  const named = spaces.filter((space) => sameName(space.name, name));
+  const named = spacesNamed(spaces, value);
   if (named.length === 1) return named[0].id;
   if (named.length === 0) throw new Refused(`"${value}" isn't the name of a space the user can open. Use its reference, such as space:…, from \`context\`.`);
+  // A space above that the user can't open is never named, nor hinted at: the space is then on its own, as the app shows it.
   const at = (space: Space) => {
     const parent = spaces.find((candidate) => candidate.id === space.parentId);
-    return parent ? ` in ${spaceLabel(parent)}` : space.parentId ? ' in a space above' : ' on its own';
+    return parent ? ` in ${spaceLabel(parent)}` : ' on its own';
   };
   const list = named.map((space) => `${spaceLabel(space)}${personalRoot(space) ? '' : at(space)} (${ref('space', space.id)})`);
   throw new Refused(`Several spaces the user can open are called ${named[0].name}: ${list.join(', ')}. Ask the user which one they mean, and use its reference.`);
 }
 
+/** For an action on a space itself, which a page in it must not stand in for. */
+const onTheSpace = { page: "Give the space's reference, such as space:…, from `context`, or its name." };
+
 /**
  * Where a write goes (guarantee 9): into the space of what it names by reference, or else the space
  * it gives. A space given as well may be that one, or one whose context showed it: a space above it,
- * or for a rule, one it applies in. Another space is a mistake, so nothing changes, and the answer
- * names the space the reference is in, which the user can open. Says where it went when that isn't
- * the space given.
+ * or for a rule, one it applies in. A name several spaces have is fine when one of them is. Another
+ * space is a mistake, so nothing changes, and the answer names the space the reference is in, which
+ * the user can open. Says where it went when that isn't the space given.
  */
 async function destination(
   s: Session,
@@ -570,14 +584,20 @@ async function destination(
   const home = spaces.find((space) => space.id === named.spaceId);
   const where = home ? `${spaceLabel(home)} (${ref('space', home.id)})` : 'a space above';
   if (given === undefined) return { spaceId: named.spaceId, where };
-  // A space given that can't be found is just another space: the reference still says where it is.
-  const spaceId = await spaceIdOf(s, given).catch((error: unknown) => {
-    if (error instanceof Refused) return undefined;
-    throw error;
-  });
-  if (spaceId === named.spaceId) return { spaceId };
-  if (spaceId && spaces.some((space) => space.id === spaceId) && (below(spaces, named.spaceId, spaceId) || (await options.appliesIn?.(spaceId)))) {
-    return { spaceId: named.spaceId, where };
+  // The spaces it could mean. One that can't be found is just another space: the reference still says where it is.
+  const candidates = refShaped(given)
+    ? [
+        await spaceIdOf(s, given).catch((error: unknown) => {
+          if (error instanceof Refused) return undefined;
+          throw error;
+        }),
+      ]
+    : spacesNamed(spaces, given).map((space) => space.id);
+  if (candidates.includes(named.spaceId)) return { spaceId: named.spaceId };
+  for (const spaceId of candidates) {
+    if (spaceId && spaces.some((space) => space.id === spaceId) && (below(spaces, named.spaceId, spaceId) || (await options.appliesIn?.(spaceId)))) {
+      return { spaceId: named.spaceId, where };
+    }
   }
   throw new Refused(`That ${named.what} is in ${where}, not in the space given. Nothing changed: leave out the space, and the ${named.what} decides where it goes.`);
 }
@@ -1171,7 +1191,7 @@ function waitingForSpace(proposal: Proposal, links: Links, card: boolean, first:
  * is named by email, and the answer is the same whether or not that email has an account.
  */
 async function proposeMembers(s: Session, links: Links, input: z.infer<typeof membersInput>, card: boolean): Promise<string | Answer> {
-  const spaceId = await spaceIdOf(s, input.space);
+  const spaceId = await spaceIdOf(s, input.space, onTheSpace);
   const change = input.change as MemberChange;
   // Whether the user may change who's in it comes first, before anyone is looked for.
   const view = await spaceView(s, spaceId);
@@ -1285,7 +1305,7 @@ async function proposePublishing(s: Session, links: Links, input: z.infer<typeof
 
 /** Suggests archiving a space whose work is done, for the user to approve. */
 async function suggestArchiving(s: Session, links: Links, input: z.infer<typeof archiveInput>, card: boolean): Promise<string | Answer> {
-  const spaceId = await spaceIdOf(s, input.space);
+  const spaceId = await spaceIdOf(s, input.space, { page: 'To archive a page, use page.archive. To archive its space, give the space\'s reference, such as space:…, or its name.' });
   // A space only the user has is archived or reopened as soon as they ask, like renaming it.
   const view = await spaceView(s, spaceId);
   const onlyTheirs = view && !view.reachedFromAbove && view.members.every((member) => member.id === personOf(s.principal));
@@ -1414,7 +1434,7 @@ async function proposeSpaceSharing(s: Session, links: Links, input: z.infer<type
   let proposal: Proposal;
   try {
     if (!input.asked) throw new Refused('Homing never suggests sharing a space in the personal space. Propose it only when the user asks, with asked: true.');
-    proposal = await proposeSpaceShare(s, { spaceId: await spaceIdOf(s, input.space), why: input.why });
+    proposal = await proposeSpaceShare(s, { spaceId: await spaceIdOf(s, input.space, onTheSpace), why: input.why });
   } catch (error) {
     if (error instanceof SpaceRefused) throw new Refused(error.message);
     throw error;
@@ -1443,7 +1463,7 @@ async function exportLink(s: Session, links: Links, input: z.infer<typeof export
 
 /** Renames a space the user looks after. */
 async function renameSpaceFor(s: Session, links: Links, input: z.infer<typeof renameSpaceInput>, card: boolean): Promise<string | Answer> {
-  const spaceId = await spaceIdOf(s, input.space);
+  const spaceId = await spaceIdOf(s, input.space, onTheSpace);
   const before = (await listSpaces(s)).find((space) => space.id === spaceId);
   const view = before && (await spaceView(s, spaceId));
   // Others would see the new name, so the user renames it themselves.

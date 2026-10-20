@@ -139,9 +139,9 @@ export async function tasksIn(s: Session, spaceId: string): Promise<{ open: Task
 }
 
 /**
- * The tasks the person can see whose title or description matches, open ones first: their own
- * private ones, and the shared ones in spaces they can open. Optionally within a space and the
- * spaces below it.
+ * The tasks the person can see whose title or description matches, best match first and open
+ * before done: their own private ones, and the shared ones in spaces they can open. Optionally
+ * within a space and the spaces below it.
  */
 export async function searchTasks(s: Session, query: string, options: { spaceId?: string; limit?: number } = {}): Promise<Task[]> {
   const terms = termsOf(query);
@@ -150,7 +150,7 @@ export async function searchTasks(s: Session, query: string, options: { spaceId?
   return s.tx<Task[]>`
     select ${columns(s)} from tasks
     where search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'tasks')} ${within}
-    order by done_at is not null, ts_rank(search, to_tsquery('simple', ${terms}), 1) desc, created_at desc
+    order by ts_rank(search, to_tsquery('simple', ${terms}), 1) desc, done_at is not null, created_at desc
     limit ${options.limit ?? 10}
   `;
 }

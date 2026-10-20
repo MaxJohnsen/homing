@@ -181,6 +181,40 @@ test('a space is found by a page in it or by its exact name, and a name two spac
   assert.equal(two.failed, true);
   assert.match(two.text, /^Several spaces the user can open are called Pilot: Pilot in Fjord Bank \(space:[0-9a-f-]+\), Pilot in Website relaunch \(space:[0-9a-f-]+\)\. Ask the user which one they mean/);
   assert.match((await claude.call('context', { request: 'x', space: 'Nowhere' })).text, /"Nowhere" isn't the name of a space the user can open/);
+
+  // A reference in one of them says which is meant.
+  assert.match((await claude.call('remember', { space: 'Pilot', task: { title: 'Book the pilot venue' } })).text, /^Several spaces the user can open are called Pilot/);
+  const pilot = refIn(two.text.split(', ')[1], 'space')!;
+  const task = refIn((await claude.call('remember', { space: pilot, task: { title: 'Book the pilot venue' } })).text, 'task')!;
+  const done = await claude.call('remember', { space: 'Pilot', task: { ref: task, done: true } });
+  assert.ok(!done.failed, done.text);
+  assert.match(done.text, /^Done: Book the pilot venue/);
+  await claude.close();
+});
+
+test('an action on a space itself takes the space or its name, never a page in it', async () => {
+  const { ana, fjord, claude } = await world();
+  const tiles = await as({ ...ana, agent: 'Claude' }, (s) => createPage(s, { spaceId: fjord, title: 'Tiles' }));
+  const act = (action: string, input: Record<string, unknown>) => claude.call('act', { action, input });
+
+  const archive = await act('space.archive', { space: `page:${tiles}`, asked: true });
+  assert.equal(archive.failed, true);
+  assert.match(archive.text, /^That's a page, not a space\. To archive a page, use page\.archive\./);
+  for (const [action, input] of [
+    ['space.rename', { space: `page:${tiles}`, name: 'Tiles and more' }],
+    ['space.share', { space: `page:${tiles}`, asked: true }],
+    ['members.change', { space: `page:${tiles}`, person: 'Cara', change: 'add' }],
+  ] as const) {
+    const attempt = await act(action, input);
+    assert.equal(attempt.failed, true, action);
+    assert.match(attempt.text, /^That's a page, not a space\. Give the space's reference/, action);
+  }
+  const [space] = await admin<{ name: string; archivedAt: Date | null }[]>`select name, archived_at from spaces where id = ${fjord}`;
+  assert.deepEqual([space.name, space.archivedAt], ['Fjord Bank', null]);
+  assert.equal((await admin`select from proposals where private_to = ${ana.id}`).length, 0);
+
+  // Its name is fine.
+  assert.match((await act('space.rename', { space: 'Fjord Bank', name: 'Fjord' })).text, /^Renamed Fjord Bank to Fjord/);
   await claude.close();
 });
 
@@ -221,6 +255,21 @@ test('a reference in a space Ana can’t open gets the same answer as one that d
   await claude.close();
 });
 
+test('two spaces with one name are told apart without a space above that the user can’t open', async () => {
+  const { ana, cara } = await world();
+  // Cara is in a closed Pilot in Ana's Harbor, which Cara can't open, and has a Pilot of her own.
+  await as({ ...ana, direct: true }, async (s) => {
+    const harbor = await createSpace(s, { name: 'Harbor' });
+    await addMember(s, await createSpace(s, { name: 'Pilot', parentId: harbor, closed: true }), cara.id);
+  });
+  await as({ ...cara, direct: true }, (s) => createSpace(s, { name: 'Pilot' }));
+  const caras = await assistantOf(cara);
+  const two = await caras.call('context', { request: 'pilot', space: 'Pilot' });
+  assert.match(two.text, /^Several spaces the user can open are called Pilot: Pilot on its own \(space:[0-9a-f-]+\), Pilot on its own \(space:[0-9a-f-]+\)\./);
+  assert.doesNotMatch(two.text, /Harbor|above/);
+  await caras.close();
+});
+
 test('search finds the user’s tasks, with where each is and whether it’s done', async () => {
   const { ana, relaunch, northwind, claude } = await world();
   const task = refIn((await claude.call('remember', { space: `space:${relaunch}`, task: { title: 'Send Gunnar the revised timeline', due: '2026-11-02' } })).text, 'task')!;
@@ -235,6 +284,10 @@ test('search finds the user’s tasks, with where each is and whether it’s don
   await claude.call('remember', { task: { ref: task, done: true } });
   const today = new Date().toISOString().slice(0, 10);
   assert.match((await claude.call('search', { query: 'revised timeline' })).text, new RegExp(`${task}, in Website relaunch, private, done on ${today}\\)`));
+  // The best match comes first, done or not, before open tasks that share only "the".
+  const tasks = (await claude.call('search', { query: 'Send Gunnar the revised timeline' })).text.split('\n').filter((line) => line.startsWith('- Task:'));
+  assert.equal(tasks.length, 2);
+  assert.match(tasks[0], new RegExp(task));
   await claude.close();
 });
 
