@@ -6,6 +6,8 @@ import * as z from 'zod';
 import { AccessDenied, personOf, withPrincipal, type Session, type Sql } from './db.ts';
 import { rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import {
+  archivedPages,
+  archivePage,
   addSource,
   createPage,
   gather,
@@ -120,6 +122,11 @@ const archiveInput = z.strictObject({
   reopen: z.boolean().optional().describe('True to reopen an archived space the user asked you to reopen'),
 }).describe('For space.archive');
 
+const pageArchiveInput = z.strictObject({
+  page: text().describe('The page that is no longer active, such as page:…'),
+  reopen: z.boolean().optional().describe('True to reopen an archived page the user asked you to reopen'),
+}).describe('For page.archive');
+
 const shareSpaceInput = z.strictObject({
   space: text().describe("The space in the user's personal space to share, such as space:…"),
   why: text().optional().describe("Why, in the user's words, shown when they decide"),
@@ -151,6 +158,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
     proposal: (id) => new URL(`/proposals/${id}`, url).toString(),
     space: (id) => new URL(`/spaces/${id}`, url).toString(),
     settings: (id) => new URL(`/spaces/${id}/settings`, url).toString(),
+    page: (id) => new URL(`/pages/${id}`, url).toString(),
   };
 
   server.registerTool(
@@ -275,11 +283,13 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'space.archive takes a space whose work is done, such as a finished project or a past trip, and the spaces in it out of everyday context; nothing is deleted. ' +
         'Suggest it only when the user says so or it clearly is. A space only the user has is archived, or reopened, as soon as they ask; ' +
         'one others have, or your own idea, waits for their approval. ' +
+        'page.archive takes a page that is no longer active, such as a finished project or someone who has left, out of everyday context; it stays searchable. ' +
+        'Only when the user asks, or with clear evidence; age is not evidence. A page only the user has is archived, or reopened, at once. ' +
         "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once.",
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'space.share']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, shareSpaceInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -303,6 +313,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             return proposeTaskSharing(s, links, inputFor(action, taskShareInput, input), card);
           case 'space.archive':
             return suggestArchiving(s, links, inputFor(action, archiveInput, input), card);
+          case 'page.archive':
+            return archivePageFor(s, links, inputFor(action, pageArchiveInput, input), card);
           case 'space.share':
             return proposeSpaceSharing(s, links, inputFor(action, shareSpaceInput, input), card);
         }
@@ -411,6 +423,7 @@ interface Links {
   proposal(id: string): string;
   space(id: string): string;
   settings(id: string): string;
+  page(id: string): string;
 }
 
 const onlyPeople = 'Only people change guidance. To add, change or remove a rule, propose it with `act`, and the user approves it in Homing.';
@@ -501,6 +514,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
 
   const me = personOf(s.principal)!;
   const pages = await listPages(s, spaceId);
+  const shelved = await archivedPages(s, spaceId);
   const rules = await rulesFor(s, spaceId);
   const skills = await skillsFor(s, spaceId);
   const waiting = await openProposals(s, spaceId);
@@ -582,6 +596,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
           ...pages.slice(0, shownPages).map((page) => `- ${page.title ?? 'Untitled'}${page.type ? ` (${page.type})` : ''}, ${ref('page', page.id)}`),
         ]
       : ['No pages yet.']),
+    ...(shelved ? [`${shelved === 1 ? '1 archived page is' : `${shelved} archived pages are`} left out. \`search\` finds what's on them.`] : []),
   ];
   if (request) {
     const hits = await search(s, request, { spaceId, limit: 10, current: true, knowledge: true });
@@ -644,6 +659,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     return [
       `# ${page.title}`,
       `${page.type ? `A ${page.type} page` : 'A page'} in ${space?.name} (${ref('page', page.id)})`,
+      ...(page.archived ? [`Archived on ${day(page.archived.at)}: no longer active, out of everyday context.`] : []),
       ...(collections.length ? [`In ${collections.map((c) => `${quote(c.title)} (${ref('page', c.id)}${c.shared ? '' : ', private'})`).join(', ')}.`] : []),
       ...(mentionedOn.length ? [`Mentioned on ${mentionedOn.map((m) => `${quote(m.title)} (${ref('page', m.id)})`).join(', ')}.`] : []),
       '',
@@ -1100,6 +1116,31 @@ async function proposeTaskSharing(s: Session, links: Links, input: z.infer<typeo
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
+/** Archives or reopens a page only the user has; one others see is theirs to archive in Homing. */
+async function archivePageFor(s: Session, links: Links, input: z.infer<typeof pageArchiveInput>, card: boolean): Promise<string | Answer> {
+  const pageId = parseRef(input.page, 'page');
+  let done: boolean | undefined;
+  try {
+    done = await s.tx.savepoint((sp) => archivePage({ ...s, tx: sp }, pageId, !input.reopen));
+  } catch (error) {
+    if (error instanceof postgres.PostgresError && error.message === 'others see that page, so a person archives it') {
+      throw new Refused(`Others see that page, so the user ${input.reopen ? 'reopens' : 'archives'} it in Homing. Nothing changed. Give them this link: ${links.page(pageId)}`);
+    }
+    if (error instanceof postgres.PostgresError && error.code === '42501') throw new Refused(`${error.message[0].toUpperCase()}${error.message.slice(1)}. Nothing changed.`);
+    throw error;
+  }
+  if (done === undefined) throw new Refused('There is no page with that reference that you can see.');
+  if (!done) throw new Refused('Rules, skills and the overview aren’t archived.');
+  const page = (await readPage(s, pageId))!;
+  const text = input.reopen
+    ? `Reopened ${quote(page.title)} (${ref('page', pageId)}). It's back in everyday context.`
+    : `Archived ${quote(page.title)} (${ref('page', pageId)}). It's out of everyday context, and still searchable.`;
+  const answer = input.reopen
+    ? { heading: 'Page reopened', name: page.title, detail: 'It’s back in everyday context.', link: links.page(pageId) }
+    : { heading: 'Page archived', name: page.title, detail: 'It’s out of everyday context, and still searchable. You can reopen it on the page.', link: links.page(pageId) };
+  return card ? { text, structuredContent: { done: answer, note: text } } : text;
+}
+
 /**
  * Proposes sharing a space from the user's personal space. They decide on the card where it goes,
  * who has it and what becomes of the rules it had there, as Settings shows it.
@@ -1227,6 +1268,7 @@ async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
       hit.superseded && 'No longer true.',
+      hit.archived && !hit.superseded && 'On an archived page.',
     ].filter(Boolean);
     return `- ${label} (${ref(hit.kind, hit.id)}, ${where})${notes.length ? `. ${notes.join(' ')}` : ''}`;
   });

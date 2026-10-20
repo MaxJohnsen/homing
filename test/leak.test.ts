@@ -101,7 +101,7 @@ for (const [layer, sql] of [
           assert.ok(!spaces.some((space) => space.id === target.space));
           for (const space of [target.space, target.person.personalSpaceId]) {
             assert.equal((await listPages(s, space)).length, 0);
-            assert.deepEqual(await pagesIn(s, space, { query: 'launch' }), { pages: [], total: 0, all: 0, types: [] });
+            assert.deepEqual(await pagesIn(s, space, { query: 'launch' }), { pages: [], total: 0, all: 0, types: [], archived: 0 });
             assert.deepEqual(await sourcesIn(s, space), { sources: [], total: 0, all: 0 });
           }
           assert.equal(await sourceView(s, target.source.id), undefined);
@@ -571,6 +571,8 @@ describe('through the app’s endpoints', () => {
         [`/api/spaces/${target.space}/members/${target.who.id}`, { change: 'remove' }],
         [`/api/spaces/${target.personalSpaceId}`, { name: 'Hello' }],
         [`/api/spaces/${target.space}/archive`, { archived: true }],
+        [`/api/pages/${target.pages.shared}/archive`, { archived: true }],
+        [`/api/pages/${target.pages.own}/archive`, { archived: true }],
         [`/api/spaces/${target.personalSpaceId}/archive`, { archived: true }],
       ] as const) {
         const changed = await browser.json(path, body);
@@ -580,6 +582,7 @@ describe('through the app’s endpoints', () => {
       // The other client's spaces keep their names, stay open, and nothing was created in them.
       assert.equal((await admin`select name from spaces where name = 'Hello' or parent_id = ${target.space}`).length, 0);
       assert.equal((await admin`select id from spaces where archived_at is not null and id in (${target.space}, ${target.personalSpaceId})`).length, 0);
+      assert.equal((await admin`select id from pages where archived_at is not null and id in (${target.pages.shared}, ${target.pages.own})`).length, 0);
 
       // Nothing they got back names the other client, what it asked for, or its guidance.
       assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report`));

@@ -85,7 +85,7 @@ test('a space’s pages are the knowledge each person sees there, newest first',
   assert.equal(forCara.pages[1].excerpt, 'The launch is on **14 November**.');
 
   // Northwind has nothing yet, and someone outside it gets nothing at all.
-  assert.deepEqual(await list(ana, northwind), { pages: [], total: 0, all: 0, types: [] });
+  assert.deepEqual(await list(ana, northwind), { pages: [], total: 0, all: 0, types: [], archived: 0 });
   assert.equal((await cara.browser.json(`/api/spaces/${northwind}/pages`)).status, 404);
 });
 

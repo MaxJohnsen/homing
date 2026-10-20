@@ -282,12 +282,14 @@ function useList<T>(path: string | undefined, fixed: Record<string, string> = {}
     type: search.get('type') ?? '',
     sort: (['recent', 'name', 'match'] as const).find((order) => order === search.get('sort')) satisfies PageOrder | undefined,
     from: Math.max(0, Number.parseInt(search.get('from') ?? '0', 10) || 0),
+    archived: search.get('archived') === '1',
   };
   const query = new URLSearchParams();
   if (filters.q.trim()) query.set('q', filters.q.trim());
   if (filters.type) query.set('type', filters.type);
   if (filters.sort) query.set('sort', filters.sort);
   if (filters.from) query.set('from', String(filters.from));
+  if (filters.archived) query.set('archived', '1');
   const api = new URLSearchParams({ ...fixed, ...Object.fromEntries(query) });
   api.delete('from');
   if (filters.from) api.set('offset', String(filters.from));
@@ -301,6 +303,7 @@ function useList<T>(path: string | undefined, fixed: Record<string, string> = {}
     if (next.type) address.set('type', next.type);
     if (next.sort) address.set('sort', next.sort);
     if (next.from) address.set('from', String(next.from));
+    if (next.archived) address.set('archived', '1');
     // Typing a search, or clearing it, replaces the address instead of adding to the history.
     navigate(`${location.pathname}${address.size ? `?${address}` : ''}`, { replace: next.q !== (new URLSearchParams(location.search).get('q') ?? '') });
   }, []);
@@ -413,6 +416,7 @@ function pageActions(page: PageData, gatheredPath: string): PageActions {
     ungather: (pageId, shared) => run(() => api(`/api/pages/${page.id}/gather/remove`, { pageId, shared })),
     join: (collectionId, shared) => run(() => api(`/api/pages/${collectionId}/gather`, { pageId: page.id, shared })),
     leave: (collectionId, shared) => run(() => api(`/api/pages/${collectionId}/gather/remove`, { pageId: page.id, shared })),
+    archive: (archived) => run(() => api(`/api/pages/${page.id}/archive`, { archived })),
     find: async (query, collections) => {
       const search = new URLSearchParams({ sort: query ? 'match' : 'name', ...(query && { q: query }), ...(collections && { collections: '1' }) });
       try {

@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
 import { OnlyYou } from '@/components/only-you';
-import { capitalize, count, focusRing, Section } from '@/components/screen';
+import { capitalize, count, dateOf, focusRing, Section } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -206,7 +206,58 @@ export function AboutPage({ page, actions }: { page: PageData; actions?: PageAct
           </ul>
         </Part>
       )}
+      {actions?.archive && <ArchivePage page={page} archive={actions.archive} />}
     </aside>
+  );
+}
+
+/**
+ * Archiving a page that's no longer active (spec §3), for everyone who sees it: it leaves everyday
+ * context and the list of pages, and stays searchable. Nothing is deleted, and it can be reopened.
+ */
+function ArchivePage({ page, archive }: { page: PageData; archive: NonNullable<PageActions['archive']> }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const run = async (archived: boolean) => {
+    setBusy(true);
+    const answer = await archive(archived);
+    setBusy(false);
+    setProblem(answer);
+    if (!answer) setAsking(false);
+  };
+  const everyone = page.shared && !page.space.private;
+
+  if (page.archived) {
+    const by = page.archived.by?.you ? ' by you' : page.archived.by?.name ? ` by ${page.archived.by.name}` : '';
+    return (
+      <Part title="Archived">
+        <p className="text-sm text-muted-foreground">On {dateOf(page.archived.at)}{by}. It’s out of everyday context, and still searchable.</p>
+        <Button variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => run(false)}>Reopen</Button>
+        {problem && <FieldError>{problem}</FieldError>}
+      </Part>
+    );
+  }
+  return (
+    <Part title="No longer active?">
+      {asking ? (
+        <div role="alertdialog" aria-label="Archive this page?" className="flex flex-col gap-2 rounded-xl bg-muted p-3 text-sm">
+          <p>
+            <span className="font-semibold">Archive {page.title}?</span>{' '}
+            It leaves everyday context{everyone ? ` for everyone in ${page.space.name}` : ''}, and stays searchable. Nothing is deleted.
+          </p>
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" disabled={busy} onClick={() => setAsking(false)} autoFocus>Keep it</Button>
+            <Button size="sm" disabled={busy} onClick={() => run(true)}>Archive</Button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" onClick={() => setAsking(true)} className={cn('self-start rounded-sm text-sm font-semibold text-primary-ink hover:underline', focusRing)}>
+          Archive this page
+        </button>
+      )}
+      {problem && <FieldError>{problem}</FieldError>}
+    </Part>
   );
 }
 

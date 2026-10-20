@@ -26,6 +26,8 @@ export interface PagesData {
   /** How many there are without searching or filtering. */
   all: number;
   types: { type: string; count: number }[];
+  /** How many archived pages there are, which show on request. */
+  archived?: number;
 }
 
 /** Who wrote something: you, someone by name, or someone the reader no longer shares a space with. Null when a space's own routine did. */
@@ -67,6 +69,8 @@ export interface PageData {
   collections: { id: string; title: string; shared: boolean }[];
   /** The pages whose items link to it. */
   mentionedOn: { id: string; title: string }[];
+  /** When it was archived and by whom, if it is. */
+  archived?: { at: string; by: Author } | null;
   /** Where it is, and how many people see what's shared there now. */
   space: { id: string; name: string; personal: boolean; private: boolean; people: number; above: boolean };
   items: ItemData[];
@@ -87,6 +91,8 @@ export interface PageActions {
   /** What sharing one of your items with the space would do, or null when there's nothing of yours to share, and sharing it, exactly as shown. */
   publication: (itemId: string) => Promise<PublicationData | null>;
   publish: (itemId: string, shown: string) => Promise<string | undefined>;
+  /** Archives the page, or reopens it. */
+  archive?: (archived: boolean) => Promise<string | undefined>;
 }
 
 /** Starting a page. Answers with the new page, or what went wrong. */
