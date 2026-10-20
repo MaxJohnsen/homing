@@ -30,7 +30,7 @@ import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange,
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
-import { accessibleSpaces, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, spaceNameLength, SpaceRefused, spaceView, type MemberChange, type Space } from './spaces.ts';
+import { accessibleSpaces, archiveSpace, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, spaceNameLength, SpaceRefused, spaceView, type MemberChange, type Space } from './spaces.ts';
 import type { AgentPrincipal } from './assistants.ts';
 
 const instructions = `Homing holds the user's working context: their spaces, such as clients and projects, and what is known in each.
@@ -117,6 +117,7 @@ const archiveInput = z.strictObject({
   space: text().describe('The space whose work is done, such as space:…'),
   why: text().optional().describe("Why it's done, in the user's words or from what you know, shown when they decide"),
   asked: z.boolean().optional().describe('True only when the user asked you to archive it'),
+  reopen: z.boolean().optional().describe('True to reopen an archived space the user asked you to reopen'),
 }).describe('For space.archive');
 
 const shareSpaceInput = z.strictObject({
@@ -269,8 +270,9 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         "knowledge.publish proposes sharing one of the user's private items with everyone in its space, when they want it shared: " +
         'they approve exactly what is shared. ' +
         "task.share proposes sharing one of the user's private tasks with everyone in its space, such as one for the team: keep it with `remember` first. " +
-        'space.archive suggests archiving a space whose work is done, such as a finished project or a past trip: only when the user says so or it clearly is. ' +
-        'The user archives it by approving, which takes it and the spaces in it out of everyday context; nothing is deleted. ' +
+        'space.archive takes a space whose work is done, such as a finished project or a past trip, and the spaces in it out of everyday context; nothing is deleted. ' +
+        'Suggest it only when the user says so or it clearly is. A space only the user has is archived, or reopened, as soon as they ask; ' +
+        'one others have, or your own idea, waits for their approval. ' +
         "space.share, for a space in the user's personal space they want to share with others, gives them the link where they decide it in Homing.",
       inputSchema: z.object({
         action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'space.share']),
@@ -510,7 +512,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
     ...(space.archived
       ? [
           `It's archived${space.archivedAt ? '' : ` with ${archivedWith?.name ?? 'the space above it'}`}: finished work, out of everyday context. ` +
-            'Work here when the user asks about it; people reopen it in Homing.',
+            'Work here when the user asks about it. Reopen it with `act` and space.archive if they ask.',
         ]
       : []),
     ...(overview.length
@@ -1035,9 +1037,32 @@ async function proposePublishing(s: Session, links: Links, input: z.infer<typeof
 
 /** Suggests archiving a space whose work is done, for the user to approve. */
 async function suggestArchiving(s: Session, links: Links, input: z.infer<typeof archiveInput>, card: boolean): Promise<string | Answer> {
+  const spaceId = parseRef(input.space, 'space');
+  // A space only the user has is archived or reopened as soon as they ask, like renaming it.
+  const view = await spaceView(s, spaceId);
+  const onlyTheirs = view && !view.reachedFromAbove && view.members.every((member) => member.id === personOf(s.principal));
+  if (input.reopen || (input.asked && onlyTheirs)) {
+    if (!view) throw new Refused('There’s no space there that you can open.');
+    if (!onlyTheirs) throw new Refused(`Others can open ${view.name}, so the user reopens it in Homing. Nothing changed. Give them this link: ${links.settings(spaceId)}`);
+    let space: Space;
+    try {
+      space = await archiveSpace(s, spaceId, !input.reopen);
+    } catch (error) {
+      if (error instanceof SpaceRefused) throw new Refused(error.message);
+      if (error instanceof postgres.PostgresError && error.code === '42501') throw new Refused(`${error.message[0].toUpperCase()}${error.message.slice(1)}. Nothing changed.`);
+      throw error;
+    }
+    const text = input.reopen
+      ? `Reopened ${space.name} (${ref('space', space.id)}). It's back in everyday context.`
+      : `Archived ${space.name} (${ref('space', space.id)}) and the spaces in it. They're out of everyday context, and still searchable; reopen it with space.archive and reopen if the user asks.`;
+    const done = input.reopen
+      ? { heading: 'Space reopened', name: space.name, detail: 'It’s back in everyday context.', link: links.space(space.id) }
+      : { heading: 'Space archived', name: space.name, detail: 'It’s out of everyday context, and still searchable. You can reopen it in its Settings.', link: links.settings(space.id) };
+    return card ? { text, structuredContent: { done, note: text } } : text;
+  }
   let proposal: Proposal;
   try {
-    proposal = await suggestArchive(s, { spaceId: parseRef(input.space, 'space'), why: input.why, asked: input.asked });
+    proposal = await suggestArchive(s, { spaceId, why: input.why, asked: input.asked });
   } catch (error) {
     if (error instanceof SpaceRefused || error instanceof NotSuggested) throw new Refused(error.message);
     throw error;
