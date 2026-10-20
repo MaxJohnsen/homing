@@ -7,7 +7,7 @@ import { eitherOf, placeOf, wantsTo, type RequestData, type WaitingData } from '
 import { Link } from '@/lib/router';
 import type { SpaceSummary } from '@/lib/spaces';
 import { CopyAddress } from '@/screens/account';
-import { ArchivedNote, ChangeList, IncludeArchived, type ArchivedChanges } from '@/screens/changes';
+import { ArchivedNote, ChangeList, IncludeArchived, onlyArchived, useArchivedToggle, type ArchivedChanges } from '@/screens/changes';
 
 /** What Home needs: what waits for you, and whether an assistant is connected yet. */
 export interface HomeData {
@@ -21,9 +21,9 @@ export interface HomeData {
   /** The latest changes to what Homing knows, and whether there are more. */
   changes?: ChangeData[];
   moreChanges?: boolean;
-  /** Archived spaces were left out, and they have changes. */
+  /** Archived spaces and pages were left out, and something changed in them. */
   archivedChanges?: boolean;
-  /** Changes in archived spaces show too. */
+  /** What changed in archived spaces and pages shows too. */
   withArchived?: boolean;
 }
 
@@ -34,9 +34,16 @@ const shown = 3;
  * who has just joined is helped to connect their assistant. The sidebar is the way to your spaces,
  * so Home doesn't list them.
  */
-export function Home({ data, recent = [], now, onArchived }: { data: HomeData; recent?: SpaceSummary[]; now?: Date; onArchived?: (include: boolean) => void }) {
+export function Home({ data, recent = [], now, onArchived, updating = false }: {
+  data: HomeData;
+  recent?: SpaceSummary[];
+  now?: Date;
+  onArchived?: (include: boolean) => void;
+  /** The changes shown are the last ones, while the next are on their way. */
+  updating?: boolean;
+}) {
   const { waiting } = data;
-  const archived: ArchivedChanges = { archived: data.archivedChanges, withArchived: data.withArchived, onArchived };
+  const archived = useArchivedToggle({ archived: data.archivedChanges, withArchived: data.withArchived, onArchived }, updating);
   if (waiting.length > 0) {
     return (
       <>
@@ -73,7 +80,7 @@ export function Home({ data, recent = [], now, onArchived }: { data: HomeData; r
   );
 }
 
-/** The latest few changes, with the way to all of them, and to those in archived spaces. */
+/** The latest few changes, with the way to all of them, and to those in archived spaces and pages. */
 function WhatChanged({ changes, more, now, heading = true, ...archived }: { changes: ChangeData[]; more?: boolean; now?: Date; heading?: boolean } & ArchivedChanges) {
   if (changes.length === 0 && !(archived.archived && archived.onArchived)) return null;
   return (
@@ -84,7 +91,7 @@ function WhatChanged({ changes, more, now, heading = true, ...archived }: { chan
           <ArchivedNote {...archived} />
         </div>
       )}
-      {changes.length > 0 && <ChangeList changes={changes} now={now} />}
+      {changes.length > 0 ? <ChangeList changes={changes} now={now} /> : <p className="text-base text-muted-foreground">{onlyArchived}</p>}
       {(more || archived.archived) && (
         <div className="flex flex-col gap-2">
           {more && (

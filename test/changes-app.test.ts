@@ -16,7 +16,7 @@ let homing: Homing;
 let ana: Member, cara: Member;
 let acme: string, northwind: string;
 
-type ChangeBody = { title: string; text: string; kind: string; newPage: boolean; by: { name: string | null; you: boolean } | null; agent: string | null; onlyYou: boolean; space: { name: string | null; archived: boolean } };
+type ChangeBody = { title: string; text: string; kind: string; newPage: boolean; by: { name: string | null; you: boolean } | null; agent: string | null; onlyYou: boolean; pageArchived: boolean; space: { name: string | null; archived: boolean } };
 
 const changes = async (who: Member, query = '') => {
   const { status, body } = await who.browser.json(`/api/changes${query}`);
@@ -132,4 +132,38 @@ test('what changed leaves out archived spaces, as each person sees them, until t
 
   assert.equal((await ana.browser.json(`/api/spaces/${campaign}/archive`, { archived: false })).status, 200);
   assert.ok((await texts(cara)).includes('The ads reached 40,000 people.'));
+});
+
+test('what changed leaves out archived pages too, and offers what’s archived only when the person would see something', async () => {
+  const texts = async (who: Member, query = '') => (await changes(who, query)).changes.map((change) => change.text);
+  // Only Ana's own note is in an archived space, so Cara isn't offered a way to it.
+  const offsite = await as({ ...ana, direct: true }, async (s) => {
+    const offsite = await createSpace(s, { name: 'Offsite', parentId: acme });
+    await writeItem(s, { pageId: await createPage(s, { spaceId: offsite, title: 'Offsite notes' }), body: 'My notes from the offsite.' });
+    return offsite;
+  });
+  assert.equal((await ana.browser.json(`/api/spaces/${offsite}/archive`, { archived: true })).status, 200);
+  assert.equal((await changes(ana)).archived, true);
+  assert.equal((await changes(cara)).archived, false);
+
+  // Archiving a page is one state for everyone who sees it: Cara archives it, and it leaves what changed for both.
+  const minutes = await as({ ...ana, direct: true }, async (s) => {
+    const minutes = await createPage(s, { spaceId: acme, title: 'Kickoff minutes', shared: true });
+    await writeItem(s, { pageId: minutes, body: 'The kickoff was on 3 March.', shared: true });
+    return minutes;
+  });
+  assert.ok((await texts(ana)).includes('The kickoff was on 3 March.'));
+  assert.equal((await cara.browser.json(`/api/pages/${minutes}/archive`, { archived: true })).status, 200);
+  for (const who of [ana, cara]) {
+    const everyday = await changes(who);
+    assert.ok(!everyday.changes.some((change) => change.text === 'The kickoff was on 3 March.'));
+    assert.equal(everyday.archived, true);
+    // Asked for, it's back, and says it's on an archived page.
+    const included = (await changes(who, '?archived=1')).changes.find((change) => change.text === 'The kickoff was on 3 March.');
+    assert.deepEqual([included?.pageArchived, included?.space.archived], [true, false]);
+  }
+  assert.equal((await ana.browser.json(`/api/pages/${minutes}/archive`, { archived: false })).status, 200);
+  assert.ok((await texts(cara)).includes('The kickoff was on 3 March.'));
+  assert.equal((await changes(cara)).archived, false);
+  assert.equal((await ana.browser.json(`/api/spaces/${offsite}/archive`, { archived: false })).status, 200);
 });

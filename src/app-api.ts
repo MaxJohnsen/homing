@@ -460,14 +460,15 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const query = new URL(req.url ?? '', 'http://homing').searchParams;
         const limit = Math.min(50, Math.max(1, Number.parseInt(query.get('limit') ?? '50', 10) || 50));
         const { spaces, found, names } = await read(async (s) => {
-          const found = await recentChanges(s, { offset: clamp(Number.parseInt(query.get('offset') ?? '0', 10)), limit, archived: query.get('archived') === '1' });
-          return { spaces: await listSpaces(s), found, names: await peopleNames(s, found.changes.map((change) => change.writtenBy)) };
+          const spaces = await listSpaces(s);
+          const found = await recentChanges(s, { offset: clamp(Number.parseInt(query.get('offset') ?? '0', 10)), limit, archived: query.get('archived') === '1', spaces });
+          return { spaces, found, names: await peopleNames(s, found.changes.map((change) => change.writtenBy)) };
         });
         const where = placeIn(spaces);
         const archived = new Set(spaces.filter((space) => space.archived).map((space) => space.id));
         json(res, 200, {
           more: found.more,
-          // Whether archived spaces, left out, have changes to show on request.
+          // Whether archived spaces and pages, left out, have changes to show on request.
           archived: found.archived,
           changes: found.changes.map((change) => ({
             itemId: change.itemId,
@@ -481,6 +482,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             agent: change.agent,
             at: change.at,
             onlyYou: change.onlyYou,
+            pageArchived: change.pageArchived,
             space: { ...where(change.spaceId), archived: archived.has(change.spaceId) },
           })),
         });

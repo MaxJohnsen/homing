@@ -168,6 +168,8 @@ export interface ChangeData {
   agent: string | null;
   at: string;
   onlyYou: boolean;
+  /** On a page that's archived. */
+  pageArchived?: boolean;
   /** Where it changed, and whether that space is archived, as you see it. */
   space: { id: string | null; name: string | null; within: string | null; private?: boolean; archived?: boolean };
 }
