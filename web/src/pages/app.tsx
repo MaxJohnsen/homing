@@ -221,6 +221,18 @@ function renameSpace(spaceId: string) {
   };
 }
 
+/** Archiving a space or reopening it, then showing it, and the sidebar, as they are now. */
+function archiveSpace(spaceId: string) {
+  return async (archived: boolean) => {
+    try {
+      await api(`/api/spaces/${spaceId}/archive`, { archived });
+      await Promise.all([reload(`/api/spaces/${spaceId}`), reload('/api/spaces')]);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
+}
+
 function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
   // Settings are only for a space's admins, and a personal space has none.
@@ -252,7 +264,7 @@ function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
           {view === 'members' && !space.private && <Members space={space} actions={memberActions(id)} />}
           {view === 'tasks' && failed(tasks.error) && <LoadFailed paths={[`/api/spaces/${id}/tasks`]} />}
           {view === 'tasks' && tasks.data && <Tasks space={space} data={tasks.data} actions={taskActions(id)} />}
-          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} />}
+          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} archive={archiveSpace(id)} />}
         </Space>
       )}
     </Titled>

@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
-import { AccessDenied, withPrincipal, type Session } from './db.ts';
+import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
 import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
@@ -8,7 +8,7 @@ import { readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { addTask, changeTask, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
-import { changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
+import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView, type Space } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -44,7 +44,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const open = new Set(spaces.map((space) => space.id));
         json(res, 200, {
           // A space whose parent the person can't open sits at the top for them, and the parent stays unnamed.
-          spaces: spaces.map(({ id, name, parentId, closed, privateTo, admin }) => ({
+          spaces: spaces.map(({ id, name, parentId, closed, privateTo, admin, archived }) => ({
             id,
             name,
             parentId: parentId && open.has(parentId) ? parentId : null,
@@ -52,6 +52,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             personal: privateTo !== null && parentId === null,
             private: privateTo !== null,
             admin,
+            archived,
           })),
         });
         break;
@@ -179,6 +180,14 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'archive space': {
+        const body = await readJson(req);
+        if (typeof body.archived !== 'boolean') return answer(res, 400, { message: 'Archive it or reopen it.' });
+        const space = await write((s) => archiveSpace(s, route.id, body.archived as boolean));
+        json(res, 200, { id: space.id, archived: space.archived });
+        break;
+      }
+
       case 'rename space': {
         const body = await readJson(req);
         const space = await write((s) => renameSpace(s, route.id, typeof body.name === 'string' ? body.name : ''));
@@ -189,7 +198,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       case 'space': {
         const found = await read(async (s) => {
           const view = await spaceView(s, route.id);
-          return view && { ...view, movedFrom: await movedFrom(s, route.id) };
+          return view && { ...view, movedFrom: await movedFrom(s, route.id), archive: await archiveOf(s, view) };
         });
         if (!found) return answer(res, 404, noSpace);
         const { id, name, parentId, closed, privateTo, admin, path: above, reachedFromAbove, members } = found;
@@ -206,6 +215,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           members: members.map((member) => ({ ...member, you: member.id === person })),
           // Where it was in your personal space before you shared it, which only you can open.
           movedFrom: found.movedFrom,
+          archive: found.archive,
         });
         break;
       }
@@ -735,7 +745,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'add member' | 'conversion' | 'convert space' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -770,6 +780,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (member) return { name: 'change member', id: member[1].toLowerCase(), person: member[2].toLowerCase() };
     for (const [name, pattern] of [
       ['rename space', `/api/spaces/${uuid}`],
+      ['archive space', `/api/spaces/${uuid}/archive`],
       ['add member', `/api/spaces/${uuid}/members`],
       ['convert space', `/api/spaces/${uuid}/conversion`],
       ['add task', `/api/spaces/${uuid}/tasks`],
@@ -791,4 +802,19 @@ function routeOf(method: string, path: string): Route | undefined {
     }
   }
   return undefined;
+}
+
+/**
+ * When a space was archived and by whom, or the space above it it was archived with. Someone the
+ * reader can't see, or a space above they can't open, stays unnamed.
+ */
+async function archiveOf(s: Session, space: Space) {
+  if (!space.archived) return null;
+  if (space.archivedAt) {
+    const [row] = await s.tx<{ archivedBy: string | null }[]>`select archived_by from spaces where id = ${space.id}::uuid`;
+    const names = await peopleNames(s, [row?.archivedBy ?? null]);
+    return { at: space.archivedAt, by: row?.archivedBy ? (names.get(row.archivedBy) ?? null) : null, you: row?.archivedBy === personOf(s.principal), with: null };
+  }
+  const above = (await listSpaces(s)).find((candidate) => candidate.id === space.archivedIn);
+  return { at: above?.archivedAt ?? null, by: null, you: false, with: above ? { id: above.id, name: above.name } : null };
 }

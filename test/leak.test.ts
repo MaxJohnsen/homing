@@ -161,6 +161,8 @@ for (const [layer, sql] of [
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select make_collaborative(${target.space}::uuid, null, false)`, sql), refused);
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select make_collaborative(${target.person.personalSpaceId}::uuid, null, false)`, sql), refused);
         await assert.rejects(as(me, (s) => s.tx`select rename_space(${target.person.personalSpaceId}::uuid, 'Way in')`, sql), refused);
+        // Nor archive it.
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select archive_space(${target.space}::uuid, true)`, sql), refused);
       }
       assert.equal((await admin`select name from spaces where name = 'Way in'`).length, 0);
     });
@@ -568,13 +570,16 @@ describe('through the app’s endpoints', () => {
         [`/api/spaces/${target.space}/tasks`, { title: 'Hello' }],
         [`/api/spaces/${target.space}/members/${target.who.id}`, { change: 'remove' }],
         [`/api/spaces/${target.personalSpaceId}`, { name: 'Hello' }],
+        [`/api/spaces/${target.space}/archive`, { archived: true }],
+        [`/api/spaces/${target.personalSpaceId}/archive`, { archived: true }],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.ok([403, 404].includes(changed.status), path);
         seen.push(changed.body);
       }
-      // The other client's spaces keep their names, and nothing was created in them.
+      // The other client's spaces keep their names, stay open, and nothing was created in them.
       assert.equal((await admin`select name from spaces where name = 'Hello' or parent_id = ${target.space}`).length, 0);
+      assert.equal((await admin`select id from spaces where archived_at is not null and id in (${target.space}, ${target.personalSpaceId})`).length, 0);
 
       // Nothing they got back names the other client, what it asked for, or its guidance.
       assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report`));

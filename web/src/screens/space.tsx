@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
-import { Avatar, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
+import { Avatar, dateOf, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
 import { MoreHorizontal } from 'lucide-react';
 import { ProposedChange } from '@/components/proposed-change';
 import { RadioCards } from '@/components/radio-cards';
@@ -31,7 +31,12 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
     <>
       <ScreenHeader
         title={space.name}
-        meta={<Where space={space} />}
+        meta={
+          <>
+            <Where space={space} />
+            {space.archive && <> {archivedLine(space.archive)}</>}
+          </>
+        }
         below={
           <nav aria-label={`${space.name}’s parts`} className="-mx-1 mt-4 flex gap-1 overflow-x-auto pb-1">
             {tabs.map((tab) => (
@@ -119,6 +124,12 @@ function Where({ space }: { space: SpaceData }) {
   return <>{onlyYou ? 'Only you have it so far.' : `Shared with its ${members(own)}.`}</>;
 }
 
+/** "Archived on October 20." or "Archived with Acme.": said wherever the space is shown. */
+function archivedLine(archive: NonNullable<SpaceData['archive']>): string {
+  if (archive.with) return `Archived with ${archive.with.name}.`;
+  return archive.at ? `Archived on ${dateOf(archive.at)}.` : 'Archived with the space above it.';
+}
+
 function members(n: number) {
   return n === 1 ? '1 member' : `${n} members`;
 }
@@ -140,7 +151,13 @@ export interface ShareSpaceActions {
  * A space's own settings, for its admins: its name, and for a space in your personal tree, sharing
  * it with others. A shared space you moved from your personal tree says where it came from, to you.
  */
-export function SpaceSettings({ space, rename, share }: { space: SpaceData; rename: (name: string) => Promise<string | undefined>; share?: ShareSpaceActions }) {
+export function SpaceSettings({ space, rename, share, archive }: {
+  space: SpaceData;
+  rename: (name: string) => Promise<string | undefined>;
+  share?: ShareSpaceActions;
+  /** Archives the space, or reopens it. */
+  archive?: (archived: boolean) => Promise<string | undefined>;
+}) {
   const [name, setName] = useState(space.name);
   const [problem, setProblem] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -192,10 +209,76 @@ export function SpaceSettings({ space, rename, share }: { space: SpaceData; rena
           </p>
         )}
       </Section>
-      {share && space.private && !space.personal && (
+      {share && space.private && !space.personal && !space.archive && (
         <ShareSpace space={space} share={share} open={sharing} onOpen={setSharing} />
       )}
+      {archive && <Archive space={space} archive={archive} />}
     </div>
+  );
+}
+
+/**
+ * Archiving a space when its work is done (spec §1): it and the spaces in it leave everyday
+ * context, and stay searchable. Nothing is deleted, and it can be reopened.
+ */
+function Archive({ space, archive }: { space: SpaceData; archive: (archived: boolean) => Promise<string | undefined> }) {
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const run = async (archived: boolean) => {
+    setBusy(true);
+    const answer = await archive(archived);
+    setBusy(false);
+    setProblem(answer);
+    if (!answer) setAsking(false);
+  };
+  const state = space.archive;
+
+  if (state?.with) {
+    return (
+      <Section title="Archived" className="max-w-2xl" description={`It’s archived with ${state.with.name}, and reopens with it.`}>
+        <Link href={`/spaces/${state.with.id}/settings`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+          Open {state.with.name}’s settings
+        </Link>
+      </Section>
+    );
+  }
+  if (state) {
+    const by = state.you ? ' by you' : state.by ? ` by ${state.by}` : '';
+    return (
+      <Section
+        title="Archived"
+        className="max-w-2xl"
+        description={`${state.at ? `Archived on ${dateOf(state.at)}${by}` : 'Archived'}. It’s out of everyday context${space.private ? '' : ' for everyone in it'}, and still searchable.`}
+      >
+        <div>
+          <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => run(false)}>Reopen {space.name}</Button>
+        </div>
+        {problem && <FieldError>{problem}</FieldError>}
+      </Section>
+    );
+  }
+  return (
+    <Section
+      title="Archive"
+      className="max-w-2xl"
+      description={`When the work in ${space.name} is done. It leaves everyday context${space.private ? '' : ' for everyone in it'}, with the spaces in it, and stays searchable. Nothing is deleted, and you can reopen it.`}
+    >
+      {asking ? (
+        <div role="group" aria-label={`Archive ${space.name}`} className="flex flex-col gap-3 rounded-xl bg-muted p-3">
+          <p className="text-sm">{space.private ? `Archive ${space.name}? Only you have it.` : `Archive ${space.name}? Everyone who can open it sees that it’s archived.`}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={busy} onClick={() => setAsking(false)} autoFocus>Keep it open</Button>
+            <Button disabled={busy} onClick={() => run(true)}>Archive</Button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => setAsking(true)}>Archive {space.name}</Button>
+        </div>
+      )}
+      {problem && <FieldError>{problem}</FieldError>}
+    </Section>
   );
 }
 

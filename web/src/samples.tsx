@@ -92,7 +92,14 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/new': { label: 'Starting a space', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/new/in': { label: 'Starting a space in Acme', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} start="acme" create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/settings/personal': { label: 'Sharing a space from your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="settings"><SpaceSettings space={sampleSpace.kitchen} rename={async () => 'Samples don’t save anything.'} share={sampleShareSpace} /></Space></InApp> },
-  '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} /></Space></InApp> },
+  '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} archive={async () => 'Samples don’t save anything.'} /></Space></InApp> },
+  '/spaces/settings/archived': {
+    label: 'An archived space’s settings',
+    render: () => {
+      const space = { ...sampleSpace.closed, id: 'rebrand', name: 'Rebrand 2025', archived: true, archive: { at: '2026-09-30T14:00:00+02:00', by: 'Cara Lund', you: false, with: null } };
+      return <InApp spaceId="rebrand"><Space space={space} view="settings"><SpaceSettings space={space} rename={async () => 'Samples don’t save anything.'} archive={async () => 'Samples don’t save anything.'} /></Space></InApp>;
+    },
+  },
   '/spaces/from-above': { label: 'Members of a space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="members"><Members space={sampleSpace.fromAbove} /></Space></InApp> },
   '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
   '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }} looksAfterHoming><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },

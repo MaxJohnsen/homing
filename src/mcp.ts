@@ -448,9 +448,11 @@ function parseAnyRef(value: string): { kind: Kind; id: string } {
 /** Without a space: the space the request is about, if that's clear, or the candidates. */
 async function resolve(s: Session, links: Links, request: string): Promise<string> {
   const spaces = await listSpaces(s);
+  // An archived space is out of everyday context, unless the request names it.
   const named = spaces.filter((space) => mentions(request, space.name));
   const matched = new Set((await search(s, request, { limit: 50, current: true, knowledge: true })).map((hit) => hit.spaceId));
-  const candidates = named.length ? named : spaces.filter((space) => matched.has(space.id));
+  const candidates = named.length ? named : spaces.filter((space) => matched.has(space.id) && !space.archived);
+  const archived = spaces.filter((space) => space.archived).length;
 
   if (candidates.length === 1) {
     const why = named.length ? 'the request names it' : 'it is the only space with matching knowledge';
@@ -463,7 +465,10 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
       ? ['\n## Spaces that fit', ...candidates.map((space) => `- ${space.name} (${ref('space', space.id)})`)]
       : []),
     '\n## Your spaces',
-    ...tree(spaces),
+    ...tree(spaces.filter((space) => !space.archived)),
+    ...(archived
+      ? [`\n${archived === 1 ? '1 archived space is' : `${archived} archived spaces are`} left out. \`search\` finds what's in them, and \`context\` with one works there when the user asks about it.`]
+      : []),
   ].join('\n');
 }
 
@@ -472,7 +477,8 @@ const shownPages = 50;
 
 /** With a space: its pages, and what is relevant to the request. */
 async function spaceContext(s: Session, links: Links, spaceId: string, request?: string): Promise<string> {
-  const space = (await listSpaces(s)).find((candidate) => candidate.id === spaceId);
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === spaceId);
   if (!space) throw new Refused('There is no space with that reference that you can see.');
 
   const me = personOf(s.principal)!;
@@ -486,10 +492,17 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
   const overview = (await overviewOf(s, spaceId))?.items ?? [];
   const { open: tasks } = await tasksIn(s, spaceId);
   const assignees = await peopleNames(s, tasks.map((task) => task.assignee));
+  const archivedWith = space.archived && !space.archivedAt ? spaces.find((above) => above.id === space.archivedIn) : undefined;
   const lines = [
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
       'What you save with `remember` stays on your private side.',
+    ...(space.archived
+      ? [
+          `It's archived${space.archivedAt ? '' : ` with ${archivedWith?.name ?? 'the space above it'}`}: finished work, out of everyday context. ` +
+            'Work here when the user asks about it; people reopen it in Homing.',
+        ]
+      : []),
     ...(overview.length
       ? [
           '\n## Overview',
@@ -1118,7 +1131,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
 }
 
 async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
-  const names = new Map((await listSpaces(s)).map((space) => [space.id, space.name]));
+  const spaces = new Map((await listSpaces(s)).map((space) => [space.id, space]));
   return hits.map((hit) => {
     const label =
       hit.kind === 'page'
@@ -1128,7 +1141,8 @@ async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
           : hit.pageType === 'guidance'
             ? `Rule: ${oneLine(hit.text)}`
             : `${hit.title ? `${oneLine(hit.title)}: ` : ''}${oneLine(hit.text)}`;
-    const where = `in ${names.get(hit.spaceId) ?? 'a space above'}${hit.private ? ', private' : ''}`;
+    const space = spaces.get(hit.spaceId);
+    const where = `in ${space?.name ?? 'a space above'}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
       hit.superseded && 'No longer true.',

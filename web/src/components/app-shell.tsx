@@ -189,7 +189,7 @@ function Spaces({ spaces, recent, current, address }: { spaces: SpaceSummary[]; 
             <li key={space.id}>
               <NavLink href={`/spaces/${space.id}`} active={current === space.id} className="flex-col items-start gap-0">
                 <span className="max-w-full truncate font-semibold">{space.name}</span>
-                <span className="max-w-full truncate text-sm text-muted-foreground">{pathOf(space, byId) || 'At the top'}</span>
+                <span className="max-w-full truncate text-sm text-muted-foreground">{pathOf(space, byId) || 'At the top'}{space.archived && ', archived'}</span>
               </NavLink>
             </li>
           ))}
@@ -236,6 +236,7 @@ function pathOf(space: SpaceSummary, byId: Map<string, SpaceSummary>): string {
 /**
  * Your spaces as a tree, your personal space first. Spaces at the top are set in bold. With many,
  * only the way to where you are is open, and a closed branch says how many spaces it holds.
+ * Archived spaces fold away at the end of the spaces they're in, unless you're in one.
  */
 function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; current?: string; crowded: boolean }) {
   const [toggled, setToggled] = useState<Map<string, boolean>>(new Map());
@@ -245,6 +246,40 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
   for (let above = current ? byId.get(current)?.parentId : undefined; above; above = byId.get(above)?.parentId) along.add(above);
   const isOpen = (id: string) => toggled.get(id) ?? (!crowded || along.has(id));
   const toggle = (id: string) => setToggled((previous) => new Map(previous).set(id, !isOpen(id)));
+  // A fold of archived spaces is open while you're in one of them.
+  const foldOpen = (id: string, folded: SpaceSummary[]) => toggled.get(`archived:${id}`) ?? folded.some((space) => space.id === current || along.has(space.id));
+  const toggleFold = (id: string, folded: SpaceSummary[]) => setToggled((previous) => new Map(previous).set(`archived:${id}`, !foldOpen(id, folded)));
+
+  /** The spaces in one place: the open ones, then the archived ones folded away. Inside an archived space, all of them. */
+  const list = (spaces: SpaceSummary[], depth: number, within: SpaceSummary | null): ReactNode => {
+    const folded = within?.archived ? [] : spaces.filter((space) => space.archived);
+    const open = spaces.filter((space) => !folded.includes(space));
+    const key = within?.id ?? 'top';
+    const shown = folded.length > 0 && foldOpen(key, folded);
+    return (
+      <>
+        {open.map((space) => branch(space, depth))}
+        {folded.length > 0 && (
+          <li className={cn(depth === 0 && 'mt-1')}>
+            <button
+              type="button"
+              aria-expanded={shown}
+              onClick={() => toggleFold(key, folded)}
+              className={cn(
+                'flex h-9 w-full items-center gap-1.5 rounded-lg pr-3 text-left text-sm text-muted-foreground hover:bg-background/70 hover:text-foreground',
+                depth === 0 ? 'pl-3' : depth === 1 ? 'pl-7' : 'pl-11',
+                focusRing,
+              )}
+            >
+              {shown ? <ChevronDown aria-hidden="true" className="size-4" /> : <ChevronRight aria-hidden="true" className="size-4" />}
+              Archived ({folded.length})
+            </button>
+            {shown && <ul className="flex flex-col gap-0.5">{folded.map((space) => branch(space, depth))}</ul>}
+          </li>
+        )}
+      </>
+    );
+  };
 
   const branch = (space: SpaceSummary, depth: number): ReactNode => {
     const children = childrenOf(space.id);
@@ -255,7 +290,7 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
           <NavLink
             href={`/spaces/${space.id}`}
             active={current === space.id}
-            className={cn('flex-1 pr-11', depth === 0 ? 'font-semibold' : depth === 1 ? 'pl-7' : 'pl-11')}
+            className={cn('flex-1 pr-11', depth === 0 ? 'font-semibold' : depth === 1 ? 'pl-7' : 'pl-11', space.archived && current !== space.id && 'text-muted-foreground')}
           >
             <span className="truncate">{space.name}</span>
             {space.personal && <Lock aria-label="Only you" className="size-3.5 shrink-0 text-private-foreground" />}
@@ -273,12 +308,12 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
             </button>
           )}
         </div>
-        {children.length > 0 && expanded && <ul className="flex flex-col gap-0.5">{children.map((child) => branch(child, depth + 1))}</ul>}
+        {children.length > 0 && expanded && <ul className="flex flex-col gap-0.5">{list(children, depth + 1, space)}</ul>}
       </li>
     );
   };
 
-  return <ul className="flex flex-col gap-0.5">{inOrder(childrenOf(null)).map((space) => branch(space, 0))}</ul>;
+  return <ul className="flex flex-col gap-0.5">{list(inOrder(childrenOf(null)), 0, null)}</ul>;
 }
 
 /** Your name, at the bottom of the shelf: your account, looking after Homing if you do, and signing out. */

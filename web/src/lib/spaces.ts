@@ -10,6 +10,8 @@ export interface SpaceSummary {
   private: boolean;
   /** Whether you're an admin of it. */
   admin: boolean;
+  /** Archived, itself or with a space above it: finished, so folded away and out of everyday context. */
+  archived?: boolean;
 }
 
 /** Someone who can open a space, directly or through a space above it. */
@@ -33,6 +35,11 @@ export interface SpaceData extends SpaceSummary {
   members: SpaceMember[];
   /** Where you moved it from in your personal space, when you shared it from there. Only you see it. */
   movedFrom?: { id: string; name: string } | null;
+  /**
+   * When it was archived and by whom, or the space above it it was archived with. Someone you can't
+   * see, or a space above you can't open, stays unnamed.
+   */
+  archive?: { at: string | null; by: string | null; you: boolean; with: { id: string; name: string } | null } | null;
 }
 
 /** Your personal space first, then the others in the order they were made. */
