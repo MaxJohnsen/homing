@@ -1,7 +1,9 @@
 // What moving to explicit private updates (#32's follow-up) does to what was there before it: an
-// original shared as a copy now shows as the copy, so wherever its owner's text says something
-// else, they keep it as an item of their own beside the copy. Nobody's text goes out of sight,
-// nobody sees anything new of anyone else's, and the migration runs whatever it finds.
+// original shared as a copy now shows as the copy, so wherever its owner changed it after sharing,
+// they keep their text as an item of their own. Where nobody else changed the copy, it's their
+// update of the copy, in its place, as it would be now; otherwise it shows beside it. Nobody's
+// text goes out of sight, nobody sees anything new of anyone else's, and the migration runs
+// whatever it finds.
 
 import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
@@ -81,6 +83,14 @@ before(async () => {
   await as({ person: ben, agent: 'Claude' }, (s) => s.tx`update content set body = 'Ben is away in August.' where id = ${originals.Ben}::uuid`);
   await as({ person: ana, direct: true }, (s) => removeMember(s, acme, ben));
 
+  // Ana's assistant rewrote what she had shared, then replaced that with a private item.
+  await shareCopy(ana, 'R', 'R one.');
+  await as({ person: ana, agent: 'Claude' }, (s) => s.tx`update content set body = 'R two.' where id = ${originals.R}::uuid`);
+  await as({ person: ana, agent: 'Claude' }, (s) => s.tx`
+    insert into content (space_id, page_id, kind, body, private_to, supersedes)
+    values (${acme}::uuid, ${pages.R}::uuid, 'text', 'R three.', ${ana}::uuid, ${originals.R}::uuid)
+  `);
+
   // And one that still says what it was shared as.
   await shareCopy(ana, 'Same', 'The office closes at 17.');
 });
@@ -90,19 +100,25 @@ after(async () => {
   await admin.end();
 });
 
-test('nothing anyone saw goes out of sight, and nothing of anyone else’s comes into view', async () => {
+test('nothing anyone saw goes out of sight, and earlier updates take the shape they’d have now', async () => {
   const before = new Set((await admin<{ id: string }[]>`select id from content`).map((row) => row.id));
   await migrate(urls.admin, urls.app, urls.auth);
 
-  // Where Ana's text says something else than what she shared, she keeps it beside the copy, where it stood.
-  assert.deepEqual(await seen(ana, pages.A), [['The launch is on 21 November.', 'own', null], ['The launch is on 14 November.', 'shared', null]]);
+  // Ana's changes where nobody else touched the copy are her updates of it, in its place, saying what the others see.
+  assert.deepEqual(await seen(ana, pages.A), [['The launch is on 21 November.', 'own', 'The launch is on 14 November.']]);
+  assert.deepEqual(await seen(ana, pages.D), [['The venue is Hotel Bergen.', 'own', 'The venue is Hotel Oslo.']]);
+  assert.deepEqual(await seen(ana, pages.R), [['R three.', 'own', 'R one.']]);
+  // Where the copy was replaced or corrected since, hers shows beside it, replacing nothing.
   assert.deepEqual(await seen(ana, pages.B), [['The budget is 420,000.', 'own', null], ['The budget is 450,000.', 'own', 'The budget is 400,000.']]);
-  assert.deepEqual(await seen(ana, pages.D), [['The venue is Hotel Bergen.', 'own', 'The venue is Hotel Oslo.'], ['The venue is Hotel Oslo.', 'shared', null]]);
-  // Cara's corrections stay as she wrote them, for everyone: nothing replaces them.
   assert.deepEqual(await seen(ana, pages.G), [['Doors open at 19.', 'own', null], ['Doors open at 17.', 'shared', null]]);
-  assert.deepEqual(await seen(ana, pages.H), [['The bar opens at 19.', 'own', null], ['The bar opens at 20.', 'shared', null]]);
+  // Unchanged since she shared it, hers is what Cara corrected, and shows as the correction.
+  assert.deepEqual(await seen(ana, pages.H), [['The bar opens at 20.', 'shared', null]]);
   assert.deepEqual(await seen(ana, pages.Same), [['The office closes at 17.', 'shared', null]]);
   assert.deepEqual(await seen(ana, pages.Ben), [['Ben is away in July.', 'shared', null]]);
+  for (const page of [pages.A, pages.D, pages.R]) {
+    const [update] = (await as({ person: ana }, (s) => readPage(s, page)))!.items;
+    assert.equal(update.replaced?.shared, true, 'others still see the copy, which her update says');
+  }
 
   // Cara sees the shared side as before, and Ben, who left, nothing.
   const forCara = Object.fromEntries(await Promise.all(Object.entries(pages).map(async ([shape, page]) => [shape, await seen(cara, page)])));
@@ -113,16 +129,27 @@ test('nothing anyone saw goes out of sight, and nothing of anyone else’s comes
     G: [['Doors open at 17.', 'shared', null]],
     H: [['The bar opens at 20.', 'shared', null]],
     Ben: [['Ben is away in July.', 'shared', null]],
+    R: [['R one.', 'shared', null]],
     Same: [['The office closes at 17.', 'shared', null]],
   });
   assert.deepEqual(await seen(ben, pages.Ben), []);
 
-  // The only new items are Ana's four, each hers as her assistant wrote it, replacing nothing.
+  // The only new items are the kept versions, each its owner's as their assistant wrote it.
   const added = (await admin<{ id: string; pageId: string; privateTo: string; writtenBy: string; agent: string | null; supersedes: string | null }[]>`
     select id, page_id, private_to, written_by, agent, supersedes from content
   `).filter((row) => !before.has(row.id));
-  assert.deepEqual(added.map((row) => [row.pageId, row.privateTo, row.writtenBy, row.agent, row.supersedes]).sort(), [pages.A, pages.B, pages.G, pages.H].map((page) => [page, ana, ana, 'Claude', null]).sort());
+  assert.deepEqual(added.map((row) => [row.pageId, row.privateTo, row.writtenBy, row.agent, row.supersedes]).sort(), [
+    [pages.A, ana, ana, 'Claude', copies.A],
+    [pages.B, ana, ana, 'Claude', null],
+    [pages.G, ana, ana, 'Claude', null],
+    [pages.Ben, ben, ben, 'Claude', copies.Ben],
+  ].sort());
   // With its sources and what it said before.
   const kept = await as({ person: ana }, (s) => readItem(s, added.find((row) => row.pageId === pages.A)!.id));
   assert.deepEqual([kept?.sources.map((source) => source.reference), kept?.history.map((entry) => entry.body)], [['Email about A'], ['The launch is on 14 November.']]);
+
+  // Ben, back in Acme, finds his change where he left it.
+  await as({ person: ana, direct: true }, (s) => addMember(s, acme, ben));
+  assert.deepEqual(await seen(ben, pages.Ben), [['Ben is away in August.', 'own', 'Ben is away in July.']]);
+  assert.deepEqual(await seen(cara, pages.Ben), [['Ben is away in July.', 'shared', null]]);
 });

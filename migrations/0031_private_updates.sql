@@ -7,40 +7,68 @@
 -- update of the copy, which supersedes it. Sharing that update replaces the
 -- copy for everyone, so the copy is never rewritten from a private original.
 
--- Nothing anyone saw goes out of sight. An original that says something
--- other than what it was shared as, such as one rewritten since, stays with
--- its owner as an item of its own beside the copy, replacing nothing, with
--- its sources, authors and earlier versions: when it's unclear, both show.
--- Someone who can no longer open the space doesn't see it either way, and a
--- private item that replaced an original keeps showing as it is.
+-- Nothing anyone saw goes out of sight, and earlier updates take the shape
+-- they'd have now. An original changed after it was shared, so it says
+-- something other than the copy did then, stays with its owner as an item of
+-- its own, with its sources, authors and earlier versions. Where nobody has
+-- changed or replaced the copy since, it's their update of the copy, in its
+-- place. Otherwise it replaces nothing and shows beside it: when it's
+-- unclear, both show. Someone who left the space gets theirs too, which they
+-- see only once they can open the space again, so the check that a writer
+-- can open the page is off for these.
+alter table content disable trigger check_page_open;
+
 do $$
 declare
   o record;
   kept uuid;
 begin
   for o in
-    select original.* from content original
+    select original.*, c.id as copy,
+           -- Nobody changed the copy, and nothing shared, or of the owner's, replaced it.
+           not exists (select from revisions v where v.content_id = c.id)
+             and not exists (select from content r where r.supersedes = c.id and (r.private_to is null or r.private_to = original.private_to))
+             -- An assistant's text never replaces what a person wrote.
+             and (original.agent is null or c.agent is not null or c.written_by is null) as untouched
+    from content original
+    join lateral (
+      select * from content c where c.published_from = original.id and c.private_to is null
+      order by c.published_at desc limit 1
+    ) c on true
     where original.private_to is not null and original.kind = 'text'
-      and exists (select from content c where c.published_from = original.id and c.private_to is null)
-      and original.body <> (
-        select c.body from content c where c.published_from = original.id and c.private_to is null
-        order by c.published_at desc limit 1
-      )
       and not exists (select from content r where r.supersedes = original.id)
-      and exists (select from space_access a where a.space_id = original.space_id and a.person_id = original.private_to)
+      -- What the copy said when it was shared: its first wording.
+      and original.body <> coalesce((select v.body from revisions v where v.content_id = c.id order by v.replaced_at limit 1), c.body)
   loop
-    -- Written as its owner, who can still open the space, so the store checks it as theirs.
+    -- Written as its owner and their assistant, so the store checks it as theirs.
     perform set_config('homing.person_id', o.private_to::text, true);
-    insert into content (space_id, page_id, kind, body, private_to, written_by, agent, created_at, updated_at)
-    values (o.space_id, o.page_id, 'text', o.body, o.private_to, o.written_by, o.agent, o.created_at, o.updated_at)
+    perform set_config('homing.agent', coalesce(o.agent, ''), true);
+    insert into content (space_id, page_id, kind, body, private_to, supersedes, written_by, agent, created_at, updated_at)
+    values (o.space_id, o.page_id, 'text', o.body, o.private_to, case when o.untouched then o.copy end, o.written_by, o.agent, o.created_at, o.updated_at)
     returning id into kept;
     insert into citations (content_id, source_id) select kept, source_id from citations where content_id = o.id;
     insert into revisions (content_id, space_id, private_to, body, written_by, agent, written_at, replaced_at)
     select kept, space_id, private_to, body, written_by, agent, written_at, replaced_at from revisions where content_id = o.id;
   end loop;
   perform set_config('homing.person_id', '', true);
+  perform set_config('homing.agent', '', true);
 end
 $$;
+
+alter table content enable trigger check_page_open;
+
+-- A private item that replaced an original after it was shared is its
+-- owner's update of the copy, in its place, where nobody changed the copy.
+update content s set supersedes = c.id
+from content o, content c
+where s.supersedes = o.id and s.private_to = o.private_to and o.private_to is not null and s.kind = 'text'
+  and c.id = (
+    select x.id from content x where x.published_from = o.id and x.private_to is null
+    order by x.published_at desc limit 1
+  )
+  and not exists (select from revisions v where v.content_id = c.id)
+  and not exists (select from content r where r.supersedes = c.id and (r.private_to is null or r.private_to = o.private_to))
+  and (s.agent is null or c.agent is not null or c.written_by is null);
 
 -- Shares one of the person's own private items with its space, exactly as
 -- they were shown it, and the page's title with it if the page has no shared

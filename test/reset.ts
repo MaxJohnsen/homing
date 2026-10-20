@@ -21,17 +21,23 @@ export function inTestDatabase(url: string, name = testDatabase): string {
  */
 export async function freshDatabase(name: string, options: { before?: string } = {}) {
   const database = `${testDatabase}_${name}`;
-  const sql = postgres(adminUrl, { onnotice: () => {} });
-  await sql.unsafe(`drop database if exists ${database} with (force)`);
-  await sql.unsafe(`create database ${database}`);
-  await sql.end();
-  const urls = {
-    app: inTestDatabase(databaseUrl, database),
-    auth: inTestDatabase(authDatabaseUrl, database),
-    admin: inTestDatabase(adminUrl, database),
-  };
-  await migrate(urls.admin, urls.app, urls.auth, options);
-  return urls;
+  // One connection, holding a lock on the shared database while it migrates: migrating ends by
+  // changing the roles every database shares, which two at once can't do.
+  const sql = postgres(adminUrl, { max: 1, onnotice: () => {} });
+  try {
+    await sql`select pg_advisory_lock(hashtext('homing.fresh_database'))`;
+    await sql.unsafe(`drop database if exists ${database} with (force)`);
+    await sql.unsafe(`create database ${database}`);
+    const urls = {
+      app: inTestDatabase(databaseUrl, database),
+      auth: inTestDatabase(authDatabaseUrl, database),
+      admin: inTestDatabase(adminUrl, database),
+    };
+    await migrate(urls.admin, urls.app, urls.auth, options);
+    return urls;
+  } finally {
+    await sql.end();
+  }
 }
 
 if (import.meta.main) {

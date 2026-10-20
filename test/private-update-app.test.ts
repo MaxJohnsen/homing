@@ -230,3 +230,46 @@ test('asking to share an original again names what everyone sees now', async () 
   assert.ok(again.failed);
   assert.match(again.text, new RegExp(`The user shared it already: everyone sees item:${now} now\\.`));
 });
+
+test('sources carry over only between one person’s own items on one page', async () => {
+  const { page, other, mine, own, shared } = await as({ person: ana.id, direct: true }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Suppliers', shared: true });
+    const other = await createPage(s, { spaceId: acme, title: 'Offices', shared: true });
+    const note = await addSource(s, { spaceId: acme, reference: 'Ana’s call notes', excerpt: 'Supplier A is late.' });
+    return {
+      page, other,
+      mine: (await writeItem(s, { pageId: page, body: 'Supplier A is late.', sources: [note.id] })).id,
+      own: (await writeItem(s, { pageId: other, body: 'The office moves in May.' })).id,
+      shared: (await writeItem(s, { pageId: page, body: 'We use two suppliers.', shared: true })).id,
+    };
+  });
+  const theirs = await as({ person: cara.id, direct: true }, async (s) => {
+    const note = await addSource(s, { spaceId: acme, reference: 'Cara’s own note', excerpt: 'Supplier B is cheaper.' });
+    return (await writeItem(s, { pageId: page, body: 'Supplier B is cheaper.', sources: [note.id] })).id;
+  });
+  const carry = (from: string, to: string) => as({ person: ana.id }, (s) => s.tx`select carry_citations(${from}::uuid, ${to}::uuid)`);
+  const cited = async (item: string) => (await admin`select count(*)::int as n from citations where content_id = ${item}`)[0].n as number;
+
+  await carry(theirs, mine); // Cara's private sources onto Ana's item
+  await carry(mine, theirs); // Ana's onto Cara's
+  await carry(mine, shared); // Ana's onto what everyone sees
+  await carry(mine, own); // Ana's onto her own item on another page
+  assert.deepEqual([await cited(mine), await cited(theirs), await cited(shared), await cited(own)], [1, 1, 0, 0]);
+  assert.ok(other);
+});
+
+test('when something shared replaces what Ana updated, her update no longer says the others still see it', async () => {
+  const { page, item } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Deadline', shared: true });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'The report is due Friday.', shared: true })).id };
+  });
+  await anas.call('remember', { space: `space:${acme}`, replaces: `item:${item}`, text: 'The report is due Monday.' });
+  await as({ person: cara.id, direct: true }, (s) => supersedeItem(s, item, { body: 'The report is due Tuesday.', shared: true }));
+
+  const forAna = (await pageAs(ana, page)).items;
+  assert.deepEqual(forAna.map((entry) => [entry.text, entry.shared, entry.replaced?.shared ?? null]), [
+    ['The report is due Monday.', false, false],
+    ['The report is due Tuesday.', true, false],
+  ]);
+  assert.doesNotMatch((await anas.call('read', { ref: `page:${page}` })).text, /Others in the space still see/);
+});
