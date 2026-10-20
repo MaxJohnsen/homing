@@ -146,7 +146,7 @@ export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (na
       >
         <Input
           aria-label="Name"
-          className="h-11 text-base sm:max-w-sm"
+          className="h-11 text-base md:text-base sm:max-w-sm"
           value={name}
           maxLength={100}
           onChange={(event) => {

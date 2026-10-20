@@ -1,9 +1,19 @@
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import { current, visible } from './knowledge.ts';
-import { accessibleSpaces, listSpaces, peopleNames, spaceView } from './spaces.ts';
+import { accessibleSpaces, listSpaces, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type Space, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space';
+
+/** A space an assistant suggests: its name, who it's for, where it goes, and whether it's closed. */
+export interface SpaceChange {
+  name: string;
+  who: Who;
+  in: string | null;
+  closed: boolean;
+  /** The person asked for it, and approves it because others would see it. Otherwise it's the assistant's own suggestion. */
+  asked?: boolean;
+}
 
 /**
  * A change waiting for a person to decide it (spec §6). Expired means nobody decided it in time.
@@ -18,7 +28,7 @@ export interface Proposal {
   action: Action;
   /** The rule it changes or removes. */
   itemId: string | null;
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean };
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean } & Partial<SpaceChange>;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -33,6 +43,8 @@ export interface Proposal {
   adminsEmailed: boolean | null;
   decidedBy: string | null;
   decidedAt: Date | null;
+  /** For a suggested space, the space approving it created. */
+  spaceCreated: string | null;
 }
 
 /** A proposal with what someone needs to decide it. */
@@ -49,6 +61,25 @@ export interface ProposalView extends Proposal {
   names: { proposedTo: string | null; decidedBy: string | null };
   /** For a request, the space's admins as far as the reader can see them. */
   admins: string[];
+  /** For a suggested space: where the person may put it, and the space it became, if they can open it. */
+  places: Place[];
+  /** The space approving it created, if the person can open it: its name now, and where it is and who has it. */
+  created: { id: string; name: string; where: string } | null;
+}
+
+/** A space a new one can go in. */
+export interface Place {
+  id: string;
+  /** Where it sits, from the top: "Your personal space › Reading", or "Acme › Website". */
+  label: string;
+  name: string;
+  /** In the person's personal tree, so for a space just for them. Otherwise a shared space they're an admin of. */
+  mine: boolean;
+  /** Their personal space itself. */
+  personal: boolean;
+  /** For a shared space: how many people have it, as its Members shows them, and whether people above it they can't open have it too. */
+  people?: number;
+  above?: boolean;
 }
 
 /** Why a proposal can't be decided as asked. Nothing changed. */
@@ -110,6 +141,66 @@ export async function proposeRule(
   });
 }
 
+/** Why Homing won't make a suggestion: one is already waiting, or the person declined this one. */
+export class NotSuggested extends Error {
+  readonly proposalId: string;
+
+  constructor(message: string, proposalId: string) {
+    super(message);
+    this.proposalId = proposalId;
+  }
+}
+
+/**
+ * Suggests a space for the person to create (spec §1), checked the way creating it is, so it can be
+ * created as suggested. Suggestions are rare: while one waits, there's no other, and a space the
+ * person declined, or let expire, isn't suggested again by name. A space the person asked for that
+ * others would see waits for their approval the same way, since its name is shared, but it's theirs
+ * to ask for as often as they like.
+ */
+export async function suggestSpace(s: Session, input: { name: string; who: Who; in?: string; closed?: boolean; why?: string; asked?: boolean }): Promise<Proposal> {
+  // One person's suggestions are decided one at a time, so two at once can't both be the one waiting.
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.suggest:' || ${personOf(s.principal)!}))`;
+  const place = await placeSpace(s, input);
+  const asked = input.asked === true;
+  if (asked) await notTooMany(s);
+  else await rare(s, place.name);
+  return insertProposal(s, {
+    spaceId: (place.parent ?? place.personal).id,
+    action: 'add space',
+    itemId: null,
+    change: { name: place.name, who: input.who, in: place.parent?.id ?? null, closed: place.closed, ...(asked && { asked }) },
+    request: false,
+    reason: input.why?.trim() || null,
+  });
+}
+
+/** A few asked-for spaces wait at a time: the assistant's word that the user asked isn't a licence for more. */
+async function notTooMany(s: Session) {
+  const [{ waiting }] = await s.tx<{ waiting: number }[]>`
+    select count(*)::int as waiting from proposals
+    where ${yours(s)} and action = 'add space' and state = 'open' and expires_at > now() and coalesce((change->>'asked')::boolean, false)
+  `;
+  if (waiting >= 3) throw new SpaceRefused('where', 'Three spaces are already waiting for the user to approve them. Wait until they have decided.');
+}
+
+/** Whether a suggestion is rare enough: none waiting, and not one the person already turned down. */
+async function rare(s: Session, name: string) {
+  const [waiting] = await s.tx<{ id: string; name: string }[]>`
+    select id, change->>'name' as name from proposals
+    where ${yours(s)} and action = 'add space' and state = 'open' and expires_at > now() and not coalesce((change->>'asked')::boolean, false)
+    limit 1
+  `;
+  if (waiting) throw new NotSuggested(`A suggested space, ${waiting.name}, is already waiting for the user. Don't suggest another space until they decide it.`, waiting.id);
+  const [declined] = await s.tx<{ id: string; at: Date }[]>`
+    select id, coalesce(decided_at, expires_at) as at from proposals
+    where ${yours(s)} and action = 'add space' and lower(change->>'name') = lower(${name}) and not coalesce((change->>'asked')::boolean, false)
+      and (state = 'rejected' or (state = 'open' and expires_at <= now()))
+    limit 1
+  `;
+  if (declined) throw new NotSuggested(`The user didn’t create a space called ${name} when it was suggested on ${declined.at.toISOString().slice(0, 10)}. Don't suggest it again.`, declined.id);
+}
+
 /** A proposal the person can see, with what they need to decide it. */
 export async function readProposal(s: Session, proposalId: string): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
@@ -123,6 +214,7 @@ export async function readProposal(s: Session, proposalId: string): Promise<Prop
   const rule = proposal.itemId ? await ruleFor(s, proposal.itemId) : undefined;
   const names = await peopleNames(s, [proposal.privateTo, proposal.decidedBy]);
   const admins = proposal.request ? ((await spaceView(s, proposal.spaceId))?.members ?? []).filter((member) => member.admin).map((member) => member.name) : [];
+  const created = proposal.spaceCreated ? spaces.find((candidate) => candidate.id === proposal.spaceCreated) : undefined;
   return {
     ...proposal,
     space: {
@@ -138,7 +230,55 @@ export async function readProposal(s: Session, proposalId: string): Promise<Prop
       decidedBy: proposal.decidedBy && proposal.decidedBy !== personOf(s.principal) ? (names.get(proposal.decidedBy) ?? null) : null,
     },
     admins,
+    places: proposal.action === 'add space' && proposal.state === 'open' && proposal.privateTo === personOf(s.principal) ? await placesFor(s, spaces) : [],
+    created: created ? { id: created.id, name: created.name, where: whereItIs(created, spaces) } : null,
   };
+}
+
+/** "In Acme. Everyone in Acme has it.": where a space is and who has it, for its creator. */
+function whereItIs(space: Space, spaces: Space[]): string {
+  const parent = spaces.find((candidate) => candidate.id === space.parentId);
+  if (space.privateTo) return parent && parent.parentId ? `In ${parent.name}, in your personal space. Only you have it.` : 'In your personal space. Only you have it.';
+  if (!parent) return 'A space of its own. Only you have it until you add people.';
+  return space.closed ? `In ${parent.name}. Only the people added to it have it.` : `In ${parent.name}. Everyone in ${parent.name} has it.`;
+}
+
+/** Where the person can put a new space: anywhere in their personal tree, and in the shared spaces they look after. */
+async function placesFor(s: Session, spaces: Space[]): Promise<Place[]> {
+  const byId = new Map(spaces.map((space) => [space.id, space]));
+  const personal = (space: Space) => space.privateTo !== null && space.parentId === null;
+  // "Website, in Acme › Havbris": its own name first, as New space has it.
+  const label = (space: Space) => {
+    if (personal(space)) return 'Your personal space';
+    const above: string[] = [];
+    for (let at = space.parentId ? byId.get(space.parentId) : undefined; at; at = at.parentId ? byId.get(at.parentId) : undefined) {
+      above.unshift(personal(at) ? 'your personal space' : at.name);
+    }
+    return above.length ? `${space.name}, in ${above.join(' › ')}` : space.name;
+  };
+  // Who has a shared space, as its Members shows them: the people in it and in the spaces above it
+  // until one is closed, and whether people above that the person can't open have it too.
+  const memberships = await s.tx<{ spaceId: string; personId: string }[]>`
+    select space_id, person_id from memberships where space_id in (${accessibleSpaces(s)})
+  `;
+  const audience = (space: Space) => {
+    const people = new Set<string>();
+    let above = false;
+    for (let at: Space | undefined = space; at; ) {
+      for (const row of memberships) if (row.spaceId === at.id) people.add(row.personId);
+      if (at.closed || !at.parentId) break;
+      const next = byId.get(at.parentId);
+      if (!next) above = true;
+      at = next;
+    }
+    return { people: people.size, above };
+  };
+  const mine = spaces.filter((space) => space.privateTo).sort((a, b) => Number(personal(b)) - Number(personal(a)));
+  const shared = spaces.filter((space) => !space.privateTo && space.admin);
+  return [
+    ...mine.map((space) => ({ id: space.id, label: label(space), name: space.name, mine: true, personal: personal(space) })),
+    ...shared.map((space) => ({ id: space.id, label: label(space), name: space.name, mine: false, personal: false, ...audience(space) })),
+  ];
 }
 
 /** The person's proposals waiting in a space for them to decide or send, oldest first. */
@@ -214,6 +354,8 @@ export interface Waiting {
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
   text: string | null;
   agent: string | null;
+  /** For a space: whether the person asked for it, rather than the assistant suggesting it. */
+  asked: boolean;
   /** For a request: whether it's sent, whether the person asked themselves, and who asked when it's someone else they know. */
   request: boolean;
   sent: boolean;
@@ -232,7 +374,8 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', rule.body) as text, p.agent, p.request, p.state = 'requested' as sent, p.private_to,
+           coalesce(p.change->>'text', p.change->>'name', rule.body) as text, p.agent,
+           coalesce((p.change->>'asked')::boolean, false) as asked, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
     join spaces s on s.id = p.space_id
@@ -270,7 +413,7 @@ function ruleStands(s: Session, table: string) {
 export async function decide(
   s: Session,
   proposalId: string,
-  decision: { approve: boolean; shown?: string; onlyHere?: boolean; decidedIn?: string },
+  decision: { approve: boolean; shown?: string; onlyHere?: boolean; decidedIn?: string; space?: Partial<SpaceChange> },
 ): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
     select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${seen(s)} for update
@@ -283,9 +426,21 @@ export async function decide(
     throw new Undecidable('decided', 'You sent this request, so one of the space’s admins decides it.');
   }
 
+  let created: string | null = null;
   if (decision.approve && !sending) {
     const { change } = proposal;
-    if (proposal.action === 'add rule') {
+    if (proposal.action === 'add space') {
+      // As suggested, or as the person changed it before creating it, checked again now.
+      const set = decision.space ?? {};
+      created = (
+        await newSpace(s, {
+          name: set.name ?? change.name!,
+          who: set.who ?? change.who!,
+          in: (set.in === undefined ? change.in : set.in) ?? undefined,
+          closed: set.closed ?? change.closed,
+        })
+      ).id;
+    } else if (proposal.action === 'add rule') {
       await addRule(s, {
         spaceId: proposal.spaceId,
         kind: change.kind!,
@@ -308,15 +463,18 @@ export async function decide(
   }
   const state = decision.approve ? (sending ? 'requested' : 'approved') : 'rejected';
   await s.tx`
-    update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}
+    update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}, space_created = ${created}::uuid
     where id = ${proposalId}::uuid and ${seen(s)}
   `;
   return readProposal(s, proposalId);
 }
 
+/** An action as the app names it. */
+export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space' } as const;
+
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
 export function proposalData(proposal: ProposalView) {
-  const action = ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[proposal.action];
+  const action = shortAction[proposal.action];
   const rule = proposal.rule;
   return {
     id: proposal.id,
@@ -348,6 +506,20 @@ export function proposalData(proposal: ProposalView) {
       : null,
     // Who decided it, when that was someone other than the reader.
     decidedBy: proposal.names.decidedBy,
+    // A suggested space: as suggested, why, where it may go instead, and what it became.
+    suggestion:
+      proposal.action === 'add space'
+        ? {
+            name: proposal.change.name!,
+            who: proposal.change.who!,
+            in: proposal.change.in ?? null,
+            closed: proposal.change.closed ?? false,
+            asked: proposal.change.asked ?? false,
+            why: proposal.reason,
+            places: proposal.places,
+            created: proposal.created,
+          }
+        : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,
@@ -396,6 +568,6 @@ function columns(s: Session) {
   return s.tx`
     id, space_id, private_to, action, item_id, change, agent, request, reason,
     case when state in ('open', 'requested') and expires_at <= now() then 'expired' else state end as state,
-    created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at
+    created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at, space_created
   `;
 }

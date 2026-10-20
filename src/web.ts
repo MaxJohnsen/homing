@@ -13,6 +13,7 @@ import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
 import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable } from './proposals.ts';
+import { SpaceRefused, type Who } from './spaces.ts';
 
 /** What the web app's requests need from the server. */
 export interface App {
@@ -184,6 +185,7 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
           approve: body.approve as boolean,
           shown: typeof body.shown === 'string' ? body.shown : undefined,
           onlyHere: typeof body.onlyHere === 'boolean' ? body.onlyHere : undefined,
+          space: spaceAsSet(body.space),
         }),
       );
       if (!decided) return json(res, 404, missing);
@@ -193,6 +195,7 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
       return json(res, 200, { person: session.user.name, proposal: proposalData(now ?? decided) });
     } catch (error) {
       if (error instanceof Undecidable) return json(res, error.reason === 'expired' ? 410 : 409, { code: error.reason.toUpperCase(), message: error.message });
+      if (error instanceof SpaceRefused) return json(res, error.reason === 'missing' ? 404 : error.reason === 'admin' ? 403 : 400, { field: error.reason === 'name' ? 'name' : 'in', message: error.message });
       if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
         return json(res, 403, { message: 'You can’t make this change any more, so nothing changed.' });
       }
@@ -201,6 +204,22 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
   }
 
   return json(res, 404, { message: 'Not found.' });
+}
+
+/** A suggested space as the person set it before creating it, or undefined to create it as suggested. */
+function spaceAsSet(value: unknown): { name?: string; who?: Who; in?: string | null; closed?: boolean } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const space = value as Record<string, unknown>;
+  const set: { name?: string; who?: Who; in?: string | null; closed?: boolean } = {};
+  if (typeof space.name === 'string') set.name = space.name;
+  if (space.who === 'just me' || space.who === 'with others') set.who = space.who;
+  if (space.in === null) set.in = null;
+  else if (space.in !== undefined) {
+    if (typeof space.in !== 'string' || !/^[0-9a-f-]{36}$/i.test(space.in)) throw new SpaceRefused('where', 'Choose where the space goes.');
+    set.in = space.in.toLowerCase();
+  }
+  if (typeof space.closed === 'boolean') set.closed = space.closed;
+  return set;
 }
 
 const dist = new URL('../web/dist/app/', import.meta.url);

@@ -3,7 +3,7 @@ import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
 import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
-import { requestsSent, waitingFor } from './proposals.ts';
+import { requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
@@ -101,9 +101,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             space: item.space,
             personal: item.personal,
             within: item.within,
-            action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[item.action],
+            action: shortAction[item.action],
             kind: item.kind,
             text: item.text,
+            asked: item.asked,
             // For a request: who asked, unless it's the person, and whether it's sent.
             request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null,
             createdAt: item.createdAt,
@@ -119,7 +120,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             id: request.id,
             space: request.space,
             within: request.within,
-            action: ({ 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove' } as const)[request.action],
+            action: shortAction[request.action],
             kind: request.kind,
             text: request.text,
             state: request.state,
@@ -375,7 +376,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           pages: active.all,
           collections: collections.pages,
           decisions: decisions.pages,
-          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
+          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
           spaces: spaces.map(({ id, name, closed }) => ({ id, name, closed })),
         });
         break;

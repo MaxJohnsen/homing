@@ -369,3 +369,31 @@ export const sampleOverview: OverviewData = {
   waiting: [{ id: 'w1', action: 'add rule', kind: 'requirement', text: 'Copy the CFO on every invoice to Northwind.', assistant: 'Claude', request: { by: 'Cara Lund', yours: false, sent: true } }],
   spaces: [{ id: 'website', name: 'Website', closed: false }, { id: 'app', name: 'Booking app', closed: true }],
 };
+
+/** A space Claude suggests on its own, for the person to change and create, or decline. */
+export const suggestedSpace: ProposalData = {
+  ...proposal,
+  id: 'suggested-space',
+  space: 'Personal',
+  personal: true,
+  action: 'space',
+  text: null,
+  shared: false,
+  alreadyApplies: [],
+  suggestion: {
+    name: 'Home renovation',
+    who: 'just me',
+    in: null,
+    closed: false,
+    asked: false,
+    why: 'You’ve been planning the kitchen and bathroom across several conversations. A space keeps the quotes, dates and decisions together.',
+    places: [
+      { id: 'personal', label: 'Your personal space', name: 'Personal', mine: true, personal: true },
+      { id: 'kitchen', label: 'Kitchen, in your personal space', name: 'Kitchen', mine: true, personal: false },
+      { id: 'acme', label: 'Acme', name: 'Acme', mine: false, personal: false },
+      { id: 'northwind', label: 'Northwind, in Acme', name: 'Northwind', mine: false, personal: false },
+    ],
+    created: null,
+  },
+};
+
