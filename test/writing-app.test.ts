@@ -10,7 +10,7 @@ import { createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, type Member } from './helpers.ts';
+import { admin, as, db, member, refused, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -28,6 +28,17 @@ before(async () => {
 });
 
 after(() => homing.close());
+
+// Ana's Claude, connected once for the whole file.
+let anaChat: Awaited<ReturnType<Assistant['open']>> | undefined;
+async function claudeForAna() {
+  if (!anaChat) {
+    const claude = new Assistant(homing.url, assistants.claude);
+    await claude.connect(ana.browser);
+    anaChat = await claude.open();
+  }
+  return anaChat;
+}
 
 const post = async (who: Member, path: string, body: unknown) => who.browser.json(path, body);
 const page = async (who: Member, id: string) => {
@@ -86,9 +97,7 @@ test('a shared item is corrected for everyone, and the assistant reads it next a
   assert.deepEqual(forCara[0].earlier.map((entry) => entry.text), ['The launch is on 14 November.']);
 
   // Ana's assistant reads it next as written by Ana, and can't rewrite or replace it.
-  const claude = new Assistant(homing.url, assistants.claude);
-  await claude.connect(ana.browser);
-  const chat = await claude.open();
+  const chat = await claudeForAna();
   const read = await chat.call('read', { ref: `item:${date.id}` });
   assert.match(read.text, /The launch is on 20 November\./);
   assert.match(read.text, /Written by Ana on/);
@@ -125,4 +134,46 @@ test('rules and skills aren’t corrected as knowledge', async () => {
   assert.equal((await post(ana, `/api/items/${rule}`, { text: 'Changed' })).status, 404);
   const [guidance] = await admin`select page_id from content where id = ${rule}`;
   assert.equal((await post(ana, `/api/pages/${guidance.pageId}/items`, { text: 'Hello' })).status, 404);
+});
+
+test('a private update of a private update still says what others see, in the app and to the assistant', async () => {
+  // Written by Cara's assistant, so Ana's may replace it for her.
+  const roadmap = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Roadmap', shared: true });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'Version 2 ships in March.', shared: true })).id };
+  });
+  const chat = await claudeForAna();
+  const first = await chat.call('remember', { space: `space:${acme}`, text: 'Version 2 ships in April.', replaces: `item:${roadmap.item}` });
+  const mine = /Saved as item:([0-9a-f-]{36})/.exec(first.text)![1];
+  const again = await chat.call('remember', { space: `space:${acme}`, text: 'Version 2 ships in May.', replaces: `item:${mine}` });
+  assert.match(again.text, /others in the space still see the shared version, item:/);
+
+  const forAna = (await page(ana, roadmap.page)).body.items;
+  assert.deepEqual(forAna.map((item) => [item.text, item.replaced]), [['Version 2 ships in May.', { text: 'Version 2 ships in March.', shared: true, until: (forAna[0].replaced as { until?: string }).until }]]);
+  const found = await chat.call('search', { query: 'ships May', space: `space:${acme}` });
+  assert.match(found.text, /Version 2 ships in May\..*A private update: others still see the earlier version\./);
+  assert.deepEqual((await page(cara, roadmap.page)).body.items.map((item) => item.text), ['Version 2 ships in March.']);
+});
+
+test('context lists the pages changed most recently, and points to search for the rest', async () => {
+  const archive = await as(ana, (s) => createSpace(s, { name: 'Archive', parentId: ana.personalSpaceId }));
+  await as(ana, async (s) => {
+    for (let n = 1; n <= 60; n++) await createPage(s, { spaceId: archive, title: `Meeting ${n}` });
+  });
+  const text = (await (await claudeForAna()).call('context', { request: 'Plan the week', space: `space:${archive}` })).text;
+  assert.match(text, /The 50 most recently changed of 60\. Use `search` to find the others\./);
+  assert.match(text, /Meeting 60/);
+  assert.doesNotMatch(text, /Meeting 1,/);
+});
+
+test('nobody writes on a page whose content they can’t see, even straight against the database', async () => {
+  const secret = await as(ana, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Ana’s secret plans' });
+    await writeItem(s, { pageId: page, body: 'Ana plans to leave in spring.' });
+    return page;
+  });
+  for (const kind of ['title', 'text']) {
+    await assert.rejects(as(cara, (s) => s.tx`insert into content (page_id, space_id, kind, body) values (${secret}, ${acme}, ${kind}, 'Hello')`), refused);
+  }
+  assert.equal((await cara.browser.json(`/api/spaces/${acme}/pages?q=secret`)).body.total, 0);
 });

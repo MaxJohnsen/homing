@@ -24,7 +24,7 @@ export interface ProposalData {
    * For a request to the space's admins: who asked, or null when it's yours, why, whether it's
    * sent, and the admins who can decide it.
    */
-  request?: { by: string | null; why: string | null; sent: boolean; emailed?: boolean | null; admins: string[] } | null;
+  request?: { by: string | null; yours: boolean; why: string | null; sent: boolean; emailed?: boolean | null; admins: string[] } | null;
   /** Who decided it, when that was someone else. */
   decidedBy?: string | null;
   /** The rules that already apply where a new one would go. */
@@ -45,8 +45,8 @@ export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within
 /** A change waiting for you, as Home and the list of everything waiting show it. */
 export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind'> {
   spaceId: string;
-  /** For a request: who asked, or null when it's yours to send, and whether it's sent. */
-  request?: { by: string | null; sent: boolean } | null;
+  /** For a request: whether it's yours, who asked when it's someone you know, and whether it's sent. */
+  request?: { by: string | null; yours: boolean; sent: boolean } | null;
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
   text: string | null;
   createdAt: string;
@@ -56,11 +56,11 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
  * Who wants what, where: "Claude wants to add a rule to Acme", "Claude wants to ask the admins of Acme
  * to add a rule", or "Cara Lund asks to add a rule to Acme". Under a heading that names the place, without it.
  */
-export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null } | null }, withPlace = true): string {
+export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null; yours: boolean } | null }, withPlace = true): string {
   const { assistant, action, kind, request } = proposal;
   const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
   const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
-  if (request?.by) return `${request.by} asks to ${what}${place}`;
+  if (request && !request.yours) return `${request.by ?? 'A member'} asks to ${what}${place}`;
   if (request) return withPlace ? `${assistant} wants to ask the admins of ${placeOf(proposal)} to ${what}` : `${assistant} wants to ask the admins to ${what}`;
   return `${assistant} wants to ${what}${place}`;
 }
@@ -94,7 +94,7 @@ export function buttonsOf(action: ProposalData['action'], sending = false): { ap
 
 /** Whether this is a request you haven't sent yet, so deciding it means sending it. */
 export function isSending(proposal: Pick<ProposalData, 'request' | 'state'>): boolean {
-  return Boolean(proposal.request && proposal.request.by === null && !proposal.request.sent && proposal.state === 'open');
+  return Boolean(proposal.request?.yours && !proposal.request.sent && proposal.state === 'open');
 }
 
 /** "Ana Berg or Jon Dahl". */
@@ -109,7 +109,7 @@ export function eitherOf(names: string[]): string {
 export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejected' | 'expired' | 'gone' | 'sent'; heading: string; detail: string } | undefined {
   const { action, assistant, state, request, decidedBy } = proposal;
   const place = placeOf(proposal);
-  const yours = Boolean(request && request.by === null);
+  const yours = Boolean(request?.yours);
   if (state === 'requested') {
     if (!yours) return undefined;
     const admins = request!.admins;
@@ -138,10 +138,12 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     };
   }
   if (state === 'expired') {
+    if (request && !yours) return { kind: 'expired', heading: 'This request expired', detail: 'Nothing changed, because no admin decided it in time.' };
     return { kind: 'expired', heading: 'This request expired', detail: `Nothing changed. Ask ${assistant} again if you still want it.` };
   }
   if (isGone(proposal)) {
-    return { kind: 'gone', heading: 'This rule no longer applies', detail: `It was removed after ${request?.by ?? assistant} asked, so there’s nothing to decide.` };
+    const asker = request && !yours ? (request.by ?? 'the member') : assistant;
+    return { kind: 'gone', heading: 'This rule no longer applies', detail: `It was removed after ${asker} asked, so there’s nothing to decide.` };
   }
   return undefined;
 }

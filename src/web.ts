@@ -6,7 +6,7 @@ import { fromNodeHeaders } from 'better-auth/node';
 import type { Pool } from 'pg';
 import postgres from 'postgres';
 import { connectedAssistants, disconnectAssistant } from './assistants.ts';
-import { joinWithPassword, mcpResource, saveTicket, signedInRecently, type Auth } from './auth.ts';
+import { clientAddressHeader, joinWithPassword, mcpResource, saveTicket, signedInRecently, type Auth } from './auth.ts';
 import { AccessDenied, withPrincipal, type Sql } from './db.ts';
 import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
@@ -23,6 +23,8 @@ export interface App {
   url: URL;
   /** Sends email, if Homing has a way to. */
   mailer?: Mailer;
+  /** Whether a client address may try once more, for endpoints that could be tried over and over. */
+  limit: (address: string) => boolean;
 }
 
 // One plain address, nothing a mail program could read as a name and another address.
@@ -41,6 +43,10 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
     const invite = typeof token === 'string' ? await findInvite(app.sql, token) : undefined;
     if (!invite) return json(res, 410, { message: 'This invite has expired or was already used.' });
     return json(res, 200, invite);
+  }
+
+  if (req.method === 'POST' && path.startsWith('/api/join') && !app.limit(String(req.headers[clientAddressHeader] ?? ''))) {
+    return json(res, 429, { message: 'Too many tries. Wait a few minutes and try again.' });
   }
 
   if (req.method === 'POST' && path === '/api/join') {

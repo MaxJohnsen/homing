@@ -145,7 +145,7 @@ export async function readProposal(s: Session, proposalId: string): Promise<Prop
 export async function openProposals(s: Session, spaceId: string): Promise<Proposal[]> {
   return s.tx<Proposal[]>`
     select ${columns(s)} from proposals
-    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now()
+    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')}
     order by created_at
   `;
 }
@@ -214,9 +214,10 @@ export interface Waiting {
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
   text: string | null;
   agent: string | null;
-  /** For a request: whether it's sent, and who asked, when it's someone else. */
+  /** For a request: whether it's sent, whether the person asked themselves, and who asked when it's someone else they know. */
   request: boolean;
   sent: boolean;
+  yours: boolean;
   askedBy: string | null;
   createdAt: Date;
 }
@@ -227,7 +228,7 @@ export interface Waiting {
  */
 export async function waitingFor(s: Session): Promise<Waiting[]> {
   const me = personOf(s.principal) ?? null;
-  const waiting = await s.tx<(Omit<Waiting, 'askedBy'> & { privateTo: string })[]>`
+  const waiting = await s.tx<(Omit<Waiting, 'askedBy' | 'yours'> & { privateTo: string })[]>`
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
@@ -237,13 +238,21 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     join spaces s on s.id = p.space_id
     left join spaces above on above.id = s.parent_id and above.id in (${accessibleSpaces(s)})
     left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
-    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now()
+    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')}
       and ((p.private_to = ${me}::uuid and p.state = 'open')
            or (p.state = 'requested' and p.private_to <> ${me}::uuid and admin_of(p.space_id)))
     order by coalesce(p.requested_at, p.created_at)
   `;
   const names = await peopleNames(s, waiting.map((item) => item.privateTo));
-  return waiting.map(({ privateTo, ...item }) => ({ ...item, askedBy: privateTo === me ? null : (names.get(privateTo) ?? null) }));
+  return waiting.map(({ privateTo, ...item }) => ({ ...item, yours: privateTo === me, askedBy: privateTo === me ? null : (names.get(privateTo) ?? null) }));
+}
+
+/** A change or removal waits only while its rule is still there; one whose rule was removed has nothing left to decide. */
+function ruleStands(s: Session, table: string) {
+  const p = s.tx(table);
+  return s.tx`(${p}.item_id is null or exists (
+    select from content rule where rule.id = ${p}.item_id and ${visible(s, 'rule')} and ${current(s, 'rule')}
+  ))`;
 }
 
 /**
@@ -285,7 +294,11 @@ export async function decide(
         onlyHere: decision.onlyHere ?? change.onlyHere,
       });
     } else {
+      // Held until this decision is done, so nobody changes the rule between the check and the change.
+      await s.tx`select id from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')} for update`;
       const rule = await ruleFor(s, proposal.itemId!);
+      // Only a rule in the request's own space, whatever the proposal row says.
+      if (rule && rule.spaceId !== proposal.spaceId) throw new AccessDenied('That rule isn’t in this space.');
       if (!rule?.current || rule.text !== decision.shown) {
         throw new Undecidable('changed', 'This rule changed after you opened this page. Check the change again.');
       }
@@ -324,6 +337,8 @@ export function proposalData(proposal: ProposalView) {
     // For a request: who asked, unless it's the reader, why, whether it's sent, and who can decide it.
     request: proposal.request
       ? {
+          yours: proposal.yours,
+          // Unnamed when it's the reader's, or someone the reader doesn't share a space with.
           by: proposal.yours ? null : proposal.names.proposedTo,
           why: proposal.reason,
           sent: proposal.requestedAt !== null,

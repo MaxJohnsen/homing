@@ -197,10 +197,12 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
       where c.page_id = ${pageId}::uuid and ${visibleContent(s, 'c')}
     )
     select ${itemColumns(s, 'content')}, ${citationsOf(s)} as sources, (
-      -- Whoever can see a replacement can see what it replaced.
+      -- Whoever can see a replacement can see what it replaced. For your own update to something
+      -- shared, however many times you updated it since, that's what the others still see.
       select json_build_object('id', r.id, 'body', r.body, 'shared', r.private_to is null)
       from content r
-      where r.id = content.supersedes
+      where r.id = case when content.private_to is not null and first.private_to is null and first.id <> content.id
+                        then first.id else content.supersedes end
     ) as replaced
     from content
     left join chain on chain.id = content.id
@@ -528,7 +530,8 @@ export async function historyOf(s: Session, itemIds: string[]): Promise<(Revisio
 
 /** Search terms for full-text search: longer words match by how they start, so "launch" finds "launches". */
 function termsOf(query: string): string | undefined {
-  const words = query.match(/[\p{L}\p{N}]+/gu);
+  // Letters with their accents and marks, as one word, and at most 32 words.
+  const words = query.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32);
   return words ? words.map((word) => (word.length >= 4 ? `${word}:*` : word)).join(' | ') : undefined;
 }
 
@@ -561,8 +564,8 @@ export async function search(
              c.space_id, c.page_id, p.type as page_type, ${titleOf(s, s.tx`c.page_id`)} as title,
              case c.kind when 'file' then ${titleOf(s, s.tx`c.page_id`)} else c.body end as text,
              c.private_to is not null as private, not ${current(s, 'c')} as superseded,
-             c.private_to is not null and exists (
-               select from content r where r.id = c.supersedes and r.private_to is null and ${visible(s, 'r')}
+             c.private_to is not null and c.supersedes is not null and exists (
+               select from content r where r.id = first_of(c.id) and r.private_to is null and ${visible(s, 'r')}
              ) as updates_shared,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank
       from content c

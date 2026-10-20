@@ -87,7 +87,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             kind: item.kind,
             text: item.text,
             // For a request: who asked, unless it's the person, and whether it's sent.
-            request: item.request ? { by: item.askedBy, sent: item.sent } : null,
+            request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null,
             createdAt: item.createdAt,
           })),
         });
@@ -126,7 +126,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
                 query: query.get('q')?.slice(0, 200) ?? undefined,
                 type: query.get('type') || undefined,
                 order,
-                offset: Number.isFinite(offset) ? offset : 0,
+                offset: clamp(offset),
                 collections: query.get('collections') === '1',
                 in: collection ?? undefined,
               })
@@ -195,7 +195,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const offset = Number.parseInt(query.get('offset') ?? '0', 10);
         const found = await read(async (s) =>
           (await spaceView(s, route.id))
-            ? sourcesIn(s, route.id, { query: query.get('q')?.slice(0, 200) ?? undefined, offset: Number.isFinite(offset) ? offset : 0 })
+            ? sourcesIn(s, route.id, { query: query.get('q')?.slice(0, 200) ?? undefined, offset: clamp(offset) })
             : undefined,
         );
         if (!found) return answer(res, 404, noSpace);
@@ -300,7 +300,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           // In the order the assistant gets them, from least to most specific.
           rules: rules.map((rule) => ({
             id: rule.id,
-            spaceId: rule.spaceId,
+            // A space above that the person can't open stays unnamed, and so does its id.
+            spaceId: rule.spaceName === null && !rule.personal ? null : rule.spaceId,
             spaceName: rule.spaceName,
             personal: rule.personal,
             kind: rule.kind,
@@ -350,7 +351,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             id: pageId,
             name,
             description,
-            spaceId,
+            spaceId: spaceName === null ? null : spaceId,
             spaceName,
             shared: privateTo === null,
             used,
@@ -402,6 +403,11 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     throw error;
   }
   return true;
+}
+
+/** Where in a long list to start: from the top, and never past what any list could hold. */
+function clamp(offset: number): number {
+  return Number.isFinite(offset) ? Math.min(Math.max(0, Math.floor(offset)), 1_000_000) : 0;
 }
 
 function answer(res: ServerResponse, status: number, body: unknown): true {

@@ -102,11 +102,12 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   }
   const mailer = 'mailer' in options ? options.mailer : smtpMailer();
   const pool = new Pool({ connectionString: options.authDatabase ?? authDatabaseUrl, options: '-c search_path=auth' });
+  const rateLimit = options.rateLimit ?? !isLocal(url);
   const homingAuth = createAuth(sql, pool, {
     url,
     secret,
     passwords: options.passwords ?? process.env.HOMING_PASSWORDS !== 'off',
-    rateLimit: options.rateLimit ?? !isLocal(url),
+    rateLimit,
     fetchClientMetadata: options.fetchClientMetadata,
     assistantSites: options.assistantSites ?? assistantSites,
     mailer,
@@ -127,7 +128,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   auth = authHandler(homingAuth);
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
-  app = { sql, auth: homingAuth, authPool: pool, url, mailer };
+  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true };
 
   return {
     url,
@@ -225,4 +226,21 @@ if (import.meta.main) {
   if (link) {
     console.log(`\nCreate the first account with this link. It also looks after this Homing, and works for an hour:\n\n  ${link}\n\nRestart Homing for a new link.\n`);
   }
+}
+
+/**
+ * At most this many tries from one address in a window, such as joining with an invite, so an
+ * invite link can't be used to check many email addresses for accounts.
+ */
+function limiter(tries: number, windowMs: number): (address: string) => boolean {
+  const seen = new Map<string, number[]>();
+  return (address) => {
+    const now = Date.now();
+    const recent = (seen.get(address) ?? []).filter((at) => now - at < windowMs);
+    if (recent.length >= tries) return false;
+    recent.push(now);
+    seen.set(address, recent);
+    if (seen.size > 10_000) seen.delete(seen.keys().next().value!);
+    return true;
+  };
 }

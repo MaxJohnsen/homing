@@ -80,7 +80,7 @@ export function Rules({ space, rules, actions }: { space: SpaceData; rules: Rule
         const name = from[0].spaceName;
         return (
           <RuleSection
-            key={spaceId}
+            key={spaceId ?? 'above'}
             title={name ? `From ${name}` : 'From a space above'}
             description={
               name ? (

@@ -169,3 +169,12 @@ test('rules, skills and pages someone can’t see don’t open as pages', async 
   assert.equal((await cara.browser.json(`/api/pages/${notes}`)).status, 404);
   assert.equal((await cara.browser.json(`/api/pages/${gunnar}`)).status, 200);
 });
+
+test('a search finds words with accents however they were typed, and a wild offset starts at the top', async () => {
+  const notes = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Café meetings', shared: true }));
+  // "Café" typed with a combining accent finds the page written with a single é.
+  assert.deepEqual((await list(ana, acme, `?q=${encodeURIComponent('cafe\u0301')}`)).pages.map((page) => page.id), [notes]);
+  const far = await ana.browser.json(`/api/spaces/${acme}/pages?offset=1e20`);
+  assert.equal(far.status, 200);
+  assert.ok(far.body.pages.length > 0);
+});
