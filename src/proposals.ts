@@ -52,7 +52,7 @@ export interface Proposal {
   request: boolean;
   /** Why the person wants it, in their words. */
   reason: string | null;
-  state: 'open' | 'requested' | 'approved' | 'rejected' | 'expired';
+  state: 'open' | 'requested' | 'approved' | 'rejected' | 'withdrawn' | 'expired';
   createdAt: Date;
   expiresAt: Date;
   requestedAt: Date | null;
@@ -60,6 +60,8 @@ export interface Proposal {
   adminsEmailed: boolean | null;
   decidedBy: string | null;
   decidedAt: Date | null;
+  /** The assistant whose card it was decided on, or that withdrew it. */
+  decidedIn: string | null;
   /** For a suggested space, the space approving it created. */
   spaceCreated: string | null;
 }
@@ -248,7 +250,7 @@ async function rare(s: Session, name: string) {
   const [declined] = await s.tx<{ id: string; at: Date }[]>`
     select id, coalesce(decided_at, expires_at) as at from proposals
     where ${yours(s)} and action = 'add space' and lower(change->>'name') = lower(${name}) and not coalesce((change->>'asked')::boolean, false)
-      and (state = 'rejected' or (state = 'open' and expires_at <= now()))
+      and (state in ('rejected', 'withdrawn') or (state = 'open' and expires_at <= now()))
     limit 1
   `;
   if (declined) throw new NotSuggested(`The user didn’t create a space called ${name} when it was suggested on ${declined.at.toISOString().slice(0, 10)}. Don't suggest it again.`, declined.id);
@@ -327,7 +329,7 @@ export async function suggestArchive(s: Session, input: { spaceId: string; why?:
     // Kept open: turned down, or archived on a suggestion and reopened since, as it's open now.
     const [kept] = await s.tx<{ id: string; at: Date }[]>`
       select id, decided_at as at from proposals
-      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid and state in ('rejected', 'approved')
+      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid and state in ('rejected', 'approved', 'withdrawn')
       order by decided_at desc limit 1
     `;
     if (kept) throw new NotSuggested(`The user kept ${space.name} open after archiving it was suggested on ${kept.at.toISOString().slice(0, 10)}. Don't suggest it again unless they ask.`, kept.id);
@@ -693,6 +695,7 @@ export async function decide(
   if (!proposal) return undefined;
   if (proposal.state === 'expired') throw new Undecidable('expired', 'This request has expired, so nothing changed.');
   const sending = proposal.request && proposal.state === 'open';
+  if (proposal.state === 'withdrawn') throw new Undecidable('decided', 'It was withdrawn, so there’s nothing to decide.');
   if (proposal.state !== 'open' && proposal.state !== 'requested') throw new Undecidable('decided', 'This request was already decided.');
   if (proposal.state === 'requested' && proposal.privateTo === personOf(s.principal)) {
     throw new Undecidable('decided', 'You sent this request, so one of the space’s admins decides it.');
@@ -788,6 +791,41 @@ export async function decide(
   return readProposal(s, proposalId, decision.findAccount);
 }
 
+/**
+ * Withdraws a proposal while it waits, as the person it's for or their assistant (spec §6): it ends,
+ * and nothing changes. A request sent to the space's admins is withdrawn the same way.
+ * Undefined when there's no such proposal of the person's.
+ */
+export async function withdraw(s: Session, proposalId: string): Promise<ProposalView | undefined> {
+  const [proposal] = await s.tx<Proposal[]>`
+    select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${yours(s)} for update
+  `;
+  if (!proposal) return undefined;
+  if (proposal.state === 'expired') throw new Undecidable('expired', 'It had expired already, so nothing changed.');
+  if (proposal.state === 'withdrawn') throw new Undecidable('decided', 'It was withdrawn already.');
+  if (proposal.state !== 'open' && proposal.state !== 'requested') throw new Undecidable('decided', 'It was decided already, so there’s nothing to withdraw.');
+  await s.tx`update proposals set state = 'withdrawn' where id = ${proposalId}::uuid`;
+  return readProposal(s, proposalId);
+}
+
+/**
+ * The person's proposals in a space that ended in the last day: decided, withdrawn or expired,
+ * newest first, so their assistant knows how they ended instead of going by what it said before.
+ */
+export async function endedLately(s: Session, spaceId: string): Promise<Proposal[]> {
+  return s.tx<Proposal[]>`
+    select * from (
+      select ${columns(s)}, coalesce(decided_at, expires_at) as ended from proposals
+      where space_id = ${spaceId}::uuid and ${yours(s)}
+        and (decided_at > now() - interval '1 day' or (state in ('open', 'requested') and expires_at <= now() and expires_at > now() - interval '1 day'))
+        -- Requests sent to the admins are listed with where they stand already.
+        and requested_at is null
+    ) ended
+    order by ended desc
+    limit 20
+  `;
+}
+
 /** What sharing an item would do, as the decision page, the card and the page itself show it. */
 export function publicationData(publication: Publication, audience: { people: number; above: boolean } | null, why: string | null = null) {
   return {
@@ -843,6 +881,8 @@ export function proposalData(proposal: ProposalView) {
       : null,
     // Who decided it, when that was someone other than the reader.
     decidedBy: proposal.names.decidedBy,
+    // The assistant that withdrew it, if the person didn't themselves.
+    withdrawnBy: proposal.state === 'withdrawn' ? proposal.decidedIn : null,
     // A suggested space: as suggested, why, where it may go instead, and what it became.
     suggestion:
       proposal.action === 'add space'
@@ -915,6 +955,6 @@ function columns(s: Session) {
   return s.tx`
     id, space_id, private_to, action, item_id, task_id, change, agent, request, reason,
     case when state in ('open', 'requested') and expires_at <= now() then 'expired' else state end as state,
-    created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at, space_created
+    created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at, decided_in, space_created
   `;
 }
