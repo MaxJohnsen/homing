@@ -8,21 +8,24 @@ Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks), run on 20 October
 
 **The recommended instruction didn't make them more reliable here, and one line of it works against Homing.** It made `context` the first call every time (Claude started with it 83% of the time without it), and it made both models call Homing for questions that have nothing to do with it: 9 of 12 control questions with it, against 1 of 12 without. It also says "when the user wants a new rule, show them the exact text and ask them to add it". GPT-6.1 Sol took that literally in 3 of the 15 conversations where the user asked it for a new rule with the instruction, and told the user to add it in Homing themselves, instead of proposing it with `act`, as the spec (§2) and `act`'s own description say.
 
+That doesn't show the instruction is useless, and the spec's "more consistent" (§10) stays as it is on this evidence. Without the instruction, both models already called Homing every time, so there was no room to be more consistent. Vaguer requests, or other tools competing for them, may show a difference these didn't.
+
 **Five tools hold up.** Splitting `act` into one function per action changed nothing that matters (benchmark 2): tasks done went from 92% to 96% for Claude and from 90% to 86% for GPT, both within the spread between runs. Homing never refused an `act` payload for its shape, in any of the 648 conversations, including the 169 `act` calls of benchmark 2, and no model used `remember` where `act` was needed or the reverse. The 11 refused `act` calls were all about references, the same in both variants.
 
 **What goes wrong is references and spaces.** Homing refused 93 of the 2,399 calls the models made, in 51 of the 648 conversations:
 
-- 35 tried `replaces` on an item a person wrote. Agents never supersede what people wrote (spec §3), and the models then saved a new item beside it, as Homing's answer asks. But `remember` describes `replaces` as the way to update anything no longer true, and nothing tells the model who wrote an item before it tries.
+- 35 tried `replaces` on an item a person wrote. Agents never supersede what people wrote (spec §3), and the models then saved a new item beside it, as Homing's answer asks. But `remember` describes `replaces` as the way to update anything no longer true. `read` of an item says who wrote it, but page reads, `context` and `search` don't, and the models went by those.
 - 37 paired a reference with the wrong space. 33 were an item or page from Website relaunch given with Northwind's space: Northwind's `context` and `search` include the spaces below it, so that's where the models found them, and `remember` then needs the space the page is really in. The other 4 tried to remove a personal rule "in" the space whose `context` showed it. In every case the reference already names its space.
 - 12 gave a name where a reference was expected, such as `space: "Website relaunch"` or `"Personal"`, and 6 gave a page's reference as the space.
+- The last 3: two tried to share an item that can't be shared, one Ana's own overview and one a reference the model had pieced together from two others, and one tried to gather a page into a collection in another space.
 
-These cost turns. Telling Homing that Northwind's IT lead is leaving and who takes over failed in 7 of 12 conversations, every time by running out of the 10 model calls after a few of these refusals, 4 times with the change already saved.
+These cost turns. Telling Homing that Northwind's IT lead is leaving and who takes over failed in 7 of 12 conversations, every time by running out of the harness's 10 model calls after a few of these refusals, 4 times with the change already saved.
 
 **Tasks and proposals can't be found by searching.** For "Mark my task about the revised timeline as done", `search` finds nothing and `context` without a space lists candidate spaces. Claude opened spaces until it found the task, 6 of 6 times; GPT asked which space, 6 of 6 times, and the canned "go ahead" didn't answer that. Withdrawing a proposal went the same way once. The same task named with Gunnar ("I sent Gunnar the revised timeline…") was done every time, because his name finds the right space.
 
-**More context saves calls, not quality, at this size** (benchmark 3). All three sizes gave complete answers, 180 of 180, because the models read what was missing. Giving more up front saved calls and time: Claude answered from the first `context` alone in none of 30 conversations with the core, 8 with the relevant items, and 16 with the full pages, and made 4.6, 3.8 and 2.9 Homing calls on average. GPT read more in every variant, 6.4, 5.8 and 4.7 calls. Cost per conversation stayed about the same, since fewer input tokens were also less often cached. Homing's own time was 0.1 to 0.2 seconds a conversation, the models' 7 to 17 seconds.
+**More context saves calls, not quality, at this size** (benchmark 3). All three sizes gave complete answers, 180 of 180, because the models read what was missing. Giving more up front saved calls: Claude answered from `context` alone, without `read` or `search`, in none of 30 conversations with the core, 8 with the relevant items, and 16 with the full pages, and made 4.6, 3.8 and 2.9 Homing calls on average. GPT read more in every variant, 6.4, 5.8 and 4.7 calls. Whether it saves time isn't shown: the mean fell a little from core to full, from 8.6 to 7.1 seconds for Claude and from 17.0 to 15.1 for GPT, but Claude's median was the same for relevant and full, 6.4 seconds, and the spread is wide. Cost per conversation stayed about the same, since fewer input tokens were also less often cached. Homing's own time was 0.1 to 0.2 seconds a conversation, the models' 7 to 17 seconds.
 
-**GPT calls functions strictly unless told not to.** Sent Homing's tools as they are, without `strict: false`, GPT-6.1 Sol filled every optional field, so `context` always got a made-up space such as `" "` or `"personal"`, which Homing refuses. In 7 conversations it made 64 calls, Homing refused all 64, and it never did a task. With `strict: false` it leaves optional fields out, as the rest of these results show. An MCP client chooses this, and we couldn't see what ChatGPT does. A client that calls strictly needs every optional field to accept null, which Homing's don't.
+**Sent without a `strict` field, GPT called functions as if they were strict.** Through OpenRouter, GPT-6.1 Sol filled every optional field of functions sent without `strict`, so `context` always got a made-up space such as `" "` or `"personal"`, which Homing refuses. In 7 conversations it made 64 calls, Homing refused all 64, and it never did a task. With `strict: false` it left optional fields out, as the rest of these results show. That is what we saw; we didn't find it described by OpenAI or OpenRouter. Whether to send `strict` is each client's choice, and we couldn't see what ChatGPT does. A client that calls strictly would need every optional field to accept null, which Homing's don't.
 
 ### Worth deciding
 
@@ -151,13 +154,19 @@ How much should `context` give: the core alone, the core plus the relevant items
 
 Every task was answered completely in every run and variant, by both models.
 
+## Changed along the way
+
+Smoke runs of 30 conversations came before the pilot, and three things changed after them: functions got `strict: false`; a reminder saved in the personal space counts as done; and share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team. Both GPT conversations asked which space and shared nothing, since `search` can't find tasks, and Claude searched space after space. That is a second case of tasks that can't be found by searching, which these results don't count. The first wording is kept for the next run as share-task-vague. The [README](README.md#how-they-work) has the details.
+
 ## Limitations
 
 - **API models aren't the apps.** Claude.ai and ChatGPT add their own system prompts, other tools that compete for a request, such as web search and memory, and their own handling of MCP: how tools are named, whether functions are called strictly, and in Claude.ai, Homing's approval card. These runs use a plain system prompt, Homing's tools only, and links instead of the card. They validate neither the ChatGPT app and its connector nor Claude.ai.
 - **One turn.** The user says one thing, plus "Yes, please go ahead." once if no change was made. A real user would answer a question, which would turn most "asked the user back" failures into successes.
 - **Requests that point at Homing.** Every task is about Ana's work and names its people and clients, and there are only two controls. That 100% asked Homing says little about vaguer requests, or about requests where other tools compete.
 - **One small world.** About 30 pages, and questions with one clear subject each. Context size at thousands of pages is untested, and there the full variant would cost more.
-- **Patterns, not judgment.** An answer can match a fact's pattern and still be wrong, or say it in a way the pattern misses. A sample of answers read by hand matched what the patterns found.
+- **Patterns, not judgment.** An answer can match a fact's pattern and still be wrong, or say it in a way the pattern misses. A sample of answers read by hand matched what the patterns found. A few patterns were loose, such as one that took any mention of email for "Gunnar prefers email"; they are stricter for the next run, and scoring the stored answers again with them changes 4 fact counts and no result.
+- **A limit of 10 model calls.** The harness ends a conversation after 10 model calls. That limit is behind 7 of the 12 failures of the task about Northwind's IT lead, 4 of them after the change was saved; a client that lets a model go on would have done more of them.
+- **The full variant's extra reads.** In benchmark 3's full variant, the harness reads the pages it adds itself. Those reads aren't counted as Homing calls, though their time is in the latency.
 - **One model per maker, three runs.** Each at its API's default reasoning and temperature, in October 2026. The ranges are the lowest and highest of the three runs, not confidence intervals. The strict-mode finding rests on 7 conversations and 10 single calls.
 
 ## Spending
@@ -170,6 +179,6 @@ Every task was answered completely in every run and variant, by both models.
 | Full run | 648 | 7.93 |
 | **Total** | | **9.04** |
 
-The ledger counts USD 9.0376 over 2,807 model calls, every one with its cost from OpenRouter, and the key's own usage grew by exactly the same since the first run. The cap was USD 50; no call came near it.
+The ledger counts USD 9.0376 over 2,807 model calls, every one with its cost from OpenRouter, and the key's own usage grew by exactly the same since the first run. The cap was USD 50; no call came near it. The ledger has since moved to `~/.config/homing/bench-spend.json`, outside every checkout, with that history in it.
 
 **The plan, from the pilot.** The pilot cost, per conversation, USD 0.014 (Claude) and 0.008 (GPT) in benchmark 1, 0.017 and 0.010 in benchmark 2, and 0.024 and 0.025 in benchmark 3. That projected USD 10 for the full set, three runs of every task, variant and model, well under the USD 45 planned, so nothing was trimmed. The full run had a limit of USD 20 of its own.

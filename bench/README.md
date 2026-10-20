@@ -16,17 +16,19 @@ npm run bench -- run --max-spend 45     # everything, three runs, continuing whe
 npm run bench -- report                 # the tables in results.md, from results/full.jsonl
 ```
 
-`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs and `--concurrency` how many conversations run at once. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`.
+`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs and `--concurrency` how many conversations run at once. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
 
 Each conversation is one line in `results/<phase>.jsonl`: the tools called with their arguments, Homing's answers (shortened), the model's answer, tokens, time and cost. A run skips what already has a result there, so a stopped run continues without paying for anything twice.
 
 ### Spending
 
-Every model call passes the guard in `budget.ts` first. It reserves the call's worst case: its input at the dearest input price that could apply, cache writes included, and all of `max_tokens` at the output price. If what's spent, plus every call under way, plus that worst case would pass USD 50, or the run's `--max-spend`, the call isn't made and the run stops.
+Every model call passes the guard in `budget.ts` first. It reserves an estimate of the call's worst case: its input, counted high at about two characters a token, at the dearest input price that could apply, cache writes included, and all of `max_tokens` at the output price. The input count is an estimate, not a guarantee; the key's own usage, below, is the check behind it. What's spent is the ledger's total or the key's usage since the first run, whichever is more. If that, plus every call under way, plus this call's worst case would pass USD 50, or the run's `--max-spend`, the call isn't made and the run stops.
 
-What each call cost, as OpenRouter reports it, goes into `bench/.spend.json` at once. The file is outside git and is never reset: a rerun adds to it, and a call a crash interrupted counts at its worst case. The key's own usage is also read at the start and end of every run and every 50 calls, and the run stops if it has grown by more than USD 50 since the first run.
+The ledger is `~/.config/homing/bench-spend.json`, next to the key and outside every checkout, so a new checkout or a rerun adds to the same total. What each call cost, as OpenRouter reports it, goes into it at once. A call whose cost isn't known counts at its worst case: one that failed on the way, a crash interrupted, or that came back without a usable answer or a cost. Only a request OpenRouter refused itself, with a 4xx answer and no cost, counts as free. A run holds a lock on the ledger from before it remakes the database to its end, so a second run is refused instead of spending at the same time or dropping the first one's database.
 
-The key is read from its file when the first call is made and only ever sent in the Authorization header. Errors and results pass through a filter that removes anything shaped like a key. `node --test bench/budget.test.ts` tests the guard with made-up prices and a stand-in for OpenRouter, without spending anything.
+The key's own usage is read at the start and end of every run and every 50 calls. The run stops if it has grown by more than USD 50 since the first run, or if it can't be read. A model whose prices are missing or negative on OpenRouter's list, such as its routers, isn't called at all, and neither is anything when `--max-spend` isn't a number of zero or more.
+
+The key is read from its file when a call is made and only ever sent in the Authorization header. Errors and results pass through a filter that removes it, and anything shaped like a key. The guard's tests, in `budget.test.ts`, run with the other tests: they use made-up prices, made-up keys and a stand-in for OpenRouter, so they spend nothing and never read the real key.
 
 ## How they work
 
@@ -44,9 +46,11 @@ The key is read from its file when the first call is made and only ever sent in 
 
 **Checks** (`benchmarks.ts`) are deterministic, and no model judges another. A question counts as answered when the model asked Homing and its answer has the expected facts, matched by patterns such as "1 March" written any of the usual ways. A change counts as done when Homing's database shows it afterwards: the item saved in the right space, the task due on Friday, the proposal with the right rule, item or person. Benchmark 2 also records whether the first write was the expected tool and action, and whether Homing accepted it the first time. Benchmark 1 has two control questions Homing has nothing to do with, to see whether the instruction makes a model call it anyway.
 
-**Models.** Claude Sonnet 5.5 and GPT-6.1 Sol, each maker's current everyday model, released a day apart and priced the same, USD 2 per million input tokens and 10 per million output tokens. They are what most people would use in Claude or ChatGPT. Each runs at its API's default reasoning, served by its own maker where OpenRouter can.
+**Models.** Claude Sonnet 5.5 and GPT-6.1 Sol: the newest of Anthropic's Sonnet and of OpenAI's Sol models on OpenRouter's list on 20 October 2026, each in the middle of its maker's range there (between Haiku and Opus, and between Luna and Astra), at the same price, USD 2 per million input tokens and 10 per million output tokens. Each runs at its API's default reasoning, served by its own maker where OpenRouter can.
 
-**Like the apps.** The system prompt and the newest message are marked for Anthropic's prompt cache, as Claude's apps do; OpenAI caches without being asked. Functions are sent with `strict: false`. Without it, GPT models call functions strictly, filling every optional field: GPT-6.1 Sol always sent `context` a made-up `space`, such as `" "` or `"personal"`, which Homing refuses (see [results.md](results.md)).
+**Caching and strict mode.** The system prompt and the newest message are marked for Anthropic's prompt cache; OpenAI cached long prompts on its own, as the cached-token counts show. Functions are sent with `strict: false`. Sent through OpenRouter without a `strict` field, GPT-6.1 Sol called them as if they were strict: it filled every optional field, and always sent `context` a made-up `space`, such as `" "` or `"personal"`, which Homing refuses. With `strict: false` it left them out. That is what we saw, in 7 conversations and 10 single calls (see [results.md](results.md)); whether to send `strict` is each client's choice.
+
+**Changed along the way.** Smoke runs of 30 conversations in all came before the pilot, and three things changed after them. Functions got `strict: false`, as above. A reminder saved in the personal space now counts as done: Claude Haiku 5.5 saved one there in the first smoke run, and a reminder works from there. And the task share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team, and `search` can't find tasks: both GPT conversations asked which space and didn't share it, and Claude searched space after space, once only after the "go ahead". The first wording is kept as share-task-vague, which isn't in the results of 20 October and runs from the next run on. After the full run, the patterns for a few facts were made stricter for the next run; scoring the stored answers again with them changes 4 fact counts, where the old pattern took "follow up by email" for "Gunnar prefers email", and no result.
 
 ## Prompts
 
@@ -91,6 +95,7 @@ The key is read from its file when the first call is made and only ever sent in 
 | create-space | `act` space.create | Create a space for our new client Polar Freight under Acme, for the whole team. |
 | archive-space | `act` space.archive | The kitchen renovation is finished. Archive that space. |
 | share-task | `act` task.share | Share my task about sending Gunnar the revised timeline with everyone in the website relaunch. |
+| share-task-vague | `act` task.share | Share my task about the revised timeline with the rest of the team. Not in the results of 20 October. |
 | withdraw | `act` proposal.withdraw | Withdraw the rule I proposed about sending status reports on Fridays. |
 | archive-page | `act` page.archive | Archive my old CMS notes page, that system is gone. |
 | rename | `act` space.rename | Rename my Running space to Marathon 2027. |

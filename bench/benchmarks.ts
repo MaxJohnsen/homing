@@ -43,6 +43,11 @@ function date(day: number, month: string): Fact {
 }
 const any = (...patterns: RegExp[]): Fact => patterns;
 
+// Facts several tasks look for, matched only where they're said, not where a word happens to appear.
+const perOwnsHosting = any(/hansen|\bper\b[^.\n]{0,60}\b(hosting|dns)\b|\b(hosting|dns)\b[^.\n]{0,60}\bper\b/);
+const prefersEmail = any(/(prefers?|rather have|likes)[^.\n]{0,30}\be-?mails?\b|e-?mails? (over|rather than|instead of|before) (a |phone )?calls?/);
+const itTeamRunsAzure = any(/\bit team|already (runs?|uses|using|on|has|in)\b/);
+
 /** The world after a conversation, read with the admin role but only ever about this world's people and spaces. */
 export class Look {
   readonly world: World;
@@ -158,16 +163,16 @@ export const b1: Benchmark = {
     { id: 'golive', kind: 'read', prompt: 'When does the Northwind website relaunch go live?', facts: [date(1, 'march')] },
     { id: 'budget', kind: 'read', prompt: "What's the budget for the website relaunch?", facts: [any(/450/)] },
     { id: 'who-gunnar', kind: 'read', prompt: 'Who is Gunnar Holm again?', facts: [any(/marketing/)] },
-    { id: 'why-azure', kind: 'read', prompt: "Why did we go with Azure for Northwind's hosting?", facts: [any(/\bit team|already/)] },
+    { id: 'why-azure', kind: 'read', prompt: "Why did we go with Azure for Northwind's hosting?", facts: [itTeamRunsAzure] },
     { id: 'fjord-renewal', kind: 'read', prompt: 'When does the Fjord Bank contract renew?', facts: [date(1, 'january')] },
     { id: 'carpenter', kind: 'read', prompt: 'When is the carpenter starting on my kitchen?', facts: [date(3, 'november')] },
     { id: 'my-tasks', kind: 'read', prompt: 'What tasks do I have for the website relaunch?', facts: [any(/timeline/)] },
-    { id: 'report-format', kind: 'read', prompt: 'How should I write my status reports for clients?', facts: [any(/english/), any(/date/)] },
+    { id: 'report-format', kind: 'read', prompt: 'How should I write my status reports for clients?', facts: [any(/english/), any(/date (first|at the (start|beginning))|(starts?|begins?|leads?) with the date|\d{4}-\d{2}-\d{2}/)] },
     {
       id: 'call-prep',
       kind: 'read',
       prompt: 'Help me prepare for my call with Gunnar tomorrow.',
-      facts: [date(1, 'march'), any(/450/), any(/\bapi\b|rate limit|10 requests|migrat/), any(/cookie|consent|mona/), any(/email/)],
+      facts: [date(1, 'march'), any(/450/), any(/\bapi\b|rate limit|10 requests|migrat/), any(/cookie|consent|mona/), prefersEmail],
       need: 2,
     },
     { id: 'migration-owner', kind: 'read', prompt: 'Who owns the content migration on the relaunch?', facts: [any(/cara/)] },
@@ -244,7 +249,7 @@ export const b2: Benchmark = {
       prompt: "Change Acme's status report rule so the date goes last in the title instead of first.",
       check: async (look) => {
         const change = (await look.newProposals()).find((p) => p.action === 'change rule' && p.itemId === look.world.items.reportRule);
-        return [...unless(Boolean(change), "no proposal to change Acme's status report rule"), ...unless(/last|end/i.test(change?.change.text ?? ''), 'the new wording keeps the date first')];
+        return [...unless(Boolean(change), "no proposal to change Acme's status report rule"), ...unless(/\blast\b|at the end\b|end of the title/i.test(change?.change.text ?? ''), 'the new wording keeps the date first')];
       },
     },
     { id: 'publish', kind: 'governed', expect: ['act:knowledge.publish'], prompt: "Share Gunnar's hint about the budget with everyone on the Northwind team.", check: checks.publishHint },
@@ -283,6 +288,15 @@ export const b2: Benchmark = {
       kind: 'governed',
       expect: ['act:task.share'],
       prompt: 'Share my task about sending Gunnar the revised timeline with everyone in the website relaunch.',
+      check: async (look) => unless((await look.newProposals()).some((p) => p.action === 'share task' && p.taskId === look.world.tasks.timeline), 'no proposal to share the timeline task'),
+    },
+    // The first wording, before the smoke run: it doesn't say which team, and search can't find tasks.
+    // Not in the results of 20 October 2026; it runs from the next run on.
+    {
+      id: 'share-task-vague',
+      kind: 'governed',
+      expect: ['act:task.share'],
+      prompt: 'Share my task about the revised timeline with the rest of the team.',
       check: async (look) => unless((await look.newProposals()).some((p) => p.action === 'share task' && p.taskId === look.world.tasks.timeline), 'no proposal to share the timeline task'),
     },
     {
@@ -343,19 +357,19 @@ export const b3: Benchmark = {
       id: 'relaunch-status',
       kind: 'read',
       prompt: 'Give me the full status of the Northwind website relaunch: go-live date, budget, who owns what, and the open risks.',
-      facts: [date(1, 'march'), any(/450/), any(/cara/), any(/hansen|\bper\b(?! (second|request|month|year|cent))/), any(/\bapi\b|rate.?limit|10 requests/), any(/cookie|consent|mona/)],
+      facts: [date(1, 'march'), any(/450/), any(/cara/), perOwnsHosting, any(/\bapi\b|rate.?limit|10 requests/), any(/cookie|consent|mona/)],
     },
     {
       id: 'gunnar',
       kind: 'read',
       prompt: 'What do I know about Gunnar Holm?',
-      facts: [any(/marketing/), any(/sponsor/), any(/email/), any(/fjordline|2023/), any(/before 9|9 ?(am|a\.m\.)|9 in the morning|0?9[:.]00/)],
+      facts: [any(/marketing/), any(/sponsor/), prefersEmail, any(/fjordline|2023/), any(/before 9|9 ?(am|a\.m\.)|9 in the morning|0?9[:.]00/)],
     },
     {
       id: 'azure',
       kind: 'read',
       prompt: 'Why did Northwind choose Azure for hosting, and what was the alternative?',
-      facts: [any(/\bit team|already/), any(/norway/), any(/aws|amazon/), any(/15 ?%|15 percent|cheaper/)],
+      facts: [itTeamRunsAzure, any(/norway/), any(/aws|amazon/), any(/15 ?%|15 percent|cheaper/)],
     },
     {
       id: 'steering',
@@ -383,7 +397,7 @@ export const b3: Benchmark = {
     },
     { id: 'kitchen', kind: 'read', prompt: 'When does Erik start on the kitchen, and what did he quote?', facts: [date(3, 'november'), any(/85/)] },
     { id: 'sign-off', kind: 'read', prompt: 'Who has to sign off on a 250,000 NOK change order at Fjord Bank?', facts: [any(/kari/)] },
-    { id: 'who-to-ask', kind: 'read', prompt: 'Who at Northwind should I talk to about the cookie banner, and who about DNS?', facts: [any(/mona/), any(/hansen|\bper\b/)] },
+    { id: 'who-to-ask', kind: 'read', prompt: 'Who at Northwind should I talk to about the cookie banner, and who about DNS?', facts: [any(/mona/), perOwnsHosting] },
   ],
 };
 

@@ -10,20 +10,31 @@ import { inputTokensOf, OverBudget, pricesOf, worstCase, type Ledger, type Liste
 const api = 'https://openrouter.ai/api/v1';
 const keyFile = join(homedir(), '.config/homing/.openrouter');
 
-let key: string | undefined;
+/** Where a key comes from. The benchmarks use the file; tests give a made-up one. */
+export type KeySource = () => string;
 
-/** The key, read once. A file that doesn't hold one is refused without saying what it holds. */
-function openRouterKey(): string {
-  if (key) return key;
+/** Every key used so far, which redact takes out of any text. */
+const keys = new Set<string>();
+
+/** The key in ~/.config/homing/.openrouter. A file that doesn't hold one is refused without saying what it holds. */
+export const fileKey: KeySource = () => {
   const value = readFileSync(keyFile, 'utf8').trim();
   if (!/^sk-or-[A-Za-z0-9_-]+$/.test(value)) throw new Error(`${keyFile} doesn't hold an OpenRouter key.`);
-  key = value;
+  return value;
+};
+
+/** The key from its source, remembered so that redact can take it out. */
+function keyFrom(source: KeySource): string {
+  const key = source();
+  if (key.length < 8) throw new Error('That is too short to be an OpenRouter key.');
+  keys.add(key);
   return key;
 }
 
-/** Text with the key, or anything shaped like one, taken out. Everything the harness writes or throws passes through it. */
+/** Text with every key used, and anything shaped like an OpenRouter key, taken out. Everything the harness writes or throws passes through it. */
 export function redact(text: string): string {
-  const hidden = key ? text.split(key).join('[key]') : text;
+  let hidden = text;
+  for (const key of keys) hidden = hidden.split(key).join('[key]');
   return hidden.replace(/sk-or-[A-Za-z0-9_-]+/g, '[key]');
 }
 
@@ -34,11 +45,24 @@ export async function listedModels(): Promise<ListedModel[]> {
   return ((await response.json()) as { data: ListedModel[] }).data;
 }
 
-/** The key's usage so far, in USD, as OpenRouter reports it. */
-export async function keyUsage(): Promise<number> {
-  const response = await fetch(`${api}/key`, { headers: { authorization: `Bearer ${openRouterKey()}` }, signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new OverBudget(`OpenRouter answered ${response.status} when asked for the key's usage, so no more calls are made.`);
-  return Number(((await response.json()) as { data?: { usage?: unknown } }).data?.usage);
+/** The key's usage so far, in USD, as OpenRouter reports it. When it can't be read, nothing more is called. */
+export async function keyUsage(key: KeySource): Promise<number> {
+  const stop = (why: string) => new OverBudget(`Couldn't read the key's usage from OpenRouter (${why}), so no more calls are made.`);
+  let response: Response;
+  try {
+    response = await fetch(`${api}/key`, { headers: { authorization: `Bearer ${keyFrom(key)}` }, signal: AbortSignal.timeout(30_000) });
+  } catch (error) {
+    throw stop(redact(error instanceof Error ? error.name : 'no answer'));
+  }
+  if (!response.ok) throw stop(`it answered ${response.status}`);
+  let usage: unknown;
+  try {
+    usage = ((await response.json()) as { data?: { usage?: unknown } }).data?.usage;
+  } catch {
+    throw stop('its answer was not JSON');
+  }
+  if (typeof usage !== 'number' || !Number.isFinite(usage)) throw stop('its answer had no usage');
+  return usage;
 }
 
 export interface ToolCall {
@@ -88,25 +112,30 @@ export class Model {
   readonly id: string;
   readonly prices: Prices;
   private readonly ledger: Ledger;
-  private calls = 0;
+  private readonly key: KeySource;
+  /** How long to wait before the first retry, doubling after. */
+  private readonly backoffMs: number;
   /** Every this many calls, across models, the key's own usage is checked as well. */
   static keyCheckEvery = 50;
   static callsSinceKeyCheck = 0;
 
-  constructor(listed: ListedModel, ledger: Ledger) {
+  constructor(listed: ListedModel, ledger: Ledger, options: { key: KeySource; backoffMs?: number }) {
     this.id = listed.id;
     this.prices = pricesOf(listed);
     this.ledger = ledger;
+    this.key = options.key;
+    this.backoffMs = options.backoffMs ?? 4_000;
   }
 
   /**
    * One chat completion. It is reserved at its worst case first, retried a few times when
-   * OpenRouter or the provider fails, and settled at what it cost.
+   * OpenRouter or the provider fails, and settled at what it cost. When the cost isn't known it
+   * counts at its worst case, unless OpenRouter refused the request before any model ran.
    */
   async complete(request: { messages: Message[]; tools: FunctionTool[]; maxTokens: number; label: string }): Promise<Completion> {
     if (++Model.callsSinceKeyCheck >= Model.keyCheckEvery) {
       Model.callsSinceKeyCheck = 0;
-      this.ledger.checkKey(await keyUsage());
+      this.ledger.checkKey(await keyUsage(this.key));
     }
     const body = {
       model: this.id,
@@ -120,14 +149,14 @@ export class Model {
     };
     let lastFailure = '';
     for (let attempt = 0; attempt < 4; attempt++) {
-      if (attempt) await new Promise((resolve) => setTimeout(resolve, 2_000 * 2 ** attempt));
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, this.backoffMs * 2 ** (attempt - 1)));
       const reservation = this.ledger.reserve(this.id, worstCase(this.prices, inputTokensOf(body), request.maxTokens));
       const started = performance.now();
       let response: Response;
       try {
         response = await fetch(`${api}/chat/completions`, {
           method: 'POST',
-          headers: { authorization: `Bearer ${openRouterKey()}`, 'content-type': 'application/json', 'x-title': 'Homing benchmarks' },
+          headers: { authorization: `Bearer ${keyFrom(this.key)}`, 'content-type': 'application/json', 'x-title': 'Homing benchmarks' },
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(240_000),
         });
@@ -141,20 +170,23 @@ export class Model {
       try {
         json = await response.json();
       } catch {
-        this.ledger.settle(reservation, response.ok ? 'unknown' : 'error', request.label);
-        lastFailure = `OpenRouter answered ${response.status} with something other than JSON.`;
-        continue;
+        json = undefined;
       }
-      const cost = Number(json?.usage?.cost);
-      if (!response.ok || json.error || !json.choices?.length) {
-        this.ledger.settle(reservation, Number.isFinite(cost) ? { cost } : 'error', request.label);
-        lastFailure = redact(`OpenRouter answered ${response.status}: ${JSON.stringify(json?.error ?? json).slice(0, 400)}`);
+      const reported = json?.usage?.cost;
+      const cost = typeof reported === 'number' && Number.isFinite(reported) && reported >= 0 ? reported : undefined;
+      const usable = response.ok && json && !json.error && Array.isArray(json.choices) && json.choices.length > 0;
+      if (!usable) {
+        // Only OpenRouter's own answer to a bad request comes before any model ran. Anything else may have been charged.
+        const refused = response.status >= 400 && response.status < 500 && json !== undefined;
+        this.ledger.settle(reservation, cost !== undefined ? { cost } : refused ? 'error' : 'unknown', request.label);
+        lastFailure = redact(
+          json === undefined ? `OpenRouter answered ${response.status} with something other than JSON.` : `OpenRouter answered ${response.status}: ${JSON.stringify(json?.error ?? json).slice(0, 400)}`,
+        );
         // A request that can never succeed isn't retried.
-        if (response.status === 400 || response.status === 401 || response.status === 402 || response.status === 403) break;
+        if ([400, 401, 402, 403].includes(response.status)) break;
         continue;
       }
-      this.ledger.settle(reservation, Number.isFinite(cost) ? { cost } : 'unknown', request.label);
-      this.calls++;
+      this.ledger.settle(reservation, cost !== undefined ? { cost } : 'unknown', request.label);
       const usage = json.usage ?? {};
       const choice = json.choices[0];
       return {
@@ -171,7 +203,7 @@ export class Model {
           cachedTokens: usage.prompt_tokens_details?.cached_tokens ?? 0,
           cacheWriteTokens: usage.prompt_tokens_details?.cache_write_tokens ?? 0,
           reasoningTokens: usage.completion_tokens_details?.reasoning_tokens ?? 0,
-          cost: Number.isFinite(cost) ? cost : reservation.worst,
+          cost: cost ?? reservation.worst,
         },
         provider: json.provider,
         ms: performance.now() - started,

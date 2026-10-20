@@ -3,4 +3,3 @@
 node_modules/
 web/dist/
 .env
-/bench/.spend.json*

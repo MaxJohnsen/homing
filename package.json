@@ -9,7 +9,7 @@
   "scripts": {
     "migrate": "node src/migrate.ts",
     "check": "tsc && tsc -p web",
-    "test": "node test/reset.ts && node --test --test-concurrency=4 'test/**/*.test.ts'",
+    "test": "node test/reset.ts && node --test --test-concurrency=4 'test/**/*.test.ts' 'bench/**/*.test.ts'",
     "dev:web": "vite --config web/vite.config.ts",
     "build:web": "vite build --config web/vite.config.ts && vite build --config web/vite.config.ts --mode card",
     "build:site": "vite build --config web/vite.config.ts --mode site",

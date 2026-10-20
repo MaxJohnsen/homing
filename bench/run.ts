@@ -6,20 +6,19 @@
 //   npm run bench -- run --max-spend 45        the full set, resuming where it stopped
 //   npm run bench -- report                    tables from the results
 //
-// Every call passes the spending guard in budget.ts, and the total, across runs, is in
-// bench/.spend.json. CI never runs this.
+// Every call passes the spending guard in budget.ts. The total, across every run and checkout, is
+// in ~/.config/homing/bench-spend.json, and only one run at a time may use it. CI never runs this.
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { converse, homingOver, type Trace } from './agent.ts';
 import { answerOf, benchmarks, factsIn, Look, readTools, writesOf, type Benchmark, type Task } from './benchmarks.ts';
-import { hardCap, Ledger, OverBudget, usd } from './budget.ts';
+import { hardCap, Ledger, ledgerPath, OverBudget, usd } from './budget.ts';
 import { makeWorld, startHoming, type AssistantKind, type Bench } from './homing.ts';
-import { keyUsage, listedModels, Model, redact } from './openrouter.ts';
+import { fileKey, keyUsage, listedModels, Model, redact } from './openrouter.ts';
 import { report } from './report.ts';
 
 const here = new URL('./', import.meta.url);
-const ledgerFile = new URL('.spend.json', here).pathname;
 export const resultsFile = (phase: string) => new URL(`results/${phase}.jsonl`, here).pathname;
 
 /** Claude Sonnet 5.5 and GPT-6.1 Sol: each maker's current everyday model, at the same price. */
@@ -36,6 +35,8 @@ const { positionals, values } = parseArgs({
   },
 });
 const command = positionals[0];
+const runs = Number(values.runs);
+const concurrency = Number(values.concurrency);
 
 // The MCP client warns on every connection about a callback check the benchmarks don't need.
 const warn = console.warn;
@@ -185,18 +186,31 @@ async function main() {
     console.error('Say what to do: npm run bench -- show, smoke, pilot, run or report');
     process.exit(1);
   }
+  if (!(Number.isInteger(runs) && runs >= 1 && Number.isInteger(concurrency) && concurrency >= 1)) {
+    console.error('--runs and --concurrency take a whole number, 1 or more.');
+    process.exit(1);
+  }
+  // Taken before the database is made again, so a second run can't drop the first one's. Show spends nothing.
+  const ledger = new Ledger(ledgerPath, { runLimit: command === 'show' ? 0 : values['max-spend'] === undefined ? undefined : Number(values['max-spend']) });
+  try {
+    await benchmark(ledger, command);
+  } finally {
+    ledger.close();
+  }
+}
+
+async function benchmark(ledger: Ledger, command: string) {
   const bench = await startHoming();
   try {
     if (command === 'show') return await show(bench);
     const phase = command === 'run' ? 'full' : command;
-    const ledger = new Ledger(ledgerFile, { runLimit: values['max-spend'] ? Number(values['max-spend']) : undefined });
     const listed = await listedModels();
     const models = values.models!.split(',').map((id) => {
       const model = listed.find((candidate) => candidate.id === id);
       if (!model) throw new Error(`OpenRouter doesn't list ${id}.`);
-      return new Model(model, ledger);
+      return new Model(model, ledger, { key: fileKey });
     });
-    const since = ledger.checkKey(await keyUsage());
+    const since = ledger.checkKey(await keyUsage(fileKey));
     console.log(`Spent so far: ${usd(ledger.spent)} of ${usd(hardCap)} by the ledger, ${usd(since)} by the key's usage. This run may spend ${usd(ledger.runLimit)}.`);
 
     const only = values.only?.split(',');
@@ -208,10 +222,9 @@ async function main() {
     const failedBefore = new Map<string, number>();
     for (const result of readResults(phase).filter((result) => result.error)) failedBefore.set(result.key, (failedBefore.get(result.key) ?? 0) + 1);
     const picked = pickedTasks[phase];
-    const runs = picked ? 1 : Number(values.runs);
     const jobs: Job[] = [];
     // Run by run, so that stopping early still leaves every task, variant and model covered.
-    for (let run = 1; run <= runs; run++) {
+    for (let run = 1; run <= (picked ? 1 : runs); run++) {
       for (const benchmark of benchmarks.filter((b) => !only || only.includes(b.id))) {
         for (const task of benchmark.tasks.filter((t) => !picked || picked[benchmark.id].includes(t.id))) {
           for (const variant of benchmark.variants) {
@@ -249,8 +262,8 @@ async function main() {
         }
       }
     };
-    await Promise.all(Array.from({ length: Number(values.concurrency) }, worker));
-    const after = ledger.checkKey(await keyUsage());
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    const after = ledger.checkKey(await keyUsage(fileKey));
     if (stopped) console.log(`\n${stopped}`);
     console.log(`\nSpent: ${usd(ledger.spentThisRun)} in this run. In total ${usd(ledger.spent)} by the ledger, and ${usd(after)} by the key's usage since the first run.`);
   } finally {
