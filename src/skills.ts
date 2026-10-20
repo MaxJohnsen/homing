@@ -253,7 +253,8 @@ function describe(files: SkillFile[]): { name: string; description: string } {
   return { name, description };
 }
 
-function frontmatter(skillMd: string): { name?: string; description?: string } {
+/** A SKILL.md's name and description, from its frontmatter, where it has them. */
+export function frontmatter(skillMd: string): { name?: string; description?: string } {
   const yaml = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/.exec(skillMd)?.[1];
   try {
     const fields = yaml ? parse(yaml) : undefined;

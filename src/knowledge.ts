@@ -120,6 +120,11 @@ export async function readSource(s: Session, sourceId: string): Promise<Source |
   return source;
 }
 
+/** A title or a type as a page keeps it: one line, with single spaces, however it was written. */
+export function oneLineTitle(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 /** Creates a page for one subject, with its title on the given side. */
 export async function createPage(
   s: Session,
@@ -129,8 +134,8 @@ export async function createPage(
   await checkSpace(s, input.spaceId, input.shared);
   // A page is only visible through its items, so it can't be returned until its title exists.
   const id = randomUUID();
-  await s.tx`insert into pages (id, space_id, type) values (${id}::uuid, ${input.spaceId}::uuid, ${input.type ?? null})`;
-  await insertItem(s, { pageId: id, spaceId: input.spaceId, privateTo, kind: 'title', body: input.title });
+  await s.tx`insert into pages (id, space_id, type) values (${id}::uuid, ${input.spaceId}::uuid, ${input.type === undefined ? null : oneLineTitle(input.type) || null})`;
+  await insertItem(s, { pageId: id, spaceId: input.spaceId, privateTo, kind: 'title', body: oneLineTitle(input.title) || 'Untitled' });
   return id;
 }
 

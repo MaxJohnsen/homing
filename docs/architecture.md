@@ -71,6 +71,32 @@ Each routine run is a job, recording who it acted for, which connection it used,
 - Sign-in has its own database role and schema. It can't read space data, and Homing's role can't read passwords, passkeys or sessions. An account has the same id as its person, and only accepting an invite creates both.
 - The application still filters explicitly. Row-level security catches missing filters. It is not protection against a fully compromised application.
 
+## Export
+
+A space's export is a zip, read in one snapshot as the person who asks for it, so row-level security keeps everyone else's private side out underneath Homing's own filters. It goes down only through spaces the person can open, and only sources kept in those spaces come along. Items, tasks and spaces carry their own dates, as the app shows them. What happened to a page itself before the person could see anything on it stays out: its archive history starts when they could first see it, counting something shared from someone's own side from when it was shared, and a page archived before then shows as archived since then, by nobody named. In knowledge, a reference such as `page:…` to anything left out keeps its words and loses the reference; rules and skills' files stay word for word, and plain Homing addresses stay as written.
+
+```
+homing.json                    the manifest, compact JSON, the only file import reads
+knowledge/                     an OKF v0.2 bundle
+  index.md                     okf_version, then the space's overview, tasks, sources, pages and spaces
+  log.md                       what changed, by day, newest first
+  <page>.md                    one concept per page
+  overview.md, tasks.md
+  sources/<id>.md              one concept per source
+  <space>/                     each space below, the same way
+guidance/
+  AGENTS.md                    the space's rules
+  skills/<name>/               SKILL.md folders as they were saved
+  private-skills/<name>/       the person's own skills
+  <space>/                     each space below, the same way
+```
+
+The manifest has `format: "homing-export"`, `version: 1`, the instance's address, when it was exported and by whom, and then flat lists by current ID: `people`, `spaces`, `spaceArchives`, `pages`, `items`, `revisions`, `sources`, `links`, `gathered`, `pageArchives` and `tasks`. People are keys that hold only within the export, `person-1` and so on, each with a name, or null for someone the exporter no longer shares a space with; never an account's id or email. Whoever did something is an author: `by` is `person`, `agent` (with the agent's name, and the person it acted for) or `routine`. An item has its kind, body, visibility (`shared`, or `private` to the exporter), author, when it was created and last written, what it supersedes, `onlyHere` for a rule, the sources it cites in the export, `sourcesElsewhere` for those it rests on that are kept in other spaces, and the private item it was published from when that is the exporter's own. Members, proposals and credentials aren't exported, and Homing keeps no live external records yet.
+
+Each page is a concept with its type (`Page` when it has none), `title` on one line, its id under `homing`, `generated` with the last writer as an OKF actor (`human:<name>`, `<assistant>/homing` for an agent, `process:homing` for a routine), and `sources` pointing to their concepts, cited as footnotes keyed by source id. Items keep their ids in comments, private ones say whose they are, ones resting on sources elsewhere say so, replaced ones follow under Earlier, and an archived page has `status: deprecated`. A skill's file that wouldn't stay in its folder on every system, with a backslash, a colon, `.` or `..` in its path, is left out of `guidance/`, though the manifest has it. A test checks the knowledge folder against OKF §11 on every change.
+
+The zip is written with Node's own zlib, each file compressed into memory of its own. A big space is tens of thousands of files, so past 65,535 the zip ends with ZIP64's records, which common unzip tools read. Other requests keep being answered while an export is made: the manifest is built and written a few thousand rows at a time, small files are compressed a few hundred at a time, and a file over 1 MB, such as `homing.json`, is compressed off the main thread. Each person makes one export at a time, and Homing two at once, each until its zip has been sent, or for at most five minutes. On the big sample, about 100,000 files, an export peaks at about 1 GB, and nothing else waits more than about a tenth of a second.
+
 ## Self-hosting
 
 Self-hosting is part of the product, not something users piece together: HTTPS, MCP authentication, OAuth callbacks, migrations, upgrades, backup and restore. A full backup includes the encryption key. A Markdown export is not an operational backup.

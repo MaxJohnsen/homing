@@ -255,10 +255,8 @@ function archiveSpace(spaceId: string) {
   };
 }
 
-function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
+function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
-  // Settings are only for a space's admins, and a personal space has none.
-  const view = asked === 'settings' && space && (!space.admin || space.personal) ? 'overview' : asked;
   const rulesLoad = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '');
   const skillsLoad = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '');
   const rules = rulesLoad.data?.rules;

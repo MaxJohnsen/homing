@@ -161,7 +161,10 @@ Upkeep runs when new evidence arrives, and in a periodic tidy pass per space tha
 
 **What is stored.** Knowledge, not conversation history. By default a source is a reference plus an excerpt, and a full copy is kept only when it is necessary and permitted. Content is Markdown, backed by one transactional store that nobody edits directly. Relationships come from explicit links between pages, not from things appearing together.
 
-**Export** is an open bundle, compatible with the Open Knowledge Format where possible: pages, content, sources, links, stable IDs and history.
+**Export.** Anyone who can open a space can export it. The export holds everything they see there and in the spaces below it they can open: the shared side, and their own private side, marked as theirs, never anyone else's. That is its pages with their types, the items on them with their sources' permitted excerpts and history, including superseded items and archived pages, the links between pages, collections, the overview, rules, skills with their files, and tasks. Sources kept in other spaces, such as another client's, stay there, and what rests on them says so. A space below that the person can't open leaves no trace, not even its name. Items, tasks and spaces keep their dates, but what someone did with a page while it was theirs alone, such as archiving it, stays theirs. Credentials and live external records are never exported. An assistant gives the person the link to download it.
+
+- The bundle is readable as it is: the knowledge as Markdown in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format), and the rules and skills beside it as AGENTS.md and SKILL.md folders.
+- Everything keeps its stable ID and who did it: a person by name, told apart from others with the same name, an agent acting for them, or a space's routine. A manifest holds what importing it again needs, and importing it into a new space brings the space back intact (guarantee 10).
 
 ## 4. People and identity
 
@@ -347,6 +350,7 @@ More about the tools:
 - `remember` needs no approval, but it still has permissions. It can't overwrite text people wrote, change guidance, or write to anyone else's private side.
 - `remember` puts knowledge on the page for its subject: an existing page when there is one, a new one when the subject deserves it, and otherwise the space's notes, which upkeep can reorganize later. Sources can be kept on their own as evidence. An agent's own words are never treated as a source.
 - `act` returns one of three outcomes: done, waiting for approval (with a form or a link), or blocked. Approval is never a tool.
+- What a person does only in Homing, such as downloading a space's export, `act` answers with the link to it.
 - Every write can, and should, cite its sources.
 - A new system adds actions to `act`, never new tools. `act` validates arguments, authorization and approvals.
 - Whether an action publishes depends on its effect, not its name. A draft in a shared mailbox counts as publishing.

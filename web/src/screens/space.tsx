@@ -25,8 +25,8 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     { label: 'Tasks', href: `/spaces/${space.id}/tasks`, current: view === 'tasks' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
-    // Settings appear once there's something to set: so far, the name, which admins change.
-    ...(space.admin && !space.personal ? [{ label: 'Settings', href: `/spaces/${space.id}/settings`, current: view === 'settings' }] : []),
+    // Settings, for everyone in it to export it, and for its admins to rename, share and archive it.
+    { label: 'Settings', href: `/spaces/${space.id}/settings`, current: view === 'settings' },
   ];
   return (
     <>
@@ -144,12 +144,13 @@ export interface ShareSpaceActions {
 }
 
 /**
- * A space's own settings, for its admins: its name, and for a space in your personal tree, sharing
- * it with others. A shared space you moved from your personal tree says where it came from, to you.
+ * A space's own settings. Its admins rename it, share a space in your personal tree with others,
+ * and archive it, and a shared space you moved from your personal tree says where it came from, to
+ * you. Everyone who can open it exports it. A personal space keeps its name and stays open.
  */
 export function SpaceSettings({ space, rename, share, archive }: {
   space: SpaceData;
-  rename: (name: string) => Promise<string | undefined>;
+  rename?: (name: string) => Promise<string | undefined>;
   share?: ShareSpaceActions;
   /** Archives the space, or reopens it. */
   archive?: (archived: boolean) => Promise<string | undefined>;
@@ -163,7 +164,10 @@ export function SpaceSettings({ space, rename, share, archive }: {
   useEffect(() => setName(space.name), [space.name]);
   const changed = name.replace(/\s+/g, ' ').trim() !== space.name;
 
+  const looksAfter = space.admin && !space.personal;
+
   const save = async () => {
+    if (!rename) return;
     setBusy(true);
     const answer = await rename(name.trim());
     setBusy(false);
@@ -173,7 +177,7 @@ export function SpaceSettings({ space, rename, share, archive }: {
 
   return (
     <div className="flex flex-col gap-10">
-      <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? 'Only you see it.' : `Everyone who can open ${space.name} sees the new name.`}>
+      {rename && looksAfter && <Section title="Name" tone="raised" className="max-w-2xl" description={space.private ? 'Only you see it.' : `Everyone who can open ${space.name} sees the new name.`}>
         <form
           className="flex flex-col gap-3 sm:flex-row"
           onSubmit={(event) => {
@@ -204,12 +208,61 @@ export function SpaceSettings({ space, rename, share, archive }: {
             You moved it here from {space.movedFrom.name === 'your personal space' ? 'your personal space' : `${space.movedFrom.name}, in your personal space`}. Only you see this.
           </p>
         )}
-      </Section>
-      {share && space.private && !space.personal && !space.archive && (
+      </Section>}
+      {share && looksAfter && space.private && !space.archive && (
         <ShareSpace space={space} share={share} open={sharing} onOpen={setSharing} />
       )}
-      {archive && <Archive space={space} archive={archive} />}
+      <Export space={space} />
+      {archive && looksAfter && <Archive space={space} archive={archive} />}
     </div>
+  );
+}
+
+/**
+ * Downloading a space (spec §3): everything the person sees in it, and in the spaces in it they
+ * can open, as a zip. Their own private side comes along, marked, and never anyone else's.
+ */
+function Export({ space }: { space: SpaceData }) {
+  const name = space.personal ? 'your personal space' : space.name;
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  // Fetched first, so a big space says it's on its way, and a refusal says why instead of downloading it.
+  const download = async () => {
+    setBusy(true);
+    setProblem(undefined);
+    try {
+      const response = await fetch(`/api/spaces/${space.id}/export`);
+      if (!response.ok) {
+        setProblem(((await response.json().catch(() => ({}))) as { message?: string }).message ?? 'Something went wrong. Try again.');
+        return;
+      }
+      const file = URL.createObjectURL(await response.blob());
+      const link = Object.assign(document.createElement('a'), {
+        href: file,
+        download: /filename="([^"]+)"/.exec(response.headers.get('content-disposition') ?? '')?.[1] ?? 'export.zip',
+      });
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(file), 60_000);
+    } catch {
+      setProblem('Homing can’t be reached right now. Check your connection and try again.');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <Section
+      title="Export"
+      className="max-w-2xl"
+      description={space.private
+        ? `A zip of everything in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it.`
+        : `A zip of everything you see in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it you can open. What’s only yours comes along, marked as yours. Nobody else’s does.`}
+    >
+      <div>
+        <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={download}>Download {name}</Button>
+      </div>
+      {busy && <p role="status" className="text-sm text-muted-foreground">Putting the export together. A big space takes a little while.</p>}
+      {problem && <FieldError>{problem}</FieldError>}
+    </Section>
   );
 }
 
