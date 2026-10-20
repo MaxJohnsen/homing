@@ -161,7 +161,7 @@ export function SpaceFields({ draft, onChange, places, audience, problem, disabl
           onChange={(who) => set({ who })}
           disabled={disabled}
           options={[
-            { value: 'just me', label: 'Just me', detail: 'In your personal space. Nobody else can ever be added.', private: true },
+            { value: 'just me', label: 'Just me', detail: 'In your personal space, only yours until you share it from its Settings.', private: true },
             { value: 'with others', label: 'With others', detail: 'For people you add, or everyone in a shared space you’re an admin of. What you write in it starts as only yours.' },
           ]}
         />

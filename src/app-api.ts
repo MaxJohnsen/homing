@@ -73,7 +73,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (!isEmail(email)) return answer(res, 400, { field: 'email', message: 'Write their email address.' });
         const space = await read((s) => spaceView(s, route.id));
         if (!space) return answer(res, 404, noSpace);
-        if (!space.admin || space.privateTo) return answer(res, 403, { message: space.privateTo ? 'Spaces in your personal space are only ever yours, so nobody can be added.' : `Only ${space.name}’s admins change who’s in it.` });
+        if (!space.admin || space.privateTo) return answer(res, 403, { message: space.privateTo ? 'Spaces in your personal space are only yours. To add people, share the space first, from its Settings.' : `Only ${space.name}’s admins change who’s in it.` });
         // Signed in, an admin learns whether someone uses Homing with that email.
         const account = await accountFinder(app.authPool)(email);
         if (!account) {
@@ -99,6 +99,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (!conversion) return answer(res, 404, noSpace);
         json(res, 200, {
           rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName })),
+          skillsLeaving: conversion.skillsLeaving,
           places: conversion.places,
         });
         break;

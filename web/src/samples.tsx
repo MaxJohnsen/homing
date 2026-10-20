@@ -175,6 +175,7 @@ const sampleRuleActions: RuleActions = { add: async () => undefined, edit: async
 const sampleShareSpace: ShareSpaceActions = {
   conversion: async () => ({
     rulesLeaving: [{ kind: 'preference', text: 'Keep renovation notes in Norwegian.', from: 'Home' }],
+    skillsLeaving: [{ name: 'Quote checker', from: 'Home' }],
     places: [{ id: 'acme', name: 'Acme', label: 'Acme', people: 5, above: false }],
   }),
   convert: async () => 'Samples don’t share anything.',

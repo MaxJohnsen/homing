@@ -242,7 +242,7 @@ export async function proposeMemberChange(s: Session, input: { spaceId: string; 
   const space = await spaceView(s, input.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (input.person) await memberChangeFits(s, space, input.person.id, input.change);
-  else if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
+  else if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only yours. To add people, share the space first, from its Settings.');
   else if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
   return insertProposal(s, {
     spaceId: space.id,

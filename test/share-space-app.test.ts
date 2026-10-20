@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
 import { addRule } from '../src/guidance.ts';
-import { addSource, createPage, writeItem } from '../src/knowledge.ts';
+import { addSource, createPage, gather, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -17,6 +17,7 @@ import { inTestDatabase } from './reset.ts';
 let homing: Homing;
 let ana: Member, cara: Member;
 let acme: string, home: string, kitchen: string, tiles: string, page: string;
+let chat: Awaited<ReturnType<Assistant['open']>>;
 
 const conversion = (who: Member, space: string) => who.browser.json(`/api/spaces/${space}/conversion`);
 const convert = (who: Member, space: string, body: Record<string, unknown>) => who.browser.json(`/api/spaces/${space}/conversion`, body);
@@ -37,6 +38,9 @@ before(async () => {
     await writeItem(s, { pageId: page, body: 'The cabinets cost 80,000.', sources: [quote.id] });
     return { acme, home, kitchen, tiles, page };
   }));
+  const claude = new Assistant(homing.url, assistants.claude);
+  await claude.connect(ana.browser);
+  chat = await claude.open();
 });
 
 after(() => homing.close());
@@ -95,11 +99,68 @@ test('only you share a space of yours, only as a person, and only into a space y
 
 test('an assistant gives the user the link, where they decide it', async () => {
   const garden = await as({ person: ana.id, direct: true }, (s) => createSpace(s, { name: 'Shed', parentId: ana.personalSpaceId }));
-  const claude = new Assistant(homing.url, assistants.claude);
-  await claude.connect(ana.browser);
-  const chat = await claude.open();
   const answer = await chat.call('act', { action: 'space.share', input: { space: `space:${garden}` } });
   assert.ok(!answer.failed, answer.text);
   assert.match(answer.text, new RegExp(`Nothing has changed yet\\. Give them this link: ${homing.url}spaces/${garden}/settings`));
   assert.equal((await spaceAs(ana, garden)).private, true);
+});
+
+test('shared closed, with its rules for everyone: only people added have it, and nothing of Ana\'s private side is theirs', async () => {
+  const { projects, garden, notes } = await as({ person: ana.id, direct: true }, async (s) => {
+    const projects = await createSpace(s, { name: 'Projects', parentId: ana.personalSpaceId });
+    await addRule(s, { spaceId: projects, kind: 'requirement', body: 'Write dates as YYYY-MM-DD.' });
+    const garden = await createSpace(s, { name: 'Garden', parentId: projects });
+    await addRule(s, { spaceId: garden, kind: 'preference', body: 'Plant natives first.' });
+    await writeOverview(s, { spaceId: garden, text: 'Planning the spring planting.' });
+    const notes = await createPage(s, { spaceId: garden, title: 'Notes' });
+    const plants = await createPage(s, { spaceId: garden, title: 'Plants' });
+    await writeItem(s, { pageId: plants, body: 'Lavender by the wall.' });
+    await gather(s, { collectionId: notes, pageId: plants });
+    const beds = await createSpace(s, { name: 'Beds', parentId: garden });
+    const bedPage = await createPage(s, { spaceId: beds, title: 'Raised beds' });
+    await writeItem(s, { pageId: bedPage, body: 'Three beds of 2 by 1 metres.' });
+    return { projects, garden, notes };
+  });
+  const shared = await convert(ana, garden, { in: acme, closed: true, rules: 'share' });
+  assert.equal(shared.status, 200, JSON.stringify(shared.body));
+  // Closed: Cara, in Acme, doesn't have it.
+  assert.equal((await cara.browser.json(`/api/spaces/${garden}`)).status, 404);
+  await as({ person: ana.id, direct: true }, (s) => addMember(s, garden, cara.id));
+  // Added, Cara sees the rule Ana chose to share, and nothing else of hers.
+  const rules = ((await cara.browser.json(`/api/spaces/${garden}/rules`)).body.rules as { text: string; shared: boolean }[]).map((rule) => [rule.text, rule.shared]);
+  assert.ok(rules.some(([text, shared]) => text === 'Write dates as YYYY-MM-DD.' && shared === true));
+  assert.ok(!rules.some(([text]) => text === 'Plant natives first.'), 'her own rules in the space stay hers');
+  assert.deepEqual((await cara.browser.json(`/api/spaces/${garden}/overview`)).body.overview, []);
+  assert.deepEqual((await cara.browser.json(`/api/spaces/${garden}/pages`)).body.pages, []);
+  assert.equal((await cara.browser.json(`/api/pages/${notes}`)).status, 404);
+  const bedsId = ((await cara.browser.json('/api/spaces')).body.spaces as { id: string; name: string }[]).find((space) => space.name === 'Beds')?.id;
+  assert.ok(bedsId, 'the spaces under it come along');
+  assert.deepEqual((await cara.browser.json(`/api/spaces/${bedsId}/pages`)).body.pages, []);
+  // Where it came from is Ana's alone, in the database too.
+  assert.equal((await as(cara, (s) => s.tx`select moved_from from space_moves where space_id = ${garden}::uuid`)).length, 0);
+  assert.ok(projects);
+});
+
+test('a space can\'t take a name that\'s taken where it goes, nor go where the database won\'t let it', async () => {
+  const { kitchen2, shed } = await as({ person: ana.id, direct: true }, async (s) => ({
+    kitchen2: await createSpace(s, { name: 'Kitchen', parentId: ana.personalSpaceId }),
+    shed: await createSpace(s, { name: 'Bike shed', parentId: ana.personalSpaceId }),
+  }));
+  const taken = await convert(ana, kitchen2, { in: acme, rules: 'drop' });
+  assert.deepEqual([taken.status, taken.body.field], [400, 'name']);
+  assert.match(taken.body.message, /already a space called Kitchen in Acme/);
+  // Straight against the database: never into a space Ana isn't an admin of, nor anyone's private space.
+  const team = await as({ person: cara.id, direct: true }, async (s) => {
+    const team = await createSpace(s, { name: 'Cara’s club' });
+    await addMember(s, team, ana.id);
+    return team;
+  });
+  for (const into of [team, cara.personalSpaceId, ana.personalSpaceId]) {
+    await assert.rejects(as({ person: ana.id, direct: true }, (s) => s.tx`select make_collaborative(${shed}::uuid, ${into}::uuid, false)`), refused, into);
+  }
+});
+
+test('the assistant\'s link is only for a space in the personal space', async () => {
+  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${ana.personalSpaceId}` } })).text, /personal space itself stays the user’s own/);
+  assert.match((await chat.call('act', { action: 'space.share', input: { space: `space:${acme}` } })).text, /already shared/);
 });

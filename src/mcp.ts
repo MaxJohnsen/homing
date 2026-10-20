@@ -853,7 +853,7 @@ async function proposeMembers(s: Session, links: Links, input: z.infer<typeof me
   // Whether the user may change who's in it comes first, before anyone is looked for.
   const view = await spaceView(s, spaceId);
   if (!view) throw new Refused('There’s no space there that you can open.');
-  if (view.privateTo) throw new Refused('Spaces in your personal space are only ever yours, so nobody can be added.');
+  if (view.privateTo) throw new Refused(`${view.name} is in the user's personal space, so only they have it. To add people, it's shared first: use space.share for the link.`);
   // Anyone may leave a space; everything else is for its admins.
   if (!view.admin && change !== 'remove') throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
   let person: { id: string; name: string } | undefined;

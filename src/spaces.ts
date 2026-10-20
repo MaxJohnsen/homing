@@ -98,7 +98,7 @@ export async function placeSpace(
       throw new SpaceRefused('where', `A space just for you goes in your personal space. A space in ${parent.name} is for the people in it.`);
     }
   } else if (parent?.privateTo) {
-    throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours. To share one, create it on its own, or in a shared space.');
+    throw new SpaceRefused('where', 'Spaces in your personal space are only yours. To share one with others, create it on its own or in a shared space, or share it later from its Settings.');
   } else if (parent && !parent.admin) {
     throw new SpaceRefused('admin', `Only ${parent.name}’s admins create spaces in it.`);
   }
@@ -172,7 +172,7 @@ export async function changeMember(s: Session, spaceId: string, personId: string
  */
 export async function memberChangeFits(s: Session, view: SpaceView, personId: string, change: MemberChange): Promise<void> {
   const leaving = change === 'remove' && personId === personOf(s.principal);
-  if (view.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
+  if (view.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only yours. To add people, share the space first, from its Settings.');
   if (!view.admin && !leaving) throw new SpaceRefused('admin', `Only ${view.name}’s admins change who’s in it.`);
   const member = view.members.find((candidate) => candidate.id === personId && candidate.member);
   if (change === 'add' && member) throw new SpaceRefused('person', `${member.name} is already in ${view.name}.`);

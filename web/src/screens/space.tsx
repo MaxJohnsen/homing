@@ -125,6 +125,7 @@ function members(n: number) {
 /** What sharing a space from your personal tree would do: the rules that stop applying, and where it can go. */
 export interface ConversionData {
   rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null }[];
+  skillsLeaving: { name: string; from: string | null }[];
   places: { id: string; name: string; label: string; people: number; above: boolean }[];
 }
 
@@ -219,6 +220,16 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
   }, [open, conversion, share]);
   const parent = conversion?.places.find((place) => place.id === inside);
   const others = parent ? parent.people - 1 : 0;
+  const opener = useRef<HTMLButtonElement>(null);
+  const first = useRef<HTMLDivElement>(null);
+  // Opening takes you into the form; closing it brings you back to where you were.
+  useEffect(() => {
+    if (open && conversion) first.current?.querySelector<HTMLElement>('select, button')?.focus();
+  }, [open, conversion]);
+  const close = () => {
+    onOpen(false);
+    requestAnimationFrame(() => opener.current?.focus());
+  };
 
   const convert = async () => {
     setBusy(true);
@@ -237,14 +248,14 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
     >
       {!open ? (
         <div>
-          <Button variant="outline" onClick={() => onOpen(true)}>Share {space.name}</Button>
+          <Button ref={opener} variant="outline" onClick={() => onOpen(true)}>Share {space.name}</Button>
         </div>
       ) : conversion === undefined ? (
-        <p className="text-sm text-muted-foreground">Getting what would change…</p>
+        <p role="status" className="text-sm text-muted-foreground">Getting what would change…</p>
       ) : conversion === null ? (
         <p className="text-base">{space.name} can’t be shared from here.</p>
       ) : (
-        <div className="flex flex-col gap-4">
+        <div ref={first} className="flex flex-col gap-4">
           {conversion.places.length > 0 && (
             <div className="flex flex-col gap-2">
               <Label htmlFor="share-space-in" className="text-base">Where does it go?</Label>
@@ -284,7 +295,7 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
               ? `A space of its own, with you as its admin. Only you have it until you add people.`
               : closed
                 ? `In ${parent.name}, with you as its admin. Only the people you add have it, and ${parent.name}’s shared rules apply in it.`
-                : `In ${parent.name}, with you as its admin. Everyone there sees its name and the spaces under it, and ${parent.name}’s shared rules apply in it.`}
+                : `In ${parent.name}. Everyone there sees its name and the spaces under it, ${parent.name}’s admins look after it with you, and its shared rules apply in it.`}
           </p>
           {conversion.rulesLeaving.length > 0 && (
             <div className="flex flex-col gap-3">
@@ -310,10 +321,18 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
               />
             </div>
           )}
+          {conversion.skillsLeaving.length > 0 && (
+            <p className="text-base">
+              {conversion.skillsLeaving.length === 1 ? 'The skill' : 'The skills'} {conversion.skillsLeaving.map((skill) => `“${skill.name}”`).join(', ')} from your personal space stop applying in it too. Add {conversion.skillsLeaving.length === 1 ? 'it' : 'them'} to {space.name}’s Guidance afterwards if you need {conversion.skillsLeaving.length === 1 ? 'it' : 'them'}.
+            </p>
+          )}
           {problem && <FieldError>{problem}</FieldError>}
           <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-            <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => onOpen(false)}>Cancel</Button>
-            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={convert}>Share {space.name}</Button>
+            <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={close}>Cancel</Button>
+            {/* The button names who will have it: everyone in a space it goes in, or for now only you. */}
+            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={convert}>
+              {parent && !closed ? `Share with ${parent.name}` : `Move ${space.name} out of your personal space`}
+            </Button>
           </div>
         </div>
       )}
