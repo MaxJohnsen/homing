@@ -113,6 +113,8 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 
 **Small items where useful.** Anything that can go out of date, such as a date, an owner, a status, a decision, a commitment or a contact, is its own item with its own sources, so it can be updated alone. Background and reasoning stay as prose. Agents choose sensible boundaries, and ideas are marked as ideas.
 
+**No sections.** A page is its items in order. Headings inside an item give longer prose its structure, and a page that grows too long is split into pages that a collection gathers.
+
 **When a page is created.** When guidance names its type, when a person asks, or when an agent judges that someone would look the subject up by name. A subject coming up again is a signal, not a rule. Someone who only appears in sources doesn't get a page until they matter, so a mailbox with 20,000 contacts doesn't produce 20,000 pages.
 
 **Knowledge without a home stays in its source.** Excerpts remain searchable, and when a subject earns a page, the page is built from them. Nothing is dumped on the overview.

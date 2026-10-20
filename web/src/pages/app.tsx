@@ -3,7 +3,7 @@ import { Shell } from '@/components/app-shell';
 import { ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
-import type { PageData, PageOrder, PagesData } from '@/lib/knowledge';
+import type { NewPage, PageActions, PageData, PageOrder, PagesData } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
 import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
@@ -96,7 +96,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
       {error?.status === 404 && <ScreenHeader title="There’s no space here" meta="It may have been removed, or you can’t open it." />}
       {space && (
         <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
-          {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} />}
+          {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} create={newPage(id)} />}
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
           {view === 'members' && !space.private && <Members space={space} />}
@@ -146,9 +146,37 @@ function PagePage({ id }: { id: string }) {
   return (
     <Titled title={data?.title ?? 'Page'}>
       {error?.status === 404 && <ScreenHeader title="There’s no page here" meta="It may have been removed, or you can’t open it." />}
-      {data && <Page page={data} />}
+      {data && <Page page={data} actions={pageActions(data)} />}
     </Titled>
   );
+}
+
+/** Starting a page in a space. */
+function newPage(spaceId: string): NewPage {
+  return async (input) => {
+    try {
+      return await api<{ id: string }>(`/api/spaces/${spaceId}/pages`, input);
+    } catch (error) {
+      return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.' };
+    }
+  };
+}
+
+/** Writing on a page directly, then showing it as it is now, and the space's list with it. */
+function pageActions(page: PageData): PageActions {
+  const run = async (action: () => Promise<unknown>) => {
+    try {
+      await action();
+      await reload(`/api/pages/${page.id}`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) await reload(`/api/pages/${page.id}`);
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
+  return {
+    add: (text, shared) => run(() => api(`/api/pages/${page.id}/items`, { text, shared })),
+    correct: (itemId, text, shared) => run(() => api(`/api/items/${itemId}`, { text, shared })),
+  };
 }
 
 /** Changing rules directly, then showing them as they are now. */

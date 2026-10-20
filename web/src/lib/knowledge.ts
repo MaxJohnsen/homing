@@ -46,10 +46,22 @@ export interface PageData {
   id: string;
   title: string;
   type: string | null;
+  /** On the space's shared side, so everyone there sees its title. */
+  shared: boolean;
   updatedAt: string;
-  space: { id: string; name: string; personal: boolean; private: boolean };
+  /** Where it is, and how many people see what's shared there now. */
+  space: { id: string; name: string; personal: boolean; private: boolean; people: number };
   items: ItemData[];
 }
+
+/** Writing on a page. Each answers with what went wrong, or nothing when it's saved. */
+export interface PageActions {
+  add: (text: string, shared: boolean) => Promise<string | undefined>;
+  correct: (itemId: string, text: string, shared: boolean) => Promise<string | undefined>;
+}
+
+/** Starting a page. Answers with the new page, or what went wrong. */
+export type NewPage = (input: { title: string; type: string; shared: boolean }) => Promise<{ id: string } | { problem: string }>;
 
 /** The text without its Markdown, for a one-line glimpse. */
 export function plain(markdown: string): string {

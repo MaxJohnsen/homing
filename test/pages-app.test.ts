@@ -121,7 +121,7 @@ test('a long list comes fifty at a time, and starts over when asked for past its
 type PageBody = {
   title: string;
   type: string | null;
-  space: { id: string; name: string; personal: boolean; private: boolean };
+  space: { id: string; name: string; personal: boolean; private: boolean; people: number };
   items: {
     text: string;
     shared: boolean;
@@ -142,7 +142,7 @@ const open = async (who: Member, page: string) => {
 test('a page shows each person the shared items and their own, with who wrote them and from where', async () => {
   const forAna = await open(ana, launch);
   assert.equal(forAna.title, 'Website launch');
-  assert.deepEqual(forAna.space, { id: acme, name: 'Acme', personal: false, private: false });
+  assert.deepEqual(forAna.space, { id: acme, name: 'Acme', personal: false, private: false, people: 2 });
   // Ana's newer date stands where the shared one did, and says what the others still see.
   assert.deepEqual(forAna.items.map((item) => [item.text, item.shared]), [
     ['The launch moved to 20 November.', false],

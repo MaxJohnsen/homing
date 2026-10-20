@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { historyOf, pagesIn, readPage, type PageOrder } from './knowledge.ts';
+import { createPage, historyOf, pagesIn, readItem, readPage, supersedeItem, updateItem, writeItem, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, peopleNames, spaceView } from './spaces.ts';
@@ -30,6 +30,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
   const read = <T>(fn: (s: Session) => Promise<T>) => withPrincipal(app.sql, { person }, fn);
   const write = <T>(fn: (s: Session) => Promise<T>) => withPrincipal(app.sql, { person, direct: true }, fn);
   const noSpace = { message: 'There’s no space here that you can open.' };
+  const noPage = { message: 'There’s no page here that you can open.' };
+  const noItem = { message: 'There’s nothing here that you can change.' };
   const noRule = { message: 'There’s no rule here that you can change.' };
 
   try {
@@ -142,7 +144,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           const names = await peopleNames(s, [...page.items, ...history].map((entry) => entry.writtenBy));
           return { page, space, history, names };
         });
-        if (!found) return answer(res, 404, { message: 'There’s no page here that you can open.' });
+        if (!found) return answer(res, 404, noPage);
         const { page, space, history, names } = found;
         // Who wrote something: a person by name, or nobody named when they're no longer someone the reader shares a space with.
         const by = (writtenBy: string | null) => (writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person });
@@ -150,8 +152,16 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           id: page.id,
           title: page.title,
           type: page.type,
+          shared: page.shared,
           updatedAt: page.updatedAt,
-          space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
+          space: {
+            id: space.id,
+            name: space.name,
+            personal: space.privateTo !== null && space.parentId === null,
+            private: space.privateTo !== null,
+            // How many people see what's shared there now.
+            people: space.members.length,
+          },
           items: page.items.map((item) => ({
             id: item.id,
             text: item.body,
@@ -167,6 +177,49 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               .map((entry) => ({ text: entry.body, by: by(entry.writtenBy), agent: entry.agent, writtenAt: entry.writtenAt, until: entry.replacedAt })),
           })),
         });
+        break;
+      }
+
+      case 'add page': {
+        const body = await readJson(req);
+        const title = typeof body.title === 'string' ? body.title.trim() : '';
+        const type = typeof body.type === 'string' ? body.type.trim().toLowerCase() : '';
+        if (!title || title.length > 200) return answer(res, 400, { field: 'title', message: title ? 'Keep the title under 200 characters.' : 'Say what the page is about.' });
+        if (type.length > 40) return answer(res, 400, { field: 'type', message: 'Keep the type to a word or two.' });
+        if (type === 'guidance' || type === 'skill') return answer(res, 400, { field: 'type', message: 'Rules and skills are written under Guidance.' });
+        if (!(await read((s) => spaceView(s, route.id)))) return answer(res, 404, noSpace);
+        const id = await write((s) => createPage(s, { spaceId: route.id, title, type: type || undefined, shared: body.shared === true }));
+        json(res, 200, { id });
+        break;
+      }
+
+      case 'add item': {
+        const body = await readJson(req);
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text || text.length > 20_000) return answer(res, 400, { field: 'text', message: text ? 'Keep it under 20,000 characters, or split it over more items.' : 'Write what you know.' });
+        const page = await read((s) => readPage(s, route.id));
+        if (!page || page.type === 'guidance' || page.type === 'skill') return answer(res, 404, noPage);
+        // On a page only you can see, everything stays yours. Sharing it is publishing, which comes with approvals.
+        if (body.shared === true && !page.shared) {
+          return answer(res, 403, { message: 'Only you see this page, so what you add to it stays yours.' });
+        }
+        const item = await write((s) => writeItem(s, { pageId: route.id, body: text, shared: body.shared === true }));
+        json(res, 200, { id: item.id });
+        break;
+      }
+
+      case 'correct item': {
+        const body = await readJson(req);
+        const text = typeof body.text === 'string' ? body.text.trim() : '';
+        if (!text || text.length > 20_000) return answer(res, 400, { field: 'text', message: text ? 'Keep it under 20,000 characters.' : 'Write what it should say.' });
+        const item = await read((s) => readItem(s, route.id));
+        if (!item || item.kind !== 'text' || item.reachesDown) return answer(res, 404, noItem);
+        // A shared item is corrected for everyone, or replaced by your own version that only you see.
+        const changed = item.privateTo === null && body.shared === false
+          ? await write((s) => supersedeItem(s, route.id, { body: text }))
+          : await write((s) => updateItem(s, route.id, { body: text }));
+        if (!changed) return answer(res, 404, noItem);
+        json(res, 200, { id: changed.id });
         break;
       }
 
@@ -288,7 +341,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' }
-  | { name: 'space' | 'pages' | 'page' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'pages' | 'page' | 'add page' | 'add item' | 'correct item' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -311,6 +364,9 @@ function routeOf(method: string, path: string): Route | undefined {
   }
   if (method === 'POST') {
     for (const [name, pattern] of [
+      ['add page', `/api/spaces/${uuid}/pages`],
+      ['add item', `/api/pages/${uuid}/items`],
+      ['correct item', `/api/items/${uuid}`],
       ['add rule', `/api/spaces/${uuid}/rules`],
       ['edit rule', `/api/rules/${uuid}`],
       ['remove rule', `/api/rules/${uuid}/remove`],

@@ -258,8 +258,9 @@ export const samplePage: PageData = {
   id: '7d1c2a40-0000-4000-8000-000000000001',
   title: 'Website relaunch',
   type: 'project',
+  shared: true,
   updatedAt: daysAgo(0, 5),
-  space: { id: 'northwind', name: 'Northwind', personal: false, private: false },
+  space: { id: 'northwind', name: 'Northwind', personal: false, private: false, people: 4 },
   items: [
     {
       id: 'item-1', text: 'Northwind’s public website is being rebuilt with a new design system and a **booking flow**, so customers can book service appointments online. Acme designs and builds it; Northwind’s own team writes the content.',
