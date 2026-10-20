@@ -2,7 +2,7 @@ import { useId, useState } from 'react';
 import { cn } from 'cn';
 import { AudienceChoice, everyoneIn, type Audience } from '@/components/audience';
 import { OnlyYou } from '@/components/only-you';
-import { dateOf, Section } from '@/components/screen';
+import { dateOf, Section, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { FieldError } from '@/components/ui/field';
@@ -131,8 +131,9 @@ function TaskRow({ task, space, actions, now }: { task: TaskData; space: SpaceDa
             </p>
           )}
         </div>
+        {/* At most half the row, so a long space name never squeezes the task out. */}
         {actions && onlyYou && !task.done && !sharing && (
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => setSharing(true)}>Share with {space.name}</Button>
+          <Button variant="outline" size="sm" className={cn(wrapsLabel, 'min-h-8 max-w-1/2 py-1')} disabled={busy} onClick={() => setSharing(true)}>Share with {space.name}</Button>
         )}
       </div>
       {actions && onlyYou && !task.done && sharing && (
@@ -185,9 +186,9 @@ function AddTask({ space, add, onDone }: { space: SpaceData; add: TaskActions['a
         </div>
         {!space.private && <AudienceChoice space={space.name} people={space.members.length} above={space.reachedFromAbove} value={audience} onChange={setAudience} disabled={busy} surface="muted" />}
         {problem && <FieldError>{problem}</FieldError>}
-        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
           <Button type="button" variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
-          <Button type="submit" size="lg" disabled={busy || !title.trim()}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
+          <Button type="submit" size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !title.trim()}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
         </div>
       </form>
     </Section>

@@ -5,7 +5,7 @@ import { OnlyYou } from '@/components/only-you';
 import type { RuleKind } from '@/components/proposed-change';
 import { RadioCards } from '@/components/radio-cards';
 import { RuleReach } from '@/components/rule-reach';
-import { dateOf, focusRing, Tag } from '@/components/screen';
+import { dateOf, focusRing, Tag, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Label } from '@/components/ui/label';
@@ -298,9 +298,9 @@ function IncludeForm({ space, what, options, include, onDone }: {
       )}
       <p className="text-sm text-muted-foreground">{reach}</p>
       {message && <FieldError>{message}</FieldError>}
-      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" disabled={busy} onClick={onDone}>Cancel</Button>
-        <Button disabled={busy || !chosen} onClick={add}>{shared ? `Include for ${space.name}` : 'Include for you'}</Button>
+        <Button className={cn(wrapsLabel, 'min-h-9 py-1.5')} disabled={busy || !chosen} onClick={add}>{shared ? `Include for ${space.name}` : 'Include for you'}</Button>
       </div>
     </div>
   );

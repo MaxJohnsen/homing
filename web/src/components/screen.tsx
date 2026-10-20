@@ -9,7 +9,9 @@ export const focusRing = 'focus-visible:ring-[3px] focus-visible:ring-ring focus
 
 /**
  * For a button whose label can be long, as one with a space's name in it: the label wraps inside the
- * button instead of running past its edge. Give it its usual height as a minimum, such as min-h-11.
+ * button instead of running past its edge. Follow it with the button's usual height as a minimum,
+ * such as min-h-11, and less padding on a smaller button (py-1.5 by default, py-1 small) so one line
+ * keeps that height.
  */
 export const wrapsLabel = 'h-auto max-w-full py-2 text-center whitespace-normal text-balance';
 

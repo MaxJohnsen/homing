@@ -156,7 +156,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
             {!declineOnly(proposal) && (
-              <Button className={cn('min-h-10 px-4', wrapsLabel)} disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttons!.approve}</Button>
+              <Button className={cn(wrapsLabel, 'min-h-10 px-4')} disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttons!.approve}</Button>
             )}
             <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttons!.reject}</Button>
           </div>

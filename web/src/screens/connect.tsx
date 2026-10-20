@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { cn } from 'cn';
+import { wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
@@ -51,9 +53,9 @@ export function Connect({
             <p>Changing rules or sharing knowledge requires your approval.</p>
           </div>
 
-          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
             <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>Cancel</Button>
-            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(true)}>Connect {assistant.name}</Button>
+            <Button size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy} onClick={() => choose(true)}>Connect {assistant.name}</Button>
           </div>
           {message && <FieldError>{message}</FieldError>}
           <p className="text-sm text-muted-foreground">You can disconnect it at any time from your account.</p>

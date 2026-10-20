@@ -88,7 +88,7 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
                 {buttons.reject}
               </Button>
               {!declineOnly && (
-                <Button size="lg" className={cn('min-h-11 text-base sm:px-5', wrapsLabel)} disabled={busy || blocked} onClick={() => choose(true)}>
+                <Button size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy || blocked} onClick={() => choose(true)}>
                   {buttons.approve}
                 </Button>
               )}
