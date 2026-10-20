@@ -286,30 +286,41 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
 
 /**
  * Suggests archiving a space whose work is done (spec §1), for the person to approve as one of its
- * admins. Rare by design: one waiting at a time, and never again for a space the person kept open,
- * unless they ask.
+ * admins. Rare by design, as suggested spaces are: one of the assistant's own waiting at a time, and
+ * never again for a space the person kept open; a few at a time when the person asked.
  */
 export async function suggestArchive(s: Session, input: { spaceId: string; why?: string; asked?: boolean }): Promise<Proposal> {
+  // One person's suggestions are made one at a time, so two at once can't both pass the checks.
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.suggest:' || ${personOf(s.principal)!}))`;
   const spaces = await listSpaces(s);
   const space = spaces.find((candidate) => candidate.id === input.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (space.privateTo !== null && space.parentId === null) throw new SpaceRefused('where', 'The personal space stays open.');
   if (space.archived) throw new SpaceRefused('where', space.archivedAt ? `${space.name} is archived already.` : `${space.name} is archived already, with the space above it.`);
   if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins archive it. The user can ask one of them.`);
-  const [waiting] = await s.tx<{ id: string }[]>`
-    select id from proposals where ${yours(s)} and action = 'archive space' and state = 'open' and expires_at > now() limit 1
+  const asked = input.asked === true;
+  // What still waits: only suggestions whose space is open, since one archived another way has nothing left to decide.
+  const waiting = await s.tx<{ id: string; asked: boolean; spaceId: string }[]>`
+    select id, coalesce((change->>'asked')::boolean, false) as asked, space_id from proposals
+    where ${yours(s)} and action = 'archive space' and state = 'open' and expires_at > now() and ${spaceOpen(s, 'proposals')}
   `;
-  if (waiting) throw new NotSuggested(`Archiving a space already waits for the user (proposal:${waiting.id}). Don't suggest another until they decide it.`, waiting.id);
-  if (!input.asked) {
-    const [kept] = await s.tx<{ id: string; at: Date }[]>`
-      select id, coalesce(decided_at, expires_at) as at from proposals
-      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid
-        and (state = 'rejected' or (state = 'open' and expires_at <= now()))
-      limit 1
-    `;
-    if (kept) throw new NotSuggested(`The user kept ${space.name} open when archiving it was suggested on ${kept.at.toISOString().slice(0, 10)}. Don't suggest it again unless they ask.`, kept.id);
+  const same = waiting.find((proposal) => proposal.spaceId === space.id);
+  if (same) throw new NotSuggested(`Archiving ${space.name} already waits for the user (proposal:${same.id}). Give them that link again if they need it.`, same.id);
+  if (asked && waiting.filter((proposal) => proposal.asked).length >= 3) {
+    throw new SpaceRefused('where', 'Three archives already wait for the user to approve them. Wait until they have decided.');
   }
-  return insertProposal(s, { spaceId: space.id, action: 'archive space', itemId: null, change: input.asked ? { asked: true } : {}, request: false, reason: input.why?.trim() || null });
+  if (!asked) {
+    const own = waiting.find((proposal) => !proposal.asked);
+    if (own) throw new NotSuggested(`Archiving a space already waits for the user (proposal:${own.id}). Don't suggest another until they decide it.`, own.id);
+    // Kept open: turned down, or archived on a suggestion and reopened since, as it's open now.
+    const [kept] = await s.tx<{ id: string; at: Date }[]>`
+      select id, decided_at as at from proposals
+      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid and state in ('rejected', 'approved')
+      order by decided_at desc limit 1
+    `;
+    if (kept) throw new NotSuggested(`The user kept ${space.name} open after archiving it was suggested on ${kept.at.toISOString().slice(0, 10)}. Don't suggest it again unless they ask.`, kept.id);
+  }
+  return insertProposal(s, { spaceId: space.id, action: 'archive space', itemId: null, change: asked ? { asked } : {}, request: false, reason: input.why?.trim() || null });
 }
 
 /** Whether a space is somewhere inside another, as far as the person can see. */
@@ -634,9 +645,14 @@ export async function decide(
         throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
       }
     } else if (proposal.action === 'archive space') {
-      // As one of its admins, now; a space archived meanwhile has nothing left to archive.
-      const space = (await listSpaces(s)).find((candidate) => candidate.id === proposal.spaceId);
+      // As one of its admins, now, and with the spaces in it that were shown; a space archived
+      // meanwhile has nothing left to archive.
+      const spaces = await listSpaces(s);
+      const space = spaces.find((candidate) => candidate.id === proposal.spaceId);
       if (space?.archived) throw new Undecidable('changed', 'It was archived after you opened this page, so there’s nothing to decide.');
+      if (decision.shown !== String(spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length)) {
+        throw new Undecidable('changed', 'Spaces went in or out of it after you opened this page. Check it again before archiving it.');
+      }
       await archiveSpace(s, proposal.spaceId, true);
     } else if (proposal.action === 'share task') {
       // Only while it's still the person's own and open, and exactly as it was shown.
@@ -772,7 +788,7 @@ export function proposalData(proposal: ProposalView) {
     // Sharing an item: what it says, on which page, what of it others won't see, and who will see it.
     publication: proposal.publication ? publicationData(proposal.publication, proposal.audience, proposal.reason) : null,
     // Archiving a space: how many spaces in it go with it, who has it, whether it's archived now, and why.
-    archive: proposal.archive ? { ...proposal.archive, why: proposal.reason } : null,
+    archive: proposal.archive ? { ...proposal.archive, asked: proposal.change.asked ?? false, why: proposal.reason } : null,
     // Sharing a task: the task as it is now, why, and who will see it.
     task: proposal.task ? { ...proposal.task, why: proposal.reason, audience: proposal.audience } : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({

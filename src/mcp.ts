@@ -1141,7 +1141,11 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     case 'approved':
       if (proposal.action === 'change members') return `The user approved it on ${day(proposal.decidedAt!)}, and it applies now.`;
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user shared it on ${day(proposal.decidedAt!)}. Everyone in the space sees it now.`;
-      if (proposal.action === 'archive space') return `The user archived it on ${day(proposal.decidedAt!)}. It's out of everyday context now, and still searchable.`;
+      if (proposal.action === 'archive space') {
+        return 'archive' in proposal && proposal.archive && !proposal.archive.archived
+          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since.`
+          : `The user archived it on ${day(proposal.decidedAt!)}. It's out of everyday context now, and still searchable.`;
+      }
       if (proposal.action === 'add space') {
         return created
           ? `The user created it as ${quote(created.name)} (${ref('space', created.id)}) on ${day(proposal.decidedAt!)}. Call \`context\` with it to work there.`

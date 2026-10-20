@@ -54,7 +54,7 @@ export interface ProposalData {
   publication?: PublicationData | null;
   task?: TaskShareData | null;
   /** Archiving the space: how many spaces in it go with it, whether only you have it, whether it's archived now, and why. */
-  archive?: { spaces: number; private: boolean; archived: boolean; why: string | null } | null;
+  archive?: { spaces: number; private: boolean; archived: boolean; asked?: boolean; why: string | null } | null;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -142,6 +142,7 @@ export function wantsTo(
     request?: { by: string | null; yours: boolean } | null;
     asked?: boolean;
     suggestion?: { asked: boolean } | null;
+    archive?: { asked?: boolean } | null;
     member?: MemberChange | { change: MemberChange; name: string | null; email: string | null } | null;
     text?: string | null;
   },
@@ -150,7 +151,11 @@ export function wantsTo(
   const { assistant, action, kind, request } = proposal;
   if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
   if (action === 'task') return withPlace ? `${assistant} wants to share a task with ${placeOf(proposal)}` : `${assistant} wants to share a task`;
-  if (action === 'archive') return withPlace ? `${assistant} suggests archiving ${placeOf(proposal)}` : `${assistant} suggests archiving it`;
+  // Whether the user asked is only the assistant's word, so it's said as the assistant's wish.
+  if (action === 'archive') {
+    const asked = proposal.asked || proposal.archive?.asked;
+    return asked ? `${assistant} wants to archive ${withPlace ? placeOf(proposal) : 'it'}` : `${assistant} suggests archiving ${withPlace ? placeOf(proposal) : 'it'}`;
+  }
   if (action === 'members') {
     const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
     const who = typeof proposal.member === 'object' && proposal.member ? (proposal.member.name ?? proposal.member.email) : proposal.text;
@@ -245,9 +250,13 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     return undefined;
   }
   if (action === 'archive') {
-    if (state === 'approved') return { kind: 'approved', heading: `Archived ${place}`, detail: 'It’s out of everyday context, and still searchable. You can reopen it in its Settings.' };
-    if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: `${assistant} won’t suggest archiving it again.` };
-    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was archived, and ${assistant} won’t suggest it again.` };
+    if (state === 'approved') {
+      return proposal.archive && !proposal.archive.archived
+        ? { kind: 'approved', heading: `Archived ${place}`, detail: 'It was reopened since.' }
+        : { kind: 'approved', heading: `Archived ${place}`, detail: 'It’s out of everyday context, and still searchable. You can reopen it in its Settings.' };
+    }
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: proposal.archive?.asked ? 'Nothing was archived.' : `${assistant} won’t suggest archiving it again.` };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: 'Nothing was archived.' };
     if (isGone(proposal)) return { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' };
     return undefined;
   }
