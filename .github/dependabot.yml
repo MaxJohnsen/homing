@@ -1,4 +1,5 @@
 # One grouped update a month per ecosystem. Security fixes arrive as soon as they are published.
+# Minor and patch updates merge themselves once CI passes; major updates come one at a time and wait for a person.
 version: 2
 updates:
   - package-ecosystem: npm
@@ -8,6 +9,7 @@ updates:
     groups:
       dependencies:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
     ignore:
       # The types follow the oldest Node.js version Homing supports.
       - dependency-name: "@types/node"
@@ -19,3 +21,4 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+        update-types: ["minor", "patch"]
