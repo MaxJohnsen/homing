@@ -1,6 +1,6 @@
 import { useId, useState } from 'react';
 import { cn } from 'cn';
-import { AudienceChoice, type Audience } from '@/components/audience';
+import { AudienceChoice, everyoneIn, type Audience } from '@/components/audience';
 import { OnlyYou } from '@/components/only-you';
 import { dateOf, Section } from '@/components/screen';
 import { Button } from '@/components/ui/button';
@@ -18,7 +18,8 @@ export interface TaskData {
   /** The day it's due, as YYYY-MM-DD. */
   due: string | null;
   shared: boolean;
-  assignee: { id: string; name: string | null; you: boolean } | null;
+  /** Who it's for. Someone you can't see has neither name nor id. */
+  assignee: { id: string | null; name: string | null; you: boolean } | null;
   done: { at: string; by: { name: string | null; you: boolean } | null } | null;
   /** The assistant that kept it for someone, if one did. */
   agent: string | null;
@@ -90,6 +91,7 @@ function TaskRow({ task, space, actions, now }: { task: TaskData; space: SpaceDa
   const id = useId();
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const run = async (action: () => Promise<string | undefined>) => {
     setBusy(true);
     setProblem(await action());
@@ -129,10 +131,20 @@ function TaskRow({ task, space, actions, now }: { task: TaskData; space: SpaceDa
             </p>
           )}
         </div>
-        {actions && onlyYou && !task.done && (
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => run(() => actions.share(task.id))}>Share with {space.name}</Button>
+        {actions && onlyYou && !task.done && !sharing && (
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => setSharing(true)}>Share with {space.name}</Button>
         )}
       </div>
+      {actions && onlyYou && !task.done && sharing && (
+        // Said before sharing, since a shared task is the space's from then on.
+        <div role="group" aria-label={`Share with ${space.name}`} className="ml-8 flex flex-col gap-3 rounded-xl bg-muted p-3">
+          <p className="text-sm">Everyone in {space.name} will see it and can tick it off: {everyoneIn(space.members.length, space.reachedFromAbove).replace(/^./, (first) => first.toLowerCase())}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={busy} onClick={() => setSharing(false)} autoFocus>Keep it yours</Button>
+            <Button disabled={busy} onClick={() => run(() => actions.share(task.id))}>Share</Button>
+          </div>
+        </div>
+      )}
       {problem && <FieldError>{problem}</FieldError>}
     </li>
   );

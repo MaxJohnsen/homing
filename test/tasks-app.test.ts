@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
 import { startServer, type Homing } from '../src/server.ts';
-import { addMember, createSpace } from '../src/spaces.ts';
+import { addMember, changeMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { as, db, member, refused, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
@@ -82,4 +82,57 @@ test('a task of your own is shared only by you, and assistants never write the s
   // Nothing to share from a personal space.
   const mine = await ana.browser.json(`/api/spaces/${ana.personalSpaceId}/tasks`, { title: 'Water the plants' });
   assert.equal((await ana.browser.json(`/api/tasks/${mine.body.id}/share`, {})).status, 404);
+});
+
+test('a task stays changeable after the person it was for leaves, and done is when it was ticked off', async () => {
+  const venue = await as({ ...ana, direct: true }, async (s) => {
+    const venue = await createSpace(s, { name: 'Venue' });
+    await addMember(s, venue, cara.id);
+    return venue;
+  });
+  const given = await ana.browser.json(`/api/spaces/${venue}/tasks`, { title: 'Sign the venue contract', assignee: cara.id, shared: true });
+  assert.equal(given.status, 200, JSON.stringify(given.body));
+  await as({ ...ana, direct: true }, (s) => changeMember(s, venue, cara.id, 'remove'));
+  assert.equal((await ana.browser.json(`/api/tasks/${given.body.id}`, { title: 'Sign the contract' })).status, 200);
+  assert.equal((await ana.browser.json(`/api/tasks/${given.body.id}`, { done: true })).status, 200);
+  assert.equal((await ana.browser.json(`/api/tasks/${given.body.id}`, { assignee: null })).status, 200);
+  assert.equal((await ana.browser.json(`/api/tasks/${given.body.id}`, { assignee: cara.id })).status, 400, 'but it can’t be given to her again');
+
+  // The store marks when it was done, whatever it's told.
+  const [stored] = await as({ ...ana, direct: true }, (s) => s.tx<{ doneAt: Date; doneBy: string }[]>`
+    update tasks set done_at = '2100-01-01' where id = ${given.body.id}::uuid returning done_at, done_by
+  `);
+  assert.ok(stored.doneAt.getFullYear() < 2100, 'done stays when it was done');
+  assert.equal(stored.doneBy, ana.id);
+  const [opened] = await as({ ...ana, direct: true }, (s) => s.tx<{ doneBy: string | null }[]>`
+    update tasks set done_at = null where id = ${given.body.id}::uuid returning done_by
+  `);
+  assert.equal(opened.doneBy, null);
+
+  // Only someone acting directly writes the space's tasks, not just someone without an assistant named.
+  await assert.rejects(as(ana, (s) => s.tx`insert into tasks (space_id, title) values (${venue}::uuid, 'Hello')`), refused);
+  await assert.rejects(as(ana, (s) => s.tx`update tasks set done_at = now() where id = ${given.body.id}::uuid`), refused);
+  // And a description has a length.
+  assert.equal((await ana.browser.json(`/api/spaces/${venue}/tasks`, { title: 'Long', description: 'x'.repeat(20001) })).status, 400);
+  assert.equal((await ana.browser.json(`/api/spaces/${ana.personalSpaceId}/tasks`, { title: 'Hello', shared: true })).status, 403);
+});
+
+test('an assistant never rewrites a task the user wrote, and keeps a task and knowledge apart', async () => {
+  const typed = await ana.browser.json(`/api/spaces/${acme}/tasks`, { title: 'Call the bank' });
+  assert.match((await remember({ ref: `task:${typed.body.id}`, title: 'Call the bank about the loan' })).text, /The user wrote this task/);
+  assert.match((await remember({ ref: `task:${typed.body.id}`, due: '2026-12-01' })).text, /^Open: Call the bank .+due 2026-12-01/);
+  assert.match((await remember({ ref: `task:${typed.body.id}`, due: null })).text, /^Open: Call the bank \(task:[0-9a-f-]+\)\./);
+  await assert.rejects(
+    as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update tasks set title = 'Something else' where id = ${typed.body.id}::uuid`),
+    refused,
+  );
+
+  // A task the assistant kept becomes the user's once they rewrite it.
+  const kept = /task:([0-9a-f-]{36})/.exec((await remember({ title: 'Draft the agenda' })).text)![1];
+  assert.equal((await ana.browser.json(`/api/tasks/${kept}`, { title: 'Draft the agenda for Monday' })).status, 200);
+  assert.equal((await tasksAs(ana)).open.find((task) => task.id === kept)?.agent, null);
+
+  const both = await claude.call('remember', { space: `space:${acme}`, text: 'The bank closes at 15.', task: { title: 'Call before 15' } });
+  assert.ok(both.failed && /A task goes alone/.test(both.text), both.text);
+  assert.ok(!(await tasksAs(ana)).open.some((task) => task.title === 'Call before 15'), 'nothing was saved');
 });

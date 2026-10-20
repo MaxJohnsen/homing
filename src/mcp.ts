@@ -213,12 +213,12 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
           .object({
             ref: text().optional().describe('A task to change or mark done, such as task:…. Leave it out for a new one'),
             title: text().max(200).optional().describe('What to do, such as "Follow up with Gunnar about the budget"'),
-            description: text().optional(),
-            due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('The day it is due, as YYYY-MM-DD'),
+            description: text().nullable().optional().describe('More about it, or null to clear it'),
+            due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('The day it is due, as YYYY-MM-DD, or null to clear it'),
             done: z.boolean().optional().describe('True when it is done, false to open it again'),
           })
           .optional()
-          .describe("A private task for the user, such as a follow-up: give its title for a new one, or its reference to change it or mark it done. Leave out text for a task alone."),
+          .describe("A private task for the user, such as a follow-up: give its title for a new one, or its reference to change it or mark it done. A task goes alone: save knowledge in a call of its own."),
         gatherInto: text().optional().describe('A collection to put the page in, as a page reference. A page can be in several.'),
         removeFrom: text().optional().describe('A collection to take the page out of, as a page reference. The page itself stays.'),
         sources: z
@@ -228,7 +228,15 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
       }),
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    (input) => answer((s) => (input.task ? rememberTask(s, parseRef(input.space, 'space'), input.task) : remember(s, input))),
+    (input) =>
+      answer((s) => {
+        if (!input.task) return remember(s, input);
+        const { space, task, ...rest } = input;
+        if (Object.values(rest).some((value) => value !== undefined)) {
+          throw new Refused('A task goes alone. Nothing was saved: save the task and the knowledge in two calls.');
+        }
+        return rememberTask(s, parseRef(space, 'space'), task);
+      }),
   );
 
   server.registerTool(
@@ -953,7 +961,7 @@ async function peopleKnown(s: Session): Promise<{ id: string; name: string; plac
 async function rememberTask(
   s: Session,
   spaceId: string,
-  input: { ref?: string; title?: string; description?: string; due?: string; done?: boolean },
+  input: { ref?: string; title?: string; description?: string | null; due?: string | null; done?: boolean },
 ): Promise<string> {
   try {
     if (input.ref) {
@@ -961,11 +969,14 @@ async function rememberTask(
       const task = await readTask(s, taskId);
       if (!task || task.spaceId !== spaceId) throw new Refused('There is no task with that reference in this space that you can see.');
       if (!ownTask(s, task)) throw new Refused("That task is the space's: people change shared tasks in Homing.");
+      if ((input.title !== undefined || input.description !== undefined) && task.agent === null && task.writtenBy !== null) {
+        throw new Refused('The user wrote this task, so its words stay theirs. Nothing changed. You can still mark it done or change its due date.');
+      }
       const changed = (await changeTask(s, taskId, { title: input.title, description: input.description, due: input.due, done: input.done }))!;
       return `${changed.doneAt ? 'Done' : 'Open'}: ${oneLine(changed.title)} (${ref('task', changed.id)}${changed.due ? `, due ${changed.due}` : ''}). Only the user sees it.`;
     }
     if (!input.title) throw new Refused('Give the new task a title.');
-    const task = await addTask(s, { spaceId, title: input.title, description: input.description, due: input.due });
+    const task = await addTask(s, { spaceId, title: input.title, description: input.description ?? undefined, due: input.due ?? undefined });
     return `Kept as a private task (${ref('task', task.id)}${task.due ? `, due ${task.due}` : ''}). Only the user sees it, and it shows in \`context\` until it's done.`;
   } catch (error) {
     if (error instanceof TaskRefused) throw new Refused(error.message);

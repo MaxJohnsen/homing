@@ -35,27 +35,59 @@ with check (
   )
 );
 
--- Who changed a task, and that assistants keep to the person's own tasks.
--- An assignee has the space: on the shared side anyone who can open it, on
--- the private side only its owner.
+-- Who changed a task, and what they may change. Only people write a space's
+-- shared tasks, directly. Assistants keep the person's own, and never
+-- rewrite the words of one the person wrote, though they may still mark it
+-- done or move its due date. An assignee has the space: on the shared side
+-- anyone who can open it, on the private side only its owner; it's checked
+-- when given, so a task stays changeable after someone leaves. The store
+-- marks when a task is done, and who did it.
 create function check_task() returns trigger
 language plpgsql security definer set search_path = public, pg_temp
 as $$
+declare
+  wrote boolean;
+  changed boolean;
+  assigning boolean;
 begin
-  if new.private_to is null and current_agent() is not null then
+  if tg_op = 'INSERT' then
+    wrote := true;
+    changed := true;
+    assigning := new.assignee is not null;
+  else
+    wrote := (new.title, new.description) is distinct from (old.title, old.description);
+    -- Someone's account going leaves their tasks unassigned, which is no one's change.
+    assigning := new.assignee is not null and (new.assignee, new.private_to) is distinct from (old.assignee, old.private_to);
+    changed := wrote or assigning or (new.due, new.done_at, new.private_to) is distinct from (old.due, old.done_at, old.private_to);
+  end if;
+  if changed and new.private_to is null and not direct_edit() then
     raise exception 'only people write shared tasks' using errcode = 'insufficient_privilege';
   end if;
-  if new.assignee is not null and (
+  if assigning and (
     (new.private_to is not null and new.assignee <> new.private_to)
     or (new.private_to is null and not exists (select from space_access a where a.space_id = new.space_id and a.person_id = new.assignee))
   ) then
     raise exception 'that person can''t be given this task' using errcode = 'check_violation';
   end if;
   if tg_op = 'UPDATE' then
-    new.updated_at := clock_timestamp();
-    if new.done_at is distinct from old.done_at then
-      new.done_by := case when new.done_at is null then null else current_person_id() end;
+    if wrote then
+      if current_agent() is not null and old.agent is null and old.written_by is not null then
+        raise exception 'agents never rewrite what people wrote' using errcode = 'insufficient_privilege';
+      end if;
+      new.written_by := current_person_id();
+      new.agent := current_agent();
     end if;
+    if new.done_at is distinct from old.done_at then
+      if new.done_at is null then
+        new.done_by := null;
+      elsif old.done_at is null then
+        new.done_at := clock_timestamp();
+        new.done_by := current_person_id();
+      else
+        new.done_at := old.done_at;
+      end if;
+    end if;
+    new.updated_at := clock_timestamp();
   end if;
   return new;
 end

@@ -35,6 +35,7 @@ import {
 } from '../src/knowledge.ts';
 import { decide, openProposals, proposeRule, readProposal, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor } from '../src/skills.ts';
+import { addTask } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.ts';
 import { admin, as, authDb, db, member, person, refused, type Person } from './helpers.ts';
@@ -50,6 +51,8 @@ interface Client {
   skill: { pageId: string; name: string };
   source: Source;
   proposal: Proposal;
+  /** The space's task and one only the person has. */
+  tasks: string[];
 }
 
 let acme: Client;
@@ -227,6 +230,7 @@ describe('straight against the database', () => {
         const members = await s.tx`select distinct person_id from memberships`;
         const access = await s.tx`select distinct person_id from space_access`;
         const proposals = await s.tx`select change ->> 'text' as text from proposals`;
+        const tasks = await s.tx`select title from tasks order by created_at`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -240,6 +244,7 @@ describe('straight against the database', () => {
         assert.deepEqual(members.map((row) => row.personId), [person.id]);
         assert.deepEqual(access.map((row) => row.personId), [person.id]);
         assert.deepEqual(proposals.map((row) => row.text), [proposal.change.text]);
+        assert.deepEqual(tasks.map((row) => row.title), [`${name}: book the venue`, `${name}: call the lawyer`]);
       });
     }
   });
@@ -275,6 +280,16 @@ describe('straight against the database', () => {
         `), refused);
       }
 
+      // Nor a task there, on any side, nor one given to the other person.
+      for (const privateTo of [null, me.id, target.person.id]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`
+          insert into tasks (space_id, private_to, title) values (${target.space}, ${privateTo}, 'Hello')
+        `), refused);
+      }
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`
+        insert into tasks (space_id, title, assignee) values (${intruder.space}, 'Hello', ${target.person.id})
+      `), { code: '23514' });
+
       // Nor a rule on the other client's guidance page, editing directly.
       await assert.rejects(as(me, (s) => s.tx`select guidance_page(${target.space})`), refused);
       const [rule] = target.rules;
@@ -299,6 +314,15 @@ describe('straight against the database', () => {
       `);
       assert.equal(decided.length, 0);
       await assert.rejects(as(intruder.person, (s) => s.tx`delete from proposals where id = ${target.proposal.id}`), refused);
+
+      const ticked = await as({ ...intruder.person, direct: true }, (s) => s.tx`
+        update tasks set title = 'Changed', done_at = now() where id in ${s.tx(target.tasks)} returning id
+      `);
+      assert.equal(ticked.length, 0);
+      await assert.rejects(as(intruder.person, (s) => s.tx`delete from tasks where id in ${s.tx(target.tasks)}`), refused);
+      for (const task of target.tasks) {
+        await assert.rejects(as({ ...intruder.person, direct: true }, (s) => s.tx`select share_task(${task}::uuid)`), refused);
+      }
     }
     await assertUntouched();
   });
@@ -388,6 +412,10 @@ async function client(
     ];
     const skillMd = `---\nname: ${notes.skill}\ndescription: How ${name} wants it done\n---\n\nSteps for ${notes.skill.replaceAll('-', ' ')}\n`;
     const skill = await saveSkill(s, { spaceId: space, files: [{ path: 'SKILL.md', body: skillMd }], shared: true });
+    const tasks = [
+      await addTask(s, { spaceId: space, title: `${name}: book the venue`, shared: true, assignee: p.id }),
+      await addTask(s, { spaceId: space, title: `${name}: call the lawyer` }),
+    ];
     return {
       name,
       person: p,
@@ -397,6 +425,7 @@ async function client(
       rules,
       skill: { pageId: skill.pageId, name: skill.name },
       source,
+      tasks: tasks.map((task) => task.id),
     };
   });
   const proposal = await as({ person: p.id, agent: 'Claude' }, (s) =>
@@ -637,6 +666,13 @@ async function assertUntouched() {
   }
   const proposals = await admin`select state from proposals where id in ${admin([acme.proposal.id, beta.proposal.id])}`;
   assert.deepEqual(proposals.map((row) => row.state), ['open', 'open']);
+  const tasks = await admin`select title, done_at, private_to is null as shared from tasks where id in ${admin([...acme.tasks, ...beta.tasks])} order by created_at`;
+  assert.deepEqual(tasks.map((row) => [row.title, row.doneAt, row.shared]), [
+    ['Acme: book the venue', null, true],
+    ['Acme: call the lawyer', null, false],
+    ['Beta: book the venue', null, true],
+    ['Beta: call the lawyer', null, false],
+  ]);
 }
 
 function bodies(items: readonly { body: string }[]) {

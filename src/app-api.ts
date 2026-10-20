@@ -131,7 +131,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           description: task.description,
           due: task.due,
           shared: task.privateTo === null,
-          assignee: task.assignee && { id: task.assignee, name: found.names.get(task.assignee) ?? null, you: task.assignee === person },
+          // Someone the reader can't see stays unnamed, and so does their id.
+          assignee: task.assignee && { id: found.names.has(task.assignee) ? task.assignee : null, name: found.names.get(task.assignee) ?? null, you: task.assignee === person },
           done: task.doneAt && { at: task.doneAt, by: task.doneBy ? { name: found.names.get(task.doneBy) ?? null, you: task.doneBy === person } : null },
           agent: task.agent,
         });
@@ -688,7 +689,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     }
   } catch (error) {
     if (error instanceof SpaceRefused) return answer(res, error.status, { field: error.field, message: error.message });
-    if (error instanceof TaskRefused) return answer(res, 400, { message: error.message });
+    if (error instanceof TaskRefused) return answer(res, 400, { field: error.field, message: error.message });
     if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
       return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });
     }
