@@ -35,7 +35,7 @@ import {
   type Item,
   type Source,
 } from '../src/knowledge.ts';
-import { decide, openProposals, proposeInclude, proposeRule, readProposal, searchProposals, type Proposal } from '../src/proposals.ts';
+import { decide, openProposals, proposalData, proposeInclude, proposeRule, readProposal, searchProposals, Undecidable, type PlanStep, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor } from '../src/skills.ts';
 import { addTask, readTask, searchTasks } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
@@ -454,6 +454,39 @@ describe('straight against the database', () => {
       for (const task of target.tasks) {
         await assert.rejects(as({ ...intruder.person, direct: true }, (s) => s.tx`select share_task(${task}::uuid)`), refused);
       }
+    }
+    await assertUntouched();
+  });
+
+  test('a plan naming another client’s item, task, rule or person shows none of it, and approving it changes nothing', async () => {
+    for (const { intruder, target } of attempts()) {
+      const steps: PlanStep[] = [
+        { action: 'publish', item: target.items[1].id },
+        { action: 'share task', task: target.tasks[1] },
+        { action: 'change rule', rule: target.rules[0].id, text: 'Hello' },
+        { action: 'change members', person: target.person.id, personName: 'Someone', member: 'add' },
+      ];
+      const theirs = new RegExp([...bodies(target.items), ...bodies(target.rules), `\\b${target.person.name}\\b`, target.name].join('|'));
+      await assert.rejects(
+        as({ ...intruder.person, direct: true }, async (s) => {
+          // Made straight against the database, in their own space, so nothing checked what it names.
+          const [{ id }] = await s.tx<{ id: string }[]>`
+            insert into proposals (space_id, private_to, action, change) values (${intruder.space}, ${intruder.person.id}, 'plan', ${s.tx.json({ steps })}) returning id
+          `;
+          const view = (await readProposal(s, id))!;
+          assert.deepEqual(view.plan!.steps.map((step) => [step.item, step.task, step.rule?.now, step.member?.found, step.problem !== null]), [
+            [null, null, undefined, undefined, true],
+            [null, null, undefined, undefined, true],
+            [null, null, null, undefined, true],
+            [null, null, undefined, false, true],
+          ]);
+          const titles = (await s.tx<{ title: string }[]>`select title from tasks where id = ${target.tasks[1]}::uuid`).map((row) => row.title);
+          assert.deepEqual(titles, []);
+          assert.doesNotMatch(JSON.stringify(proposalData(view)), theirs);
+          await decide(s, id, { approve: true, shown: view.plan!.shown });
+        }),
+        Undecidable,
+      );
     }
     await assertUntouched();
   });

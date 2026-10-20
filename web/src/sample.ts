@@ -113,6 +113,8 @@ export const manyWaiting: WaitingData[] = [
   { id: 'w3', assistant: 'Claude', spaceId: 'acme', space: 'Acme', personal: false, action: 'remove', kind: 'preference', text: 'Write status reports in Norwegian.', createdAt: minutesAgo(60 * 20) },
   { id: 'w4', assistant: 'Claude', spaceId: 'acme', space: 'Acme', personal: false, action: 'add', kind: 'preference', text: 'Name files with the date first, like 2026-10-19 Status.', createdAt: minutesAgo(60 * 30) },
   { id: 'w5', assistant: 'Claude', spaceId: 'website', space: 'Website', personal: false, action: 'add', kind: 'requirement', text: 'Check every page with a screen reader before it goes live.', createdAt: minutesAgo(60 * 50) },
+  { id: 'w7', assistant: 'Claude', spaceId: 'kitchen', space: 'Kitchen renovation', personal: false, action: 'plan', kind: 'preference', text: null, changes: 5, createdAt: minutesAgo(60 * 52) },
+  { id: 'w8', assistant: 'Claude', spaceId: 'acme', space: 'Acme', personal: false, action: 'plan', kind: 'preference', text: 'Intranet', changes: 2, createdAt: minutesAgo(60 * 54) },
 ];
 
 const ana = { id: 'ana', name: 'Ana Berg', you: true };
@@ -591,6 +593,104 @@ export const taskProposal: ProposalData = {
     shown: 'Book the venue for the launch\n2026-11-03\nTwo options: Hotel Bristol or the Opera foyer.',
     why: 'Cara can pick it up if I don’t get to it.',
     audience: { people: 5, above: false },
+  },
+};
+
+/**
+ * The kitchen story: Ana asked Claude to set up the kitchen renovation, put what they know in it
+ * and add Jonas. The space is hers alone so far, so Claude created it at once and kept what it knew
+ * there; the rest waits for her as one plan.
+ */
+export const planProposal: ProposalData = {
+  ...proposal,
+  id: 'plan',
+  action: 'plan',
+  space: 'Kitchen renovation',
+  text: null,
+  alreadyApplies: [{ kind: 'preference', text: 'Write in Norwegian.', from: 'your personal space' }],
+  plan: {
+    create: null,
+    space: 'Kitchen renovation',
+    spaceId: 'kitchen',
+    steps: [
+      {
+        action: 'publish',
+        publication: {
+          text: 'Byggmester AS quoted NOK 180,000 for the whole kitchen, including demolition.',
+          page: 'Contractor quotes',
+          pageId: 'quotes',
+          hidden: [{ space: null, reference: 'Email from Byggmester AS, 3 October' }],
+          hiddenUnseen: 0,
+          copy: true,
+          sharesTitle: true,
+          sharedText: null,
+          current: true,
+          why: null,
+          audience: null,
+        },
+        item: { text: 'Byggmester AS quoted NOK 180,000 for the whole kitchen, including demolition.', page: 'Contractor quotes', pageId: 'quotes' },
+        task: null,
+        member: null,
+        rule: null,
+        problem: null,
+      },
+      {
+        action: 'publish',
+        publication: {
+          text: 'Demolition starts 2 November, and the new kitchen is in by 20 December.',
+          page: 'Timeline',
+          pageId: 'timeline',
+          hidden: [],
+          hiddenUnseen: 0,
+          copy: false,
+          sharesTitle: true,
+          sharedText: null,
+          current: true,
+          why: null,
+          audience: null,
+        },
+        item: { text: 'Demolition starts 2 November, and the new kitchen is in by 20 December.', page: 'Timeline', pageId: 'timeline' },
+        task: null,
+        member: null,
+        rule: null,
+        problem: null,
+      },
+      { action: 'task', publication: null, item: null, task: { title: 'Order the tiles', description: null, due: '2026-11-10' }, member: null, rule: null, problem: null },
+      { action: 'members', publication: null, item: null, task: null, member: { change: 'add', name: 'Jonas Holm', email: null, found: true, inSpace: false, through: null }, rule: null, problem: null },
+      { action: 'add', publication: null, item: null, task: null, member: null, rule: { kind: 'requirement', text: 'Get every quote in writing.', now: null, shared: true, onlyHere: false }, problem: null },
+    ],
+    audience: { people: 1, above: false, adding: ['Jonas Holm'] },
+    sees: { pages: 2, archived: 0, tasks: 1, rules: 1, spaces: 0 },
+    why: 'Jonas is helping with the kitchen.',
+    shown: '[]',
+  },
+};
+
+/** A plan that creates a space everyone in Home would see, with a rule and Jonas in it. */
+export const newSpacePlanProposal: ProposalData = {
+  ...planProposal,
+  id: 'plan-new',
+  space: 'Home',
+  alreadyApplies: [],
+  plan: {
+    ...planProposal.plan!,
+    create: { name: 'Kitchen', in: 'Home', people: 3, above: false, problem: null },
+    space: 'Kitchen',
+    spaceId: null,
+    steps: [planProposal.plan!.steps[4], planProposal.plan!.steps[3]],
+    audience: { people: 3, above: false, adding: ['Jonas Holm'] },
+    sees: { pages: 0, archived: 0, tasks: 0, rules: 2, spaces: 0 },
+    why: null,
+  },
+};
+
+/** The kitchen plan after Ana shared the quote herself, so it can't be approved as it is. */
+export const blockedPlanProposal: ProposalData = {
+  ...planProposal,
+  id: 'plan-blocked',
+  plan: {
+    ...planProposal.plan!,
+    steps: [{ ...planProposal.plan!.steps[0], publication: null, problem: 'It’s shared already.' }, ...planProposal.plan!.steps.slice(1)],
   },
 };
 

@@ -6,7 +6,7 @@ import { FieldError } from '@/components/ui/field';
 import { cn } from 'cn';
 import { focusRing, wrapsLabel } from '@/components/screen';
 import { draftOf, spaceOf, type SpaceSet } from '@/components/space-fields';
-import { buttonsOf, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, wantsTo, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, planBlocked, wantsTo, type ProposalData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 
 /**
@@ -42,7 +42,7 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
   const [choice, setChoice] = useState<ShareChoice>(firstChoice);
   const buttons = proposal.conversion
     ? { approve: shareButton(proposal.space, choice, proposal.conversion), reject: 'Keep it only mine' }
-    : buttonsOf(action, sending, proposal.member?.change, placeOf(proposal));
+    : buttonsOf(action, sending, proposal.member?.change, placeOf(proposal), proposal.plan ? changesIn(proposal.plan) : 0);
   // An email nobody uses Homing with can't be added until they're invited, and what you can't open can't be included.
   const declineOnly = onlyDecline(proposal);
   const blocked = (action === 'space' && !space?.name) || declineOnly;
@@ -63,8 +63,8 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why) && (
-                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why}”</p>
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why) && (
+                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why}”</p>
               )}
             </div>
             <ProposalDetails
@@ -95,7 +95,11 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
             </div>
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
             <p className="text-sm text-muted-foreground">
-              {action === 'members' || action === 'archive'
+              {proposal.plan
+                ? planBlocked(proposal.plan)
+                  ? `A change can’t be made now, so this can’t be approved as it is. Ask ${assistant} to revise it, or decline it.`
+                  : `Only you can approve this, and ${assistant} can’t do it for you. Approving makes every change at once, and none if one can’t be made then. To change something, ask ${assistant} to revise it.`
+                : action === 'members' || action === 'archive'
                 ? `Only you can approve this. ${assistant} can’t do it for you.`
                 : action === 'convert'
                 ? `Only you can share it. ${assistant} can’t do it for you, and everything in it stays only yours until you share it.`
@@ -165,6 +169,11 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
             {proposal.action === 'task' && proposal.state === 'approved' && proposal.spaceId && (
               <Link href={`/spaces/${proposal.spaceId}/tasks`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
                 Open {proposal.space}’s tasks
+              </Link>
+            )}
+            {proposal.plan && proposal.state === 'approved' && proposal.plan.spaceId && (
+              <Link href={`/spaces/${proposal.plan.spaceId}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+                Open {proposal.plan.space}
               </Link>
             )}
             {suggestion?.created && (
