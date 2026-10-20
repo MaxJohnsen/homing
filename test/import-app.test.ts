@@ -6,10 +6,12 @@
 // damaged, changed or too big is refused, with nothing created.
 
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { after, before, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { authDatabaseUrl } from '../src/db.ts';
+import { previewJson, previewOf } from '../src/bundle.ts';
 import { rewriteReferences, type Manifest } from '../src/export.ts';
 import { addRule, removeRule } from '../src/guidance.ts';
 import { ImportRefused, importSpace, readForImport } from '../src/import.ts';
@@ -231,6 +233,14 @@ test('who wrote imported knowledge comes along by name, credited to nobody here'
     as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`insert into content (page_id, space_id, kind, body, supersedes, private_to) select page_id, space_id, 'text', 'Replaced', id, ${cara.id} from content where id = ${written}`),
     refused,
   );
+  // A task a person wrote stays theirs too: Ana's assistant can mark it done, but not reword it.
+  const [{ task: venue }] = await admin`select id as task from tasks where space_id = ${copy} and title = 'Book a bigger venue'`;
+  const forAna = new Assistant(homing.url, assistants.claude);
+  await forAna.connect(ana.browser);
+  const anas = await forAna.open();
+  assert.match((await anas.call('remember', { space: `space:${copy}`, task: { ref: `task:${venue}`, title: 'Book the town hall' } })).text, /A person wrote this task before it was imported/);
+  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update tasks set title = 'Rewritten' where id = ${venue}`), refused);
+  assert.match((await anas.call('remember', { space: `space:${copy}`, task: { ref: `task:${venue}`, done: true } })).text, /^Done: Book a bigger venue/);
   // What an assistant wrote, it can keep up to date, as Ana's can.
   const [{ item: budget }] = await admin`select id as item from content where space_id = ${copy} and body = 'Gunnar asked for the budget by Friday.'`;
   await as({ person: ana.id, agent: 'Claude' }, (s) => updateItem(s, budget, { body: 'Gunnar asked for the budget by Thursday.' }));
@@ -319,8 +329,8 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
     ['a citation of nothing', bundle((m) => { m.items.find((item) => item.sources.length)!.sources = [crypto.randomUUID()]; }), /cites a source that isn’t in the export/],
     ['a wrong type', bundle((m) => Object.assign(m.items[0], { body: 42 })), /changed or damaged/],
     ['a name nobody can see', bundle((m) => { m.spaces[1].name = 'Web\u202esite'; }), /name Homing doesn’t take/],
-    ['too much unpacked', zip([['homing.json', ' '.repeat(65 * 1024 * 1024)]]), /larger than Homing imports at once/],
-    ['too much unpacked, though it says otherwise', zip([['homing.json', ' '.repeat(65 * 1024 * 1024)]]).then(understated), /larger than Homing imports at once/],
+    ['too much unpacked', zip([['homing.json', ' '.repeat(33 * 1024 * 1024)]]), /larger than Homing imports at once/],
+    ['too much unpacked, though it says otherwise', zip([['homing.json', ' '.repeat(33 * 1024 * 1024)]]).then(understated), /larger than Homing imports at once/],
     ['a damaged zip', damaged(), /damaged/],
   ];
   for (const [what, zipped, message] of refusals) {
@@ -350,7 +360,7 @@ function damaged(): Buffer {
   return Buffer.concat([Buffer.alloc(10), Buffer.from('PK\x01\x02'), end]);
 }
 
-test('an export is held to what Homing keeps, and to rules and names that hide nothing', async () => {
+test('an export is held to what Homing keeps, and to rules that hide nothing', async () => {
   const { manifest } = await exported(ana, acme);
   const bundle = (change: (m: Manifest) => void) => {
     const copy = structuredClone(manifest);
@@ -369,16 +379,14 @@ test('an export is held to what Homing keeps, and to rules and names that hide n
     ['a rule too long', (m) => { item(m, 'Write dates as YYYY-MM-DD.').body = 'x'.repeat(4_001); }, /longer than Homing keeps/],
     ['an overview too long', (m) => { item(m, 'The launch is in November.').body = 'x'.repeat(2_001); }, /longer than Homing keeps/],
     ['a title too long', (m) => { item(m, 'Launch plan').body = 'x'.repeat(201); }, /longer than Homing keeps/],
-    ['a page type too long', (m) => { m.pages.find((page) => page.type === 'person')!.type = 'x'.repeat(41); }, /changed or damaged/],
+    ['a page type too long', (m) => { m.pages.find((page) => page.type === 'person')!.type = 'x'.repeat(41); }, /pages\.\d+\.type is longer than Homing keeps/],
     ['a skill name Homing doesn’t take', (m) => { item(m, 'status-report').body = 'Status Report'; }, /name Homing doesn’t take/],
     ['a skill named otherwise in its SKILL.md', (m) => { item(m, 'status-report').body = 'weekly-report'; }, /named differently in its SKILL\.md/],
-    ['a skill’s file too large', (m) => { file(m, 'references/tone.md').body = 'x'.repeat(512 * 1024 + 1); }, /changed or damaged/],
+    ['a skill’s file too large', (m) => { file(m, 'references/tone.md').body = 'x'.repeat(512 * 1024 + 1); }, /longer than Homing keeps/],
+    ['a source cited twice', (m) => { const cites = m.items.find((entry) => entry.sources.length)!; cites.sources = [cites.sources[0], cites.sources[0]]; }, /cites a source twice/],
     ['two files at one place', (m) => { m.items.push({ ...file(m, 'references/tone.md'), id: crypto.randomUUID() }); }, /two files at one place/],
     ['two spaces with one name', (m) => { m.spaces.find((space) => space.name === 'Legal')!.name = 'website'; }, /both called/],
-    ['a person’s name over two lines', (m) => { m.people[0].name = 'Ana\nBen'; }, /characters nobody sees/],
-    ['an agent’s name turned around', (m) => { item(m, 'Gunnar asked for the budget by Friday.').author.agent = 'Cl‮aude'; }, /characters nobody sees/],
-    ['the exporter’s name with a space nobody sees', (m) => { m.exportedBy.name = 'A​na'; }, /characters nobody sees/],
-    ['a rule turned around', (m) => { item(m, 'Write dates as YYYY-MM-DD.').body = 'Write dates as ‮DD-MM-YYYY.'; }, /hide what it says/],
+    ['a rule turned around', (m) => { item(m, 'Write dates as YYYY-MM-DD.').body = 'Write dates as \u202eDD-MM-YYYY.'; }, /hide what it says/],
     ['a skill’s file with hidden words', (m) => { file(m, 'SKILL.md').body += '\u{E0049}\u{E0047}\u{E004E}'; }, /hide what it says/],
   ];
   for (const [what, change, message] of refusals) {
@@ -386,6 +394,93 @@ test('an export is held to what Homing keeps, and to rules and names that hide n
     assert.equal(answer.status, 400, what);
     assert.match(answer.body.message, message, what);
   }
+});
+
+test('names that came in an export are shown plainly, without what hides or turns them around', async () => {
+  const { manifest } = await exported(ana, acme);
+  const m = structuredClone(manifest);
+  const party = m.items.find((entry) => entry.body === 'The launch party is at Bislett.')!;
+  const leads = m.items.find((entry) => entry.body === 'Gunnar leads the steering group.')!;
+  const asked = m.items.find((entry) => entry.body === 'Gunnar asked for the budget by Friday.')!;
+  // Names as people may give them when they sign up, and some no one would.
+  m.people.find((person) => person.key === party.author.person)!.name = 'Mohammad\u200cReza\nKarimi';
+  m.people.find((person) => person.key === leads.author.person)!.name = 'Ana 🏴\u{e0067}\u{e0062}\u{e0073}\u{e0063}\u{e0074}\u{e007f}';
+  m.exportedBy.name = 'A\u200bna \u202eBerg';
+  asked.author.agent = 'Cl\u202eaude\u2066';
+  const bytes = await exportOf(m);
+  const preview = await upload(ana, bytes);
+  assert.equal(preview.body.from.exportedBy, 'Ana Berg');
+  const copy = await imported(ana, bytes, 'Acme, names');
+  const author = async (body: string) => (await admin`select imported -> 'author' as author from content where space_id = ${copy} and body = ${body}`)[0].author;
+  // The joiner Persian needs stays, a line break is a space, and the tags in a flag go.
+  assert.equal((await author('The launch party is at Bislett.')).name, 'Mohammad\u200cReza Karimi');
+  assert.equal((await author('Gunnar leads the steering group.')).name, 'Ana 🏴');
+  assert.equal((await author('Gunnar asked for the budget by Friday.')).agent, 'Claude');
+  assert.equal((await admin`select exported_by from imports where space_id = ${copy}`)[0].exportedBy, 'Ana Berg');
+});
+
+test('an export that would show too much is refused, and Homing keeps answering meanwhile', async () => {
+  const { manifest } = await exported(ana, acme);
+  const m = structuredClone(manifest);
+  // Thousands of rules that are nothing but references to a page with a long title.
+  const rule = m.items.find((entry) => entry.body === 'Write dates as YYYY-MM-DD.')!;
+  const gunnar = m.items.find((entry) => entry.kind === 'title' && entry.body === 'Gunnar Holm')!;
+  gunnar.body = 'Gunnar Holm '.repeat(16).trim();
+  const body = `page:${gunnar.page} `.repeat(95).trim();
+  for (let n = 0; n < 5_000; n++) m.items.push({ ...rule, id: crypto.randomUUID(), body });
+  const bytes = await exportOf(m);
+  assert.ok(bytes.length < 1024 * 1024);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const delay = monitorEventLoopDelay({ resolution: 10 });
+  delay.enable();
+  const answer = await upload(ana, bytes);
+  delay.disable();
+  assert.equal(answer.status, 400);
+  assert.match(answer.body.message, /more rules than Homing can show you/);
+  assert.ok(delay.max < 100e6, `${Math.round(delay.max / 1e6)} ms`);
+  // However else it would grow, what's shown stays under 5 MB.
+  const wide = structuredClone(manifest);
+  for (let n = 0; n < 80_000; n++) wide.spaces.push({ ...wide.spaces[1], id: crypto.randomUUID(), parent: wide.space, name: `Space ${n}`, archived: null, creator: null, imported: undefined });
+  assert.throws(() => previewJson(wide, ''), /more than Homing can show you/);
+});
+
+test('references are found in time in step with the text, whatever it holds', async () => {
+  let start = performance.now();
+  rewriteReferences('['.repeat(200_000), () => undefined);
+  assert.ok(performance.now() - start < 100, `${Math.round(performance.now() - start)} ms`);
+  // And in rules, as the preview names what they refer to.
+  const m = structuredClone((await exported(ana, acme)).manifest);
+  const rule = m.items.find((entry) => entry.body === 'Write dates as YYYY-MM-DD.')!;
+  for (let n = 0; n < 200; n++) m.items.push({ ...rule, id: crypto.randomUUID(), body: '['.repeat(4_000) });
+  start = performance.now();
+  previewOf(m, '');
+  assert.ok(performance.now() - start < 200, `${Math.round(performance.now() - start)} ms`);
+});
+
+test('an export still on its way holds up nobody else’s', async () => {
+  const { bytes } = await exported(ana, acme);
+  // Cara starts sending one, and her connection stalls.
+  const stalled = request(new URL('/api/import/preview', homing.url), {
+    method: 'POST',
+    headers: { origin: homing.url.origin, cookie: cara.browser.cookieHeader(), 'content-type': 'application/zip', 'content-length': String(1024 * 1024) },
+  });
+  stalled.on('error', () => {});
+  stalled.write(Buffer.alloc(1024));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  // Ana's is read meanwhile, and Cara sends one at a time.
+  assert.equal((await upload(ana, bytes)).status, 200);
+  assert.equal((await upload(cara, bytes)).status, 429);
+  stalled.destroy();
+});
+
+test('an earlier version of something private stays private, whatever the export says', async () => {
+  const { manifest } = await exported(ana, acme);
+  const m = structuredClone(manifest);
+  const calls = m.items.find((entry) => entry.body === 'Prefers calls before nine.')!;
+  m.revisions.push({ item: calls.id, visibility: 'shared', body: 'Prefers calls before ten.', author: calls.author, writtenAt: calls.createdAt, replacedAt: calls.writtenAt });
+  const copy = await imported(ana, await exportOf(m), 'Acme, earlier');
+  const [earlier] = await admin`select private_to from revisions where space_id in (select space_subtree(${copy})) and body = 'Prefers calls before ten.'`;
+  assert.equal(earlier.privateTo, ana.id);
 });
 
 test('an import is of exactly the export that was looked at', async () => {
@@ -403,8 +498,8 @@ test('an import is of exactly the export that was looked at', async () => {
 });
 
 test('an export made to be heavy is refused, and Homing keeps answering meanwhile', async () => {
-  // A small zip that unpacks to twenty million empty objects.
-  const heavy = await zip([['homing.json', `{"pad":[${'{},'.repeat(20_000_000)}{}]}`]]);
+  // A small zip that unpacks to ten million empty objects.
+  const heavy = await zip([['homing.json', `{"pad":[${'{},'.repeat(10_000_000)}{}]}`]]);
   assert.ok(heavy.length < 1024 * 1024);
   const delay = monitorEventLoopDelay({ resolution: 10 });
   delay.enable();
@@ -459,6 +554,25 @@ test('the store writes an import only into spaces it makes, and only for a perso
   own.pages = [];
   await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select import_bundle(${s.tx.json(own)})`), refused);
   assert.equal((await admin`select count(*)::int as n from spaces where name = 'Trojan'`)[0].n, 0);
+
+  // An earlier version is of something the import brought, in its space, and private whenever its item is.
+  const now = new Date().toISOString();
+  const [top, below, page, item] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  const history = (revision: { space: string; private: boolean }) => ({
+    from: { instance: 'https://elsewhere.test', exportedBy: 'Mallory', exportedAt: now, space: crypto.randomUUID() },
+    spaces: [{ id: top, name: 'Earlier', parent: null, closed: false, archivedAt: null, imported: {} }, { id: below, name: 'Below', parent: top, closed: false, archivedAt: null, imported: {} }],
+    pages: [{ id: page, space: top, type: null, createdAt: now, archivedAt: null, imported: {} }],
+    items: [{ id: item, page, space: top, kind: 'title', path: null, body: 'Mine', private: true, supersedes: null, reachesDown: false, publishedFrom: null, publishedAt: null, createdAt: now, writtenAt: now, imported: {} }],
+    revisions: [{ item, body: 'Before', writtenAt: now, replacedAt: now, imported: {}, ...revision }],
+    citations: [], sources: [], gathered: [], pageArchives: [], tasks: [],
+  });
+  await assert.rejects(as({ ...ana, direct: true }, async (s) => {
+    await s.tx`select import_bundle(${s.tx.json(history({ space: top, private: true }))})`;
+    throw new Error('undone');
+  }), /undone/);
+  for (const revision of [{ space: below, private: true }, { space: top, private: false }]) {
+    await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(history(revision))})`), refused);
+  }
 });
 
 /**

@@ -418,7 +418,8 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const kinds = 'page|item|source|space|task|proposal';
 /** A reference to something in Homing, as a Markdown link or on its own, such as [Gunnar](page:…) or item:…. */
-const references = new RegExp(`\\[([^\\]\\n]*)\\]\\((?:${kinds}):(${uuid})\\)|\\b(?:${kinds}):(${uuid})`, 'gi');
+// The link's words hold no brackets, so finding references takes time in step with the text.
+const references = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\((?:${kinds}):(${uuid})\\)|\\b(?:${kinds}):(${uuid})`, 'gi');
 const pageRefs = new RegExp(`\\bpage:(${uuid})`, 'gi');
 
 /** The text with references to anything not in the bundle taken out: a link keeps its words. */

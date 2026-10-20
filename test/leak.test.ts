@@ -390,6 +390,24 @@ describe('straight against the database', () => {
       ]) {
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), kept);
       }
+      // Nor on pages of theirs that anyone may write on, as far as the page goes: a page with
+      // nothing on it yet, their overview, and two pages with titles, for a collection.
+      const [empty, overview, first, second] = await admin<{ id: string }[]>`
+        insert into pages (space_id, type) values (${target.space}, null), (${target.space}, 'overview'), (${target.space}, null), (${target.space}, null) returning id
+      `;
+      await admin`
+        insert into content (page_id, space_id, kind, body, written_by)
+        values (${first.id}, ${target.space}, 'title', 'First', ${target.person.id}), (${second.id}, ${target.space}, 'title', 'Second', ${target.person.id})
+      `;
+      for (const bundle of [
+        imported(() => ({ items: [item({ page: empty.id, space: target.space })] })),
+        imported(() => ({ items: [item({ page: overview.id, space: target.space })] })),
+        imported(() => ({ gathered: [{ collection: first.id, page: second.id, space: target.space, private: true, createdAt: now, imported: {} }] })),
+      ]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), refused);
+      }
+      await admin`delete from content where page_id in ${admin([first.id, second.id])}`;
+      await admin`delete from pages where id in ${admin([empty.id, overview.id, first.id, second.id])}`;
 
       // Nor a rule on the other client's guidance page, editing directly.
       await assert.rejects(as(me, (s) => s.tx`select guidance_page(${target.space})`), refused);

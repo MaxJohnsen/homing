@@ -10,11 +10,11 @@
 
 import { Worker } from 'node:worker_threads';
 import postgres from 'postgres';
-import { ImportRefused, importLimits, tooLarge, type ImportPreview } from './bundle.ts';
+import { ImportRefused, importLimits, tooLarge } from './bundle.ts';
 import type { Session } from './db.ts';
 import { placeSpace } from './spaces.ts';
 
-export { ImportRefused, importLimits, type ImportPreview };
+export { ImportRefused, importLimits };
 
 /** The most a worker reading an export may hold, and how long it may take. */
 const worker = { memory: 768, time: 60_000 };
@@ -49,8 +49,8 @@ function inWorker<T>(task: { zip: Buffer; name?: string; hash?: string }): Promi
   });
 }
 
-/** What importing the export would bring, with a fingerprint of it. Nothing is created. */
-export function previewExport(zip: Buffer): Promise<ImportPreview> {
+/** What importing the export would bring, with a fingerprint of it, as JSON for the app. Nothing is created. */
+export function previewExport(zip: Buffer): Promise<string> {
   return inWorker({ zip });
 }
 

@@ -13,10 +13,11 @@ import { fileIn, ZipRefused } from './zip.ts';
 /**
  * The most Homing takes in one import: the zip, its homing.json unpacked, the files the zip lists,
  * and the objects in homing.json, so even a small zip can't make Homing build millions of them.
- * 64 MB of homing.json is about 125,000 items, read in a second or two in under 400 MB, and
- * written in about 8 seconds, while creating spaces waits (architecture.md, "Export and import").
+ * 32 MB of homing.json is about 60,000 items, read in half a second, and written in about 4
+ * seconds on a laptop, while creating spaces waits (architecture.md, "Export and import"). What the
+ * preview shows has limits of its own: the rules' text, and the whole preview.
  */
-export const importLimits = { upload: 100 * 1024 * 1024, manifest: 64 * 1024 * 1024, files: 250_000, objects: 2_000_000 };
+export const importLimits = { upload: 100 * 1024 * 1024, manifest: 32 * 1024 * 1024, files: 250_000, objects: 2_000_000, rules: 1_000_000, preview: 5 * 1024 * 1024 };
 
 /** The most Homing keeps of each kind of text, as its own screens and tools take them. */
 const longest = { knowledge: 20_000, overview: 2_000, title: 200, rule: 4_000, file: 512 * 1024, type: 40, name: 200, task: 200, description: 20_000, excerpt: 20_000 };
@@ -116,7 +117,10 @@ export function readExport(zip: Uint8Array): { manifest: Manifest; hash: string 
   const parsed = manifestSchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    throw new ImportRefused(`That export was changed or damaged, so Homing won’t import it: ${issue.path.join('.')} ${issue.message.toLowerCase()}.`);
+    const where = issue.path.join('.').slice(0, 100);
+    if (issue.code === 'too_big') throw new ImportRefused(`That export holds more than Homing keeps, so Homing won’t import it: ${where} is longer than Homing keeps.`);
+    // Said briefly, however much is wrong, such as every key that doesn't belong.
+    throw new ImportRefused(`That export was changed or damaged, so Homing won’t import it: ${where} ${issue.message.toLowerCase().slice(0, 200)}.`);
   }
   const manifest = parsed.data as Manifest;
   const problem = problemIn(manifest);
@@ -126,10 +130,18 @@ export function readExport(zip: Uint8Array): { manifest: Manifest; hash: string 
 
 export const tooLarge = `That export is larger than Homing imports at once, ${importLimits.manifest / 1024 / 1024} MB of knowledge.`;
 
-/** Whether a name has characters nobody sees, as a space's name may not: control and format characters, line breaks too, except the joiner some emoji use. */
-function hidden(name: string): boolean {
-  return /[\p{Cc}\p{Cf}]/u.test(name.replaceAll('‍', ''));
+/**
+ * A name as Homing shows one that came in an export: on one line, without control characters, or
+ * format characters that hide or turn text around, such as direction overrides, tag characters
+ * and zero-width spaces. The joiners, direction marks and soft hyphens languages need stay, as in
+ * rules. A name with nothing left is no name.
+ */
+export function plainName(name: string): string {
+  return name.replace(/\s+/g, ' ').replace(/[\p{Cc}\p{Cf}]/gu, (mark) => (kept.test(mark) ? mark : '')).trim();
 }
+
+/** The format characters languages need: soft hyphens, the Arabic letter mark, the joiners and the direction marks. */
+const kept = /[\u00ad\u061c\u200c-\u200f]/;
 
 /**
  * Whether a rule or a skill's file has characters that hide or reorder what it says, such as
@@ -139,17 +151,15 @@ function hidden(name: string): boolean {
  */
 function hiddenIn(text: string, kind: string): boolean {
   const controls = kind === 'file' ? /[\p{Cc}--[\t\n\r\f]]/v : /[\p{Cc}--[\t\n\r]]/v;
-  return controls.test(text) || /\p{Cf}/u.test((kind === 'file' ? text.replace(/^﻿/, '') : text).replace(/[­؜‌-‏]/g, ''));
+  return controls.test(text) || /\p{Cf}/u.test((kind === 'file' ? text.replace(/^\ufeff/, '') : text).replace(new RegExp(kept, 'g'), ''));
 }
 
 /** What doesn't hold together in an export, if anything: what points nowhere, or where it can't. */
 function problemIn(m: Manifest): string | undefined {
   // Everyone named is one of the export's people, and an author is a person, an agent, or a routine.
-  if (hidden(m.exportedBy.name)) return 'whoever exported it has a name with characters nobody sees';
   const people = new Set<string>();
   for (const person of m.people) {
     if (people.has(person.key)) return `${person.key} appears twice`;
-    if (person.name !== null && hidden(person.name)) return `${person.key} has a name with characters nobody sees`;
     people.add(person.key);
   }
   if (!people.has(m.exportedBy.person)) return 'whoever exported it isn’t among its people';
@@ -162,7 +172,6 @@ function problemIn(m: Manifest): string | undefined {
     const fits = !author || (author.by === 'person' ? author.person !== null && author.agent === null : author.by === 'agent' ? author.agent !== null : author.person === null && author.agent === null);
     if (!fits) return 'an author is neither a person, an agent nor a routine';
     if (author?.person && !people.has(author.person)) return `${author.person} isn’t among its people`;
-    if (author?.agent && hidden(author.agent)) return 'an agent has a name with characters nobody sees';
   }
   const keys = [
     ...m.spaces.map((space) => space.archived?.by), ...m.pages.map((page) => page.archived?.by), ...m.items.map((item) => item.published?.by),
@@ -225,6 +234,7 @@ function problemIn(m: Manifest): string | undefined {
     if (item.path !== null && !safePath(item.path)) return `item ${item.id} has a path outside its skill`;
     if (item.sources.length && item.kind !== 'text') return `item ${item.id} cites sources, which only knowledge does`;
     if (item.sources.some((source) => !sources.has(source))) return `item ${item.id} cites a source that isn’t in the export`;
+    if (new Set(item.sources).size !== item.sources.length) return `item ${item.id} cites a source twice`;
     // What an item replaced, or was shared from, is on its page.
     const replaced = item.supersedes === null ? undefined : items.get(item.supersedes);
     if ((item.supersedes !== null || item.kind === 'removed') && !(item.kind === 'text' || item.kind === 'removed')) return `item ${item.id} can’t replace anything`;
@@ -382,9 +392,14 @@ export function previewOf(m: Manifest, hash: string): ImportPreview {
   const items = new Map(m.items.map((item) => [item.id, item]));
   const sources = new Map(m.sources.map((source) => [source.id, source]));
   const tasks = new Map(m.tasks.map((task) => [task.id, task.title]));
+  // Each name at most a line's worth, however often a rule refers to it.
   const short = (text: string) => oneLineTitle(text).slice(0, 80);
-  const labelOf = (id: string) => titles.get(id) ?? spaceName.get(id) ?? (items.has(id) ? short(items.get(id)!.body) : undefined)
-    ?? (sources.has(id) ? short(sources.get(id)!.reference ?? sources.get(id)!.excerpt) : undefined) ?? tasks.get(id);
+  const named = (id: string) => titles.get(id) ?? spaceName.get(id) ?? (items.has(id) ? items.get(id)!.body : undefined)
+    ?? (sources.has(id) ? sources.get(id)!.reference ?? sources.get(id)!.excerpt : undefined) ?? tasks.get(id);
+  const labelOf = (id: string) => {
+    const name = named(id);
+    return name === undefined ? undefined : short(name);
+  };
   const labelled = (body: string) => body.replace(references, (whole, words: string | undefined, linkedKind: string | undefined, linked: string | undefined, kind: string | undefined, bare: string | undefined) => {
     const label = labelOf((linked ?? bare)!.toLowerCase());
     if (label === undefined) return whole;
@@ -411,7 +426,7 @@ export function previewOf(m: Manifest, hash: string): ImportPreview {
   const counted = current.filter((item) => item.kind === 'text' || item.kind === 'requirement' || item.kind === 'preference' || (item.kind === 'title' && pages.get(item.page)?.type === 'skill'));
   return {
     name: m.spaces[0].name,
-    from: { instance: m.instance, exportedBy: m.exportedBy.name, exportedAt: m.exportedAt },
+    from: { instance: m.instance.slice(0, 200), exportedBy: plainName(m.exportedBy.name), exportedAt: m.exportedAt },
     spaces: tree.map((space) => ({
       name: space.name,
       depth: depth.get(space.id)!,
@@ -423,9 +438,9 @@ export function previewOf(m: Manifest, hash: string): ImportPreview {
     })),
     shared: counted.filter((item) => item.visibility === 'shared').length + m.tasks.filter((task) => task.visibility === 'shared').length,
     private: counted.filter((item) => item.visibility === 'private').length + m.tasks.filter((task) => task.visibility === 'private').length,
-    rules: current
-      .filter((item) => item.kind === 'requirement' || item.kind === 'preference')
-      .map((item) => ({ space: spaceName.get(item.space)!, kind: item.kind as 'requirement' | 'preference', text: labelled(item.body), onlyHere: item.onlyHere === true, private: item.visibility === 'private' })),
+    rules: rulesOf(current.filter((item) => item.kind === 'requirement' || item.kind === 'preference'), (item) => ({
+      space: spaceName.get(item.space)!, kind: item.kind as 'requirement' | 'preference', text: labelled(item.body), onlyHere: item.onlyHere === true, private: item.visibility === 'private',
+    })),
     skills: current
       .filter((item) => item.kind === 'title' && pages.get(item.page)?.type === 'skill')
       .map((item) => ({ space: spaceName.get(item.space)!, name: item.body, private: item.visibility === 'private' })),
@@ -433,9 +448,31 @@ export function previewOf(m: Manifest, hash: string): ImportPreview {
   };
 }
 
+/** Every rule, as long as all of them can be read before importing. */
+function rulesOf<T extends { text: string }>(items: Manifest['items'], rule: (item: Manifest['items'][number]) => T): T[] {
+  const rules: T[] = [];
+  let length = 0;
+  for (const item of items) {
+    rules.push(rule(item));
+    length += rules.at(-1)!.text.length;
+    if (length > importLimits.rules) throw new ImportRefused('That export has more rules than Homing can show you to read first, so Homing won’t import it.');
+  }
+  return rules;
+}
+
+/**
+ * What importing the export would bring, as the JSON the app gets, at most so large, so however
+ * an export is made, what's shown of it stays small.
+ */
+export function previewJson(m: Manifest, hash: string): string {
+  const json = JSON.stringify(previewOf(m, hash));
+  if (Buffer.byteLength(json) > importLimits.preview) throw new ImportRefused('That export holds more than Homing can show you before importing it, so Homing won’t import it. Export less of it at a time.');
+  return json;
+}
+
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 /** A reference in text, as a Markdown link or on its own, as an export writes them. */
-const references = new RegExp(`\\[([^\\]\\n]*)\\]\\((page|item|source|space|task):(${uuid})\\)|\\b(page|item|source|space|task):(${uuid})`, 'gi');
+const references = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\((page|item|source|space|task):(${uuid})\\)|\\b(page|item|source|space|task):(${uuid})`, 'gi');
 
 /**
  * What Homing writes for an import, as JSON for import_bundle, with the new space's name: a new id
@@ -459,13 +496,15 @@ export function payloadOf(m: Manifest, name: string): string {
     m.pageArchives.map((archive) => archive.at),
   ].map(inOrder);
   // Who did what there, as imported provenance: their key in the export and their name, never anyone here.
-  const names = new Map(m.people.map((person) => [person.key, person.name]));
+  const names = new Map(m.people.map((person) => [person.key, person.name === null ? null : plainName(person.name) || null]));
   const person = (key: string | null) => (key === null ? undefined : { person: key, name: names.get(key) ?? null });
-  const by = (author: Manifest['items'][number]['author']) => ({ by: author.by, person: author.person, name: author.person === null ? null : (names.get(author.person) ?? null), agent: author.agent });
+  const by = (author: Manifest['items'][number]['author']) => ({
+    by: author.by, person: author.person, name: author.person === null ? null : (names.get(author.person) ?? null), agent: author.agent === null ? null : plainName(author.agent) || 'Assistant',
+  });
   const place = new Map(m.items.map((item, at) => [item.id, at]));
   // Each list is written out in turn, so besides the export itself only one is ever held whole.
   const lists: [string, () => unknown][] = [
-    ['from', () => ({ instance: m.instance, exportedBy: m.exportedBy.name, exportedAt: m.exportedAt, space: m.space })],
+    ['from', () => ({ instance: m.instance, exportedBy: plainName(m.exportedBy.name), exportedAt: m.exportedAt, space: m.space })],
     ['spaces', () => m.spaces.map((space, at) => ({
       id: to(space.id), name: at === 0 ? name : cleanName(space.name), parent: maybe(space.parent), closed: space.closed,
       createdAt: spaceTimes[at], archivedAt: space.archived?.at ?? null,

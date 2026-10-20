@@ -2,13 +2,13 @@
 // heavy only ever stops this worker, and Homing keeps answering everyone else meanwhile.
 
 import { parentPort, workerData } from 'node:worker_threads';
-import { ImportRefused, payloadOf, previewOf, readExport } from './bundle.ts';
+import { ImportRefused, payloadOf, previewJson, readExport } from './bundle.ts';
 
 const task = workerData as { zip: Uint8Array; name?: string; hash?: string };
 
 try {
   const { manifest, hash } = readExport(task.zip);
-  if (task.name === undefined) parentPort!.postMessage({ value: previewOf(manifest, hash) });
+  if (task.name === undefined) parentPort!.postMessage({ value: previewJson(manifest, hash) });
   // The import is of exactly what the person saw.
   else if (task.hash !== hash) parentPort!.postMessage({ refused: 'That isn’t the export you looked at. Choose it again to see what it brings.' });
   else parentPort!.postMessage({ value: payloadOf(manifest, task.name) });

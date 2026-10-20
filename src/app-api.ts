@@ -14,9 +14,16 @@ import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, placeSpa
 import { json, readJson, readUpload, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-/** Who is exporting a space right now, until it has been sent, and who is reading an export to import it, one at a time. */
+/**
+ * Who is exporting a space right now, until it has been sent, who is sending an export to import,
+ * and who is having one read or imported, one at a time.
+ */
 const exporting = new Set<string>();
+const uploading = new Set<string>();
 let importing: string | undefined;
+
+/** How long an export to import may take to arrive. */
+const uploadTime = 2 * 60_000;
 /** How long an export may take to make and send before it's given up on. */
 const exportTimeout = 5 * 60_000;
 const kinds: RuleKind[] = ['requirement', 'preference'];
@@ -232,21 +239,38 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
 
       case 'import preview':
       case 'import': {
-        // One at a time on the whole instance: reading a big export takes a lot of memory, and an
-        // import holds up creating spaces for everyone while it's written.
+        // An export from Homing, as the zip itself, which is read here and never kept. Each person
+        // sends one at a time, and a few people at once, each within a couple of minutes.
+        if (uploading.has(person) || uploading.size >= 4) return answer(res, 429, { message: 'Homing is receiving other exports right now. Try again in a moment.' });
+        uploading.add(person);
+        let zip: Awaited<ReturnType<typeof readUpload>>;
+        try {
+          zip = await readUpload(req, importLimits.upload, uploadTime);
+        } finally {
+          uploading.delete(person);
+        }
+        // Nobody to answer.
+        if (zip === 'gone') return true;
+        if (typeof zip === 'string') {
+          res.setHeader('connection', 'close');
+          return zip === 'too large'
+            ? answer(res, 413, { message: `That file is larger than Homing imports at once, ${importLimits.upload / 1024 / 1024} MB.` })
+            : answer(res, 408, { message: 'That file took too long to arrive. Try again on a steadier connection.' });
+        }
+        const params = new URL(req.url ?? '', app.url).searchParams;
+        // Whether the name is free, before the export is read, and again as it's imported.
+        const name = route.name === 'import' ? (await write((s) => placeSpace(s, { name: params.get('name') ?? '', who: 'with others' }))).name : undefined;
+        // Read and written one at a time on the whole instance: reading a big export takes a lot of
+        // memory, and an import holds up creating spaces for everyone while it's written.
         if (importing) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
         importing = person;
         try {
-          // An export from Homing, as the zip itself, which is read here and never kept.
-          const zip = await readUpload(req, importLimits.upload);
-          if (!zip) {
-            res.setHeader('connection', 'close');
-            return answer(res, 413, { message: `That file is larger than Homing imports at once, ${importLimits.upload / 1024 / 1024} MB.` });
+          if (name === undefined) {
+            // As the worker wrote it, so nothing large is built here.
+            const preview = await previewExport(zip);
+            res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(preview);
+            break;
           }
-          if (route.name === 'import preview') return answer(res, 200, await previewExport(zip));
-          const params = new URL(req.url ?? '', app.url).searchParams;
-          // Whether the name is free, before the export is read, and again as it's imported.
-          const { name } = await write((s) => placeSpace(s, { name: params.get('name') ?? '', who: 'with others' }));
           const payload = await readForImport(zip, name, params.get('hash') ?? '');
           const id = await write((s) => importSpace(s, name, payload));
           json(res, 200, { id });

@@ -334,17 +334,38 @@ export function json(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(JSON.stringify(body));
 }
 
-/** The request's body as it came, such as a file, or undefined when it's larger than the limit. */
-export async function readUpload(req: IncomingMessage, limit: number): Promise<Buffer | undefined> {
-  if (Number(req.headers['content-length'] ?? 0) > limit) return undefined;
-  let size = 0;
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    size += (chunk as Buffer).length;
-    if (size > limit) return undefined;
-    chunks.push(chunk as Buffer);
-  }
-  return Buffer.concat(chunks);
+/**
+ * The request's body as it came, such as a file, or why not: it's larger than the limit, it didn't
+ * all arrive in time, or the sender went away. Then the rest isn't read, and an answer should close
+ * the connection.
+ */
+export function readUpload(req: IncomingMessage, limit: number, time: number): Promise<Buffer | 'too large' | 'too slow' | 'gone'> {
+  if (Number(req.headers['content-length'] ?? 0) > limit) return Promise.resolve('too large');
+  return new Promise((resolve) => {
+    let size = 0;
+    const chunks: Buffer[] = [];
+    const stop = () => {
+      clearTimeout(timer);
+      req.off('data', data).off('end', end).off('error', gone);
+    };
+    const refuse = (why: 'too large' | 'too slow' | 'gone') => {
+      stop();
+      req.pause();
+      resolve(why);
+    };
+    const data = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) refuse('too large');
+      else chunks.push(chunk);
+    };
+    const end = () => {
+      stop();
+      resolve(Buffer.concat(chunks));
+    };
+    const gone = () => refuse('gone');
+    const timer = setTimeout(() => refuse('too slow'), time);
+    req.on('data', data).once('end', end).once('error', gone);
+  });
 }
 
 export async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
