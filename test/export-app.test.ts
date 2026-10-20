@@ -57,6 +57,8 @@ before(async () => {
     const calls = await writeItem(s, { pageId: gunnar, body: 'Prefers calls before nine.', sources: [diary.id] });
     const contracts = await writeItem(s, { pageId: gunnar, body: 'Gunnar signs contracts over 1 MNOK.', sources: [diary.id] });
     await publishItem(s, contracts.id, contracts.body);
+    // Shared as a copy, since it rests on Ana's diary, and then updated on her own side.
+    await updateItem(s, contracts.id, { body: 'Gunnar signs contracts over 2 MNOK.' });
     plan = await createPage(s, { spaceId: acme, title: 'Launch plan', type: 'project', shared: true });
     await writeItem(s, { pageId: plan, body: `[Gunnar](page:${gunnar}) signs off the launch.`, shared: true });
     launch = await createPage(s, { spaceId: acme, title: 'Launch 2027', shared: true });
@@ -93,7 +95,7 @@ before(async () => {
     await writeItem(s, { pageId: booking, body: 'Jon builds the booking flow.', shared: true });
     await archiveSpace(s, website, true);
     await archiveSpace(s, website, false);
-    anasOwn.push('Prefers calls before nine.', 'Ana’s call diary', 'My launch worries', 'The venue may be too small.', 'Draft in Norwegian first.', 'Book a bigger venue', 'moving to Oslo',
+    anasOwn.push('contracts over 2 MNOK', 'Prefers calls before nine.', 'Ana’s call diary', 'My launch worries', 'The venue may be too small.', 'Draft in Norwegian first.', 'Book a bigger venue', 'moving to Oslo',
       calls.id, contracts.id, diary.id, worries, venue.id, norwegian.id, venueTask.id, move!.id);
     return acme;
   });
@@ -340,6 +342,23 @@ test('each member’s export is their own view of the space', async () => {
   for (const secret of anasOwn) {
     for (const [path, text] of files) assert.ok(!text.includes(secret), `${path} holds “${secret}”`);
   }
+});
+
+test('something shared as a copy and then updated is the update for its owner, and the copy for everyone else', async () => {
+  const mine = await download(ana, acme);
+  const copy = mine.manifest.items.find((item) => item.body === 'Gunnar signs contracts over 1 MNOK.' && item.visibility === 'shared')!;
+  const update = mine.manifest.items.find((item) => item.body === 'Gunnar signs contracts over 2 MNOK.')!;
+  assert.deepEqual([update.visibility, update.supersedes], ['private', copy.id]);
+  const page = mine.files.get('knowledge/gunnar-holm.md')!;
+  assert.match(page, /_Private to Ana\. Everyone else still sees the earlier version\._\n\nGunnar signs contracts over 2 MNOK\./);
+  assert.match(page, /_Replaced on [\d-]+, for Ana only\. Everyone else still sees it\._\n\nGunnar signs contracts over 1 MNOK\./);
+  // Her original, which the copy stands for, isn't shown beside it.
+  assert.equal(page.split('Gunnar signs contracts over 1 MNOK.').length - 1, 1);
+  const theirs = await download(cara, acme);
+  const seen = theirs.manifest.items.filter((item) => item.body.startsWith('Gunnar signs contracts'));
+  assert.deepEqual(seen.map((item) => [item.body, item.visibility, item.publishedFrom]), [['Gunnar signs contracts over 1 MNOK.', 'shared', null]]);
+  assert.ok(!theirs.manifest.items.some((item) => item.supersedes === seen[0].id));
+  assert.equal(theirs.files.get('knowledge/gunnar-holm.md')!.split('Gunnar signs contracts').length - 1, 1);
 });
 
 test('who did what is told apart, by person, agent or routine, without accounts', async () => {

@@ -556,10 +556,13 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
       const path = layout.knowledge.get(id.toLowerCase());
       return path ? `](/${path})` : whole;
     });
+  // Your own original of something you shared as a copy shows as the copy, with your sources, as in Homing.
+  const copied = new Set(m.items.filter((item) => item.visibility === 'shared' && item.publishedFrom).map((item) => item.publishedFrom!));
+  const sourcesOf = (item: Data) => [...new Set([...item.sources, ...(item.publishedFrom ? (byId.get(item.publishedFrom)?.sources ?? []) : [])])].filter((id) => sources.has(id));
   /** An item, with the sources it cites as footnotes keyed by their ids, and what it rests on outside the export. */
   const withSources = (item: Data) => {
     const body = linked(item.body).trimEnd();
-    const notes = item.sources.filter((id) => sources.has(id)).map((id) => `[^${id}]`).join('');
+    const notes = sourcesOf(item).map((id) => `[^${id}]`).join('');
     // On its last line, unless that ends a code block or a table.
     const cited = !notes ? body : /^\s*(```|~~~|\|)/.test(body.split('\n').at(-1) ?? '') ? `${body}\n\n${notes}` : `${body}${notes}`;
     return item.sourcesElsewhere ? `${cited}\n\n_Also rests on ${count(item.sourcesElsewhere, 'source')} not in this export._` : cited;
@@ -583,13 +586,11 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
       const whole = onlyYou(page.id);
       const items = (itemsOn.get(page.id) ?? []).filter((item) => item.kind === 'text');
       const live = new Set((current.get(page.id) ?? []).filter((item) => item.kind === 'text'));
-      // Your own original shows as one with what you shared from it while they agree, as in Homing.
-      const agreeing = new Set([...live].filter((copy) => copy.publishedFrom && byId.get(copy.publishedFrom)?.body === copy.body).map((copy) => copy.publishedFrom));
       const shown = [...live]
-        .filter((item) => !agreeing.has(item.id))
+        .filter((item) => !copied.has(item.id))
         .sort((a, b) => firstOf(a).createdAt.localeCompare(firstOf(b).createdAt) || a.createdAt.localeCompare(b.createdAt));
-      const earlier = items.filter((item) => !live.has(item));
-      const cited = [...new Set([...shown, ...earlier].flatMap((item) => item.sources))].filter((id) => sources.has(id));
+      const earlier = items.filter((item) => !live.has(item) && !copied.has(item.id));
+      const cited = [...new Set([...shown, ...earlier].flatMap(sourcesOf))];
       for (const id of cited) usedOn.set(id, (usedOn.get(id) ?? new Set()).add(page.id));
       const latest = [...(current.get(page.id) ?? [])].sort((a, b) => b.writtenAt.localeCompare(a.writtenAt))[0];
       const name = title(page.id);
