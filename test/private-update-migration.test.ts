@@ -6,10 +6,11 @@
 // whatever it finds.
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { connect, withPrincipal, type Principal, type Session } from '../src/db.ts';
-import { addSource, createPage, readItem, readPage, writeItem } from '../src/knowledge.ts';
+import { addSource, readItem, readPage } from '../src/knowledge.ts';
 import { migrate } from '../src/migrate.ts';
 import { addMember, createPerson, createSpace, removeMember } from '../src/spaces.ts';
 import { freshDatabase } from './reset.ts';
@@ -26,12 +27,25 @@ const as = <T>(principal: Principal, fn: (s: Session) => Promise<T>) => withPrin
 const seen = async (person: string, page: string) =>
   ((await as({ person }, (s) => readPage(s, page)))?.items ?? []).map((item) => [item.body, item.privateTo === null ? 'shared' : 'own', item.replaced?.body ?? null]);
 
-/** Shares an item of the owner's that rests on their own email, so it's shared as a copy. */
+/**
+ * Shares an item of the owner's that rests on their own email, so it's shared as a copy. Written
+ * straight into the store, as the schema before the migration has it, since Homing's own code
+ * reads what later migrations add.
+ */
 async function shareCopy(owner: string, shape: string, text: string) {
-  pages[shape] = await as({ person: owner, direct: true }, (s) => createPage(s, { spaceId: acme, title: `Shape ${shape}`, shared: true }));
+  pages[shape] = await as({ person: owner, direct: true }, async (s) => {
+    const page = randomUUID();
+    await s.tx`insert into pages (id, space_id) values (${page}::uuid, ${acme}::uuid)`;
+    await s.tx`insert into content (space_id, page_id, kind, body) values (${acme}::uuid, ${page}::uuid, 'title', ${`Shape ${shape}`})`;
+    return page;
+  });
   originals[shape] = await as({ person: owner, agent: 'Claude' }, async (s) => {
     const email = await addSource(s, { spaceId: acme, reference: `Email about ${shape}`, excerpt: text });
-    return (await writeItem(s, { pageId: pages[shape], body: text, sources: [email.id] })).id;
+    const [{ id }] = await s.tx<{ id: string }[]>`
+      insert into content (space_id, page_id, kind, body, private_to) values (${acme}::uuid, ${pages[shape]}::uuid, 'text', ${text}, ${owner}::uuid) returning id
+    `;
+    await s.tx`insert into citations (content_id, source_id) values (${id}::uuid, ${email.id}::uuid)`;
+    return id;
   });
   // As sharing was before it: publish_item from the migration before.
   copies[shape] = await as({ person: owner, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select publish_item(${originals[shape]}::uuid, ${text}) as id`)[0].id);

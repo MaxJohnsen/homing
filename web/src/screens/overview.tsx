@@ -8,7 +8,7 @@ import { count, dateOf, focusRing, Section, wrapsLabel } from '@/components/scre
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
-import { nameOf, plain, type OverviewData, type WriteOverview } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, type OverviewData, type WriteOverview } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { PageRows } from '@/screens/pages';
@@ -42,7 +42,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground">
-                    {item.agent ? `${item.agent} wrote it${item.by?.you ? ' for you' : item.by?.name ? ` for ${item.by.name}` : ''}` : `${nameOf(item.by)} wrote it`}, {dateOf(item.writtenAt)}.
+                    {item.agent ? `${item.agent} wrote it${nameIn(item.by) ? ` for ${nameIn(item.by)}` : ''}` : `${nameOf(item.by)} wrote it`}, {dateOf(item.writtenAt)}.
                   </p>
                 </div>
               ))}

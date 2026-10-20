@@ -7,10 +7,14 @@
 import { setImmediate } from 'node:timers/promises';
 import { stringify } from 'yaml';
 import { personOf, type Session } from './db.ts';
-import { itemColumns, visible, type Item } from './knowledge.ts';
+import { importedAuthor, itemColumns, visible, type Imported, type ImportedAuthor, type ImportedPerson, type Item } from './knowledge.ts';
 import { frontmatter } from './skills.ts';
-import { listSpaces, peopleNames, type Space } from './spaces.ts';
+import { accessibleSpaces, listSpaces, peopleNames, type Space } from './spaces.ts';
+import type { Task } from './tasks.ts';
 import { zip } from './zip.ts';
+
+/** What a space that came in an import keeps of where it came from: who created it there, and who archived it. */
+type SpaceImported = Imported & { creator?: ImportedAuthor; archivedBy?: ImportedPerson };
 
 /** Someone the export names, by a key that holds only within it: never an account's id or email. */
 export interface Person {
@@ -30,6 +34,14 @@ export interface Author {
 
 /** Shared with the space, or private to the person who exported it. */
 export type Visibility = 'shared' | 'private';
+
+/** For something that came in an import: its id in that export, the Homing it came from, and who imported it, by key, and when, where the exporter sees them. */
+export interface ImportedFrom {
+  id?: string;
+  from?: string;
+  by?: string | null;
+  at?: string;
+}
 
 /** homing.json: everything an import needs, by the ids things have now. Times are ISO 8601. */
 export interface Manifest {
@@ -56,6 +68,7 @@ export interface Manifest {
     createdAt: string;
     /** Its folder in knowledge/ and guidance/, empty for the exported space. */
     folder: string;
+    imported?: ImportedFrom;
   }[];
   /** Every time the exporter archived or reopened one of the spaces. */
   spaceArchives: { space: string; archived: boolean; author: Author; at: string }[];
@@ -69,6 +82,7 @@ export interface Manifest {
     archived: { at: string; by: string | null } | null;
     /** Where it reads in the bundle. */
     file: string | null;
+    imported?: ImportedFrom;
   }[];
   items: {
     id: string;
@@ -95,9 +109,10 @@ export interface Manifest {
     sources: string[];
     /** How many sources it also rests on that the exporter sees, kept in spaces outside the export. */
     sourcesElsewhere: number;
+    imported?: ImportedFrom;
   }[];
-  revisions: { item: string; visibility: Visibility; body: string; author: Author; writtenAt: string; replacedAt: string }[];
-  sources: { id: string; space: string; visibility: Visibility; reference: string | null; excerpt: string; author: Author; createdAt: string }[];
+  revisions: { item: string; visibility: Visibility; body: string; author: Author; writtenAt: string; replacedAt: string; imported?: ImportedFrom }[];
+  sources: { id: string; space: string; visibility: Visibility; reference: string | null; excerpt: string; author: Author; createdAt: string; imported?: ImportedFrom }[];
   /** Pages that mention other pages, as page:… in an item. */
   links: { item: string; from: string; to: string }[];
   /** Pages gathered into collections. */
@@ -117,6 +132,7 @@ export interface Manifest {
     author: Author;
     createdAt: string;
     updatedAt: string;
+    imported?: ImportedFrom;
   }[];
 }
 
@@ -140,7 +156,9 @@ export async function manifestOf(s: Session, spaceId: string, instance: URL, now
 async function collect(s: Session, spaceId: string, instance: URL, now: Date): Promise<{ manifest: Manifest; layout: Layout } | undefined> {
   const me = personOf(s.principal);
   if (!me) return undefined;
-  const open = await listSpaces(s);
+  // In the order they were made, and spaces made at the same moment by id, so an export lists them the same way every time.
+  const made = new Map((await s.tx<{ id: string }[]>`select id from spaces where id in (${accessibleSpaces(s)}) order by created_at, id`).map((row, at) => [row.id, at]));
+  const open = (await listSpaces(s)).sort((a, b) => made.get(a.id)! - made.get(b.id)!);
   const root = open.find((space) => space.id === spaceId);
   if (!root) return undefined;
   // Down only through spaces the person can open, so a closed space they aren't in leaves no trace, nor anything in it.
@@ -148,8 +166,8 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
   for (let i = 0; i < tree.length; i++) tree.push(...open.filter((space) => space.parentId === tree[i].id));
   const ids = tree.map((space) => space.id);
 
-  const spaceRows = await s.tx<{ id: string; archivedBy: string | null; createdAt: Date; createdBy: string | null; agent: string | null }[]>`
-    select id, archived_by, created_at, created_by, agent from spaces where id in ${s.tx(ids)}
+  const spaceRows = await s.tx<{ id: string; archivedBy: string | null; createdAt: Date; createdBy: string | null; agent: string | null; imported: SpaceImported | null }[]>`
+    select id, archived_by, created_at, created_by, agent, imported from spaces where id in ${s.tx(ids)}
   `;
   const spaceArchives = await s.tx<{ spaceId: string; archived: boolean; personId: string | null; agent: string | null; at: Date }[]>`
     select a.space_id, a.archived, a.person_id, a.agent, a.at from space_archives a
@@ -160,8 +178,8 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
   // happened to the page itself before the person could see anything on it, such as when someone
   // had it to themselves and archived it, stays theirs: something shared from someone's own side
   // counts from when it was shared.
-  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; seen: Date; archivedAt: Date | null; archivedBy: string | null }[]>`
-    select p.id, p.space_id, p.type, p.archived_at, p.archived_by, first.created_at, first.seen
+  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; seen: Date; archivedAt: Date | null; archivedBy: string | null; imported: (Imported & { archivedBy?: ImportedPerson }) | null }[]>`
+    select p.id, p.space_id, p.type, p.archived_at, p.archived_by, p.imported, first.created_at, first.seen
     from pages p
     join lateral (
       select min(c.created_at) as created_at,
@@ -185,38 +203,53 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     where c.space_id in ${s.tx(ids)} and ${visible(s, 'c')} and ${visible(s, 'src')}
     order by src.created_at, src.id
   `;
-  const revisions = await s.tx<{ contentId: string; privateTo: string | null; body: string; writtenBy: string | null; agent: string | null; writtenAt: Date; replacedAt: Date }[]>`
-    select r.content_id, r.private_to, r.body, r.written_by, r.agent, r.written_at, r.replaced_at from revisions r
+  const revisions = await s.tx<{ contentId: string; privateTo: string | null; body: string; writtenBy: string | null; agent: string | null; writtenAt: Date; replacedAt: Date; imported: Imported | null }[]>`
+    select r.content_id, r.private_to, r.body, r.written_by, r.agent, r.written_at, r.replaced_at, r.imported from revisions r
     where r.space_id in ${s.tx(ids)} and ${visible(s, 'r')}
     order by r.replaced_at
   `;
-  const sources = await s.tx<{ id: string; spaceId: string; privateTo: string | null; reference: string | null; excerpt: string; writtenBy: string | null; agent: string | null; createdAt: Date }[]>`
-    select src.id, src.space_id, src.private_to, src.reference, src.excerpt, src.written_by, src.agent, src.created_at from sources src
+  const sources = await s.tx<{ id: string; spaceId: string; privateTo: string | null; reference: string | null; excerpt: string; writtenBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null }[]>`
+    select src.id, src.space_id, src.private_to, src.reference, src.excerpt, src.written_by, src.agent, src.created_at, src.imported from sources src
     where src.space_id in ${s.tx(ids)} and ${visible(s, 'src')}
     order by src.created_at, src.id
   `;
-  const archives = await s.tx<{ pageId: string; archived: boolean; personId: string | null; agent: string | null; at: Date }[]>`
-    select a.page_id, a.archived, a.person_id, a.agent, a.at from page_archives a
+  const archives = await s.tx<{ pageId: string; archived: boolean; personId: string | null; agent: string | null; at: Date; imported: Imported | null }[]>`
+    select a.page_id, a.archived, a.person_id, a.agent, a.at, a.imported from page_archives a
     join pages p on p.id = a.page_id
     where p.space_id in ${s.tx(ids)}
     order by a.at
   `;
-  const gathered = await s.tx<{ collectionId: string; pageId: string; privateTo: string | null; addedBy: string | null; agent: string | null; createdAt: Date }[]>`
-    select g.collection_id, g.page_id, g.private_to, g.added_by, g.agent, g.created_at from gathered g
+  const gathered = await s.tx<{ collectionId: string; pageId: string; privateTo: string | null; addedBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null }[]>`
+    select g.collection_id, g.page_id, g.private_to, g.added_by, g.agent, g.created_at, g.imported from gathered g
     where g.space_id in ${s.tx(ids)} and ${visible(s, 'g')}
     order by g.created_at
   `;
-  const tasks = await s.tx<{ id: string; spaceId: string; privateTo: string | null; title: string; description: string | null; due: string | null; assignee: string | null; doneAt: Date | null; doneBy: string | null; writtenBy: string | null; agent: string | null; createdAt: Date; updatedAt: Date }[]>`
+  const tasks = await s.tx<Task[]>`
     select t.id, t.space_id, t.private_to, t.title, t.description, to_char(t.due, 'YYYY-MM-DD') as due, t.assignee, t.done_at, t.done_by,
-           t.written_by, t.agent, t.created_at, t.updated_at
+           t.written_by, t.agent, t.created_at, t.updated_at, t.imported
     from tasks t
     where t.space_id in ${s.tx(ids)} and ${visible(s, 't')}
     order by t.created_at, t.id
   `;
 
+  // Who imported what came in an import, when, and from where, where the person can see it.
+  const importIds = [...new Set([...spaceRows, ...pages, ...found, ...revisions, ...sources, ...archives, ...gathered, ...tasks].map((row) => row.imported?.import).filter((id) => id !== undefined))];
+  const imports = new Map((importIds.length === 0 ? [] : await s.tx<{ id: string; importedBy: string | null; importedAt: Date; instance: string }[]>`
+    select id, imported_by, imported_at, instance from imports where id in ${s.tx(importIds)}
+  `).map((row) => [row.id, row]));
+
   // Everyone named gets a key of their own, and a name only if the person shares a space with them, the way Homing shows them.
+  // Someone named in an import is told apart by the import and their key in it, never matched with anyone here.
+  const importedNames = new Map<string, string | null>();
+  const elsewhere = (imported: Imported | null | undefined, person: ImportedPerson | null | undefined): string | null => {
+    if (!imported || !person?.person) return null;
+    const token = `import ${imported.import} ${person.person}`;
+    importedNames.set(token, person.name);
+    return token;
+  };
   const named = [
     me,
+    ...[...imports.values()].map((row) => row.importedBy),
     ...spaceRows.flatMap((row) => [row.createdBy, row.archivedBy]),
     ...spaceArchives.map((archive) => archive.personId),
     ...pages.map((page) => page.archivedBy),
@@ -228,10 +261,29 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     ...tasks.flatMap((task) => [task.writtenBy, task.assignee, task.doneBy]),
   ].filter((id) => id !== null);
   const names = await peopleNames(s, named);
+  // Those named in imports, among the rest in the order they come.
+  for (const row of [...spaceRows, ...spaceArchives, ...pages, ...found, ...revisions, ...sources, ...archives, ...gathered, ...tasks] as { imported?: (Imported & SpaceImported & { archivedBy?: ImportedPerson; assignee?: ImportedPerson; doneBy?: ImportedPerson }) | null }[]) {
+    const imported = row.imported;
+    for (const person of [imported?.author, imported?.publishedBy, imported?.archivedBy, imported?.assignee, imported?.doneBy, imported?.creator]) {
+      const token = elsewhere(imported, person);
+      if (token) named.push(token);
+    }
+  }
+  for (const [token, name] of importedNames) names.set(token, name ?? '');
   const keys = new Map<string, string>();
   for (const id of named) if (!keys.has(id)) keys.set(id, `person-${keys.size + 1}`);
   const key = (id: string | null) => (id ? keys.get(id)! : null);
-  const author = (id: string | null, agent: string | null): Author => ({ by: agent ? 'agent' : id ? 'person' : 'routine', person: key(id), agent });
+  // What still says what it said when it was imported keeps who wrote it there.
+  const author = (id: string | null, agent: string | null, imported: Imported | null = null): Author => {
+    const before = importedAuthor(imported);
+    if (before) return { by: before.by, person: key(elsewhere(imported, before)), agent: before.agent };
+    return { by: agent ? 'agent' : id ? 'person' : 'routine', person: key(id), agent };
+  };
+  const from = (imported: Imported | null): { imported?: ImportedFrom } => {
+    if (!imported) return {};
+    const row = imports.get(imported.import);
+    return { imported: { ...(imported.id && { id: imported.id }), ...(row && { from: row.instance, by: key(row.importedBy), at: time(row.importedAt) }) } };
+  };
   const side = (privateTo: string | null): Visibility => (privateTo ? 'private' : 'shared');
   const time = (date: Date) => date.toISOString();
 
@@ -257,7 +309,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     exportedAt: time(now),
     exportedBy: { person: key(me)!, name: names.get(me) ?? '' },
     space: root.id,
-    people: [...keys].map(([id, person]) => ({ key: person, name: names.get(id) ?? null })),
+    people: [...keys].map(([id, person]) => ({ key: person, name: names.get(id) || null })),
     spaces: tree.map((space) => {
       const row = spaceOf.get(space.id)!;
       return {
@@ -266,10 +318,11 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
         parent: space === root ? null : space.parentId,
         closed: space.closed,
         private: space.privateTo !== null,
-        creator: row.createdBy || row.agent ? author(row.createdBy, row.agent) : null,
-        archived: space.archivedAt ? { at: time(space.archivedAt), by: key(row.archivedBy) } : null,
+        creator: row.imported?.creator ? author(null, null, { import: row.imported.import, author: row.imported.creator }) : row.createdBy || row.agent ? author(row.createdBy, row.agent) : null,
+        archived: space.archivedAt ? { at: time(space.archivedAt), by: key(row.archivedBy) ?? key(elsewhere(row.imported, row.imported?.archivedBy)) } : null,
         createdAt: time(row.createdAt),
         folder: '',
+        ...from(row.imported),
       };
     }),
     spaceArchives: spaceArchives.map((archive) => ({ space: archive.spaceId, archived: archive.archived, author: author(archive.personId, archive.agent), at: time(archive.at) })),
@@ -279,8 +332,9 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       type: page.type,
       createdAt: time(page.createdAt),
       // Archived before the person could see it: archived since then, by nobody they know of.
-      archived: !page.archivedAt ? null : page.archivedAt < page.seen ? { at: time(page.seen), by: null } : { at: time(page.archivedAt), by: key(page.archivedBy) },
+      archived: !page.archivedAt ? null : page.archivedAt < page.seen ? { at: time(page.seen), by: null } : { at: time(page.archivedAt), by: key(page.archivedBy) ?? key(elsewhere(page.imported, page.imported?.archivedBy)) },
       file: null,
+      ...from(page.imported),
     })),
     items: await inSteps(items, (item) => ({
       id: item.id,
@@ -290,7 +344,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       path: item.path,
       body: verbatim(item.kind) ? item.body : clean(item.body),
       visibility: side(item.privateTo),
-      author: author(item.writtenBy, item.agent),
+      author: author(item.writtenBy, item.agent, item.imported),
       createdAt: time(item.createdAt),
       writtenAt: time(item.updatedAt),
       supersedes: item.supersedes && itemIds.has(item.supersedes) ? item.supersedes : null,
@@ -298,17 +352,19 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       // A removal reaches as far as what it removes, so the spaces below see it's gone.
       ...(item.kind === 'removed' ? { reachesDown: item.reachesDown } : {}),
       publishedFrom: item.publishedFrom && itemIds.has(item.publishedFrom) ? item.publishedFrom : null,
-      published: item.publishedAt ? { by: key(item.publishedBy), at: time(item.publishedAt) } : null,
+      published: item.publishedAt ? { by: key(item.publishedBy) ?? key(elsewhere(item.imported, item.imported?.publishedBy)), at: time(item.publishedAt) } : null,
       sources: (cited.get(item.id) ?? []).filter((citation) => citation.here).map((citation) => citation.sourceId),
-      sourcesElsewhere: (cited.get(item.id) ?? []).filter((citation) => !citation.here).length,
+      sourcesElsewhere: (cited.get(item.id) ?? []).filter((citation) => !citation.here).length + (item.imported?.sourcesElsewhere ?? 0),
+      ...from(item.imported),
     })),
     revisions: await inSteps(revisions.filter((revision) => itemIds.has(revision.contentId)), (revision) => ({
         item: revision.contentId,
         visibility: side(revision.privateTo),
         body: verbatim(kindOf.get(revision.contentId)!) ? revision.body : clean(revision.body),
-        author: author(revision.writtenBy, revision.agent),
+        author: author(revision.writtenBy, revision.agent, revision.imported),
         writtenAt: time(revision.writtenAt),
         replacedAt: time(revision.replacedAt),
+        ...from(revision.imported),
       })),
     sources: await inSteps(sources, (source) => ({
       id: source.id,
@@ -316,21 +372,22 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       visibility: side(source.privateTo),
       reference: source.reference && clean(source.reference),
       excerpt: clean(source.excerpt),
-      author: author(source.writtenBy, source.agent),
+      author: author(source.writtenBy, source.agent, source.imported),
       createdAt: time(source.createdAt),
+      ...from(source.imported),
     })),
     links: [],
     gathered: await inSteps(gathered.filter((gathering) => pageIds.has(gathering.collectionId) && pageIds.has(gathering.pageId)), (gathering) => ({
         collection: gathering.collectionId,
         page: gathering.pageId,
         visibility: side(gathering.privateTo),
-        author: author(gathering.addedBy, gathering.agent),
+        author: author(gathering.addedBy, gathering.agent, gathering.imported),
         createdAt: time(gathering.createdAt),
       })),
     // Only since the person could see the page, so nothing from before shows through.
     pageArchives: archives
       .filter((archive) => pageIds.has(archive.pageId) && archive.at >= firstSeen.get(archive.pageId)!)
-      .map((archive) => ({ page: archive.pageId, archived: archive.archived, author: author(archive.personId, archive.agent), at: time(archive.at) })),
+      .map((archive) => ({ page: archive.pageId, archived: archive.archived, author: author(archive.personId, archive.agent, archive.imported), at: time(archive.at) })),
     tasks: await inSteps(tasks, (task) => ({
       id: task.id,
       space: task.spaceId,
@@ -338,11 +395,12 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       title: clean(task.title),
       description: task.description && clean(task.description),
       due: task.due,
-      assignee: key(task.assignee),
-      done: task.doneAt ? { at: time(task.doneAt), by: key(task.doneBy) } : null,
-      author: author(task.writtenBy, task.agent),
+      assignee: key(task.assignee) ?? key(elsewhere(task.imported, task.imported?.assignee)),
+      done: task.doneAt ? { at: time(task.doneAt), by: key(task.doneBy) ?? key(elsewhere(task.imported, task.imported?.doneBy)) } : null,
+      author: author(task.writtenBy, task.agent, task.imported),
       createdAt: time(task.createdAt),
       updatedAt: time(task.updatedAt),
+      ...from(task.imported),
     })),
   };
 
@@ -360,13 +418,24 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const kinds = 'page|item|source|space|task|proposal';
 /** A reference to something in Homing, as a Markdown link or on its own, such as [Gunnar](page:…) or item:…. */
-const references = new RegExp(`\\[([^\\]\\n]*)\\]\\((?:${kinds}):(${uuid})\\)|\\b(?:${kinds}):(${uuid})`, 'gi');
+// The link's words hold no brackets, so finding references takes time in step with the text.
+const references = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\((?:${kinds}):(${uuid})\\)|\\b(?:${kinds}):(${uuid})`, 'gi');
 const pageRefs = new RegExp(`\\bpage:(${uuid})`, 'gi');
 
 /** The text with references to anything not in the bundle taken out: a link keeps its words. */
 function scrub(text: string, known: Set<string>): string {
+  return rewriteReferences(text, (id) => (known.has(id) ? id : undefined));
+}
+
+/**
+ * The text with each reference to something in Homing, such as [Gunnar](page:…), pointed to what
+ * `to` gives for its id. Where it gives nothing, the reference goes: a link keeps its words.
+ */
+export function rewriteReferences(text: string, to: (id: string) => string | undefined): string {
   return text.replace(references, (whole, words: string | undefined, linked: string | undefined, bare: string | undefined) => {
-    if (known.has((linked ?? bare)!.toLowerCase())) return whole;
+    const id = (linked ?? bare)!.toLowerCase();
+    const next = to(id);
+    if (next) return whole.slice(0, whole.length - id.length - (linked ? 1 : 0)) + next + (linked ? ')' : '');
     return linked ? words! : '(not in this export)';
   });
 }

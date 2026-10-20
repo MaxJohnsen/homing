@@ -9,6 +9,7 @@ export type Route =
   | { name: 'account' }
   | { name: 'admin' }
   | { name: 'new space' }
+  | { name: 'import space' }
   | { name: 'space'; id: string; view?: SpaceView }
   | { name: 'page'; id: string }
   | { name: 'source'; id: string }
@@ -27,6 +28,7 @@ const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/account$/, () => ({ name: 'account' })],
   [/^\/admin$/, () => ({ name: 'admin' })],
   [/^\/spaces\/new$/, () => ({ name: 'new space' })],
+  [/^\/spaces\/import$/, () => ({ name: 'import space' })],
   [new RegExp(`^/spaces/${uuid}(?:/(pages|collections|sources|rules|skills|tasks|members|settings))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
   [new RegExp(`^/pages/${uuid}$`, 'i'), (id) => ({ name: 'page', id: id.toLowerCase() })],
   [new RegExp(`^/sources/${uuid}$`, 'i'), (id) => ({ name: 'source', id: id.toLowerCase() })],
@@ -53,6 +55,7 @@ export function addressOf(route: Route): string {
     case 'account': return '/account';
     case 'admin': return '/admin';
     case 'new space': return '/spaces/new';
+    case 'import space': return '/spaces/import';
     case 'space': return `/spaces/${route.id}${route.view ? `/${route.view}` : ''}`;
     case 'page': return `/pages/${route.id}`;
     case 'source': return `/sources/${route.id}`;

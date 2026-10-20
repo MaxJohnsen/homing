@@ -5,7 +5,7 @@ import { Markdown } from '@/components/markdown';
 import { OnlyYou } from '@/components/only-you';
 import { ago, count, dateOf, focusRing, ScreenHeader, Section } from '@/components/screen';
 import { Input } from '@/components/ui/input';
-import { nameOf, type SourceData, type SourcesData, type SourceSummary } from '@/lib/knowledge';
+import { nameIn, nameOf, type SourceData, type SourcesData, type SourceSummary } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { Pager, pageSize, type PageFilters } from '@/screens/pages';
@@ -95,7 +95,7 @@ function SourceRow({ source, space, now }: { source: SourceSummary; space: Space
 export function Source({ source }: { source: SourceData }) {
   const where = source.space.personal ? 'your personal space' : source.space.name;
   const kept = source.agent
-    ? `${source.agent} kept it${source.by?.you ? ' for you' : source.by?.name ? ` for ${source.by.name}` : ''}`
+    ? `${source.agent} kept it${nameIn(source.by) ? ` for ${nameIn(source.by)}` : ''}`
     : source.by ? `${nameOf(source.by)} kept it` : 'Homing kept it';
   const who = source.space.private || !source.shared ? 'Only you have it.' : `Everyone in ${source.space.name} has it.`;
   const original = /^https?:\/\/\S+$/i.test(source.reference ?? '') ? source.reference! : undefined;

@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import { draftOf, parentOf, placesIn, SpaceFields, spaceOf, type SpaceSet } from '@/components/space-fields';
-import { ScreenHeader, Section } from '@/components/screen';
+import { cn } from 'cn';
+import { focusRing, ScreenHeader, Section } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { useLoad } from '@/lib/load';
+import { Link } from '@/lib/router';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 
 export type CreateSpace = (input: SpaceSet) => Promise<{ id: string } | { problem: string; field?: string }>;
@@ -64,6 +66,13 @@ export function NewSpace({ spaces, start, name, create, onCreated, onCancel }: {
           </div>
         </form>
       </Section>
+      <p className="max-w-2xl text-sm text-muted-foreground">
+        Moving a space from another Homing, or bringing one back?{' '}
+        <Link href="/spaces/import" className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+          Import its export
+        </Link>
+        , and it becomes a space of its own that only you have.
+      </p>
     </>
   );
 }

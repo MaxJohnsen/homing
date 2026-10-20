@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { nameOf, plain, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
 import type { PublicationData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import { AboutPage, CollectionPages } from '@/screens/collection';
@@ -198,7 +198,7 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
 
 /** "You wrote this", "Claude saved this for Cara Lund". */
 function wrote(by: Author, agent: string | null): string {
-  if (agent) return by?.name || by?.you ? `${agent} saved this for ${by.you ? 'you' : by.name}` : `${agent} saved this`;
+  if (agent) return nameIn(by) ? `${agent} saved this for ${nameIn(by)}` : `${agent} saved this`;
   return `${nameOf(by)} wrote this`;
 }
 

@@ -23,6 +23,7 @@ import { Overview } from '@/screens/overview';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
+import { ImportSpace, type ImportPreviewData } from '@/screens/import-space';
 import { NewSpace } from '@/screens/new-space';
 import { Members, Space, SpaceSettings, type ConversionData, type MemberActions, type ShareSpaceActions } from '@/screens/space';
 import { Tasks, type TaskActions, type TasksData } from '@/screens/tasks';
@@ -95,6 +96,8 @@ function Screen({ route, me, spaces, waiting, recent }: { route: Route; me: Acco
       return <Titled title="A decision"><ProposalPage id={route.id} /></Titled>;
     case 'new space':
       return <Titled title="New space"><NewSpacePage spaces={spaces} /></Titled>;
+    case 'import space':
+      return <Titled title="Import a space"><ImportSpacePage /></Titled>;
     case 'space':
       return <SpacePage id={route.id} view={route.view ?? 'overview'} />;
     case 'page':
@@ -138,6 +141,36 @@ function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingD
       recent={recent}
       onArchived={(include) => navigate(include ? '/?archived=1' : '/')}
       updating={changes.updating}
+    />
+  );
+}
+
+/** Importing a space from an export, then opening it. */
+function ImportSpacePage() {
+  // The zip goes as it is, and Homing reads it there and never keeps it.
+  const send = async <T,>(path: string, file: File): Promise<T | { problem: string; field?: string }> => {
+    try {
+      const response = await fetch(path, { method: 'POST', body: file, headers: { 'content-type': 'application/zip' } });
+      const body = await response.json().catch(() => ({}));
+      return response.ok ? (body as T) : { problem: body.message ?? 'Something went wrong. Try again.', field: body.field };
+    } catch {
+      return { problem: 'Homing can’t be reached right now. Check your connection and try again.' };
+    }
+  };
+  return (
+    <ImportSpace
+      actions={{
+        preview: async (file) => {
+          const answer = await send<ImportPreviewData>('/api/import/preview', file);
+          return 'problem' in answer ? answer : { preview: answer };
+        },
+        import: (file, name, hash) => send<{ id: string }>(`/api/import?${new URLSearchParams({ name, hash })}`, file),
+      }}
+      onImported={async (id) => {
+        await reload('/api/spaces');
+        navigate(`/spaces/${id}`);
+      }}
+      onCancel={() => (history.length > 1 ? history.back() : navigate('/'))}
     />
   );
 }

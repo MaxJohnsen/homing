@@ -161,6 +161,7 @@ export function SharingDetails({ place, publication }: { place: string; publicat
   const sources = [
     ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your source “${source.reference}”`)),
     ...(publication.hiddenUnseen > 0 ? [publication.hiddenUnseen === 1 ? 'a source you can no longer open' : `${publication.hiddenUnseen} sources you can no longer open`] : []),
+    ...(publication.hiddenElsewhere ? [publication.hiddenElsewhere === 1 ? 'a source that didn’t come with the import' : `${publication.hiddenElsewhere} sources that didn’t come with the import`] : []),
   ];
   const listed = sources.length > 1 ? `${sources.slice(0, -1).join(', ')} and ${sources.at(-1)}` : sources[0];
   return (
