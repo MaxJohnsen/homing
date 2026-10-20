@@ -58,7 +58,7 @@ function ChangeRow({ change, now }: { change: ChangeData; now?: Date }) {
         <span className="text-base leading-snug font-semibold break-words">{change.newPage ? change.title : <span className="line-clamp-2">{plain(change.text)}</span>}</span>
         {change.newPage && <span className="line-clamp-2 text-base">{plain(change.text)}</span>}
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-          {what}, {byWhom(change)}, {ago(change.at, now)}.
+          {what}, {byWhom(change)}, {ago(change.at, now)}.{change.space.archived && ` ${change.space.name} is archived.`}
           {change.onlyYou && !change.space.private && <OnlyYou />}
         </span>
       </Link>
@@ -66,18 +66,56 @@ function ChangeRow({ change, now }: { change: ChangeData; now?: Date }) {
   );
 }
 
+/** Whether changes in archived spaces show, and how to change that. */
+export interface ArchivedChanges {
+  /** Archived spaces were left out, and they have changes. */
+  archived?: boolean;
+  /** Changes in archived spaces show too. */
+  withArchived?: boolean;
+  onArchived?: (include: boolean) => void;
+}
+
+/**
+ * Archived spaces are out of everyday attention, so what changed in them shows only on request:
+ * a way to it below the list, offered only when there's something there, and a way back above it.
+ */
+export function ArchivedNote({ withArchived, onArchived }: ArchivedChanges) {
+  if (!withArchived || !onArchived) return null;
+  return (
+    <p className="text-sm text-muted-foreground">
+      Including changes in archived spaces, which are out of everyday context.{' '}
+      <button type="button" onClick={() => onArchived(false)} className={cn('rounded-sm font-semibold text-primary-ink hover:underline', focusRing)}>
+        Leave them out
+      </button>
+    </p>
+  );
+}
+
+export function IncludeArchived({ archived, withArchived, onArchived }: ArchivedChanges) {
+  if (!archived || withArchived || !onArchived) return null;
+  return (
+    <button type="button" onClick={() => onArchived(true)} className={cn('self-start rounded-sm text-sm font-semibold text-primary-ink hover:underline', focusRing)}>
+      Show changes in archived spaces
+    </button>
+  );
+}
+
 /** Everything that changed, fifty at a time, newest first. */
-export function Changes({ changes, more, from, onFrom, now }: {
+export function Changes({ changes, more, from, onFrom, now, ...archived }: {
   changes?: ChangeData[];
   more: boolean;
   from: number;
   onFrom: (from: number) => void;
   now?: Date;
-}) {
+} & ArchivedChanges) {
   return (
     <>
-      <ScreenHeader title="What changed" meta="In all your spaces, newest first: what’s added, updated or corrected, by people and their assistants." />
-      {changes && changes.length === 0 && <p className="text-base text-muted-foreground">Nothing has changed yet. What you and others save shows up here.</p>}
+      <ScreenHeader title="What changed" meta="In your spaces, newest first: what’s added, updated or corrected, by people and their assistants." below={<ArchivedNote {...archived} />} />
+      {changes && changes.length === 0 && (
+        <p className="text-base text-muted-foreground">
+          {archived.archived ? 'Nothing has changed outside archived spaces yet.' : 'Nothing has changed yet. What you and others save shows up here.'}
+        </p>
+      )}
       {changes && changes.length > 0 && <ChangeList changes={changes} now={now} />}
       {(from > 0 || more) && (
         <nav aria-label="Older and newer changes" className="flex flex-wrap items-center justify-between gap-3">
@@ -94,6 +132,7 @@ export function Changes({ changes, more, from, onFrom, now }: {
           </div>
         </nav>
       )}
+      <IncludeArchived {...archived} />
     </>
   );
 }

@@ -358,6 +358,13 @@ export const sampleChanges: ChangeData[] = [
   { itemId: 'c4', pageId: '7d1c2a40-0000-4000-8000-000000000006', title: 'Fjord Bank app', text: 'Version 3.2 goes to the App Store on October 28.', kind: 'corrected', newPage: false, by: { name: 'Tore Vik', you: false }, agent: null, at: daysAgo(4), onlyYou: false, space: { id: 'fjord', name: 'Fjord Bank', within: null } },
 ];
 
+/** What changed with archived spaces included: a late note in a finished project. */
+export const sampleChangesWithArchived: ChangeData[] = [
+  sampleChanges[0],
+  { itemId: 'c5', pageId: '7d1c2a40-0000-4000-8000-000000000007', title: 'Wrap-up', text: 'Final invoice paid on October 12. Nothing left open.', kind: 'added', newPage: false, by: { name: 'Tore Vik', you: false }, agent: null, at: daysAgo(0, 6), onlyYou: false, space: { id: 'summer', name: 'Summer campaign', within: 'Acme', archived: true } },
+  ...sampleChanges.slice(1),
+];
+
 /** Northwind at a glance, with Ana's own overview over the shared one. */
 export const sampleOverview: OverviewData = {
   overview: [

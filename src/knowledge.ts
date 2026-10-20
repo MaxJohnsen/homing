@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { AccessDenied, personOf, type Session } from './db.ts';
-import { accessibleSpaces } from './spaces.ts';
+import { accessibleSpaces, listSpaces } from './spaces.ts';
 
 export interface Item {
   id: string;
@@ -640,11 +640,19 @@ export interface Change {
 
 /**
  * What changed lately in everything the viewer can see, newest first: knowledge added, updated or
- * corrected, never rules, skills or what's no longer true. Says whether there's more after these.
+ * corrected, never rules, skills or what's no longer true. Archived spaces are out of everyday
+ * attention, so what changed in them shows only on request. Says whether there's more after
+ * these, and whether archived spaces that were left out have changes.
  */
-export async function recentChanges(s: Session, options: { offset?: number; limit?: number } = {}): Promise<{ changes: Change[]; more: boolean }> {
+export async function recentChanges(
+  s: Session,
+  options: { offset?: number; limit?: number; /** With archived spaces too. */ archived?: boolean } = {},
+): Promise<{ changes: Change[]; more: boolean; archived: boolean }> {
   const offset = Math.max(0, options.offset ?? 0);
   const limit = options.limit ?? 50;
+  // Archived as the viewer sees it: a space archived with one above it only when they can open that one.
+  const shelved = options.archived ? [] : (await listSpaces(s)).filter((space) => space.archived).map((space) => space.id);
+  const active = shelved.length ? s.tx`and c.space_id not in ${s.tx(shelved)}` : s.tx``;
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
@@ -663,7 +671,7 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
              ${current(s, 'c')} as is_current,
              ${agreesWithShared(s, 'c')} as agrees_with_shared
       from content c
-      where c.kind = 'text' and ${visible(s, 'c')}
+      where c.kind = 'text' and ${visible(s, 'c')} ${active}
       order by greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) desc
       limit ${offset + limit * 2 + 50}
       offset 0
@@ -672,7 +680,13 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
     order by at desc
     limit ${limit + 1} offset ${offset}
   `;
-  return { changes: rows.slice(0, limit), more: rows.length > limit };
+  // Anything written there is a change someone can include, so the way to them shows only then.
+  const [{ archived }] = shelved.length
+    ? await s.tx<{ archived: boolean }[]>`
+        select exists (select from content c where c.space_id in ${s.tx(shelved)} and c.kind = 'text' and ${visible(s, 'c')}) as archived
+      `
+    : [{ archived: false }];
+  return { changes: rows.slice(0, limit), more: rows.length > limit, archived };
 }
 
 /** A source in a list, as the viewer sees it. */
