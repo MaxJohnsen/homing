@@ -3,7 +3,7 @@
 // person's private tasks with `remember`; people also write and share them in the app.
 
 import { personOf, type Session } from './db.ts';
-import { checkSpace, sideOf, type Imported, type ImportedPerson } from './knowledge.ts';
+import { checkSpace, sideOf, termsOf, visible, type Imported, type ImportedPerson } from './knowledge.ts';
 import { spaceView } from './spaces.ts';
 
 export interface Task {
@@ -120,7 +120,7 @@ export async function changeTask(
 
 /** A task the person can see. */
 export async function readTask(s: Session, taskId: string): Promise<Task | undefined> {
-  const [task] = await s.tx<Task[]>`select ${columns(s)} from tasks where id = ${taskId}::uuid`;
+  const [task] = await s.tx<Task[]>`select ${columns(s)} from tasks where id = ${taskId}::uuid and ${visible(s, 'tasks')}`;
   return task;
 }
 
@@ -136,6 +136,23 @@ export async function tasksIn(s: Session, spaceId: string): Promise<{ open: Task
     limit 500
   `;
   return { open: tasks.filter((task) => !task.doneAt), done: tasks.filter((task) => task.doneAt) };
+}
+
+/**
+ * The tasks the person can see whose title or description matches, open ones first: their own
+ * private ones, and the shared ones in spaces they can open. Optionally within a space and the
+ * spaces below it.
+ */
+export async function searchTasks(s: Session, query: string, options: { spaceId?: string; limit?: number } = {}): Promise<Task[]> {
+  const terms = termsOf(query);
+  if (!terms) return [];
+  const within = options.spaceId ? s.tx`and space_id in (select space_subtree(${options.spaceId}::uuid))` : s.tx``;
+  return s.tx<Task[]>`
+    select ${columns(s)} from tasks
+    where search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'tasks')} ${within}
+    order by done_at is not null, ts_rank(search, to_tsquery('simple', ${terms}), 1) desc, created_at desc
+    limit ${options.limit ?? 10}
+  `;
 }
 
 /** Shares one of your private tasks with everyone in its space. Only a person does, directly. */

@@ -27,6 +27,7 @@ import {
   search,
   sourcesIn,
   sourceView,
+  spaceOfPage,
   supersedeItem,
   updateItem,
   writeItem,
@@ -34,9 +35,9 @@ import {
   type Item,
   type Source,
 } from '../src/knowledge.ts';
-import { decide, openProposals, proposeInclude, proposeRule, readProposal, type Proposal } from '../src/proposals.ts';
+import { decide, openProposals, proposeInclude, proposeRule, readProposal, searchProposals, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor } from '../src/skills.ts';
-import { addTask } from '../src/tasks.ts';
+import { addTask, readTask, searchTasks } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -107,8 +108,12 @@ for (const [layer, sql] of [
             assert.deepEqual(await sourcesIn(s, space), { sources: [], total: 0, all: 0 });
           }
           assert.equal(await sourceView(s, target.source.id), undefined);
-          for (const page of target.pages) assert.equal(await readPage(s, page), undefined);
+          for (const page of target.pages) {
+            assert.equal(await readPage(s, page), undefined);
+            assert.equal(await spaceOfPage(s, page), undefined);
+          }
           for (const item of target.items) assert.equal(await readItem(s, item.id), undefined);
+          for (const task of target.tasks) assert.equal(await readTask(s, task), undefined);
           assert.equal((await peopleNames(s, [target.person.id])).size, 0);
         }, sql);
       }
@@ -121,6 +126,13 @@ for (const [layer, sql] of [
           const hits = await as(intruder.person, (s) => search(s, text), sql);
           assert.deepEqual(hits.filter((hit) => !own.includes(hit.spaceId)), []);
         }
+        // Nor their tasks, or the proposals waiting for them: only the intruder's own, which share some words.
+        for (const text of [`${target.name}: book the venue`, `${target.name}: call the lawyer`]) {
+          const tasks = await as(intruder.person, (s) => searchTasks(s, text), sql);
+          assert.deepEqual(tasks.map((task) => task.id).sort(), [...intruder.tasks].sort(), text);
+        }
+        const waiting = await as(intruder.person, (s) => searchProposals(s, target.proposal.change.text!), sql);
+        assert.deepEqual(waiting.map((proposal) => proposal.id), [intruder.proposal.id]);
       }
     });
 
