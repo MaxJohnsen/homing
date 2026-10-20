@@ -129,6 +129,10 @@ export interface Hit {
   replacedForYou: boolean;
   /** What the matching content is: a title, knowledge, a rule or a skill's file. Null for a source. */
   itemKind: string | null;
+  /** Who wrote the matching content, and through which agent, as on an item. Null for a source. */
+  writtenBy: string | null;
+  agent: string | null;
+  imported: Imported | null;
 }
 
 /** Keeps where knowledge came from, without giving it a page yet. The same source is kept once. */
@@ -312,6 +316,14 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     archived: archivedAt ? { at: archivedAt, by: archivedBy } : null,
     items: items.filter((item) => item.kind !== 'title'),
   };
+}
+
+/** The space a page is in, if the viewer sees it in a space they can open. */
+export async function spaceOfPage(s: Session, pageId: string): Promise<string | undefined> {
+  const [page] = await s.tx<{ spaceId: string }[]>`
+    select space_id from content where page_id = ${pageId}::uuid and ${visible(s, 'content')} limit 1
+  `;
+  return page?.spaceId;
 }
 
 /** What sharing one of your private items with its space would do, for you to decide. */
@@ -886,7 +898,7 @@ export async function historyOf(s: Session, itemIds: string[]): Promise<(Revisio
 }
 
 /** Search terms for full-text search: longer words match by how they start, so "launch" finds "launches". */
-function termsOf(query: string): string | undefined {
+export function termsOf(query: string): string | undefined {
   // Letters with their accents and marks, as one word, and at most 32 words.
   const words = query.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32);
   return words ? words.map((word) => (word.length >= 4 ? `${word}:*` : word)).join(' | ') : undefined;
@@ -928,7 +940,7 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, imported from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -942,14 +954,14 @@ export async function search(
                and exists (select from content r where r.supersedes = c.id and r.private_to is not null and ${visible(s, 'r')})
                and not exists (select from content r where r.supersedes = c.id and r.private_to is null and ${visible(s, 'r')}) as replaced_for_you,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
-             ${sharedAsCopy(s, 'c')} as shared_as_copy
+             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.imported
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.

@@ -365,11 +365,13 @@ The line between `remember` and `act` is where a change happens and whom it affe
 
 More about the tools:
 
-- `remember` needs no approval, but it still has permissions. It can't overwrite text people wrote, change guidance, or write to anyone else's private side.
+- `remember` needs no approval, but it still has permissions. It can't overwrite text people wrote, change guidance, or write to anyone else's private side. Where an agent reads a page, each item says who wrote it, so it knows what a person wrote before it tries.
 - `remember` puts knowledge on the page for its subject: an existing page when there is one, a new one when the subject deserves it, and otherwise the space's notes, which upkeep can reorganize later. Sources can be kept on their own as evidence. An agent's own words are never treated as a source.
 - `act` returns one of three outcomes: done, waiting for approval (with a form or a link), or blocked. Approval is never a tool.
 - What a person does only in Homing, such as downloading a space's export, `act` answers with the link to it.
 - Every write can, and should, cite its sources.
+- Every write names its destination: a space, or something already in one, such as an item, a page, a rule or a task, whose reference decides where the write goes. A space given as well must be that space or one whose context shows it, such as a space above it, or nothing changes. A space can also be named by its name when only one space the person can open has it, and where something is read or saved there, by a page in it. None of it reveals anything the person can't see.
+- `search` also finds tasks, and the person's own proposals that are still waiting, with the space each is in.
 - A new system adds actions to `act`, never new tools. `act` validates arguments, authorization and approvals.
 - Whether an action publishes depends on its effect, not its name. A draft in a shared mailbox counts as publishing.
 - The identity used for outgoing actions comes from your preference or from asking, never from the space.

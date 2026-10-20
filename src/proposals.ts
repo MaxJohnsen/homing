@@ -1,6 +1,6 @@
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
-import { archivePage, current, itemColumns, publicationOf, publishItem, readPage, visible, type Publication } from './knowledge.ts';
+import { archivePage, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
 import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
@@ -733,6 +733,32 @@ export async function openProposals(s: Session, spaceId: string): Promise<Propos
     where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')} and ${includeStands(s, 'proposals')} and ${spaceOpen(s, 'proposals')}
       and ${pageStands(s, 'proposals')}
     order by created_at
+  `;
+}
+
+/**
+ * The person's own proposals and requests still waiting whose words match: the rule, space, person,
+ * item, task or page they're about, and why. Optionally within a space and the spaces below it.
+ */
+export async function searchProposals(s: Session, query: string, options: { spaceId?: string; limit?: number } = {}): Promise<Proposal[]> {
+  const terms = termsOf(query);
+  if (!terms) return [];
+  const within = options.spaceId ? s.tx`and space_id in (select space_subtree(${options.spaceId}::uuid))` : s.tx``;
+  // Someone has only a few waiting, so their words are matched as they are, without an index.
+  const words = s.tx`to_tsvector('simple', concat_ws(' ',
+    change->>'text', change->>'name', change->>'personName', change->>'email', reason,
+    (select c.body from content c where c.id = proposals.item_id and ${visible(s, 'c')}),
+    (select t.title from tasks t where t.id = proposals.task_id and ${visible(s, 't')}),
+    (select t.body from content t where t.page_id = proposals.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1),
+    case when action in ('archive space', 'share space') then (select x.name from spaces x where x.id = proposals.space_id) end
+  ))`;
+  return s.tx<Proposal[]>`
+    select ${columns(s)} from proposals
+    where ${yours(s)} and state in ('open', 'requested') and expires_at > now() ${within}
+      and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')} and ${spaceOpen(s, 'proposals')} and ${pageStands(s, 'proposals')}
+      and ${words} @@ to_tsquery('simple', ${terms})
+    order by ts_rank(${words}, to_tsquery('simple', ${terms}), 1) desc, created_at desc
+    limit ${options.limit ?? 5}
   `;
 }
 

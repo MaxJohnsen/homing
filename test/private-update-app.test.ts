@@ -99,7 +99,7 @@ test('Ana’s update of what she shared stands in its place for her, and the oth
   const context = (await anas.call('context', { request: 'When is the launch?', space })).text;
   assert.match(context, /The launch is on 21 November\..*A private update: others still see the earlier version\./);
   assert.doesNotMatch(context, /14 November/);
-  assert.match((await anas.call('read', { ref: `page:${page}` })).text, /The launch is on 21 November\. \(item:\S+, private\)\n {2}- A private update\. Others in the space still see: "The launch is on 14 November\."/);
+  assert.match((await anas.call('read', { ref: `page:${page}` })).text, /The launch is on 21 November\. \(item:\S+, private, written by Ana through Claude\)\n {2}- A private update\. Others in the space still see: "The launch is on 14 November\."/);
   const found = (await anas.call('search', { query: 'launch' })).text;
   assert.match(found, /The launch is on 21 November\. .*A private update: others still see the earlier version\./);
   assert.match(found, /The launch is on 14 November\. .*What others still see\. The user's private update replaces it for them\./);
