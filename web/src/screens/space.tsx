@@ -22,6 +22,7 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
     { label: 'Overview', href: `/spaces/${space.id}`, current: view === 'overview' },
     { label: 'Knowledge', href: `/spaces/${space.id}/pages`, current: view === 'pages' || view === 'collections' || view === 'sources' },
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
+    { label: 'Tasks', href: `/spaces/${space.id}/tasks`, current: view === 'tasks' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
     // Settings appear once there's something to set: so far, the name, which admins change.
     ...(space.admin && !space.personal ? [{ label: 'Settings', href: `/spaces/${space.id}/settings`, current: view === 'settings' }] : []),

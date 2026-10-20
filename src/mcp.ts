@@ -29,6 +29,7 @@ import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, readProposal, requestsIn, suggestSpace, Undecidable, type Proposal } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
+import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
 import { accessibleSpaces, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, spaceNameLength, SpaceRefused, spaceView, type MemberChange, type Space } from './spaces.ts';
 import type { AgentPrincipal } from './assistants.ts';
 
@@ -38,6 +39,7 @@ const instructions = `Homing holds the user's working context: their spaces, suc
 - Follow the rules \`context\` gives you, and read a skill before a task it describes. Only people change rules and skills: when the user wants a new rule, show them the exact text and ask them to add it.
 - Before relying on what you remember, \`search\`. Mention the references, such as item:…, of what you use.
 - When you learn something worth keeping, such as a decision, a date, an owner or a preference, save it with \`remember\`. It stays private to the user.
+- When the user should do something later, such as a follow-up, keep it as a task with \`remember\` and \`task\`, and mark it done there when it is.
 - When the user wants a new space, such as for a client or a project, first check they don't have one. Ask whether it's just for them or with others, and with others, whether it belongs in a shared space they're an admin of. Then create it with \`act\`.
 - To add someone to a space, make them an admin or remove them, propose it with \`act\`, and the user approves it. Name someone they share a space with by name, and anyone else by their email.
 - When the user wants something shared with everyone in its space, propose it with \`act\`, and they approve exactly what's shared.
@@ -207,6 +209,16 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         replaces: text().optional().describe('An item that is no longer true because of this'),
         updates: text().optional().describe('An item of yours to rewrite with this text'),
         overview: z.boolean().optional().describe('Saves the text as the user\'s own overview of the space: a short summary of where it stands, under 2,000 characters.'),
+        task: z
+          .object({
+            ref: text().optional().describe('A task to change or mark done, such as task:…. Leave it out for a new one'),
+            title: text().max(200).optional().describe('What to do, such as "Follow up with Gunnar about the budget"'),
+            description: text().nullable().optional().describe('More about it, or null to clear it'),
+            due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe('The day it is due, as YYYY-MM-DD, or null to clear it'),
+            done: z.boolean().optional().describe('True when it is done, false to open it again'),
+          })
+          .optional()
+          .describe("A private task for the user, such as a follow-up: give its title for a new one, or its reference to change it or mark it done. A task goes alone: save knowledge in a call of its own."),
         gatherInto: text().optional().describe('A collection to put the page in, as a page reference. A page can be in several.'),
         removeFrom: text().optional().describe('A collection to take the page out of, as a page reference. The page itself stays.'),
         sources: z
@@ -216,7 +228,15 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
       }),
       annotations: { readOnlyHint: false, destructiveHint: false },
     },
-    (input) => answer((s) => remember(s, input)),
+    (input) =>
+      answer((s) => {
+        if (!input.task) return remember(s, input);
+        const { space, task, ...rest } = input;
+        if (Object.values(rest).some((value) => value !== undefined)) {
+          throw new Refused('A task goes alone. Nothing was saved: save the task and the knowledge in two calls.');
+        }
+        return rememberTask(s, parseRef(space, 'space'), task);
+      }),
   );
 
   server.registerTool(
@@ -401,7 +421,7 @@ function refusal(error: unknown): string | undefined {
 /** A request Homing can't carry out as asked. */
 class Refused extends Error {}
 
-type Kind = 'space' | 'page' | 'item' | 'source' | 'proposal';
+type Kind = 'space' | 'page' | 'item' | 'source' | 'proposal' | 'task';
 
 const ref = (kind: Kind, id: string) => `${kind}:${id}`;
 
@@ -412,7 +432,7 @@ function parseRef(value: string, kind: Kind): string {
 }
 
 function parseAnyRef(value: string): { kind: Kind; id: string } {
-  const match = /^(space|page|item|source|proposal):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(value.trim());
+  const match = /^(space|page|item|source|proposal|task):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(value.trim());
   if (!match) throw new Refused(`"${value}" isn't a reference. References look like page:… or item:….`);
   return { kind: match[1] as Kind, id: match[2].toLowerCase() };
 }
@@ -456,6 +476,8 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
   const sent = requests.filter((request) => request.yours);
   const toDecide = requests.filter((request) => !request.yours && request.state === 'requested');
   const overview = (await overviewOf(s, spaceId))?.items ?? [];
+  const { open: tasks } = await tasksIn(s, spaceId);
+  const assignees = await peopleNames(s, tasks.map((task) => task.assignee));
   const lines = [
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
@@ -503,6 +525,17 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
           ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)})`),
         ]
       : []),
+    ...(tasks.length
+      ? [
+          '\n## Open tasks',
+          'Soonest due first. Keep the user\'s own with `remember` and `task`, and mark them done there too.',
+          ...tasks.slice(0, 30).map(
+            (task) =>
+              `- ${oneLine(task.title)} (${ref('task', task.id)}${task.due ? `, due ${task.due}` : ''}${task.assignee && task.privateTo === null ? `, for ${assignees.get(task.assignee) ?? 'someone in the space'}` : ''}, ${task.privateTo ? 'private' : 'shared'})`,
+          ),
+          ...(tasks.length > 30 ? [`And ${tasks.length - 30} more.`] : []),
+        ]
+      : []),
     '\n## Pages',
     ...(pages.length
       ? [
@@ -524,6 +557,17 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
 
   if (kind === 'space') return spaceContext(s, links, id);
 
+  if (kind === 'task') {
+    const task = await readTask(s, id);
+    if (!task) throw missing;
+    const names = await peopleNames(s, [task.assignee, task.writtenBy]);
+    return [
+      `# ${task.doneAt ? 'Done' : 'Open'}: ${task.title}`,
+      `${ref('task', task.id)}, ${task.privateTo ? 'private' : 'shared'}${task.due ? `, due ${task.due}` : ''}${task.assignee ? `, for ${names.get(task.assignee) ?? 'someone in the space'}` : ''}.`,
+      ...(task.description ? ['', task.description] : []),
+      ...(task.doneAt ? ['', `Done on ${day(task.doneAt)}.`] : []),
+    ].join('\n');
+  }
   if (kind === 'proposal') {
     const proposal = await readProposal(s, id);
     if (!proposal) throw missing;
@@ -911,6 +955,33 @@ async function peopleKnown(s: Session): Promise<{ id: string; name: string; plac
     where m.space_id in (${accessibleSpaces(s)}) and p.id <> ${personOf(s.principal) ?? null}::uuid
     order by p.id, sp.created_at
   `;
+}
+
+/** Keeps a private task for the user, or changes or completes one of theirs. */
+async function rememberTask(
+  s: Session,
+  spaceId: string,
+  input: { ref?: string; title?: string; description?: string | null; due?: string | null; done?: boolean },
+): Promise<string> {
+  try {
+    if (input.ref) {
+      const taskId = parseRef(input.ref, 'task');
+      const task = await readTask(s, taskId);
+      if (!task || task.spaceId !== spaceId) throw new Refused('There is no task with that reference in this space that you can see.');
+      if (!ownTask(s, task)) throw new Refused("That task is the space's: people change shared tasks in Homing.");
+      if ((input.title !== undefined || input.description !== undefined) && task.agent === null && task.writtenBy !== null) {
+        throw new Refused('The user wrote this task, so its words stay theirs. Nothing changed. You can still mark it done or change its due date.');
+      }
+      const changed = (await changeTask(s, taskId, { title: input.title, description: input.description, due: input.due, done: input.done }))!;
+      return `${changed.doneAt ? 'Done' : 'Open'}: ${oneLine(changed.title)} (${ref('task', changed.id)}${changed.due ? `, due ${changed.due}` : ''}). Only the user sees it.`;
+    }
+    if (!input.title) throw new Refused('Give the new task a title.');
+    const task = await addTask(s, { spaceId, title: input.title, description: input.description ?? undefined, due: input.due ?? undefined });
+    return `Kept as a private task (${ref('task', task.id)}${task.due ? `, due ${task.due}` : ''}). Only the user sees it, and it shows in \`context\` until it's done.`;
+  } catch (error) {
+    if (error instanceof TaskRefused) throw new Refused(error.message);
+    throw error;
+  }
 }
 
 /** Proposes sharing one of the user's private items with its space, for them to approve. */
