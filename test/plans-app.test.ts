@@ -137,14 +137,18 @@ test('a plan creates a space everyone in a shared space would see, with its rule
     changes: [
       { action: 'guidance.propose', input: { change: 'add', kind: 'preference', text: 'Pick quiet appliances.', shared: true } },
       { action: 'members.change', input: { person: 'Jonas', change: 'add' } },
+      { action: 'members.change', input: { person: 'Cara', change: 'make admin' } },
     ],
   });
-  assert.match(proposed.text, /one decision for all 3 changes/);
+  assert.match(proposed.text, /one decision for all 4 changes/);
   const id = proposalOf(proposed.text);
   // It waits in Home, where the space would go, and nothing exists yet.
-  assert.deepEqual((await ana.browser.json('/api/waiting')).body.waiting.map((item: any) => [item.id, item.spaceId, item.text, item.changes]), [[id, home, 'Kitchen', 2]]);
+  assert.deepEqual((await ana.browser.json('/api/waiting')).body.waiting.map((item: any) => [item.id, item.spaceId, item.text, item.changes]), [[id, home, 'Kitchen', 3]]);
   const shown = await shownOf(ana, id);
   assert.deepEqual(shown.plan.create, { name: 'Kitchen', in: 'Home', people: 2, above: false, problem: null });
+  // Cara is in Home, so she has Kitchen already, through it: only Jonas is new to it.
+  assert.deepEqual(shown.plan.steps.slice(1).map((step: any) => [step.member.name, step.member.through]), [['Jonas', null], ['Cara', 'Home']]);
+  assert.deepEqual(shown.plan.audience.adding, ['Jonas']);
   assert.deepEqual(shown.plan.sees, { pages: 0, archived: 0, tasks: 0, rules: 1, spaces: 0 });
 
   const decided = await decide(ana, id, shown.plan.shown);
@@ -189,15 +193,15 @@ test('if a change can no longer be made when approving, nothing changes, and it 
   assert.equal((await decide(ana, second, before.plan.shown, false)).status, 200);
 
   // A change that can only be refused as it's made undoes the ones made before it: Garden has no
-  // other admin, so Ana can't leave it, and the rule made first is undone with it.
-  const leaving = proposalOf((await plan({ space: `space:${garden}`, changes: [rule, { action: 'members.change', input: { person: 'Ana', change: 'remove' } }] })).text);
-  const shownLeaving = await shownOf(ana, leaving);
-  assert.deepEqual(shownLeaving.plan.steps.map((step: any) => step.problem), [null, null]);
-  const refusedLeaving = await decide(ana, leaving, shownLeaving.plan.shown);
-  assert.equal(refusedLeaving.status, 409);
-  assert.equal(refusedLeaving.body.message, 'Nothing changed, because Ana can’t be removed. Garden needs an admin, so make someone else an admin first.');
+  // other admin, so Ana can't stop being one, and the rule made first is undone with it.
+  const stepping = proposalOf((await plan({ space: `space:${garden}`, changes: [rule, { action: 'members.change', input: { person: 'Ana', change: 'make member' } }] })).text);
+  const shownStepping = await shownOf(ana, stepping);
+  assert.deepEqual(shownStepping.plan.steps.map((step: any) => step.problem), [null, null]);
+  const refusedStepping = await decide(ana, stepping, shownStepping.plan.shown);
+  assert.equal(refusedStepping.status, 409);
+  assert.equal(refusedStepping.body.message, 'Nothing changed, because Ana can’t be made a member. Garden needs an admin, so make someone else an admin first.');
   assert.deepEqual((await seenBy(ana, garden))!.rules, [], 'the rule was undone');
-  assert.equal((await decide(ana, leaving, shownLeaving.plan.shown, false)).status, 200);
+  assert.equal((await decide(ana, stepping, shownStepping.plan.shown, false)).status, 200);
 
   // The name is taken in Home meanwhile, by Cara.
   const third = proposalOf((await plan({ create: { name: 'Shed', who: 'with others', in: `space:${home}` }, changes: [rule] })).text);
@@ -301,11 +305,91 @@ test('only the person a plan is for sees it or decides it, and an assistant can�
   await assert.rejects(as(asClaude, (s) => s.tx`update proposals set state = 'approved' where id = ${id}::uuid`), refused);
   await assert.rejects(as(asClaude, (s) => s.tx`update proposals set change = '{"steps": []}' where id = ${id}::uuid`), refused);
   await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`update proposals set change = '{"steps": []}' where id = ${id}::uuid`), refused, 'not even Ana, directly');
-  // Nor make a plan that's a request to the admins, or holds anything but the changes a plan makes.
-  await assert.rejects(as(asClaude, (s) => s.tx`insert into proposals (space_id, private_to, action, change, request) values (${home}::uuid, ${ana.id}::uuid, 'plan', '{"steps": []}', true)`), { code: '23514' });
-  for (const steps of ['[{"action": "archive space"}]', '[{"item": "x"}]', '["publish"]', '{}']) {
-    await assert.rejects(as(asClaude, (s) => s.tx`insert into proposals (space_id, private_to, action, change) values (${home}::uuid, ${ana.id}::uuid, 'plan', ${`{"steps": ${steps}}`}::jsonb)`), { code: '23514' }, steps);
+  // Nor make a plan that's a request to the admins, or holds anything but whole changes a plan makes.
+  const rule = { action: 'add rule', kind: 'preference', text: 'Wipe your feet.', shared: true, onlyHere: false };
+  const insert = (change: Record<string, unknown>, request = false) =>
+    as(asClaude, (s) => s.tx`insert into proposals (space_id, private_to, action, change, request) values (${home}::uuid, ${ana.id}::uuid, 'plan', ${s.tx.json(change as never)}, ${request}) returning id`);
+  const malformed: [string, Record<string, unknown>, boolean?][] = [
+    ['a request', { steps: [rule, rule] }, true],
+    ['no steps', {}],
+    ['a single change', { steps: [rule] }],
+    ['a change a plan doesn’t make', { steps: [{ action: 'archive space' }, rule] }],
+    ['a step without its item', { steps: [{ action: 'publish' }, rule] }],
+    ['a step that isn’t one', { steps: ['publish', rule] }],
+    ['someone named twice over', { steps: [{ action: 'change members', member: 'add', person: jonas.id, email: 'j@example.test' }, rule] }],
+    ['a rule without its kind', { steps: [{ ...rule, kind: undefined }, rule] }],
+    ['a new space without where it goes', { space: { name: 'Shed', who: 'with others', closed: false }, steps: [rule] }],
+    ['a new space somewhere else', { space: { name: 'Shed', who: 'with others', in: jonas.personalSpaceId, closed: false }, steps: [rule] }],
+    ['a new space just for Ana', { space: { name: 'Shed', who: 'just me', in: home, closed: false }, steps: [rule] }],
+    ['a new closed space', { space: { name: 'Shed', who: 'with others', in: home, closed: true }, steps: [rule] }],
+  ];
+  for (const [what, change, request] of malformed) {
+    await assert.rejects(insert(change, request), { code: '23514', constraint_name: 'proposals_plan' }, what);
   }
+  assert.equal((await insert({ space: { name: 'Shed', who: 'with others', in: home, closed: false }, steps: [rule] })).length, 1, 'a whole one goes in');
   await assert.rejects(as(asClaude, (s) => proposePlan(s, { spaceId: club, steps: [{ action: 'add rule', kind: 'preference', text: 'A', shared: true, onlyHere: false }, { action: 'add rule', kind: 'preference', text: 'A', shared: true, onlyHere: false }] })), /repeats an earlier change/);
   assert.equal((await shownOf(ana, id)).state, 'open');
+});
+
+test('leaving a space is a decision of its own: approved once, before it takes the person’s access, and never in a plan', async () => {
+  const { ana, cara, home, plan, act, card } = await people();
+  const rule = { action: 'guidance.propose', input: { change: 'add', kind: 'preference', text: 'Close the windows.', shared: true } };
+  assert.match((await plan({ space: `space:${home}`, changes: [rule, { action: 'members.change', input: { person: 'Ana', change: 'remove' } }] })).text, /Change 2: Leaving a space is a decision of its own, not part of a plan: propose it on its own with members\.change\./);
+
+  // Written straight to the database, it shows as a change that can't be made, and approving it changes nothing.
+  const steps = [
+    { action: 'add rule', kind: 'preference', text: 'Close the windows.', shared: true, onlyHere: false },
+    { action: 'change members', person: ana.id, personName: 'Ana', member: 'remove' },
+  ];
+  const [{ id: forged }] = await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`
+    insert into proposals (space_id, private_to, action, change) values (${home}::uuid, ${ana.id}::uuid, 'plan', ${s.tx.json({ steps })}) returning id
+  `);
+  const shown = await shownOf(ana, forged);
+  assert.deepEqual(shown.plan.steps.map((step: any) => step.problem), [null, 'Leaving a space is a decision of its own, not part of a plan.']);
+  const refusedForged = await decide(ana, forged, shown.plan.shown);
+  assert.equal(refusedForged.status, 409);
+  assert.equal(refusedForged.body.message, 'Nothing changed, because Ana can’t be removed. Leaving a space is a decision of its own, not part of a plan.');
+  assert.deepEqual((await seenBy(ana, home))!.rules, []);
+
+  // On its own, Ana leaves on the card, and the proposal is approved as she goes, so it can't be approved again.
+  const leave = proposalOf((await act('members.change', { space: `space:${home}`, person: 'Ana', change: 'remove' })).text);
+  const left = await card('decide', { proposal: leave, approve: true });
+  assert.ok(!left.failed, left.text);
+  assert.equal(left.proposal!.state, 'approved');
+  assert.equal(await seenBy(ana, home), null, 'she has left');
+  const [{ state }] = await admin`select state from proposals where id = ${leave}`;
+  assert.equal(state, 'approved');
+  await as({ ...cara, direct: true }, (s) => addMember(s, home, ana.id));
+  assert.equal((await decide(ana, leave, '')).status, 409, 'back in, it stays decided');
+  assert.deepEqual((await seenBy(cara, home))!.name, 'Home');
+});
+
+test('a few spaces wait for the person at a time, plans that create one among them', async () => {
+  const { home, plan, act } = await people();
+  const rule = { action: 'guidance.propose', input: { change: 'add', kind: 'preference', text: 'Label the boxes.', shared: true } };
+  for (const name of ['Attic', 'Cellar']) assert.match((await act('space.create', { name, who: 'with others', in: `space:${home}` })).text, /waits for the user to approve it/);
+  assert.match((await plan({ create: { name: 'Kitchen', who: 'with others', in: `space:${home}` }, changes: [rule] })).text, /^Waiting for the user's approval/);
+  assert.match((await plan({ create: { name: 'Shed', who: 'with others', in: `space:${home}` }, changes: [rule] })).text, /Three spaces are already waiting for the user to approve them/);
+  assert.match((await act('space.create', { name: 'Garage', who: 'with others', in: `space:${home}` })).text, /Three spaces are already waiting for the user to approve them/, 'the plan counts');
+});
+
+test('a plan shares only what’s in its own space, even written straight to the database', async () => {
+  const { ana, cara, home, claude } = await people();
+  const garden = refOf('space', (await claude.call('act', { action: 'space.create', input: { name: 'Garden', who: 'with others' } })).text);
+  const item = refOf('item', (await claude.call('remember', { space: `space:${garden}`, page: 'Plants', text: 'The roses go along the south wall.' })).text);
+  const task = refOf('task', (await claude.call('remember', { space: `space:${garden}`, task: { title: 'Prune the roses' } })).text);
+  // Ana's own, but in Garden, named in a plan for Home that nothing checked.
+  const steps = [{ action: 'publish', item }, { action: 'share task', task }];
+  const [{ id }] = await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`
+    insert into proposals (space_id, private_to, action, change) values (${home}::uuid, ${ana.id}::uuid, 'plan', ${s.tx.json({ steps })}) returning id
+  `);
+  const shown = await shownOf(ana, id);
+  assert.deepEqual(shown.plan.steps.map((step: any) => step.problem), ['It isn’t yours to share there.', 'It isn’t yours to share there.']);
+  const refusedOther = await decide(ana, id, shown.plan.shown);
+  assert.equal(refusedOther.status, 409);
+  assert.equal(refusedOther.body.message, 'Nothing changed, because what’s on “Plants” can’t be shared. It isn’t yours to share there.');
+  const [row] = await admin`select private_to from content where id = ${item}`;
+  const [kept] = await admin`select private_to from tasks where id = ${task}`;
+  assert.deepEqual([row.privateTo, kept.privateTo], [ana.id, ana.id]);
+  assert.equal((await seenBy(cara, home))!.tasks.length, 0);
 });

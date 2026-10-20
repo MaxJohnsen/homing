@@ -730,6 +730,8 @@ function stepKey(step: PlanStep): string {
   }
 }
 
+const leaving = 'Leaving a space is a decision of its own, not part of a plan: propose it on its own with members.change.';
+
 /** Whether a change fits a plan's space, checked as proposing it on its own checks it. */
 async function stepFits(s: Session, destination: PlanDestination, step: PlanStep): Promise<void> {
   const { space } = destination;
@@ -744,6 +746,8 @@ async function stepFits(s: Session, destination: PlanDestination, step: PlanStep
       return;
     }
     case 'change members':
+      // Leaving ends the person's access to the plan's space, so it's a decision of its own.
+      if (step.member === 'remove' && step.person === personOf(s.principal)) throw new SpaceRefused('person', leaving);
       if (space) return memberProposalFits(s, space, { person: step.person ? { id: step.person } : undefined, change: step.member });
       if (step.member === 'make member' || step.member === 'remove') throw new SpaceRefused('person', `Nobody is in ${destination.name} until it’s created.`);
       if (step.person === personOf(s.principal)) throw new SpaceRefused('person', `The user is ${destination.name}’s admin once it’s created.`);
@@ -851,11 +855,14 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
     } else if (step.action === 'change members') {
       const account = step.email && deciding && findAccount ? await findAccount(step.email) : undefined;
       const subject = step.person && names.has(step.person) ? step.person : account?.id;
-      const standing = view && subject ? view.members.find((member) => member.id === subject) : undefined;
+      // Who has the space now: in one it creates, everyone in the space it goes in.
+      const above = !view && subject ? parentView?.members.find((member) => member.id === subject) : undefined;
+      const standing = view && subject ? view.members.find((member) => member.id === subject) : above && { ...above, member: false, through: above.member ? (parent?.name ?? null) : above.through };
       const who = (step.person ? (names.get(step.person) ?? step.personName) : account?.name) ?? step.email ?? 'They';
       let problem: string | null = null;
       if (open) {
-        if (step.person && !names.has(step.person)) problem = `You no longer share a space with ${step.personName ?? 'them'}, so they can’t be added this way. Ask for their email instead.`;
+        if (step.member === 'remove' && subject === me) problem = 'Leaving a space is a decision of its own, not part of a plan.';
+        else if (step.person && !names.has(step.person)) problem = `You no longer share a space with ${step.personName ?? 'them'}, so they can’t be added this way. Ask for their email instead.`;
         else if (step.email && deciding && !account) problem = `No one uses Homing with ${step.email} yet. Once they’re invited to Homing, they can be added.`;
         else if (view) {
           try {
@@ -884,7 +891,7 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
       let problem: string | null = null;
       if (open && view && step.shared && !view.admin) problem = `Only ${view.name}’s admins change its shared rules.`;
       views.push({ ...base, action: step.action, rule: { kind: step.kind, text: step.text, now: null, shared: step.shared, onlyHere: step.onlyHere }, problem, cant: `the new ${step.kind} can’t be added` });
-    } else {
+    } else if (step.action === 'change rule' || step.action === 'remove rule') {
       const rule = await ruleFor(s, step.rule);
       let problem: string | null = null;
       if (open) {
@@ -899,6 +906,9 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
         problem,
         cant: `the ${kind} can’t be ${step.action === 'change rule' ? 'changed' : 'removed'}`,
       });
+    } else {
+      // Nothing else is ever stored in a plan, but if it were, it could still only be declined.
+      views.push({ ...base, action: (step as { action: PlanStep['action'] }).action, problem: 'Homing can’t make this change.', cant: 'a change can’t be made' });
     }
   }
 
@@ -1022,20 +1032,25 @@ async function makeStep(s: Session, spaceId: string, step: PlanStep, shown: Plan
       }
       const person = step.person ?? (step.email && findAccount ? (await findAccount(step.email))?.id : undefined);
       if (!person) throw new SpaceRefused('person', `No one uses Homing with ${step.email} yet. Once they’re invited to Homing, they can be added.`);
+      if (step.member === 'remove' && person === personOf(s.principal)) throw new SpaceRefused('person', 'Leaving a space is a decision of its own, not part of a plan.');
       await changeMember(s, spaceId, person, step.member);
       return;
     }
     case 'add rule':
       await addRule(s, { spaceId, kind: step.kind, body: step.text, shared: step.shared, onlyHere: step.onlyHere });
       return;
-    default: {
+    case 'change rule':
+    case 'remove rule': {
       // Held until the plan is made, so nobody changes the rule between the check and the change.
       await s.tx`select id from content where id = ${step.rule}::uuid and ${visible(s, 'content')} for update`;
       const rule = await ruleFor(s, step.rule);
       if (!rule?.current || rule.spaceId !== spaceId || rule.text !== shown.rule?.now) throw new Undecidable('changed', 'It was changed or removed since.');
       if (step.action === 'change rule') await editRule(s, rule.id, step.text);
       else await removeRule(s, rule.id);
+      return;
     }
+    default:
+      throw new Undecidable('changed', 'Homing can’t make this change.');
   }
 }
 
@@ -1521,7 +1536,19 @@ export async function decide(
     throw new Undecidable('decided', 'You sent this request, so one of the space’s admins decides it.');
   }
 
+  const state = decision.approve ? (sending ? 'requested' : 'approved') : 'rejected';
+  // The decision is recorded as the person, while they can see it, in the transaction that makes the
+  // change: nothing is made without it.
+  const settle = async (spaceCreated: string | null) => {
+    const [settled] = await s.tx<{ id: string }[]>`
+      update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}, space_created = ${spaceCreated}::uuid
+      where id = ${proposalId}::uuid and ${seen(s)}
+      returning id
+    `;
+    if (!settled) throw new Undecidable('changed', 'You can’t decide this anymore, so nothing changed.');
+  };
   let created: string | null = null;
+  let left: ProposalView | undefined;
   if (decision.approve && !sending) {
     const { change } = proposal;
     if (proposal.action === 'publish') {
@@ -1584,6 +1611,12 @@ export async function decide(
       }
       const person = change.person ?? (change.email && decision.findAccount ? (await decision.findAccount(change.email))?.id : undefined);
       if (!person) throw new SpaceRefused('person', `No one uses Homing with ${change.email} yet. Once they’re invited to Homing, they can be added.`);
+      // Leaving ends the person's access to the space, and to this proposal with it, so it's decided
+      // first, while they still can, and what they get back is the proposal as it was decided.
+      if (change.member === 'remove' && person === personOf(s.principal)) {
+        await settle(null);
+        left = await readProposal(s, proposalId, decision.findAccount);
+      }
       await changeMember(s, proposal.spaceId, person, change.member!);
     } else if (proposal.action === 'add space') {
       // As suggested, or as the person changed it before creating it, checked again now.
@@ -1635,11 +1668,8 @@ export async function decide(
       else await removeRule(s, rule.id);
     }
   }
-  const state = decision.approve ? (sending ? 'requested' : 'approved') : 'rejected';
-  await s.tx`
-    update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}, space_created = ${created}::uuid
-    where id = ${proposalId}::uuid and ${seen(s)}
-  `;
+  if (left) return left;
+  await settle(created);
   return readProposal(s, proposalId, decision.findAccount);
 }
 

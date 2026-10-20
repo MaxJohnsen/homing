@@ -448,7 +448,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             decide(s, proposal, { approve, shown, onlyHere, space, share, findAccount, decidedIn: principal.agent }),
           );
           if (decided && notifier) await afterDecision(notifier, principal.person, decided);
-          return cardAnswer(sql, principal, proposal, findAccount);
+          // Someone who just left the space can't read the proposal anymore: it shows as it was decided.
+          return cardAnswer(sql, principal, proposal, findAccount, decided);
         } catch (error) {
           const message =
             error instanceof Undecidable || error instanceof SpaceRefused
@@ -475,8 +476,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
 }
 
 /** A proposal as the card shows it, read as the person. */
-async function cardAnswer(sql: Sql, principal: AgentPrincipal, proposalId: string, findAccount?: FindAccount): Promise<CallToolResult> {
-  const view = await withPrincipal(sql, { person: principal.person }, (s) => readProposal(s, proposalId, findAccount));
+async function cardAnswer(sql: Sql, principal: AgentPrincipal, proposalId: string, findAccount?: FindAccount, decided?: ProposalView): Promise<CallToolResult> {
+  const view = (await withPrincipal(sql, { person: principal.person }, (s) => readProposal(s, proposalId, findAccount))) ?? decided;
   if (!view) return { isError: true, content: [{ type: 'text', text: 'There’s nothing for you to decide here.' }] };
   const proposal = proposalData(view);
   return { content: [{ type: 'text', text: `The proposal is ${proposal.state}.` }], structuredContent: { proposal } };
