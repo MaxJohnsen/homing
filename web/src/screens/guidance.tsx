@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import type { IncludableData, IncludeSummary, RuleActions, RuleData, SkillSummary } from '@/lib/guidance';
+import type { IncludableData, IncludeSummary, RuleActions, RuleData, SkillSummary, WaitingSkill } from '@/lib/guidance';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
@@ -196,13 +196,17 @@ function IncludedFrom({ space, include, rules, stop }: { space: SpaceData; inclu
         <StopIncluding
           className="bg-card"
           what={include.shared
-            ? `They stop applying in ${space.name} and every space under it, for everyone. They stay in ${from}.`
-            : `They stop applying to you in ${placeOf(space)} and the spaces under it. They stay in ${from}.`}
+            ? `They stop applying in ${space.name} and every space under it, for everyone who doesn’t include them for themselves. They stay in ${from}.`
+            : include.waiting
+              ? `Yours goes. ${space.name} still includes them for everyone.`
+              : `They stop applying to you in ${placeOf(space)} and the spaces under it. They stay in ${from}.`}
           stop={stop}
           onKeep={() => setRemoving(false)}
         />
       )}
-      {!include.spaceId ? (
+      {include.waiting ? (
+        <p className="text-sm text-muted-foreground">{space.name} includes them for everyone, so yours waits, and applies again if that one stops.</p>
+      ) : !include.spaceId ? (
         <p className="text-sm text-muted-foreground">
           {include.addedBy && include.addedAt ? `Added by ${include.addedBy} on ${dateOf(include.addedAt)}. ` : ''}
           Everyone here who can open it gets its rules. As an admin you see that it’s here, but not what it is.
@@ -469,11 +473,13 @@ function RuleForm({ space, shared, actions, onDone }: { space: SpaceData; shared
  * The skills that apply in a space, with where each comes from and which one is used, and for those
  * allowed, including a skill from another space or no longer including one.
  */
-export function Skills({ space, skills, hidden = [], includable, actions }: {
+export function Skills({ space, skills, hidden = [], waiting = [], includable, actions }: {
   space: SpaceData;
   skills: SkillSummary[];
   /** For an admin, the skills the space includes for everyone that they can't open. */
   hidden?: IncludeSummary[];
+  /** Your own includes of a skill, waiting while the space includes it for everyone. */
+  waiting?: WaitingSkill[];
   includable?: IncludableData;
   actions?: RuleActions;
 }) {
@@ -483,7 +489,7 @@ export function Skills({ space, skills, hidden = [], includable, actions }: {
     <>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-[65ch] text-base">
-          {skills.length || hidden.length
+          {skills.length || hidden.length || waiting.length
             ? `How your assistant does particular tasks in ${placeOf(space)}. A skill set closer to this space replaces one with the same name from further up, and one set here replaces one included here.`
             : `No skills apply in ${placeOf(space)} yet.`}
         </p>
@@ -498,7 +504,7 @@ export function Skills({ space, skills, hidden = [], includable, actions }: {
           onDone={() => setAdding(false)}
         />
       )}
-      {skills.length + hidden.length > 0 && (
+      {skills.length + hidden.length + waiting.length > 0 && (
         <ul className="-mx-3 flex flex-col gap-1">
           {skills.map((skill) => (
             <SkillRow
@@ -509,6 +515,7 @@ export function Skills({ space, skills, hidden = [], includable, actions }: {
             />
           ))}
           {hidden.map((include) => <HiddenSkill key={include.id} space={space} include={include} stop={actions && (() => actions.stopIncluding(include.id))} />)}
+          {waiting.map((include) => <WaitingSkillRow key={include.id} space={space} include={include} stop={actions && (() => actions.stopIncluding(include.id))} />)}
         </ul>
       )}
     </>
@@ -546,7 +553,7 @@ function SkillRow({ space, skill, stop }: { space: SpaceData; skill: SkillSummar
         <StopIncluding
           className="mx-3 bg-muted"
           what={includedIn?.shared
-            ? `It stops applying in ${space.name} and every space under it, for everyone. It stays in ${skill.spaceName}.`
+            ? `It stops applying in ${space.name} and every space under it, for everyone who doesn’t include it for themselves. It stays in ${skill.spaceName}.`
             : `It stops applying to you in ${placeOf(space)} and the spaces under it. It stays in ${skill.spaceName}.`}
           stop={stop}
           onKeep={() => setRemoving(false)}
@@ -572,6 +579,26 @@ function HiddenSkill({ space, include, stop }: { space: SpaceData; include: Incl
       {removing && stop && (
         <StopIncluding className="mx-3 bg-muted" what={`It stops applying in ${space.name} and every space under it, for everyone.`} stop={stop} onKeep={() => setRemoving(false)} />
       )}
+    </li>
+  );
+}
+
+/** Your own include of a skill, waiting while the space includes it for everyone, and stopping it. */
+function WaitingSkillRow({ space, include, stop }: { space: SpaceData; include: WaitingSkill; stop?: () => Promise<string | undefined> }) {
+  const [removing, setRemoving] = useState(false);
+  return (
+    <li className="flex flex-col">
+      <div className="flex min-w-0 flex-col gap-1 px-3 py-3">
+        <span className="flex flex-wrap items-center gap-2 text-base leading-snug font-semibold">
+          {include.name}
+          <OnlyYou />
+        </span>
+        <span className="text-sm text-muted-foreground">
+          From {include.spaceName}. {space.name} includes it for everyone, so yours waits, and applies again if that one stops.
+        </span>
+      </div>
+      {stop && !removing && <Button variant="ghost" size="sm" className="ml-0.5 w-fit" onClick={() => setRemoving(true)}>Stop including</Button>}
+      {removing && stop && <StopIncluding className="mx-3 bg-muted" what={`Yours goes. ${space.name} still includes it for everyone.`} stop={stop} onKeep={() => setRemoving(false)} />}
     </li>
   );
 }

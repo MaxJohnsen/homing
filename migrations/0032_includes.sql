@@ -33,9 +33,9 @@ create unique index includes_once on includes (space_id, private_to, coalesce(sp
 where removed_at is null;
 
 -- Whether the principal can open what an include points to: the space, or
--- the space a skill is in and the skill on a side they can see. It runs as
--- its owner, so it also answers where row-level security would hide the
--- skill, and it says only yes or no.
+-- the space a skill is in and the skill, still there, on a side they can see.
+-- It runs as its owner, so it also answers where row-level security would
+-- hide the skill, and it says only yes or no.
 create function include_open(space uuid, skill uuid) returns boolean
 language sql stable security definer set search_path = public, pg_temp
 as $$
@@ -46,6 +46,7 @@ as $$
       where t.page_id = skill and t.kind = 'title'
         and t.space_id in (select accessible_spaces())
         and (t.private_to is null or t.private_to = current_person_id())
+        and not exists (select from content r where r.supersedes = t.id)
     )
   end
 $$;
@@ -146,7 +147,7 @@ as $$
   order by i.added_at
 $$;
 
-create function stop_including(include uuid) returns boolean
+create function stop_including(include uuid, space uuid) returns boolean
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
@@ -155,7 +156,8 @@ begin
   end if;
   -- check_include runs as for any removal: by a person directly, and an admin for a shared one.
   update includes i set removed_at = clock_timestamp()
-  where i.id = stop_including.include and i.private_to is null and i.removed_at is null and admin_of(i.space_id);
+  where i.id = stop_including.include and i.space_id = stop_including.space
+    and i.private_to is null and i.removed_at is null and admin_of(i.space_id);
   return found;
 end
 $$;

@@ -9,7 +9,7 @@ import { test } from 'node:test';
 import type { Principal } from '../src/db.ts';
 import { addInclude, addRule, editRule, includesIn, IncludeRefused, removeInclude, rulesFor } from '../src/guidance.ts';
 import { createPage } from '../src/knowledge.ts';
-import { saveSkill, skillsFor, skillsHere } from '../src/skills.ts';
+import { removeSkill, saveSkill, skillsFor, skillsHere } from '../src/skills.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { admin, as, db, person, refused, type Person } from './helpers.ts';
 
@@ -103,11 +103,11 @@ test('included rules come after the ones inherited and before the space’s own'
   const rules = await as(ana, (s) => rulesFor(s, website));
   assert.deepEqual(rules.map((rule) => [rule.includedIn ? `included in ${rule.includedIn.spaceName}` : rule.spaceName, rule.body]), [
     ['Personal', 'Keep answers short'],
-    // At Acme's level: what everyone there includes, then what Ana includes for herself, then Acme's own.
+    // At Acme's level: what's included for everyone, then what's only Ana's, then Acme's own.
     ['included in Acme', 'Never send prices by email'],
     ['included in Acme', 'Write dates as 1 March 2027'],
-    ['included in Acme', 'Ana signs off with her first name'],
     ['included in Acme', 'Group: answer in English'],
+    ['included in Acme', 'Ana signs off with her first name'],
     ['Acme', 'Acme: write dates as 2027-03-01'],
     ['Acme', 'Ana keeps Acme notes short'],
     ['Website', 'Website: link the style guide'],
@@ -250,12 +250,12 @@ test('only people change includes, and shared ones only the space’s admins', a
   const own = await as(direct(cara), (s) => addInclude(s, { ...include, shared: false }));
 
   const shared = await as(direct(ana), (s) => addInclude(s, include));
-  await assert.rejects(as(direct(cara), (s) => removeInclude(s, shared.id)), refused);
-  assert.equal(await as(direct(ana), (s) => removeInclude(s, own.id)), false);
-  await assert.rejects(as({ ...direct(ana), agent: 'Claude Code' }, (s) => removeInclude(s, shared.id)), refused);
+  await assert.rejects(as(direct(cara), (s) => removeInclude(s, shared.id, acme)), refused);
+  assert.equal(await as(direct(ana), (s) => removeInclude(s, own.id, acme)), false);
+  await assert.rejects(as({ ...direct(ana), agent: 'Claude Code' }, (s) => removeInclude(s, shared.id, acme)), refused);
 
   // Removing it stops it everywhere, and keeps who removed it.
-  assert.equal(await as(direct(ana), (s) => removeInclude(s, shared.id)), true);
+  assert.equal(await as(direct(ana), (s) => removeInclude(s, shared.id, acme)), true);
   assert.deepEqual(await rulesSeenBy(ana, acme), []);
   const [kept] = await admin`select removed_by, removed_at is not null as removed from includes where id = ${shared.id}`;
   assert.deepEqual(kept, { removedBy: ana.id, removed: true });
@@ -282,8 +282,12 @@ test('an include for everyone and one only for you of the same thing don’t hid
     await addInclude(s, { spaceId: acme, included: { skill: skill.pageId }, shared: true }),
   ]);
   assert.deepEqual((await admin`select removed_by from includes where id = ${anas.id}`).map((row) => row.removedBy), [ana.id]);
+  assert.deepEqual((await as(ana, (s) => includesIn(s, acme))).map((include) => include.id), shared.map((include) => include.id));
+  assert.deepEqual(
+    (await as(cara, (s) => includesIn(s, acme))).map((include) => [include.id, include.waiting]),
+    [...shared.map((include) => [include.id, false]), ...caras.map((include) => [include.id, true])],
+  );
   for (const someone of [ana, cara]) {
-    assert.deepEqual((await as(someone, (s) => includesIn(s, acme))).map((include) => include.id), shared.map((include) => include.id));
     const rules = await as(someone, (s) => rulesFor(s, acme));
     assert.deepEqual(rules.map((rule) => [rule.includedIn?.id, rule.body]).filter(([, body]) => !body?.includes('signs off')), [
       [shared[0].id, 'Never send prices by email'],
@@ -295,7 +299,7 @@ test('an include for everyone and one only for you of the same thing don’t hid
   await assert.rejects(as(direct(cara), (s) => addInclude(s, { spaceId: acme, included: { space: standards } })), IncludeRefused);
 
   // Once Ana stops including it for everyone, Cara's own applies again.
-  for (const include of shared) assert.equal(await as(direct(ana), (s) => removeInclude(s, include.id)), true);
+  for (const include of shared) assert.equal(await as(direct(ana), (s) => removeInclude(s, include.id, acme)), true);
   assert.deepEqual((await as(cara, (s) => includesIn(s, acme))).map((include) => include.id), caras.map((include) => include.id));
   assert.deepEqual((await as(cara, (s) => skillsHere(s, acme))).map((one) => [one.includedIn?.id, one.includedIn?.shared]), [[caras[1].id, false]]);
 });
@@ -342,10 +346,92 @@ test('a space’s admins see only that it includes something they can’t open, 
   assert.doesNotMatch(JSON.stringify([...seen]), new RegExp(standards));
   // Cara, a member, and Ana, who can open it, get nothing from it.
   for (const someone of [cara, ana]) assert.equal((await as(someone, (s) => s.tx`select from includes_not_open(${acme}::uuid)`)).length, 0);
-  assert.equal(await as(direct(cara), (s) => removeInclude(s, include.id)), false);
+  assert.equal(await as(direct(cara), (s) => removeInclude(s, include.id, acme)), false);
   // Only Jon himself, directly, stops it.
-  await assert.rejects(as({ ...jon, agent: 'Claude' }, (s) => s.tx`select stop_including(${include.id}::uuid)`), refused);
-  assert.equal(await as({ ...jon, direct: true }, (s) => removeInclude(s, include.id)), true);
+  await assert.rejects(as({ ...jon, agent: 'Claude' }, (s) => s.tx`select stop_including(${include.id}::uuid, ${acme}::uuid)`), refused);
+  assert.equal(await as({ ...jon, direct: true }, (s) => removeInclude(s, include.id, acme)), true);
   assert.deepEqual(await rulesSeenBy(ana, acme), []);
   assert.deepEqual((await admin`select removed_by from includes where id = ${include.id}`).map((row) => row.removedBy), [jon.id]);
+});
+
+test('between two spaces included for everyone, the reader’s own rules come after both', async () => {
+  const { ana, acme, standards } = await company();
+  const brand = await as(ana, (s) => createSpace(s, { name: 'Brand' }));
+  await as(direct(ana), async (s) => {
+    await addRule(s, { spaceId: standards, kind: 'preference', body: 'Ana uses Oxford commas' });
+    await addRule(s, { spaceId: brand, kind: 'preference', body: 'Never use Oxford commas', shared: true });
+    await addInclude(s, { spaceId: acme, included: { space: standards }, shared: true });
+    await addInclude(s, { spaceId: acme, included: { space: brand }, shared: true });
+  });
+  // Her own preference is more specific than both spaces' shared ones, so it comes last.
+  assert.deepEqual(await rulesSeenBy(ana, acme), [
+    'Never send prices by email',
+    'Write dates as 1 March 2027',
+    'Never use Oxford commas',
+    'Ana signs off with her first name',
+    'Ana uses Oxford commas',
+  ]);
+});
+
+test('guidance that applies through a closed space above isn’t included again', async () => {
+  const { ana, cara } = await company();
+  // Cara is in a project under a closed client space under Group; she can open Group and the project, not the client.
+  const { group, project } = await as(ana, async (s) => {
+    const group = await createSpace(s, { name: 'Group' });
+    await addMember(s, group, cara.id);
+    const client = await createSpace(s, { name: 'Client', parentId: group, closed: true });
+    const project = await createSpace(s, { name: 'Project', parentId: client });
+    await addMember(s, project, cara.id);
+    return { group, project };
+  });
+  await assert.rejects(as(direct(cara), (s) => addInclude(s, { spaceId: project, included: { space: group } })), IncludeRefused);
+});
+
+test('a removed skill’s include is left for an admin to stop, and nothing else of it shows', async () => {
+  const { ana, cara, acme, standards } = await company();
+  await as(ana, (s) => addMember(s, standards, cara.id));
+  const skill = await as(direct(ana), (s) =>
+    saveSkill(s, { spaceId: standards, files: [{ path: 'SKILL.md', body: '---\nname: invoice\ndescription: How we send invoices\n---\n' }], shared: true }),
+  );
+  const include = await as(direct(ana), (s) => addInclude(s, { spaceId: acme, included: { skill: skill.pageId }, shared: true }));
+  await as(direct(ana), (s) => removeSkill(s, skill.pageId));
+  assert.deepEqual(await as(cara, (s) => includesIn(s, acme)), []);
+  // Ana, an admin, sees that something is still included, and stops it.
+  assert.deepEqual((await as(ana, (s) => s.tx`select id, kind from includes_not_open(${acme}::uuid)`)).map((row) => [row.id, row.kind]), [[include.id, 'skill']]);
+  assert.equal(await as(direct(ana), (s) => removeInclude(s, include.id, acme)), true);
+});
+
+test('admins see nothing of someone’s own include, and an include is removed only from its own space', async () => {
+  const { ana, cara, acme, standards } = await company();
+  const jon = await person('Jon');
+  await as(ana, async (s) => {
+    await addMember(s, acme, jon.id, 'admin');
+    await addMember(s, standards, cara.id);
+  });
+  const caras = await as(direct(cara), (s) => addInclude(s, { spaceId: acme, included: { space: standards } }));
+  // Jon, an admin who can't open Standards, sees nothing of Cara's own include.
+  assert.equal((await as(jon, (s) => s.tx`select from includes_not_open(${acme}::uuid)`)).length, 0);
+  assert.deepEqual(await as(jon, (s) => includesIn(s, acme)), []);
+
+  // A shared include in Acme can't be removed as if it were in another space Ana looks after.
+  const beta = await as(ana, (s) => createSpace(s, { name: 'Beta' }));
+  const shared = await as(direct(ana), (s) => addInclude(s, { spaceId: acme, included: { space: standards }, shared: true }));
+  assert.equal(await as(direct(ana), (s) => removeInclude(s, shared.id, beta)), false);
+  // Nor proposed for removal there, straight against the database.
+  await assert.rejects(
+    as({ ...ana, agent: 'Claude' }, (s) => s.tx`insert into proposals (space_id, private_to, action, include_id, change) values (${beta}, ${ana.id}, 'remove include', ${shared.id}, '{}')`),
+    refused,
+  );
+  // Cara's own now waits, marked so for her, while Acme includes Standards for everyone.
+  assert.deepEqual((await as(cara, (s) => includesIn(s, acme))).map((include) => [include.id, include.waiting]), [[shared.id, false], [caras.id, true]]);
+});
+
+test('a proposal to include something says only whether it’s for everyone, and rules or a skill', async () => {
+  const { ana, acme, standards } = await company();
+  const [proposal] = await as({ ...ana, agent: 'Claude' }, (s) => s.tx`
+    insert into proposals (space_id, private_to, action, change)
+    values (${acme}, ${ana.id}, 'add include', ${s.tx.json({ shared: true, included: { space: standards }, text: 'Hello' })})
+    returning change
+  `);
+  assert.deepEqual(proposal.change, { shared: true, what: 'rules' });
 });

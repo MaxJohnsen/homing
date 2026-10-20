@@ -77,7 +77,7 @@ Homing picks the rules that apply and puts them in order, and requirements alway
 
 **How it flows.**
 
-- Guidance applies to its space and everything below it, unless it is marked *only here*.
+- Guidance applies to its space and everything below it, and wherever its space's rules are included, unless it is marked *only here*, which keeps it out of includes too.
 - It reaches everyone in a child space, including people who can't access the parent. A closed space blocks inherited membership, not guidance. When you edit shared guidance, Homing tells you it also applies to child spaces, including closed ones you can't access, and that *only here* prevents it. It reveals nothing about those spaces.
 - Your personal space's own guidance follows you everywhere. Spaces under your personal space behave like any other.
 - An include pulls in guidance from elsewhere by link, below.
@@ -88,7 +88,7 @@ Homing picks the rules that apply and puts them in order, and requirements alway
 - It brings in what is set in that space, not what the space inherits or includes itself. Includes don't chain, so two spaces that include each other each get the other's own rules once, and nothing loops.
 - It expands for each reader when guidance is read, only if they can access what it points to. Someone who can't sees nothing of it, not even that it's there. It never grants access, and a change where it's set applies everywhere it's included.
 - The one exception is the space's admins, who look after its shared guidance: for an include for everyone that they can't access, they see that it's there, whether it's rules or a skill, and who added it when, never what it points to, and they can stop including it. So an include never outlives everyone who could remove it.
-- An include is for everyone in the space or only for you, and like a skill it applies in its space and the spaces below. One for everyone can point only to shared guidance, so what only you have can be included only for you. Something included for everyone isn't included again just for you, and including it for everyone replaces your own include of it. Guidance that already applies, such as a space above or your personal space, isn't included again.
+- An include is for everyone in the space or only for you, and like a skill it applies in its space and the spaces below. One for everyone can point only to shared guidance, so what only you have can be included only for you. Something included for everyone isn't included again just for you, and including it for everyone replaces your own include of it. Anyone else's own include of it waits: they see it marked as waiting, it brings nothing more, and it applies again if the one for everyone is stopped, which stops it only for those who don't include it themselves. Guidance that already applies, such as a space above or your personal space, isn't included again.
 - An include is guidance, changed like a rule. Proposing one shows the rules or skill it would bring in, as they are now, and approving it runs exactly that. An admin deciding a request who can't access what it points to sees nothing of it: they can only decline one to include it, and can approve one to stop including it.
 
 **Precedence.**

@@ -85,8 +85,9 @@ export async function removeRule(s: Session, ruleId: string): Promise<boolean> {
  * The rules that apply in a space, from least to most specific: the
  * viewer's personal guidance first, then each space from the top of the
  * tree down. In each space the rules its guidance includes come first, then
- * its own, with private rules after shared ones. A rule that reaches the
- * space more than one way counts once, where it is most specific.
+ * its own, and in each, what everyone gets before what's only the viewer's:
+ * their own rules, and what's included only for them. A rule that reaches
+ * the space more than one way counts once, where it is most specific.
  * Homing doesn't judge whether two rules contradict each other. The agent
  * does, by this order.
  */
@@ -117,7 +118,8 @@ export async function rulesFor(s: Session, spaceId: string): Promise<Rule[]> {
     ) r
     left join spaces sp on sp.id = r.space_id and sp.id in (${accessibleSpaces(s)})
     ${inclusionJoin(s, 'r')}
-    order by r.distance desc, r.include_id is null, r.include_private is not null, r.include_at, r.private_to is not null, r.created_at
+    -- In each space: what it includes, then its own; in each, what's shared before what's only the viewer's.
+    order by r.distance desc, r.include_id is null, coalesce(r.include_private, r.private_to) is not null, r.include_at, r.created_at
   `;
   return mostSpecific(rows.map(withInclusion)).reverse();
 }
@@ -147,7 +149,9 @@ export function applying(s: Session, spaceId: string) {
       select i.space_included, i.skill_included, a.distance, i.id, i.space_id, i.private_to, i.added_at
       from applies a
       join includes i on i.space_id = a.space_id
-      where i.removed_at is null and ${includeSeen(s, 'i')} and ${notShadowed(s, 'i')}
+      -- Only the spaces that apply, before anything is asked of each include.
+      where i.space_id = any(array(select space_id from applies)) and i.removed_at is null and ${includeSeen(s, 'i')}
+        and ${notShadowed(s, 'i', s.tx`array(select space_id from applies)`)}
     )
   `;
 }
@@ -156,11 +160,12 @@ export function applying(s: Session, spaceId: string) {
  * Not an include only for someone of what the same space also includes for everyone: the one for
  * everyone brings them the same, so theirs waits, and applies again if that one goes.
  */
-function notShadowed(s: Session, table: string) {
+function notShadowed(s: Session, table: string, spaces: ReturnType<Session['tx']>) {
   const i = s.tx(table);
+  // Only in the spaces asked about, so it never looks at every include there is.
   return s.tx`not (${i}.private_to is not null and exists (
     select from includes o
-    where o.space_id = ${i}.space_id and o.private_to is null and o.removed_at is null
+    where o.space_id = any(${spaces}) and o.space_id = ${i}.space_id and o.private_to is null and o.removed_at is null
       and coalesce(o.space_included, o.skill_included) = coalesce(${i}.space_included, ${i}.skill_included)
   ))`;
 }
@@ -226,6 +231,8 @@ export interface Include {
   id: string;
   spaceId: string;
   privateTo: string | null;
+  /** One only for the viewer, waiting while the space includes the same for everyone. */
+  waiting: boolean;
   /** The space whose rules it brings in, or for a skill, the space the skill is set in. */
   from: { id: string; name: string; personal: boolean };
   /** The skill it brings in, by its page and name, or null for a space's rules. */
@@ -264,7 +271,7 @@ export async function checkInclude(
   if (!space) throw new IncludeRefused('missing', 'There is no space with that reference that you can see.');
   if (input.shared && space.privateTo) throw new IncludeRefused('applies', 'Spaces in a personal tree have no shared side.');
   const byId = new Map(spaces.map((candidate) => [candidate.id, candidate]));
-  const applies = applyingAlready(spaces, space);
+  const applies = await applyingAlready(s, spaces, space);
 
   let from: Space | undefined;
   let skill: { pageId: string; name: string } | null = null;
@@ -307,12 +314,14 @@ export async function checkInclude(
   return { space, from, skill };
 }
 
-/** The spaces whose guidance applies in a space already: its own, the spaces above it, and the personal space. */
-export function applyingAlready(spaces: Space[], space: Space): Set<string> {
-  const byId = new Map(spaces.map((candidate) => [candidate.id, candidate]));
-  const applies = new Set([space.id, ...spaces.filter((candidate) => candidate.privateTo && !candidate.parentId).map((candidate) => candidate.id)]);
-  for (let at = space.parentId ? byId.get(space.parentId) : undefined; at; at = at.parentId ? byId.get(at.parentId) : undefined) applies.add(at.id);
-  return applies;
+/**
+ * The spaces whose guidance applies in a space already: its own, every space above it, closed
+ * ones' parents included, and the personal space.
+ */
+export async function applyingAlready(s: Session, spaces: Space[], space: Space): Promise<Set<string>> {
+  const above = await s.tx<{ id: string }[]>`select id from spaces_above(${space.id}::uuid)`;
+  const personal = spaces.filter((candidate) => candidate.privateTo && !candidate.parentId).map((candidate) => candidate.id);
+  return new Set([space.id, ...personal, ...above.map((row) => row.id)]);
 }
 
 /**
@@ -338,24 +347,24 @@ export async function addInclude(s: Session, input: { spaceId: string; included:
         and coalesce(space_included, skill_included) = ${skill?.pageId ?? from.id}::uuid
     `;
   }
-  return { id, spaceId: space.id, privateTo, from: { id: from.id, name: from.name, personal: from.privateTo !== null && !from.parentId }, skill, addedAt };
+  return { id, spaceId: space.id, privateTo, waiting: false, from: { id: from.id, name: from.name, personal: from.privateTo !== null && !from.parentId }, skill, addedAt };
 }
 
 /**
- * Stops including something, for everyone it reached. Who removed it, and when, stay in the
- * history. A space's admins also stop one for everyone that they can't open, without learning
+ * Stops including something in a space, for everyone it reached. Who removed it, and when, stay in
+ * the history. A space's admins also stop one for everyone that they can't open, without learning
  * what it pointed to.
  */
-export async function removeInclude(s: Session, includeId: string): Promise<boolean> {
+export async function removeInclude(s: Session, includeId: string, spaceId: string): Promise<boolean> {
   const [removed] = await s.tx`
     update includes set removed_at = now()
-    where id = ${includeId}::uuid and removed_at is null
+    where id = ${includeId}::uuid and space_id = ${spaceId}::uuid and removed_at is null
       and space_id in (${accessibleSpaces(s)}) and (private_to is null or private_to = ${personOf(s.principal) ?? null}::uuid)
       and include_open(space_included, skill_included)
     returning id
   `;
   if (removed) return true;
-  const [{ stopped }] = await s.tx<{ stopped: boolean }[]>`select stop_including(${includeId}::uuid) as stopped`;
+  const [{ stopped }] = await s.tx<{ stopped: boolean }[]>`select stop_including(${includeId}::uuid, ${spaceId}::uuid) as stopped`;
   return stopped;
 }
 
@@ -372,10 +381,13 @@ export async function includesNotOpen(s: Session, spaceId: string): Promise<Incl
   return s.tx<IncludeNotOpen[]>`select id, kind, added_by, added_at from includes_not_open(${spaceId}::uuid)`;
 }
 
-/** The includes set in a space that the viewer can see, as they see its guidance, shared ones first, oldest first. */
+/**
+ * The includes set in a space that the viewer can see, as they see its guidance, shared ones
+ * first, oldest first, with their own that wait while the space includes the same for everyone.
+ */
 export async function includesIn(s: Session, spaceId: string): Promise<Include[]> {
-  const rows = await s.tx<{ id: string; spaceId: string; privateTo: string | null; fromId: string; fromName: string; fromPersonal: boolean; skillId: string | null; skillName: string | null; addedAt: Date }[]>`
-    select i.id, i.space_id, i.private_to, x.id as from_id, x.name as from_name,
+  const rows = await s.tx<{ id: string; spaceId: string; privateTo: string | null; waiting: boolean; fromId: string; fromName: string; fromPersonal: boolean; skillId: string | null; skillName: string | null; addedAt: Date }[]>`
+    select i.id, i.space_id, i.private_to, not ${notShadowed(s, 'i', s.tx`array[${spaceId}::uuid]`)} as waiting, x.id as from_id, x.name as from_name,
            x.private_to is not null and x.parent_id is null as from_personal,
            i.skill_included as skill_id, t.body as skill_name, i.added_at
     from includes i
@@ -386,13 +398,14 @@ export async function includesIn(s: Session, spaceId: string): Promise<Include[]
       limit 1
     ) t on true
     join spaces x on x.id = coalesce(i.space_included, t.space_id) and x.id in (${accessibleSpaces(s)})
-    where i.space_id = ${spaceId}::uuid and i.removed_at is null and ${includeSeen(s, 'i')} and ${notShadowed(s, 'i')}
+    where i.space_id = ${spaceId}::uuid and i.removed_at is null and ${includeSeen(s, 'i')}
     order by i.private_to is not null, i.added_at
   `;
   return rows.map((row) => ({
     id: row.id,
     spaceId: row.spaceId,
     privateTo: row.privateTo,
+    waiting: row.waiting,
     from: { id: row.fromId, name: row.fromName, personal: row.fromPersonal },
     skill: row.skillId ? { pageId: row.skillId, name: row.skillName! } : null,
     addedAt: row.addedAt,

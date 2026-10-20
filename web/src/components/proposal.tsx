@@ -244,7 +244,7 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
       return (
         <>
           <ProposedChange kind="preference" label="Stop including" text={proposal.included === 'skill' ? 'A skill from a space you can’t open' : 'Rules from a space you can’t open'} />
-          <p className="text-sm text-muted-foreground">{proposal.included === 'skill' ? 'It stops' : 'They stop'} applying in {place} and the spaces under it, for everyone.</p>
+          <p className="text-sm text-muted-foreground">{proposal.included === 'skill' ? 'It stops' : 'They stop'} applying in {place} and the spaces under it, for everyone who doesn’t include {proposal.included === 'skill' ? 'it' : 'them'} for themselves.</p>
         </>
       );
     }
@@ -259,7 +259,7 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
         {include.skill.description && <p className="text-base">{include.skill.description}</p>}
         <p className="text-sm text-muted-foreground">
           {removing
-            ? `It stops applying in ${place} and the spaces under it, for ${who}.`
+            ? `It stops applying in ${place} and the spaces under it, for ${proposal.shared ? 'everyone who doesn’t include it for themselves' : 'you'}.`
             : `It’s set in ${from}, and stays as it’s set there. It applies in ${place} and the spaces under it, for ${who}, unless a skill with its name is set closer.`}
         </p>
       </>
@@ -270,7 +270,7 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
       <ProposedChange kind="preference" label={removing ? 'Stop including the rules from' : 'Include the rules from'} text={from} onlyYou={!proposal.shared} />
       <p className="text-sm text-muted-foreground">
         {removing
-          ? `They stop applying in ${place} and the spaces under it, for ${who}.`
+          ? `They stop applying in ${place} and the spaces under it, for ${proposal.shared ? 'everyone who doesn’t include them for themselves' : 'you'}.`
           : proposal.shared
             ? `In ${place} and the spaces under it, everyone who can open ${from} gets them, before ${place}’s own rules, and nobody else learns of them. They stay as they’re set in ${from}.`
             : `In ${place} and the spaces under it, you get them before ${place}’s own rules. They stay as they’re set in ${from}.`}

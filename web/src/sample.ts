@@ -4,7 +4,7 @@ import type { SearchData } from '@/lib/search';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
-import type { IncludableData, IncludeSummary, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
+import type { IncludableData, IncludeSummary, RuleData, SkillData, SkillSummary, WaitingSkill } from '@/lib/guidance';
 
 // Claude proposes a preference for Acme, where two rules already apply.
 export const proposal: ProposalData = {
@@ -185,7 +185,11 @@ export const sampleIncludes: IncludeSummary[] = [
   { id: 'i1', spaceId: 'standards', spaceName: 'Standards', shared: true },
   { id: 'i2', spaceId: 'writing', spaceName: 'Writing', shared: false },
   { id: 'i4', spaceId: null, spaceName: null, shared: true, addedBy: 'Jon Dahl', addedAt: '2026-10-12T10:00:00+02:00' },
+  { id: 'i6', spaceId: 'standards', spaceName: 'Standards', shared: false, waiting: true },
 ];
+
+// Ana's own include of a skill Northwind also includes for everyone.
+export const sampleWaitingSkills: WaitingSkill[] = [{ id: 'i7', name: 'invoice', spaceName: 'Standards' }];
 
 // A skill Northwind includes for everyone that Ana, an admin, can't open.
 export const sampleHiddenSkills: IncludeSummary[] = [{ id: 'i5', spaceId: null, spaceName: null, shared: true, addedBy: 'Jon Dahl', addedAt: '2026-10-12T10:00:00+02:00' }];

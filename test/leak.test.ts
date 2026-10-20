@@ -797,7 +797,7 @@ describe('through an include', () => {
     assert.deepEqual(seen[0].includes, []);
     assert.doesNotMatch(JSON.stringify(seen), secret);
     const [include] = await admin`select id from includes where space_id = ${lounge} and private_to is null and space_included = ${acme}`;
-    assert.equal((await ben.browser.json(`/api/includes/${include.id}/remove`, {})).status, 404);
+    assert.equal((await ben.browser.json(`/api/includes/${include.id}/remove`, { space: lounge })).status, 404);
     assert.equal((await ben.browser.json(`/api/spaces/${lounge}/includes`, { space: acme })).status, 404);
   });
 

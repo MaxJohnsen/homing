@@ -3,7 +3,7 @@ import { Label } from '@/components/ui/label';
 
 /**
  * Where a rule applies. For a shared rule the text is fixed and the same for every space, so it
- * reveals nothing about the closed spaces underneath. A rule in your personal space follows you
+ * reveals nothing about the closed spaces underneath, nor where its rules are included. A rule in your personal space follows you
  * everywhere. Without onOnlyHereChange it only says where the rule applies, or, when it is being
  * removed, where it stops applying.
  */
@@ -34,10 +34,10 @@ export function RuleReach({ id, space, shared = true, personal = false, onlyHere
 function reachOf({ space, shared, personal, onlyHere, removing }: { space: string; shared: boolean; personal: boolean; onlyHere: boolean; removing?: boolean }) {
   if (removing) {
     if (personal) return onlyHere ? 'It stops applying in your personal space.' : 'It stops following you into the spaces you work in.';
-    if (shared) return onlyHere ? `It stops applying in ${space}.` : `It stops applying in ${space} and every space under it, including spaces you can’t open.`;
-    return onlyHere ? `It stops applying to you in ${space}.` : `It stops applying to you in ${space} and the spaces under it.`;
+    if (shared) return onlyHere ? `It stops applying in ${space}.` : `It stops applying in ${space} and every space under it, including spaces you can’t open, and wherever its rules are included.`;
+    return onlyHere ? `It stops applying to you in ${space}.` : `It stops applying to you in ${space}, the spaces under it, and wherever its rules are included.`;
   }
   if (personal) return onlyHere ? 'It applies only in your personal space, not in the spaces under it.' : 'It follows you into every space you work in.';
-  if (shared) return onlyHere ? `It applies only in ${space}, not in the spaces under it.` : `It applies to ${space} and every space under it, including spaces you can’t open.`;
-  return onlyHere ? `It applies to you only in ${space}, not in the spaces under it.` : `It applies to you in ${space} and every space under it.`;
+  if (shared) return onlyHere ? `It applies only in ${space}, not in the spaces under it or where its rules are included.` : `It applies to ${space} and every space under it, including spaces you can’t open, and wherever its rules are included.`;
+  return onlyHere ? `It applies to you only in ${space}, not in the spaces under it or where its rules are included.` : `It applies to you in ${space}, every space under it, and wherever its rules are included.`;
 }

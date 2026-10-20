@@ -62,7 +62,10 @@ const guidanceInput = z.strictObject({
   rule: text().optional().describe('The rule to change or remove, such as item:…'),
   include: text()
     .optional()
-    .describe('For include or stop including: another space whose rules to include, such as space:…, or a skill, such as page:…. Included, they stay where they’re set and apply here, before the rules set here'),
+    .describe(
+      'For include or stop including: another space whose rules to include, such as space:…, or a skill, such as page:…. Included, they stay where they’re set and apply here, before the rules set here. ' +
+        "Keep the space's name out of why: admins who can't open it see the reason too",
+    ),
   kind: z
     .enum(['requirement', 'preference'])
     .optional()
@@ -577,7 +580,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
           '\n## Rules',
           'These apply here, from least to most specific. A more specific preference wins over a less specific one, ' +
             'and between equally specific preferences the private one wins. No preference wins over a requirement. ' +
-            'A rule another space’s guidance is included for counts as set where it’s included, before the rules set there. ' +
+            'A rule another space’s guidance includes counts as set where it’s included, before the rules set there. ' +
             'If two requirements conflict, stop before doing what they conflict on, and tell the user which rules conflict.',
           ...rules.map((rule) => `- ${describeRule(rule)} (${ref('item', rule.id)})`),
         ]
@@ -697,7 +700,8 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
               'Guidance set elsewhere that applies here too, by link: `context` gives the rules and skills it brings, as they are now.',
               ...includes.map(
                 (include) =>
-                  `- ${include.skill ? `The skill ${include.skill.name} (${ref('page', include.skill.pageId)}), from ${include.from.name}` : `Rules from ${include.from.name} (${ref('space', include.from.id)})`}, ${include.privateTo ? 'private' : 'shared'}`,
+                  `- ${include.skill ? `The skill ${include.skill.name} (${ref('page', include.skill.pageId)}), from ${include.from.name}` : `Rules from ${include.from.name} (${ref('space', include.from.id)})`}, ${include.privateTo ? 'private' : 'shared'}` +
+                  (include.waiting ? ', waiting: the space includes it for everyone, so the user’s own applies again only if that one stops' : ''),
               ),
             ]
           : []),

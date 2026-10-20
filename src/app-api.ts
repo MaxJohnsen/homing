@@ -670,7 +670,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           includes: [
             ...found.includes
               .filter((include) => !include.skill)
-              .map((include) => ({ id: include.id, spaceId: include.from.id, spaceName: include.from.name, shared: include.privateTo === null })),
+              .map((include) => ({ id: include.id, spaceId: include.from.id, spaceName: include.from.name, shared: include.privateTo === null, waiting: include.waiting })),
             // For an admin, what the space includes for everyone that they can't open: only that it's there.
             ...found.hidden,
           ],
@@ -697,7 +697,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'remove include': {
-        if (!(await write((s) => removeInclude(s, route.id)))) return answer(res, 404, { message: 'There’s nothing included here that you can change.' });
+        const body = await readJson(req);
+        const space = typeof body.space === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.space) ? body.space.toLowerCase() : undefined;
+        const nothing = { message: 'There’s nothing included here that you can change.' };
+        if (!space || !(await write((s) => removeInclude(s, route.id, space)))) return answer(res, 404, nothing);
         json(res, 200, {});
         break;
       }
@@ -733,12 +736,18 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'skills': {
-        const found = await read(async (s) => ((await spaceView(s, route.id)) ? { skills: await skillsHere(s, route.id), hidden: await notOpen(s, route.id, 'skill') } : undefined));
+        const found = await read(async (s) => ((await spaceView(s, route.id))
+          ? { skills: await skillsHere(s, route.id), hidden: await notOpen(s, route.id, 'skill'), includes: await includesIn(s, route.id) }
+          : undefined));
         if (!found) return answer(res, 404, noSpace);
-        const { skills, hidden } = found;
+        const { skills, hidden, includes } = found;
         json(res, 200, {
           // For an admin, the skills the space includes for everyone that they can't open: only that they're there.
           hidden,
+          // The person's own includes of a skill, waiting while the space includes it for everyone.
+          waiting: includes
+            .filter((include) => include.waiting && include.skill)
+            .map((include) => ({ id: include.id, name: include.skill!.name, spaceName: include.from.name })),
           skills: skills.map(({ pageId, name, description, spaceId, spaceName, privateTo, used, others, includedIn }) => ({
             id: pageId,
             name,

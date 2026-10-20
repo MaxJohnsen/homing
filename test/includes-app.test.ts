@@ -212,7 +212,7 @@ test('the Rules screen shows what’s included and where from, and those allowed
   assert.equal((await cara.browser.json(`/api/spaces/${acme}/includes`, { space: standards, shared: true })).status, 403);
   const own = await cara.browser.json(`/api/spaces/${acme}/includes`, { space: standards });
   assert.equal(own.status, 200);
-  assert.deepEqual((await list(cara)).includes, [{ id: own.body.id, spaceId: standards, spaceName: 'Standards', shared: false }]);
+  assert.deepEqual((await list(cara)).includes, [{ id: own.body.id, spaceId: standards, spaceName: 'Standards', shared: false, waiting: false }]);
   assert.deepEqual((await list(ana)).includes, []);
   const shared = await ana.browser.json(`/api/spaces/${acme}/includes`, { space: standards, shared: true });
   assert.equal(shared.status, 200);
@@ -225,13 +225,13 @@ test('the Rules screen shows what’s included and where from, and those allowed
   const forDan = await list(dan);
   assert.deepEqual([forDan.rules.map((rule: { text: string }) => rule.text), forDan.includes], [['Write Acme reports in English'], []]);
   assert.doesNotMatch(JSON.stringify(forDan), /Standards|prices/);
-  assert.equal((await dan.browser.json(`/api/includes/${shared.body.id}/remove`, {})).status, 404);
+  assert.equal((await dan.browser.json(`/api/includes/${shared.body.id}/remove`, { space: acme })).status, 404);
 
   // Cara can't stop including it for everyone, and Ana can.
-  assert.equal((await cara.browser.json(`/api/includes/${shared.body.id}/remove`, {})).status, 403);
-  assert.equal((await ana.browser.json(`/api/includes/${shared.body.id}/remove`, {})).status, 200);
+  assert.equal((await cara.browser.json(`/api/includes/${shared.body.id}/remove`, { space: acme })).status, 403);
+  assert.equal((await ana.browser.json(`/api/includes/${shared.body.id}/remove`, { space: acme })).status, 200);
   assert.deepEqual((await list(ana)).rules.map((rule: { text: string }) => rule.text), ['Write Acme reports in English']);
-  assert.equal((await cara.browser.json(`/api/includes/${own.body.id}/remove`, {})).status, 200);
+  assert.equal((await cara.browser.json(`/api/includes/${own.body.id}/remove`, { space: acme })).status, 200);
 });
 
 test('stopping an include names the include itself, whatever the proposal says', async () => {
@@ -278,7 +278,7 @@ test('an admin sees what the space includes for everyone that they can’t open,
   // Dan, a member, sees nothing of either, and can't stop them.
   const forDan = await lists(dan);
   assert.deepEqual([forDan.rules.includes, forDan.skills.hidden], [[], []]);
-  assert.equal((await dan.browser.json(`/api/includes/${skillInclude.id}/remove`, {})).status, 404);
+  assert.equal((await dan.browser.json(`/api/includes/${skillInclude.id}/remove`, { space: acme })).status, 404);
 
   // Cara, who can open it, asks to stop including Standards, and Jon approves it without seeing it.
   const { id } = await propose(await chat(cara), { space: `space:${acme}`, change: 'stop including', include: `space:${standards}` });
@@ -290,7 +290,29 @@ test('an admin sees what the space includes for everyone that they can’t open,
   assert.deepEqual(await rules(cara, acme), ['Write Acme reports in English']);
 
   // And stops the skill himself.
-  assert.equal((await jon.browser.json(`/api/includes/${skillInclude.id}/remove`, {})).status, 200);
+  assert.equal((await jon.browser.json(`/api/includes/${skillInclude.id}/remove`, { space: acme })).status, 200);
   assert.deepEqual((await lists(jon)).skills.hidden, []);
   assert.deepEqual((await admin`select removed_by from includes where id = ${skillInclude.id}`).map((row) => row.removedBy), [jon.id]);
+});
+
+test('your own include waits while the space includes it for everyone, and stopping it stops only yours', async () => {
+  const { ana, cara, acme, standards } = await company();
+  const own = await as({ person: cara.id, direct: true }, (s) => addInclude(s, { spaceId: acme, included: { space: standards } }));
+  const shared = await as({ person: ana.id, direct: true }, (s) => addInclude(s, { spaceId: acme, included: { space: standards }, shared: true }));
+
+  // Cara sees hers waiting, in the app and through her assistant.
+  const listed = (await cara.browser.json(`/api/spaces/${acme}/rules`)).body.includes;
+  assert.deepEqual(listed.map((include: { id: string; waiting: boolean }) => [include.id, include.waiting]), [[shared.id, false], [own.id, true]]);
+  const claude = await chat(cara);
+  const [{ guidance }] = await admin`select id as guidance from pages where space_id = ${acme} and type = 'guidance'`;
+  assert.match((await claude.call('read', { ref: `page:${guidance}` })).text, /Rules from Standards \(space:.+\), private, waiting/);
+
+  // Asking to stop including Standards stops hers, and Acme still includes it for everyone.
+  const { id } = await propose(claude, { space: `space:${acme}`, change: 'stop including', include: `space:${standards}` });
+  const shown = (await page(cara, id)).body.proposal;
+  assert.equal(shown.shared, false);
+  assert.equal((await decide(cara, id, { approve: true, shown: shown.include.shown })).status, 200);
+  const left = await admin`select id from includes where space_id = ${acme} and removed_at is null`;
+  assert.deepEqual(left.map((row) => row.id), [shared.id]);
+  assert.deepEqual(await rules(cara, acme), ['Never send prices by email', 'Write Acme reports in English']);
 });

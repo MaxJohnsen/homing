@@ -1058,7 +1058,7 @@ export async function decide(
       if (decision.shown !== include.shown) throw new Undecidable('changed', 'What it brings in changed after you opened this page. Check it again.');
       try {
         if (proposal.action === 'add include') await addInclude(s, { spaceId: proposal.spaceId, included: proposal.target!, shared: change.shared });
-        else if (!(await removeInclude(s, proposal.includeId!))) throw new Undecidable('changed', 'It isn’t included any more, so there’s nothing to remove.');
+        else if (!(await removeInclude(s, proposal.includeId!, proposal.spaceId))) throw new Undecidable('changed', 'It isn’t included any more, so there’s nothing to remove.');
       } catch (error) {
         if (!(error instanceof IncludeRefused)) throw error;
         if (error.reason === 'admin' || error.reason === 'missing') throw new AccessDenied(error.message);

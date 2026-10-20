@@ -220,7 +220,7 @@ export async function includable(s: Session, spaceId: string) {
     }
     return above.length ? `${candidate.name}, in ${above.join(' › ')}` : candidate.name;
   };
-  const applies = applyingAlready(spaces, space);
+  const applies = await applyingAlready(s, spaces, space);
   const others = spaces.filter((candidate) => !applies.has(candidate.id));
   const skills = others.length
     ? await s.tx<{ id: string; name: string; spaceId: string; privateTo: string | null; skillMd: string | null }[]>`

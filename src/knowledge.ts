@@ -872,7 +872,7 @@ export async function search(
   // there too. Knowledge alone leaves guidance out, so it doesn't look.
   const includedThere = (target: 'space_included' | 'skill_included') => s.tx`
     select i.${s.tx(target)} from includes i
-    where i.space_id in (select space_subtree(${options.spaceId ?? null}::uuid)) and i.removed_at is null
+    where i.space_id = any(array(select space_subtree(${options.spaceId ?? null}::uuid))) and i.removed_at is null
       and i.space_id in (${accessibleSpaces(s)}) and (i.private_to is null or i.private_to = ${personOf(s.principal) ?? null}::uuid)
       and include_open(i.space_included, i.skill_included)
   `;

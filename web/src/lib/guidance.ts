@@ -35,8 +35,18 @@ export interface IncludeSummary {
   spaceId: string | null;
   spaceName: string | null;
   shared: boolean;
+  /** Yours, waiting while the space includes the same for everyone. */
+  waiting?: boolean;
   addedBy?: string | null;
   addedAt?: string;
+}
+
+/** Your own include of a skill, waiting while the space includes it for everyone. */
+export interface WaitingSkill {
+  id: string;
+  name: string;
+  /** Where the skill is set. */
+  spaceName: string;
 }
 
 /** What you could include in a space: other spaces you can open, and the skills in them. Only yours can be included only for you. */
