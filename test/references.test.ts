@@ -164,6 +164,24 @@ test('a rule is changed where it is set, from any space whose context showed it'
   await claude.close();
 });
 
+test('an include names the space whose guidance it changes, and what it includes never decides that', async () => {
+  const { ana, northwind, fjord, golive, claude } = await world();
+  const propose = (input: Record<string, unknown>) => claude.call('act', { action: 'guidance.propose', input });
+  const missing = await propose({ change: 'include', include: `space:${fjord}` });
+  assert.equal(missing.failed, true);
+  assert.match(missing.text, /^Say which space's guidance it's for/);
+  const page = await propose({ space: `page:${golive.pageId}`, change: 'include', include: `space:${fjord}` });
+  assert.equal(page.failed, true);
+  assert.match(page.text, /^That's a page, not a space\. Give the space whose guidance it is/);
+  assert.equal((await admin`select from proposals where private_to = ${ana.id}`).length, 0);
+
+  const named = await propose({ space: 'Northwind', change: 'include', include: `space:${fjord}` });
+  assert.ok(!named.failed, named.text);
+  const proposals = await admin<{ spaceId: string; action: string }[]>`select space_id, action from proposals where private_to = ${ana.id}`;
+  assert.deepEqual(proposals.map((p) => [p.spaceId, p.action]), [[northwind, 'add include']]);
+  await claude.close();
+});
+
 test('a space is found by a page in it or by its exact name, and a name two spaces have asks which', async () => {
   const { ana, relaunch, golive, claude } = await world();
   const byName = await claude.call('context', { request: 'go-live', space: 'website relaunch' });

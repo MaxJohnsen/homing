@@ -1057,7 +1057,7 @@ async function proposeGuidance(
   if (input.change === 'include' || input.change === 'stop including') {
     // An include is set on the space's guidance itself, so the space is always given, and the skill it names never stands in for it.
     if (input.space === undefined) throw new Refused("Say which space's guidance it's for, such as space:….");
-    const spaceId = parseRef(input.space, 'space');
+    const spaceId = await spaceIdOf(s, input.space, { page: 'Give the space whose guidance it is, such as space:…, and the skill as include.' });
     if (!input.include) throw new Refused('Name the space whose rules to include, such as space:…, or the skill, such as page:….');
     const target = parseAnyRef(input.include);
     if (target.kind !== 'space' && target.kind !== 'page') throw new Refused(`Expected a space or a skill, such as space:… or page:…, but got "${input.include}".`);
