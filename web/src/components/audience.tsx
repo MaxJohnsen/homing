@@ -6,7 +6,7 @@ export type Audience = 'you' | 'space';
  * Who will see what you're writing, said before you save: only you, or everyone in the space,
  * with how many people that is now and that anyone who joins later sees it too.
  */
-export function AudienceChoice({ space, people, above = false, value, onChange, disabled }: {
+export function AudienceChoice({ space, people, above = false, value, onChange, disabled, surface = 'card' }: {
   space: string;
   /** How many people see what's shared in the space now, you included, that you can see. */
   people: number;
@@ -15,6 +15,8 @@ export function AudienceChoice({ space, people, above = false, value, onChange, 
   value: Audience;
   onChange: (value: Audience) => void;
   disabled?: boolean;
+  /** What the choices sit on: a tinted panel, or a white one such as a form. */
+  surface?: 'card' | 'muted';
 }) {
   const others = people - 1;
   const options: { value: Audience; label: string; detail: string }[] = [
@@ -34,6 +36,7 @@ export function AudienceChoice({ space, people, above = false, value, onChange, 
   return (
     <RadioCards
       label="Who sees it"
+      surface={surface}
       value={value}
       onChange={onChange}
       disabled={disabled}

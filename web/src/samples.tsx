@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal } from '@/sample';
+import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -26,6 +26,7 @@ import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { NewSpace, type CreateSpace } from '@/screens/new-space';
+import { Tasks } from '@/screens/tasks';
 import { Members, Space, SpaceSettings, type MemberActions, type ShareSpaceActions } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
@@ -82,6 +83,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/rules/new': { label: 'Rules in a new space', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="rules"><Rules space={sampleSpace.root} rules={[]} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/skills': { label: 'A space’s skills', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="skills"><Skills space={sampleSpace.closed} skills={sampleSkills} /></Space></InApp> },
   '/skill': { label: 'A skill', render: () => <InApp spaceId="northwind"><Skill skill={sampleSkill} /></InApp> },
+  '/spaces/tasks': { label: 'A space’s tasks', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="tasks"><Tasks space={sampleSpace.closed} data={sampleTasks} actions={{ add: notSaved, done: notSaved, share: notSaved }} now={new Date('2026-10-20T10:00:00+02:00')} /></Space></InApp> },
+  '/spaces/tasks/empty': { label: 'A space with no tasks', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="tasks"><Tasks space={sampleSpace.root} data={{ open: [], done: [] }} actions={{ add: notSaved, done: notSaved, share: notSaved }} /></Space></InApp> },
   '/spaces/closed': { label: 'A closed space’s members', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="members"><Members space={sampleSpace.closed} /></Space></InApp> },
   '/spaces/open': { label: 'Members of a space open to everyone above it', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="members"><Members space={sampleSpace.open} /></Space></InApp> },
   '/spaces/root': { label: 'Members of a space at the top, as its admin', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="members"><Members space={sampleSpace.root} actions={sampleMemberActions} /></Space></InApp> },

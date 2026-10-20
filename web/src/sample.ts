@@ -428,3 +428,13 @@ export const publishProposal: ProposalData = {
     audience: { people: 5, above: false },
   },
 };
+
+/** A space's tasks: Ana's own and the space's, open and done lately. */
+export const sampleTasks = {
+  open: [
+    { id: 't1', title: 'Send Gunnar the revised budget', description: null, due: '2026-10-17', shared: true, assignee: { id: 'ana', name: 'Ana Berg', you: true }, done: null, agent: null },
+    { id: 't2', title: 'Book the venue for the launch', description: 'Two options: Hotel Bristol or the Opera foyer.', due: '2026-11-03', shared: true, assignee: { id: 'cara', name: 'Cara Lund', you: false }, done: null, agent: null },
+    { id: 't3', title: 'Follow up with Jon about the contract', description: null, due: null, shared: false, assignee: null, done: null, agent: 'Claude' },
+  ],
+  done: [{ id: 't4', title: 'Draft the launch plan', description: null, due: '2026-10-10', shared: true, assignee: null, done: { at: '2026-10-12T10:00:00+02:00', by: { name: 'Cara Lund', you: false } }, agent: null }],
+};

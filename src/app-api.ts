@@ -7,6 +7,7 @@ import { publicationData, requestsSent, shortAction, waitingFor } from './propos
 import { readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
+import { addTask, changeTask, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
 
@@ -113,6 +114,67 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (body.in !== undefined && body.in !== null && !parent) return answer(res, 400, { field: 'in', message: 'Choose where the space goes.' });
         const space = await write((s) => makeCollaborative(s, route.id, { in: parent, closed: body.closed === true, rules }));
         json(res, 200, { id: space.id });
+        break;
+      }
+
+      case 'tasks': {
+        const found = await read(async (s) => {
+          if (!(await spaceView(s, route.id))) return undefined;
+          const { open, done } = await tasksIn(s, route.id);
+          const names = await peopleNames(s, [...open, ...done].flatMap((task) => [task.assignee, task.doneBy]));
+          return { open, done, names };
+        });
+        if (!found) return answer(res, 404, noSpace);
+        const shape = (task: Task) => ({
+          id: task.id,
+          title: task.title,
+          description: task.description,
+          due: task.due,
+          shared: task.privateTo === null,
+          assignee: task.assignee && { id: task.assignee, name: found.names.get(task.assignee) ?? null, you: task.assignee === person },
+          done: task.doneAt && { at: task.doneAt, by: task.doneBy ? { name: found.names.get(task.doneBy) ?? null, you: task.doneBy === person } : null },
+          agent: task.agent,
+        });
+        json(res, 200, { open: found.open.map(shape), done: found.done.map(shape) });
+        break;
+      }
+
+      case 'add task': {
+        const body = await readJson(req);
+        if (!(await read((s) => spaceView(s, route.id)))) return answer(res, 404, noSpace);
+        const task = await write((s) =>
+          addTask(s, {
+            spaceId: route.id,
+            title: typeof body.title === 'string' ? body.title : '',
+            description: typeof body.description === 'string' ? body.description : undefined,
+            due: typeof body.due === 'string' && body.due ? body.due : undefined,
+            assignee: typeof body.assignee === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.assignee) ? body.assignee : undefined,
+            shared: body.shared === true,
+          }),
+        );
+        json(res, 200, { id: task.id });
+        break;
+      }
+
+      case 'change task': {
+        const body = await readJson(req);
+        const changed = await write((s) =>
+          changeTask(s, route.id, {
+            title: typeof body.title === 'string' ? body.title : undefined,
+            description: typeof body.description === 'string' || body.description === null ? (body.description as string | null) : undefined,
+            due: typeof body.due === 'string' && body.due ? body.due : body.due === null || body.due === '' ? null : undefined,
+            assignee: typeof body.assignee === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.assignee) ? body.assignee : body.assignee === null ? null : undefined,
+            done: typeof body.done === 'boolean' ? body.done : undefined,
+          }),
+        );
+        if (!changed) return answer(res, 404, { message: 'There’s no task here that you can change.' });
+        json(res, 200, { id: changed.id });
+        break;
+      }
+
+      case 'share task': {
+        if (!(await write((s) => shareTask(s, route.id)))) return answer(res, 404, { message: 'There’s no task of yours here to share.' });
+        json(res, 200, {});
         break;
       }
 
@@ -626,6 +688,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     }
   } catch (error) {
     if (error instanceof SpaceRefused) return answer(res, error.status, { field: error.field, message: error.message });
+    if (error instanceof TaskRefused) return answer(res, 400, { message: error.message });
+    if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
+      return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });
+    }
     // The store refuses what the person may not do, such as a member changing a shared rule.
     if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
       return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t make that change here.' });
@@ -668,7 +734,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'add member' | 'conversion' | 'convert space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'add member' | 'conversion' | 'convert space' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -687,6 +753,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['sources', `/api/spaces/${uuid}/sources`],
       ['overview', `/api/spaces/${uuid}/overview`],
       ['conversion', `/api/spaces/${uuid}/conversion`],
+      ['tasks', `/api/spaces/${uuid}/tasks`],
       ['source', `/api/sources/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],
       ['skills', `/api/spaces/${uuid}/skills`],
@@ -704,6 +771,9 @@ function routeOf(method: string, path: string): Route | undefined {
       ['rename space', `/api/spaces/${uuid}`],
       ['add member', `/api/spaces/${uuid}/members`],
       ['convert space', `/api/spaces/${uuid}/conversion`],
+      ['add task', `/api/spaces/${uuid}/tasks`],
+      ['change task', `/api/tasks/${uuid}`],
+      ['share task', `/api/tasks/${uuid}/share`],
       ['add page', `/api/spaces/${uuid}/pages`],
       ['write overview', `/api/spaces/${uuid}/overview`],
       ['add item', `/api/pages/${uuid}/items`],

@@ -481,6 +481,7 @@ describe('through the app’s endpoints', () => {
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
       // Nor the other client's overview.
       assert.equal((await get(`/api/spaces/${target.space}/overview`)).status, 404);
+      assert.equal((await get(`/api/spaces/${target.space}/tasks`)).status, 404);
       const overwritten = await browser.json(`/api/spaces/${target.space}/overview`, { text: 'Hello', shared: true });
       assert.equal(overwritten.status, 404);
       seen.push(overwritten.body);
@@ -526,6 +527,8 @@ describe('through the app’s endpoints', () => {
         [`/api/spaces`, { name: 'Hello', who: 'just me', in: target.personalSpaceId }],
         [`/api/spaces/${target.space}`, { name: 'Hello' }],
         [`/api/spaces/${target.space}/members`, { email: 'nobody@example.test' }],
+        [`/api/spaces/${target.space}/tasks`, { title: 'Hello', shared: true }],
+        [`/api/spaces/${target.space}/tasks`, { title: 'Hello' }],
         [`/api/spaces/${target.space}/members/${target.who.id}`, { change: 'remove' }],
         [`/api/spaces/${target.personalSpaceId}`, { name: 'Hello' }],
       ] as const) {

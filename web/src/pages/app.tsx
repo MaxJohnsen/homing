@@ -25,6 +25,7 @@ import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { NewSpace } from '@/screens/new-space';
 import { Members, Space, SpaceSettings, type ConversionData, type MemberActions, type ShareSpaceActions } from '@/screens/space';
+import { Tasks, type TaskActions, type TasksData } from '@/screens/tasks';
 import { Waiting } from '@/screens/waiting';
 
 /** The signed-in app: the shelf with your spaces, and the screen you're on beside it. */
@@ -164,6 +165,24 @@ function shareSpace(spaceId: string): ShareSpaceActions {
   };
 }
 
+/** Changing tasks directly, then showing them as they are now. */
+function taskActions(spaceId: string): TaskActions {
+  const run = async (action: () => Promise<unknown>) => {
+    try {
+      await action();
+      await reload(`/api/spaces/${spaceId}/tasks`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) await reload(`/api/spaces/${spaceId}/tasks`);
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
+  return {
+    add: (input) => run(() => api(`/api/spaces/${spaceId}/tasks`, input)),
+    done: (taskId, done) => run(() => api(`/api/tasks/${taskId}`, { done })),
+    share: (taskId) => run(() => api(`/api/tasks/${taskId}/share`, {})),
+  };
+}
+
 /** Changing who is in a space directly, then showing its members as they are now. */
 function memberActions(spaceId: string): MemberActions {
   const fresh = () => Promise.all([reload(`/api/spaces/${spaceId}`), reload('/api/spaces')]);
@@ -211,6 +230,7 @@ function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
   const rules = rulesLoad.data?.rules;
   const skills = skillsLoad.data?.skills;
   const overview = useLoad<OverviewData>(view === 'overview' ? `/api/spaces/${id}/overview` : '');
+  const tasks = useLoad<TasksData>(view === 'tasks' ? `/api/spaces/${id}/tasks` : '');
   const pages = useList<PagesData>(view === 'pages' ? `/api/spaces/${id}/pages` : undefined);
   const collections = useList<PagesData>(view === 'collections' ? `/api/spaces/${id}/pages` : undefined, { collections: '1' });
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
@@ -230,6 +250,8 @@ function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
           {view === 'members' && !space.private && <Members space={space} actions={memberActions(id)} />}
+          {view === 'tasks' && failed(tasks.error) && <LoadFailed paths={[`/api/spaces/${id}/tasks`]} />}
+          {view === 'tasks' && tasks.data && <Tasks space={space} data={tasks.data} actions={taskActions(id)} />}
           {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} />}
         </Space>
       )}

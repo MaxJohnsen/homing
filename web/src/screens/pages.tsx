@@ -249,7 +249,7 @@ function NewPageForm({ space, types, create, onCancel }: { space: SpaceData; typ
         <Input id="new-page-type" list="new-page-types" className="h-11 text-base sm:max-w-xs" value={type} onChange={(event) => setType(event.target.value)} placeholder="person, meeting, decision" disabled={busy} />
         <datalist id="new-page-types">{types.map((option) => <option key={option} value={option} />)}</datalist>
       </div>
-      {!space.private && <AudienceChoice space={space.name} people={space.members.length} above={space.reachedFromAbove} value={audience} onChange={setAudience} disabled={busy} />}
+      {!space.private && <AudienceChoice space={space.name} people={space.members.length} above={space.reachedFromAbove} value={audience} onChange={setAudience} disabled={busy} surface="muted" />}
       {problem && <FieldError>{problem.message}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onCancel}>Cancel</Button>
