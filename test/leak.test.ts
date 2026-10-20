@@ -467,6 +467,9 @@ describe('through the app’s endpoints', () => {
       }
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
+      // What changed shows only the intruder's own.
+      const recent = (await get('/api/changes')).body.changes as { space: { id: string | null } }[];
+      assert.ok(recent.every((change) => change.space.id === intruder.space || change.space.id === intruder.personalSpaceId));
       // Searching for anything of the other client's finds nothing.
       for (const query of ['launch', 'salary', 'raise', 'diary', 'plan', target.name, `${target.name.toLowerCase()}-report`, 'prices']) {
         const found = (await get(`/api/search?q=${encodeURIComponent(query)}`)).body;
@@ -568,6 +571,8 @@ describe('through the app’s endpoints', () => {
     const collections = await get(`/api/spaces/${ana.space}/pages?collections=1`);
     assert.deepEqual(collections.pages.map((page: { gathers: number }) => page.gathers), [1]);
     assert.equal((await get(`/api/pages/${ana.pages.collection}`)).gathers, 1);
+    // What changed shows Cara Ana's shared launch, and nothing she keeps to herself.
+    await get('/api/changes');
     // Search finds Ana's shared launch for Cara, and nothing she keeps to herself.
     for (const query of ['launch', 'salary', 'raise', 'worries', 'fears', 'diary']) await get(`/api/search?q=${query}`);
     const shared = await get(`/api/pages/${ana.pages.shared}`);

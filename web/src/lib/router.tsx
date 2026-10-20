@@ -4,6 +4,7 @@ import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from
 export type Route =
   | { name: 'home' }
   | { name: 'search' }
+  | { name: 'changes' }
   | { name: 'waiting' }
   | { name: 'account' }
   | { name: 'admin' }
@@ -20,6 +21,7 @@ const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/$/, () => ({ name: 'home' })],
   [/^\/search$/, () => ({ name: 'search' })],
+  [/^\/changes$/, () => ({ name: 'changes' })],
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
   [/^\/admin$/, () => ({ name: 'admin' })],
@@ -44,6 +46,7 @@ export function addressOf(route: Route): string {
   switch (route.name) {
     case 'home': return '/';
     case 'search': return '/search';
+    case 'changes': return '/changes';
     case 'waiting': return '/waiting';
     case 'account': return '/account';
     case 'admin': return '/admin';

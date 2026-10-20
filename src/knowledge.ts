@@ -446,6 +446,58 @@ export async function linksOf(s: Session, pageId: string) {
   return { collections, mentionedOn };
 }
 
+/** A change to knowledge, as the viewer sees it, for what changed lately. */
+export interface Change {
+  itemId: string;
+  pageId: string;
+  spaceId: string;
+  /** The page's title, as the viewer sees it. */
+  title: string;
+  text: string;
+  /** Added, replacing what was true, or corrected where it stood. */
+  kind: 'added' | 'updated' | 'corrected';
+  /** The first thing on its page, which makes it a new page. */
+  newPage: boolean;
+  writtenBy: string | null;
+  agent: string | null;
+  at: Date;
+  onlyYou: boolean;
+}
+
+/**
+ * What changed lately in everything the viewer can see, newest first: knowledge added, updated or
+ * corrected, never rules, skills or what's no longer true. Says whether there's more after these.
+ */
+export async function recentChanges(s: Session, options: { offset?: number; limit?: number } = {}): Promise<{ changes: Change[]; more: boolean }> {
+  const offset = Math.max(0, options.offset ?? 0);
+  const limit = options.limit ?? 50;
+  // The newest items first, then only those still current: checked per item, behind the fence,
+  // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
+  const rows = await s.tx<(Change & { total: number })[]>`
+    select item_id, page_id, space_id, title, text, kind, new_page, written_by, agent, at, only_you from (
+      select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
+             -- Corrected means it has an earlier version; its timestamps alone can differ by a moment when it's written.
+             case when c.supersedes is not null then 'updated'
+                  when exists (select from revisions r where r.content_id = c.id and ${visible(s, 'r')}) then 'corrected'
+                  else 'added' end as kind,
+             c.supersedes is null and not exists (
+               select from content o where o.page_id = c.page_id and o.kind = 'text' and o.created_at < c.created_at and ${visible(s, 'o')}
+             ) as new_page,
+             c.written_by, c.agent, c.updated_at as at, c.private_to is not null as only_you,
+             ${current(s, 'c')} as is_current
+      from content c
+      where c.kind = 'text' and ${visible(s, 'c')}
+      order by c.updated_at desc
+      limit ${offset + limit * 2 + 50}
+      offset 0
+    ) recent
+    where is_current
+    order by at desc
+    limit ${limit + 1} offset ${offset}
+  `;
+  return { changes: rows.slice(0, limit), more: rows.length > limit };
+}
+
 /** A source in a list, as the viewer sees it. */
 export interface SourceSummary {
   id: string;
