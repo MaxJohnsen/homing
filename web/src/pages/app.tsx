@@ -5,7 +5,7 @@ import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 import type { ChangeData, NewPage, OverviewData, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData, WriteOverview } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
-import type { RequestData, WaitingData } from '@/lib/proposals';
+import type { PublicationData, RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
 import { navigate, routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
 import type { SearchData, SearchKind } from '@/lib/search';
@@ -366,6 +366,15 @@ function pageActions(page: PageData, gatheredPath: string): PageActions {
         return [];
       }
     },
+    publication: async (itemId) => {
+      try {
+        return await api<PublicationData>(`/api/items/${itemId}/publication`);
+      } catch {
+        return undefined;
+      }
+    },
+    // Shared directly, as the person: what they were shown, and the page as it is now.
+    publish: (itemId, shown) => run(() => api(`/api/items/${itemId}/publish`, { shown })),
   };
 }
 

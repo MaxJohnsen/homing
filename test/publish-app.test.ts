@@ -168,3 +168,35 @@ test('a chain of private updates is shared as one, replacing for everyone what i
   assert.equal((await pageAs(ana, page)).items.length, 1);
   assert.ok(shared);
 });
+
+test('in the app, Ana shares her own items straight from the page, after seeing what it would do', async () => {
+  const { page, shared, update, email } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Budget', shared: true });
+    const shared = (await writeItem(s, { pageId: page, body: 'The budget is 400,000.', shared: true })).id;
+    const update = (await supersedeItem(s, shared, { body: 'The budget is 450,000.' }))!.id;
+    const source = await addSource(s, { spaceId: acme, reference: 'Email from finance', excerpt: 'Approved: 30,000 more for travel.' });
+    const email = (await writeItem(s, { pageId: page, body: 'Travel has 30,000 more.', sources: [source.id] })).id;
+    return { page, shared, update, email };
+  });
+  // Her newer version says what the others still see.
+  const before = (await ana.browser.json(`/api/pages/${page}`)).body.items as PageItem[];
+  assert.ok(before.some((entry) => entry.id === update));
+
+  const what = await ana.browser.json(`/api/items/${update}/publication`);
+  assert.deepEqual([what.status, what.body.text, what.body.copy, what.body.sharesTitle], [200, 'The budget is 450,000.', false, false]);
+  assert.equal((await cara.browser.json(`/api/items/${update}/publication`)).status, 404);
+  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, {})).status, 400);
+  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: 'Something else' })).status, 409);
+  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: 'The budget is 450,000.' })).status, 200);
+  assert.deepEqual((await pageAs(cara, page)).items.map((entry) => entry.text), ['The budget is 450,000.']);
+  assert.ok(shared);
+
+  // Once shared, a newer version of her own says what everyone sees, until she shares that too.
+  await ana.browser.json(`/api/items/${email}/publish`, { shown: 'Travel has 30,000 more.' });
+  await as({ person: ana.id, agent: 'Claude' }, (s) => updateItem(s, email, { body: 'Travel has 35,000 more.' }));
+  const mine = ((await ana.browser.json(`/api/pages/${page}`)).body.items as (PageItem & { sharedAs: string | null })[]).find((entry) => entry.id === email);
+  assert.equal(mine?.sharedAs, 'Travel has 30,000 more.');
+  assert.equal((await ana.browser.json(`/api/items/${email}/publish`, { shown: 'Travel has 35,000 more.' })).status, 200);
+  assert.ok((await pageAs(cara, page)).items.some((entry) => entry.text === 'Travel has 35,000 more.'));
+  assert.equal((await ana.browser.json(`/api/items/${(await as(ana, (s) => createPage(s, { spaceId: ana.personalSpaceId, title: 'Mine' })))}/publication`)).status, 404);
+});

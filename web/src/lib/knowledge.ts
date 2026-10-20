@@ -1,3 +1,5 @@
+import type { PublicationData } from '@/lib/proposals';
+
 /** A page in a space's list of pages, as the person sees it. */
 export interface PageSummary {
   id: string;
@@ -41,6 +43,8 @@ export interface ItemData {
   /** Who shared it with the space from their own private side, and when, if someone did. */
   sharedBy?: Author;
   sharedAt?: string | null;
+  /** Your own version of something you shared before, while what everyone sees differs: what they see. */
+  sharedAs?: string | null;
   /** Its sources as you see them. Your own aren't shared, such as those behind something you shared. */
   sources: { id: string; reference: string | null; excerpt: string; shared?: boolean }[];
   /** What it replaced. When it's your private update to something shared, the others still see that. */
@@ -80,6 +84,9 @@ export interface PageActions {
   leave: (collectionId: string, shared: boolean) => Promise<string | undefined>;
   /** Finds pages in the page's space by what they say, or only collections. */
   find: (query: string, collections?: boolean) => Promise<PageSummary[]>;
+  /** What sharing one of your items with the space would do, and sharing it, exactly as shown. */
+  publication: (itemId: string) => Promise<PublicationData | undefined>;
+  publish: (itemId: string, shown: string) => Promise<string | undefined>;
 }
 
 /** Starting a page. Answers with the new page, or what went wrong. */

@@ -596,6 +596,23 @@ export async function decide(
   return readProposal(s, proposalId, decision.findAccount);
 }
 
+/** What sharing an item would do, as the decision page, the card and the page itself show it. */
+export function publicationData(publication: Publication, audience: { people: number; above: boolean } | null, why: string | null = null) {
+  return {
+    text: publication.item.body,
+    page: publication.pageTitle,
+    pageId: publication.item.pageId,
+    hidden: publication.hidden.map((source) => (source.space ? { space: source.space, reference: null } : { space: null, reference: source.reference ?? source.excerpt.slice(0, 80) })),
+    hiddenUnseen: publication.hiddenUnseen,
+    copy: publication.copy,
+    sharesTitle: publication.sharesTitle,
+    sharedText: publication.sharedText,
+    current: publication.current,
+    why,
+    audience,
+  };
+}
+
 /** An action as the app names it. */
 export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish' } as const;
 
@@ -650,21 +667,7 @@ export function proposalData(proposal: ProposalView) {
     // A change of members: who, and what changes.
     member: proposal.member,
     // Sharing an item: what it says, on which page, what of it others won't see, and who will see it.
-    publication: proposal.publication
-      ? {
-          text: proposal.publication.item.body,
-          page: proposal.publication.pageTitle,
-          pageId: proposal.publication.item.pageId,
-          hidden: proposal.publication.hidden.map((source) => (source.space ? { space: source.space, reference: null } : { space: null, reference: source.reference ?? source.excerpt.slice(0, 80) })),
-          hiddenUnseen: proposal.publication.hiddenUnseen,
-          copy: proposal.publication.copy,
-          sharesTitle: proposal.publication.sharesTitle,
-          sharedText: proposal.publication.sharedText,
-          current: proposal.publication.current,
-          why: proposal.reason,
-          audience: proposal.audience,
-        }
-      : null,
+    publication: proposal.publication ? publicationData(proposal.publication, proposal.audience, proposal.reason) : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,

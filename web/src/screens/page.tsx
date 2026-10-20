@@ -1,8 +1,9 @@
-import { useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
 import { Markdown } from '@/components/markdown';
+import { SharingDetails } from '@/components/proposal';
 import { OnlyYou } from '@/components/only-you';
 import { ago, capitalize, dateOf, focusRing, ScreenHeader } from '@/components/screen';
 import { Button } from '@/components/ui/button';
@@ -10,6 +11,7 @@ import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { nameOf, plain, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
+import type { PublicationData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import { AboutPage, CollectionPages } from '@/screens/collection';
 
@@ -99,7 +101,10 @@ function About({ page, now }: { page: PageData; now?: Date }) {
 function Item({ item, page, marked, actions }: { item: ItemData; page: PageData; marked: boolean; actions?: PageActions }) {
   const [open, setOpen] = useState(false);
   const [correcting, setCorrecting] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const onlyYou = marked && !item.shared && !page.space.private;
+  // Your own item in a space with a shared side can be shared with everyone there.
+  const shareable = Boolean(actions) && !item.shared && !page.space.private;
   // Your private update to something shared: you see yours, everyone else still sees what it replaced.
   const yourUpdate = !item.shared && item.replaced?.shared === true;
 
@@ -108,6 +113,14 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
     if ((event.target as HTMLElement).closest('a, button, input') || window.getSelection()?.toString()) return;
     setOpen(!open);
   };
+
+  if (sharing && actions) {
+    return (
+      <div className="-mx-2 flex flex-col gap-3 rounded-xl bg-card px-2 py-3 sm:-mx-4 sm:px-4">
+        <ShareItem item={item} page={page} actions={actions} onDone={() => setSharing(false)} />
+      </div>
+    );
+  }
 
   if (correcting && actions) {
     return (
@@ -139,12 +152,15 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
           <ChevronDown className={cn('transition-transform', open && 'rotate-180')} />
         </Button>
       </div>
-      {yourUpdate && (
-        <p className="rounded-lg bg-card px-4 py-3 text-base">
-          <span className="font-semibold">Your version is newer.</span> Others in {page.space.name} still see “{plain(item.replaced!.text)}”
-        </p>
+      {(yourUpdate || item.sharedAs) && (
+        <div className="flex flex-col items-start gap-3 rounded-lg bg-card px-4 py-3">
+          <p className="text-base">
+            <span className="font-semibold">Your version is newer.</span> Others in {page.space.name} still see “{plain(item.sharedAs ?? item.replaced!.text)}”
+          </p>
+          {shareable && <Button variant="outline" size="sm" onClick={() => setSharing(true)}>Share yours with {page.space.name}</Button>}
+        </div>
       )}
-      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} />}
+      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} onShare={shareable && !yourUpdate && !item.sharedAs ? () => setSharing(true) : undefined} space={page.space.name} />}
     </div>
   );
 }
@@ -156,7 +172,7 @@ function wrote(by: Author, agent: string | null): string {
 }
 
 /** Who wrote it and when, its sources, and what it said before: small, under the item it's about. */
-function Details({ item, yourUpdate, onCorrect }: { item: ItemData; yourUpdate: boolean; onCorrect?: () => void }) {
+function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemData; yourUpdate: boolean; onCorrect?: () => void; onShare?: () => void; space: string }) {
   const byPerson = item.by !== null && item.agent === null;
   // What it said before, newest first: its own earlier wording, then what it replaced.
   const earlier = [
@@ -187,12 +203,53 @@ function Details({ item, yourUpdate, onCorrect }: { item: ItemData; yourUpdate: 
           Until {dateOf(entry.until)}, it said <span className="text-foreground">“{plain(entry.text)}”</span>
         </p>
       ))}
-      {onCorrect && (
-        <div>
-          <Button variant="outline" size="sm" onClick={onCorrect}>Correct it</Button>
+      {(onCorrect || onShare) && (
+        <div className="flex flex-wrap gap-2">
+          {onCorrect && <Button variant="outline" size="sm" onClick={onCorrect}>Correct it</Button>}
+          {onShare && <Button variant="outline" size="sm" onClick={onShare}>Share with {space}</Button>}
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * Sharing one of your items with everyone in the space, in place: exactly what they'd see, how many
+ * people that is, and what it rests on that they won't, before you decide.
+ */
+function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: PageData; actions: PageActions; onDone: () => void }) {
+  const [publication, setPublication] = useState<PublicationData | null>();
+  const [problem, setProblem] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    actions.publication(item.id).then((found) => live && setPublication(found ?? null));
+    return () => {
+      live = false;
+    };
+  }, [actions, item.id]);
+
+  const share = async () => {
+    if (!publication) return;
+    setBusy(true);
+    const answer = await actions.publish(item.id, publication.text);
+    setBusy(false);
+    if (answer) setProblem(answer);
+    else onDone();
+  };
+
+  return (
+    <section aria-label={`Share with ${page.space.name}`} className="flex flex-col gap-4">
+      <h3 className="text-base font-semibold">Share this with {page.space.name}?</h3>
+      {publication === undefined && <p className="text-sm text-muted-foreground">Getting what would be shared…</p>}
+      {publication === null && <p className="text-base">There’s nothing of yours here to share any more.</p>}
+      {publication && <SharingDetails place={page.space.name} publication={publication} />}
+      {problem && <FieldError>{problem}</FieldError>}
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onDone} autoFocus>Don’t share</Button>
+        {publication && <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={share}>Share with {page.space.name}</Button>}
+      </div>
+    </section>
   );
 }
 

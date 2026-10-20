@@ -2,8 +2,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
-import { requestsSent, shortAction, waitingFor } from './proposals.ts';
+import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
+import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
@@ -230,6 +230,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             // Who shared it from their own private side, and when.
             sharedBy: item.publishedBy && item.privateTo === null ? by(item.publishedBy) : null,
             sharedAt: item.privateTo === null ? item.publishedAt : null,
+            // Your own version of something you shared before, while what everyone sees is different.
+            sharedAs: item.sharedAs !== item.body ? item.sharedAs : null,
             sources: item.sources,
             // What it replaced, and so what others see when it's your private update to something shared.
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
@@ -454,6 +456,27 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'publication': {
+        // What sharing one of your own items would do, before you share it.
+        const found = await read(async (s) => {
+          const publication = await publicationOf(s, route.id);
+          const space = publication && (await spaceView(s, publication.item.spaceId));
+          return publication && space && !space.privateTo ? publicationData(publication, { people: space.members.length, above: space.reachedFromAbove }) : undefined;
+        });
+        if (!found) return answer(res, 404, noItem);
+        json(res, 200, found);
+        break;
+      }
+
+      case 'publish item': {
+        const body = await readJson(req);
+        if (typeof body.shown !== 'string') return answer(res, 400, { message: 'Share what you were shown.' });
+        const shared = await write((s) => publishItem(s, route.id, body.shown as string));
+        if (!shared) return answer(res, 409, { message: 'This changed while you were reading. The page now shows it as it is.' });
+        json(res, 200, { id: shared });
+        break;
+      }
+
       case 'correct item': {
         const body = await readJson(req);
         const text = typeof body.text === 'string' ? body.text.trim() : '';
@@ -616,7 +639,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'add member' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'add member' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -631,6 +654,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],
       ['page', `/api/pages/${uuid}`],
+      ['publication', `/api/items/${uuid}/publication`],
       ['sources', `/api/spaces/${uuid}/sources`],
       ['overview', `/api/spaces/${uuid}/overview`],
       ['source', `/api/sources/${uuid}`],
@@ -655,6 +679,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['gather', `/api/pages/${uuid}/gather`],
       ['ungather', `/api/pages/${uuid}/gather/remove`],
       ['correct item', `/api/items/${uuid}`],
+      ['publish item', `/api/items/${uuid}/publish`],
       ['add rule', `/api/spaces/${uuid}/rules`],
       ['edit rule', `/api/rules/${uuid}`],
       ['remove rule', `/api/rules/${uuid}/remove`],

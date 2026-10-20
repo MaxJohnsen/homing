@@ -49,8 +49,11 @@ export interface Page {
   shared: boolean;
   /** When anything the viewer sees on it last changed. */
   updatedAt: Date;
-  /** The current items, each with its sources and the earlier item it replaced, if any. */
-  items: (Item & { sources: Citation[]; replaced: Replaced | null })[];
+  /**
+   * The current items, each with its sources and the earlier item it replaced, if any. Your own
+   * private items also say what everyone sees from your earlier share of them, if anything.
+   */
+  items: (Item & { sources: Citation[]; replaced: Replaced | null; sharedAs: string | null })[];
 }
 
 /** What an item replaced. When a private item replaced a shared one, others still see that one. */
@@ -203,7 +206,9 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
       select c.id, chain.first from content c join chain on c.supersedes = chain.id
       where c.page_id = ${pageId}::uuid and ${visibleContent(s, 'c')}
     )
-    select ${itemColumns(s, 'content')}, ${citationsOf(s, true)} as sources, (
+    select ${itemColumns(s, 'content')}, ${citationsOf(s, true)} as sources,
+           case when content.private_to is not null and content.kind = 'text'
+                then (select shared.body from content shared where shared.id = shared_copy(content.id)) end as shared_as, (
       -- Whoever can see a replacement can see what it replaced. For your own update to something
       -- shared, however many times you updated it since, that's what the others still see.
       select json_build_object('id', r.id, 'body', r.body, 'shared', r.private_to is null)
@@ -300,10 +305,12 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
  */
 export async function publishItem(s: Session, itemId: string, shown: string): Promise<string | undefined> {
   try {
-    const [{ id }] = await s.tx<{ id: string }[]>`select publish_item(${itemId}::uuid, ${shown}) as id`;
+    // In a savepoint, so a refusal leaves the rest of the transaction usable.
+    const [{ id }] = await s.tx.savepoint((sp) => sp<{ id: string }[]>`select publish_item(${itemId}::uuid, ${shown}) as id`);
     return id;
   } catch (error) {
-    if (error instanceof Error && error.message === 'it changed since it was shown') return undefined;
+    // Changed or replaced since it was shown: it's shown again as it is now.
+    if (error instanceof Error && ['it changed since it was shown', 'that item has been replaced since'].includes(error.message)) return undefined;
     throw error;
   }
 }
