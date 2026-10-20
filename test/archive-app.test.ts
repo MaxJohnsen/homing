@@ -7,7 +7,7 @@ import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
 import { createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
-import { addMember, createSpace } from '../src/spaces.ts';
+import { addMember, changeMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { as, db, member, refused, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
@@ -76,7 +76,8 @@ test('an admin archives a space, and it and the spaces in it leave everyday cont
 
 test('only people archive, and a personal space stays open', async () => {
   assert.equal((await archive(ana, ana.personalSpaceId)).status, 403);
-  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select archive_space(${globex}::uuid, true)`), refused);
+  // An assistant only for a space nobody else can open; Cara has Acme.
+  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select archive_space(${acme}::uuid, true)`), refused);
   await assert.rejects(as(ana, (s) => s.tx`select archive_space(${globex}::uuid, true)`), refused, 'not without acting directly');
   // Archiving straight against the table isn't possible either.
   const changed = await as({ ...ana, direct: true }, (s) => s.tx`update spaces set archived_at = now() where id = ${globex}::uuid returning id`).catch((error) => error);
@@ -115,7 +116,9 @@ test('archiving shows only through spaces you can open, and nothing new goes in 
 
 test('an assistant suggests archiving a finished space, rarely, and the user archives it by approving', async () => {
   const [done, spring, autumn] = await as({ ...ana, direct: true }, async (s) => {
+    // Cara has it too, so even asked for, archiving it waits for Ana.
     const done = await createSpace(s, { name: 'Summer campaign' });
+    await addMember(s, done, cara.id);
     await createSpace(s, { name: 'Ads', parentId: done });
     return [done, await createSpace(s, { name: 'Spring fair' }), await createSpace(s, { name: 'Autumn fair' })];
   });
@@ -170,4 +173,66 @@ test('an assistant suggests archiving a finished space, rarely, and the user arc
   assert.match((await act({ space: `space:${theirs}`, asked: true })).text, /Only Cara’s club’s admins archive it/);
   assert.match((await act({ space: `space:${ana.personalSpaceId}` })).text, /personal space stays open/);
   assert.match((await act({ space: `space:${done}`, asked: true })).text, /archived already/);
+});
+
+test('a space only the user has is archived and reopened as soon as they ask, and one others have waits', async () => {
+  const reading = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Reading list', parentId: ana.personalSpaceId }));
+  const act = (input: Record<string, unknown>) => claude.call('act', { action: 'space.archive', input });
+
+  assert.match((await act({ space: `space:${reading}`, asked: true })).text, /^Archived Reading list .+out of everyday context/);
+  assert.ok((await spacesAs(ana)).find((space) => space.id === reading)?.archived);
+  assert.match((await act({ space: `space:${reading}`, reopen: true })).text, /^Reopened Reading list/);
+  assert.ok(!(await spacesAs(ana)).find((space) => space.id === reading)?.archived);
+  const recorded = await as(ana, (s) => s.tx<{ archived: boolean; agent: string }[]>`select archived, agent from space_archives where space_id = ${reading}::uuid order by at`);
+  assert.deepEqual(recorded.map((row) => [row.archived, row.agent]), [[true, 'Claude'], [false, 'Claude']]);
+
+  // Cara has Acme, so even asked for, it waits for Ana, and only she reopens it.
+  const waiting = await act({ space: `space:${acme}`, asked: true });
+  assert.match(waiting.text, /Waiting for the user's approval/);
+  const proposal = /proposal:([0-9a-f-]{36})/.exec(waiting.text)![1];
+  assert.equal((await ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: false })).status, 200);
+  assert.match((await act({ space: `space:${acme}`, reopen: true })).text, /Others can open Acme, so the user reopens it in Homing/);
+});
+
+test('each person sees archiving only through the spaces they can open', async () => {
+  const [erik, dave2] = [await member(homing.url, 'Erik'), await member(homing.url, 'Dave')];
+  const [client, portal, board] = await as({ ...ana, direct: true }, async (s) => {
+    const client = await createSpace(s, { name: 'Client' });
+    await addMember(s, client, cara.id);
+    const portal = await createSpace(s, { name: 'Portal', parentId: client });
+    await addMember(s, portal, erik.id);
+    const board = await createSpace(s, { name: 'Board', parentId: client, closed: true });
+    await addMember(s, board, dave2.id);
+    await changeMember(s, board, dave2.id, 'make admin');
+    return [client, portal, board];
+  });
+  const ours = new Set([client, portal, board]);
+  const archivedFor = async (who: Member) => (await spacesAs(who)).filter((space) => ours.has(space.id) && space.archived).map((space) => space.name).sort();
+
+  assert.equal((await archive(ana, client)).status, 200);
+  // Ana and Cara can open Client, so what's in it is archived with it for them; Board only for
+  // Ana, who's in it. Erik is in Portal and Dave in Board, without Client: for them nothing changed.
+  assert.deepEqual(await archivedFor(ana), ['Board', 'Client', 'Portal']);
+  assert.deepEqual(await archivedFor(cara), ['Client', 'Portal']);
+  assert.deepEqual(await archivedFor(erik), []);
+  assert.deepEqual(await archivedFor(dave2), []);
+  for (const [who, space] of [[erik, portal], [dave2, board]] as const) {
+    const seen = (await who.browser.json(`/api/spaces/${space}`)).body;
+    assert.equal(seen.archive, null);
+    assert.doesNotMatch(JSON.stringify(seen), /Client/);
+  }
+
+  // Board's own admin archives it on his own; Ana sees it archived itself, and it stays archived
+  // when Client reopens. Reopening Board while Client is archived leaves it archived with Client.
+  assert.equal((await archive(dave2, board)).status, 200);
+  assert.equal((await ana.browser.json(`/api/spaces/${board}`)).body.archive.with, null);
+  assert.equal((await archive(ana, client, false)).status, 200);
+  assert.deepEqual(await archivedFor(ana), ['Board']);
+  assert.equal((await archive(ana, client)).status, 200);
+  assert.equal((await archive(dave2, board, false)).status, 200);
+  assert.deepEqual((await ana.browser.json(`/api/spaces/${board}`)).body.archive.with, { id: client, name: 'Client' });
+  assert.deepEqual(await archivedFor(dave2), []);
+  // Only Client's admins reopen what's archived with it.
+  assert.equal((await archive(cara, client, false)).status, 403);
+  assert.equal((await archive(ana, client, false)).status, 200);
 });
