@@ -1,5 +1,6 @@
 import type { AccountData } from '@/screens/account';
 import type { PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
+import type { SearchData } from '@/lib/search';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
@@ -334,4 +335,16 @@ export const sampleGathered: PagesData = {
     { id: '7d1c2a40-0000-4000-8000-000000000003', type: null, title: 'Pricing thoughts before the renewal', excerpt: 'They will push for a lower day rate.', updatedAt: daysAgo(1), onlyYou: true, gathers: 0, gatheredShared: false },
     { id: '7d1c2a40-0000-4000-8000-000000000005', type: 'meeting', title: 'Steering group, October 9', excerpt: '- Design is signed off\n- Content is late', updatedAt: daysAgo(11), onlyYou: false, gathers: 0, gatheredShared: true },
   ],
+};
+
+/** What a search for "launch" finds for Ana. */
+export const sampleSearch: SearchData = {
+  spaces: [{ id: 'website', name: 'Website', within: 'Acme' }],
+  pages: [
+    { id: samplePage.id, title: 'Website relaunch', type: 'project', text: 'The launch is planned for **November 20**.', onlyYou: true, superseded: false, updatesShared: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+    { id: '7d1c2a40-0000-4000-8000-000000000004', title: 'Launch moved to November 14', type: 'decision', text: null, onlyYou: false, superseded: false, updatesShared: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+  ],
+  rules: [{ id: 'rule-1', text: 'Never announce a launch date before the client does.', kind: 'requirement', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
+  skills: [{ id: 'skill-1', name: 'launch-checklist', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
+  sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'New launch date November 20, but he hasn’t told his team yet.', onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } }],
 };

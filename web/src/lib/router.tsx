@@ -3,6 +3,7 @@ import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from
 /** A screen inside the app. Each has an address of its own, so links from assistants and the back button work. */
 export type Route =
   | { name: 'home' }
+  | { name: 'search' }
   | { name: 'waiting' }
   | { name: 'account' }
   | { name: 'admin' }
@@ -18,6 +19,7 @@ export type SpaceView = 'pages' | 'collections' | 'sources' | 'rules' | 'skills'
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/$/, () => ({ name: 'home' })],
+  [/^\/search$/, () => ({ name: 'search' })],
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
   [/^\/admin$/, () => ({ name: 'admin' })],
@@ -41,6 +43,7 @@ export function routeOf(path: string): Route | undefined {
 export function addressOf(route: Route): string {
   switch (route.name) {
     case 'home': return '/';
+    case 'search': return '/search';
     case 'waiting': return '/waiting';
     case 'account': return '/account';
     case 'admin': return '/admin';

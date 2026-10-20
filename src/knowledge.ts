@@ -76,6 +76,8 @@ export interface Hit {
   superseded: boolean;
   /** A private item that replaced a shared one, which others still see. */
   updatesShared: boolean;
+  /** What the matching content is: a title, knowledge, a rule or a skill's file. Null for a source. */
+  itemKind: string | null;
 }
 
 /** Keeps where knowledge came from, without giving it a page yet. The same source is kept once. */
@@ -546,7 +548,7 @@ function termsOf(query: string): string | undefined {
 export async function search(
   s: Session,
   query: string,
-  options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean } = {},
+  options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources' } = {},
 ): Promise<Hit[]> {
   const terms = termsOf(query);
   if (!terms) return [];
@@ -557,29 +559,32 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, updates_shared from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, updates_shared, item_kind from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
-             c.space_id, c.page_id, p.type as page_type, ${titleOf(s, s.tx`c.page_id`)} as title,
+             c.space_id, c.page_id, (select p.type from pages p where p.id = c.page_id) as page_type, ${titleOf(s, s.tx`c.page_id`)} as title,
              case c.kind when 'file' then ${titleOf(s, s.tx`c.page_id`)} else c.body end as text,
              c.private_to is not null as private, not ${current(s, 'c')} as superseded,
              c.private_to is not null and c.supersedes is not null and exists (
                select from content r where r.id = first_of(c.id) and r.private_to is null and ${visible(s, 'r')}
              ) as updates_shared,
-             ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank
+             ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind
+      -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
-      join pages p on p.id = c.page_id
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${within('c')}
-        and ${options.knowledge ? knowledge(s, 'p') : s.tx`true`}
-        and (c.kind <> 'file' or ${current(s, 'c')})
+        and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1)
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null
       from sources src
-      where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')}
+      where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
+      -- Keeps the filters below out of this query, where they'd be run over every item first.
+      offset 0
     ) hits
-    where not (${options.current ?? false} and superseded)
+    -- A skill's file that's no longer current doesn't find it. Only knowledge leaves out rules and skills.
+    where not (${options.current ?? false} and superseded) and not (item_kind = 'file' and superseded)
+      and not (${options.knowledge ?? false} and coalesce(page_type, '') in ('guidance', 'skill'))
     order by kind, id, superseded, rank desc
     ) best
     order by superseded, rank desc

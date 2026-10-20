@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, gather, historyOf, linksOf, pagesIn, readItem, readPage, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, type PageOrder } from './knowledge.ts';
+import { createPage, gather, historyOf, linksOf, pagesIn, readItem, readPage, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, peopleNames, spaceView } from './spaces.ts';
@@ -13,7 +13,7 @@ const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
 /**
- * The endpoints of the app's own screens: spaces, what's waiting, knowledge, guidance, and looking after Homing. Each answers only
+ * The endpoints of the app's own screens: spaces, what's waiting, knowledge, search, guidance, and looking after Homing. Each answers only
  * with what the signed-in person can open, and the database checks the same underneath. Returns
  * whether it answered.
  */
@@ -251,6 +251,61 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'search': {
+        const query = (new URL(req.url ?? '', 'http://homing').searchParams.get('q') ?? '').slice(0, 200).trim();
+        const { spaces, hits } = await read(async (s) => ({
+          spaces: await listSpaces(s),
+          // The same search assistants get, as many results as a person would look through, of each kind.
+          hits: query ? [...(await search(s, query, { limit: 200, only: 'content' })), ...(await search(s, query, { limit: 200, only: 'sources' }))] : [],
+        }));
+        const byId = new Map(spaces.map((space) => [space.id, space]));
+        // Where something is: "your personal space", "Website in Acme", or unnamed when it's a space above the person can't open.
+        const where = (spaceId: string) => {
+          const space = byId.get(spaceId);
+          if (!space) return { id: null, name: null, within: null };
+          const above = space.parentId ? byId.get(space.parentId) : undefined;
+          const personal = (candidate: typeof space) => candidate.privateTo !== null && candidate.parentId === null;
+          return {
+            id: space.id,
+            name: personal(space) ? 'your personal space' : space.name,
+            within: above ? (personal(above) ? 'your personal space' : above.name) : null,
+            private: space.privateTo !== null,
+          };
+        };
+        const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+        const pages = new Map<string, unknown>();
+        for (const hit of hits) {
+          if (!hit.pageId || hit.pageType === 'guidance' || hit.pageType === 'skill' || pages.has(hit.pageId)) continue;
+          // One row per page, with the best match on it.
+          pages.set(hit.pageId, {
+            id: hit.pageId,
+            title: hit.title ?? 'Untitled',
+            type: hit.pageType,
+            text: hit.kind === 'item' ? hit.text : null,
+            onlyYou: hit.private,
+            superseded: hit.superseded,
+            updatesShared: hit.updatesShared,
+            space: where(hit.spaceId),
+          });
+        }
+        json(res, 200, {
+          spaces: words.length
+            ? spaces.filter((space) => words.every((word) => space.name.toLowerCase().includes(word))).slice(0, 50).map((space) => ({ ...where(space.id), id: space.id }))
+            : [],
+          pages: [...pages.values()],
+          rules: hits
+            .filter((hit) => hit.pageType === 'guidance' && (hit.itemKind === 'requirement' || hit.itemKind === 'preference'))
+            .map((hit) => ({ id: hit.id, text: hit.text, kind: hit.itemKind, onlyYou: hit.private, space: where(hit.spaceId) })),
+          skills: hits
+            .filter((hit) => hit.pageType === 'skill' && hit.pageId)
+            .map((hit) => ({ id: hit.pageId, name: hit.title, onlyYou: hit.private, space: where(hit.spaceId) })),
+          sources: hits
+            .filter((hit) => hit.kind === 'source')
+            .map((hit) => ({ id: hit.id, reference: hit.title, excerpt: hit.text, onlyYou: hit.private, space: where(hit.spaceId) })),
+        });
+        break;
+      }
+
       case 'add page': {
         const body = await readJson(req);
         const title = typeof body.title === 'string' ? body.title.trim() : '';
@@ -418,7 +473,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' }
   | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
@@ -428,6 +483,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/waiting') return { name: 'waiting' };
     if (path === '/api/admin') return { name: 'admin' };
     if (path === '/api/requests') return { name: 'requests' };
+    if (path === '/api/search') return { name: 'search' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],
