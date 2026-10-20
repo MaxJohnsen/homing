@@ -495,7 +495,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
   if (kind === 'proposal') {
     const proposal = await readProposal(s, id);
     if (!proposal) throw missing;
-    return `${describeProposal(proposal)}\n\n${ref('proposal', proposal.id)} in ${proposal.space.name}. ${outcome(proposal, links)}`;
+    return `${describeProposal(proposal)}\n\n${ref('proposal', proposal.id)} in ${proposal.space.name}. ${outcome(proposal, links, proposal.created)}`;
   }
 
   if (kind === 'page') {
@@ -791,7 +791,7 @@ async function suggestSpaceFor(
       throw new Refused(error.existing ? `${error.message} Use it (${ref('space', error.existing.id)}) instead.` : error.message);
     }
     if (error instanceof NotSuggested) {
-      throw new Refused(`${error.message} (${ref('proposal', error.proposalId)}) Don't suggest another space now. If the user asks for one, create it with space.create.`);
+      throw new Refused(`${error.message} (${ref('proposal', error.proposalId)}) If the user asks for a space, create it with space.create.`);
     }
     throw error;
   }
@@ -834,7 +834,7 @@ async function renameSpaceFor(s: Session, links: Links, input: z.infer<typeof re
 /** "Add a preference: "Write reports in Norwegian"", for an agent. */
 function describeProposal(proposal: Proposal): string {
   const { change } = proposal;
-  if (proposal.action === 'add space') return `Create a space called ${quote(change.name!)}, ${change.who}${change.closed ? ', closed' : ''}`;
+  if (proposal.action === 'add space') return `Create a space called ${quote(change.name!)}, ${change.who === 'just me' ? 'just for the user' : 'with others'}${change.closed ? ', closed' : ''}`;
   const ask = proposal.request ? 'Ask the admins to ' : '';
   if (proposal.action === 'add rule') {
     const where = [change.shared ? 'shared' : 'private', change.onlyHere && 'only here'].filter(Boolean).join(', ');
@@ -845,7 +845,7 @@ function describeProposal(proposal: Proposal): string {
 }
 
 /** Where a proposal stands, for an agent. */
-function outcome(proposal: Proposal, links: Links): string {
+function outcome(proposal: Proposal, links: Links, created?: { id: string; name: string } | null): string {
   const decider = proposal.request ? 'An admin of the space' : 'The user';
   switch (proposal.state) {
     case 'open':
@@ -856,7 +856,9 @@ function outcome(proposal: Proposal, links: Links): string {
       return `Sent to the space's admins on ${day(proposal.requestedAt!)}. Waiting for one of them to decide, until ${day(proposal.expiresAt)}. Nothing has changed yet.`;
     case 'approved':
       if (proposal.action === 'add space') {
-        return `The user created it on ${day(proposal.decidedAt!)}${proposal.spaceCreated ? ` (${ref('space', proposal.spaceCreated)}), possibly with another name or place` : ''}. Call \`context\` with it to work there.`;
+        return created
+          ? `The user created it as ${quote(created.name)} (${ref('space', created.id)}) on ${day(proposal.decidedAt!)}. Call \`context\` with it to work there.`
+          : `The user created it on ${day(proposal.decidedAt!)}.`;
       }
       return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
@@ -866,7 +868,7 @@ function outcome(proposal: Proposal, links: Links): string {
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
     case 'expired':
       return proposal.action === 'add space'
-        ? `Nobody decided it before ${day(proposal.expiresAt)}, so nothing was created. Don't suggest it again unless the user asks.`
+        ? `Nobody decided it before ${day(proposal.expiresAt)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again unless the user asks."}`
         : `Nobody decided it before ${day(proposal.expiresAt)}, so it expired and nothing changed.`;
   }
 }

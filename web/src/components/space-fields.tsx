@@ -1,4 +1,4 @@
-import { useId } from 'react';
+import { useEffect, useId, useRef } from 'react';
 import { cn } from 'cn';
 import { OnlyYou } from '@/components/only-you';
 import { RadioCards } from '@/components/radio-cards';
@@ -20,6 +20,9 @@ export interface Place {
   mine: boolean;
   /** Your personal space itself. */
   personal: boolean;
+  /** For a shared space, when known: how many people have it, and whether people above it you can't open have it too. */
+  people?: number;
+  above?: boolean;
 }
 
 /** A new space as it's being set: its name, who it's for, and where it goes for each. */
@@ -109,6 +112,11 @@ export function SpaceFields({ draft, onChange, places, audience, problem, disabl
   autoFocus?: boolean;
 }) {
   const id = useId();
+  const nameField = useRef<HTMLInputElement>(null);
+  // A problem with the name takes you to it.
+  useEffect(() => {
+    if (problem?.field === 'name') nameField.current?.focus();
+  }, [problem]);
   const mine = places.filter((place) => place.mine);
   const shared = places.filter((place) => !place.mine);
   const set = (change: Partial<SpaceDraft>) => onChange({ ...draft, ...change });
@@ -116,7 +124,9 @@ export function SpaceFields({ draft, onChange, places, audience, problem, disabl
   const others = audience ? audience.people - 1 : 0;
   const everyone = !parent
     ? ''
-    : audience?.above
+    : !audience
+      ? 'Everyone there now, and anyone who joins later.'
+      : audience.above
       ? `${others > 0 ? `${count(others)}, ` : ''}everyone who can open the space above it, and anyone who joins ${parent.name} later.`
       : others > 0
         ? `${count(others)} now, and anyone who joins ${parent.name} later.`
@@ -127,8 +137,9 @@ export function SpaceFields({ draft, onChange, places, audience, problem, disabl
       <div className="flex flex-col gap-2">
         <Label htmlFor={`${id}-name`} className="text-base">Name</Label>
         <Input
+          ref={nameField}
           id={`${id}-name`}
-          className="h-11 text-base"
+          className="h-11 text-base md:text-base"
           value={draft.name}
           onChange={(event) => set({ name: event.target.value })}
           placeholder="Such as a client or a project"

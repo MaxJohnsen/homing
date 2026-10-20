@@ -111,7 +111,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/declined': { label: 'Rule not added', render: () => <SampleConfirm proposal={{ ...proposal, state: 'rejected' }} /> },
   '/confirm/space': { label: 'Confirm a space Claude suggests', render: () => <SampleConfirm proposal={suggestedSpace} /> },
   '/confirm/space/asked': { label: 'Confirm a space you asked for that others would see', render: () => <SampleConfirm proposal={{ ...suggestedSpace, suggestion: { ...suggestedSpace.suggestion!, name: 'Intranet', who: 'with others', in: 'acme', asked: true, why: null } }} /> },
-  '/confirm/space/created': { label: 'Suggested space created', render: () => <SampleConfirm proposal={{ ...suggestedSpace, state: 'approved', suggestion: { ...suggestedSpace.suggestion!, created: { id: 'kitchen', name: 'Home renovation' } } }} /> },
+  '/confirm/space/created': { label: 'Suggested space created', render: () => <SampleConfirm proposal={{ ...suggestedSpace, state: 'approved', suggestion: { ...suggestedSpace.suggestion!, created: { id: 'kitchen', name: 'Home renovation', where: 'In your personal space. Only you have it.' } } }} /> },
   '/confirm/space/declined': { label: 'Suggested space declined', render: () => <SampleConfirm proposal={{ ...suggestedSpace, state: 'rejected' }} /> },
   '/confirm/removed': { label: 'Rule removed', render: () => <SampleConfirm proposal={{ ...removeProposal, state: 'approved', rule: { ...removeProposal.rule!, current: false } }} /> },
   '/confirm/expired': { label: 'Request expired', render: () => <SampleConfirm proposal={{ ...proposal, state: 'expired' }} /> },

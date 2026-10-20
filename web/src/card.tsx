@@ -59,7 +59,7 @@ function Card() {
         // So the assistant knows without asking. Hosts that don't take it lose nothing.
         app
           .updateModelContext({
-            content: [{ type: 'text', text: `The user ${approve ? (proposal.action === 'space' ? 'created the space in' : 'approved') : 'rejected'} proposal:${proposal.id} in Homing's card.` }],
+            content: [{ type: 'text', text: proposal.action === 'space' ? `The user ${approve ? 'created the space from' : 'declined'} proposal:${proposal.id} in Homing's card.` : `The user ${approve ? 'approved' : 'rejected'} proposal:${proposal.id} in Homing's card.` }],
           })
           .catch(() => {});
       }}

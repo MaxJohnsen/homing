@@ -3,7 +3,7 @@ import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
 import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
-import { SpaceFields, type SpaceDraft } from '@/components/space-fields';
+import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { precedenceOf, type ProposalData } from '@/lib/proposals';
 
 /**
@@ -26,7 +26,10 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
   const { action, kind, rule, shared, personal, space } = proposal;
   if (action === 'space') {
     if (!draft || !onDraftChange || !proposal.suggestion) return null;
-    return <SpaceFields draft={draft} onChange={onDraftChange} places={proposal.suggestion.places} problem={problem} disabled={disabled} />;
+    // Who has the shared space it would go in, from Homing, since the card can't ask for it.
+    const parent = parentOf(draft, proposal.suggestion.places);
+    const audience = parent?.people !== undefined ? { people: parent.people, above: parent.above ?? false } : undefined;
+    return <SpaceFields draft={draft} onChange={onDraftChange} places={proposal.suggestion.places} audience={audience} problem={problem} disabled={disabled} />;
   }
   if (action === 'add') {
     return (

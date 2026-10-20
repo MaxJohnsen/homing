@@ -396,3 +396,4 @@ export const suggestedSpace: ProposalData = {
     created: null,
   },
 };
+

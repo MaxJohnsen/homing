@@ -376,7 +376,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           pages: active.all,
           collections: collections.pages,
           decisions: decisions.pages,
-          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
+          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
           spaces: spaces.map(({ id, name, closed }) => ({ id, name, closed })),
         });
         break;

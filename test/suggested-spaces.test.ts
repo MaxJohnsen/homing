@@ -16,7 +16,7 @@ let ana: Member, cara: Member;
 let acme: string;
 let claude: Awaited<ReturnType<Assistant['open']>>;
 
-type Suggestion = { name: string; who: string; in: string | null; closed: boolean; asked: boolean; why: string | null; places: { id: string; label: string; mine: boolean }[]; created: { id: string; name: string } | null };
+type Suggestion = { name: string; who: string; in: string | null; closed: boolean; asked: boolean; why: string | null; places: { id: string; label: string; mine: boolean; people?: number; above?: boolean }[]; created: { id: string; name: string; where: string } | null };
 
 const act = async (action: string, input: Record<string, unknown>) => {
   const result = await claude.client.callTool({ name: 'act', arguments: { action, input } });
@@ -65,7 +65,7 @@ test('an assistant suggests a space, and the person changes it and creates it', 
   const { proposal: shown } = await proposal(ana, suggested.proposal!);
   assert.deepEqual([shown.action, shown.suggestion.name, shown.suggestion.who, shown.suggestion.why], ['space', 'Home renovation', 'just me', 'You’ve been planning this across several conversations.']);
   // Where it could go instead: anywhere in Ana's personal tree, and the shared spaces she looks after.
-  assert.deepEqual(shown.suggestion.places.map((place) => [place.label, place.mine]), [['Your personal space', true], ['Acme', false]]);
+  assert.deepEqual(shown.suggestion.places.map((place) => [place.label, place.mine, place.people]), [['Your personal space', true, undefined], ['Acme', false, 2]]);
 
   // Ana shares it in Acme instead, under another name.
   const created = await decide(ana, suggested.proposal!, { approve: true, space: { name: 'Acme office move', who: 'with others', in: acme, closed: false } });
@@ -79,7 +79,7 @@ test('an assistant suggests a space, and the person changes it and creates it', 
 
   // The assistant learns what it became.
   const read = await claude.call('read', { ref: `proposal:${suggested.proposal}` });
-  assert.match(read.text, new RegExp(`The user created it on .+ \\(space:${space}\\)`));
+  assert.match(read.text, new RegExp(`The user created it as "Acme office move" \\(space:${space}\\) on `));
 });
 
 test('one suggestion waits at a time, and a declined one isn’t made again', async () => {
@@ -155,6 +155,36 @@ test('a space the user asks for that others would see waits for their approval, 
   assert.ok((await cara.browser.json('/api/spaces')).body.spaces.some((space: { name: string }) => space.name === 'Intranet'));
   assert.equal((await decide(ana, again.proposal!, { approve: false })).status, 200);
   assert.match((await claude.call('read', { ref: `proposal:${again.proposal}` })).text, /The user declined it on .+, so nothing was created\.$/m);
+});
+
+test('two suggestions at once still make one, asking has its own limit, and a decision takes only what the person set', async () => {
+  // Decline what waits, so nothing does.
+  for (const item of (await ana.browser.json('/api/waiting')).body.waiting as { id: string }[]) await decide(ana, item.id, { approve: false });
+  const both = await Promise.all(['Allotment', 'Beehives', 'Chickens'].map((name) => suggest(name)));
+  assert.equal(both.filter((answer) => !answer.failed).length, 1);
+  const waiting = both.find((answer) => !answer.failed)!;
+
+  // A space the user asked for and declined can still be suggested later.
+  await decide(ana, waiting.proposal!, { approve: false });
+  assert.ok(!(await suggest('Handbook')).failed, 'Handbook was asked for and declined, never suggested');
+
+  // The approval says who has the space it would go in.
+  const asked = [1, 2, 3].map((n) => `Team ${n}`);
+  const made = [];
+  for (const name of asked) made.push(await act('space.create', { name, who: 'with others', in: `space:${acme}` }));
+  assert.ok(made.every((answer) => !answer.failed));
+  const acmePlace = (await proposal(ana, made[0].proposal!)).proposal.suggestion.places.find((place) => place.id === acme) as { people?: number; above?: boolean };
+  assert.deepEqual([acmePlace.people, acmePlace.above], [2, false]);
+  const fourth = await act('space.create', { name: 'Team 4', who: 'with others', in: `space:${acme}` });
+  assert.ok(fourth.failed);
+  assert.match(fourth.text, /Three spaces are already waiting/);
+
+  // Left out, a field stays as it was; a place that isn't one is refused.
+  const garbled = await decide(ana, made[0].proposal!, { approve: true, space: { in: 'space:acme' } });
+  assert.deepEqual([garbled.status, garbled.body.field], [400, 'in']);
+  const renamed = await decide(ana, made[0].proposal!, { approve: true, space: { name: 'Team One' } });
+  assert.equal(renamed.status, 200, JSON.stringify(renamed.body));
+  assert.equal((await spaceNamed('Team One'))?.parentId, acme);
 });
 
 async function spaceNamed(name: string) {

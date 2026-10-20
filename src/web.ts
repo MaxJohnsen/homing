@@ -210,12 +210,16 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
 function spaceAsSet(value: unknown): { name?: string; who?: Who; in?: string | null; closed?: boolean } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const space = value as Record<string, unknown>;
-  return {
-    name: typeof space.name === 'string' ? space.name : undefined,
-    who: space.who === 'just me' || space.who === 'with others' ? space.who : undefined,
-    in: typeof space.in === 'string' && /^[0-9a-f-]{36}$/i.test(space.in) ? space.in.toLowerCase() : space.in === null ? null : undefined,
-    closed: typeof space.closed === 'boolean' ? space.closed : undefined,
-  };
+  const set: { name?: string; who?: Who; in?: string | null; closed?: boolean } = {};
+  if (typeof space.name === 'string') set.name = space.name;
+  if (space.who === 'just me' || space.who === 'with others') set.who = space.who;
+  if (space.in === null) set.in = null;
+  else if (space.in !== undefined) {
+    if (typeof space.in !== 'string' || !/^[0-9a-f-]{36}$/i.test(space.in)) throw new SpaceRefused('where', 'Choose where the space goes.');
+    set.in = space.in.toLowerCase();
+  }
+  if (typeof space.closed === 'boolean') set.closed = space.closed;
+  return set;
 }
 
 const dist = new URL('../web/dist/app/', import.meta.url);

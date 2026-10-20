@@ -44,7 +44,7 @@ export interface ProposalData {
     asked: boolean;
     why: string | null;
     places: Place[];
-    created: { id: string; name: string } | null;
+    created: { id: string; name: string; where: string } | null;
   } | null;
 }
 
@@ -77,7 +77,8 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
  */
 export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null; yours: boolean } | null; asked?: boolean; suggestion?: { asked: boolean } | null }, withPlace = true): string {
   const { assistant, action, kind, request } = proposal;
-  if (action === 'space') return proposal.asked || proposal.suggestion?.asked ? `${assistant} wants to create a space you asked for` : `${assistant} suggests a new space`;
+  // Whether the user asked is only the assistant's word, so an asked-for space says where it goes instead.
+  if (action === 'space') return proposal.asked || proposal.suggestion?.asked ? `${assistant} wants to create a space in ${placeOf(proposal)}` : `${assistant} suggests a new space`;
   const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
   const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
   if (request && !request.yours) return `${request.by ?? 'A member'} asks to ${what}${place}`;
@@ -132,8 +133,8 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
   if (action === 'space' && suggestion) {
-    if (state === 'approved') return { kind: 'approved', heading: 'Space created', detail: 'It’s with your spaces now.' };
-    if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: suggestion.asked ? 'Nothing was created.' : 'Nothing was created, and it won’t be suggested again.' };
+    if (state === 'approved') return { kind: 'approved', heading: 'Space created', detail: suggestion.created?.where ?? 'It’s with your spaces now.' };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: suggestion.asked ? 'Nothing was created.' : `Nothing was created, and ${assistant} won’t suggest a space called ${suggestion.name} again.` };
     if (state === 'expired') {
       return suggestion.asked
         ? { kind: 'expired', heading: 'This expired', detail: `Nothing was created. Ask ${assistant} again if you still want it.` }

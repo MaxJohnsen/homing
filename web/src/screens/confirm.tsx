@@ -58,7 +58,10 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
               onlyHere={onlyHere}
               onOnlyHereChange={sending ? undefined : setOnlyHere}
               draft={draft}
-              onDraftChange={setDraft}
+              onDraftChange={(next) => {
+                setDraft(next);
+                setProblem(undefined);
+              }}
               problem={problem}
               disabled={busy}
               idPrefix="page"
@@ -74,7 +77,9 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
             <p className="text-sm text-muted-foreground">
               {action === 'space'
-                ? `Only you can create it. ${assistant} can’t do it for you${suggestion?.asked ? '.' : ', and if you don’t, it won’t be suggested again.'}`
+                ? suggestion?.asked
+                  ? `Everyone in ${place} would see its name, so it waits for you. ${assistant} can’t create it without you.`
+                  : `Only you can create it. If you don’t, ${assistant} won’t suggest a space called ${suggestion?.name} again.`
                 : sending
                 ? `Only the admins of ${place} change its shared rules, so this asks them. Nothing changes until one of them approves it.`
                 : request && !request.yours
