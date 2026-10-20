@@ -49,8 +49,10 @@ create index space_names_space on space_names (space_id, renamed_at);
 
 alter table space_names enable row level security;
 
-create policy visible on space_names for select
-using (space_id in (select accessible_spaces()));
+-- Only whoever renamed it reads an old name for now, since others may join
+-- the space later, and the name before may have been for fewer people.
+create policy own on space_names for select
+using (renamed_by = current_person_id() and space_id in (select accessible_spaces()));
 
 grant select on space_names to homing_app;
 
@@ -74,6 +76,12 @@ begin
     select from space_access a where a.space_id = rename_space.space and a.person_id <> current_person_id()
   ) then
     raise exception 'others can open that space, so the person renames it' using errcode = 'insufficient_privilege';
+  end if;
+  if current_agent() is not null and (
+    select count(*) from space_names n
+    where n.renamed_by = current_person_id() and n.agent is not null and n.renamed_at > now() - interval '1 hour'
+  ) >= 20 then
+    raise exception 'an assistant renames at most 20 spaces an hour' using errcode = 'insufficient_privilege';
   end if;
   insert into space_names (space_id, name) select s.id, s.name from spaces s where s.id = rename_space.space;
   update spaces set name = btrim(rename_space.name) where id = rename_space.space;

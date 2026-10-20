@@ -161,6 +161,12 @@ test('an assistant never names a space others see: the user creates or renames i
   assert.match(rename.text, new RegExp(`Others can open Acme, so the user renames it in Homing\\. Nothing changed\\. Give them this link: ${homing.url}spaces/${acme}/settings`));
   assert.equal((await spacesOf(cara)).find((space) => space.id === acme)?.name, 'Acme');
 
+  // Closed, a space in Acme is the user's alone, even to Acme's other admins.
+  await as(ana, (s) => addMember(s, acme, cara.id, 'admin'));
+  const closed = await act('space.create', { name: 'Ana’s Acme notes', who: 'with others', in: `space:${acme}`, closed: true });
+  assert.ok(!closed.failed, closed.text);
+  assert.equal((await cara.browser.json(`/api/spaces/${/space:([0-9a-f-]{36})/.exec(closed.text)![1]}`)).status, 404);
+
   // The database holds to it too, whatever an assistant's session asks for.
   const claude = { person: ana.id, agent: 'Claude' };
   await assert.rejects(as(claude, (s) => createSpace(s, { name: 'Intranet', parentId: acme })), /others would see that space/);
