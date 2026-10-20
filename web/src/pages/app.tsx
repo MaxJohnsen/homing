@@ -1,12 +1,13 @@
-import { useEffect, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, type ReactNode } from 'react';
 import { Shell } from '@/components/app-shell';
 import { ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
+import type { PageData, PageOrder, PagesData } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
 import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
-import { routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
+import { navigate, routeOf, useAddress, type Route, type SpaceView } from '@/lib/router';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import { AccountPage } from '@/pages/account';
 import { ProposalPage } from '@/pages/proposal';
@@ -14,6 +15,8 @@ import type { AccountData } from '@/screens/account';
 import { Admin, type AdminData, type InviteMade } from '@/screens/admin';
 import { Home } from '@/screens/home';
 import { Rules, Skills } from '@/screens/guidance';
+import { Page } from '@/screens/page';
+import { Pages, type PageFilters } from '@/screens/pages';
 import { Skill } from '@/screens/skill';
 import { Members, Space } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
@@ -27,7 +30,8 @@ export function AppPage() {
   const waiting = useLoad<{ waiting: WaitingData[] }>('/api/waiting').data?.waiting;
 
   const skill = useLoad<SkillData>(route.name === 'skill' ? `/api/skills/${route.id}` : '').data;
-  const spaceId = route.name === 'space' ? route.id : route.name === 'skill' ? (skill?.spaceId ?? undefined) : undefined;
+  const page = useLoad<PageData>(route.name === 'page' ? `/api/pages/${route.id}` : '').data;
+  const spaceId = route.name === 'space' ? route.id : route.name === 'skill' ? (skill?.spaceId ?? undefined) : route.name === 'page' ? page?.space.id : undefined;
   const { recent, opened } = useRecent(me?.email ?? '');
   // Only a space that opened counts as visited.
   const visited = route.name === 'space' && spaces?.some((space) => space.id === route.id) ? route.id : undefined;
@@ -49,7 +53,8 @@ export function AppPage() {
         location.assign('/sign-in');
       }}
     >
-      <Screen key={address} route={route} me={me} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
+      {/* A new screen for each address; searching and filtering within one keeps it. */}
+      <Screen key={address.split('?')[0]} route={route} me={me} waiting={waiting} recent={recent.map((id) => spaces.find((space) => space.id === id)).filter((space) => space !== undefined)} />
     </Shell>
   );
 }
@@ -67,7 +72,9 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
     case 'proposal':
       return <Titled title="A decision"><ProposalPage id={route.id} /></Titled>;
     case 'space':
-      return <SpacePage id={route.id} view={route.view ?? 'rules'} />;
+      return <SpacePage id={route.id} view={route.view ?? 'pages'} />;
+    case 'page':
+      return <PagePage id={route.id} />;
     case 'skill':
       return <SkillPage id={route.id} />;
   }
@@ -83,16 +90,63 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
   const rules = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '').data?.rules;
   const skills = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '').data?.skills;
+  const pages = usePages(view === 'pages' ? id : undefined);
   return (
     <Titled title={space?.name ?? 'Space'}>
       {error?.status === 404 && <ScreenHeader title="There’s no space here" meta="It may have been removed, or you can’t open it." />}
       {space && (
         <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
+          {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} />}
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
           {view === 'members' && !space.private && <Members space={space} />}
         </Space>
       )}
+    </Titled>
+  );
+}
+
+/**
+ * A space's pages, as the list's search, type, order and place in the address ask, so the back
+ * button returns to the same list. While a new answer is on its way, the last one stays.
+ */
+function usePages(spaceId: string | undefined) {
+  const search = new URLSearchParams(location.search);
+  const filters: PageFilters = {
+    q: search.get('q') ?? '',
+    type: search.get('type') ?? '',
+    sort: (['recent', 'name', 'match'] as const).find((order) => order === search.get('sort')) satisfies PageOrder | undefined,
+    from: Math.max(0, Number.parseInt(search.get('from') ?? '0', 10) || 0),
+  };
+  const query = new URLSearchParams();
+  if (filters.q.trim()) query.set('q', filters.q.trim());
+  if (filters.type) query.set('type', filters.type);
+  if (filters.sort) query.set('sort', filters.sort);
+  if (filters.from) query.set('from', String(filters.from));
+  const api = new URLSearchParams(query);
+  api.delete('from');
+  if (filters.from) api.set('offset', String(filters.from));
+  const { data } = useLoad<PagesData>(spaceId ? `/api/spaces/${spaceId}/pages${api.size ? `?${api}` : ''}` : '');
+  const last = useRef<PagesData>(undefined);
+  if (data) last.current = data;
+  const change = useCallback((next: PageFilters) => {
+    const address = new URLSearchParams();
+    if (next.q.trim()) address.set('q', next.q.trim());
+    if (next.type) address.set('type', next.type);
+    if (next.sort) address.set('sort', next.sort);
+    if (next.from) address.set('from', String(next.from));
+    // Typing a search replaces the address instead of adding to the history.
+    navigate(`${location.pathname}${address.size ? `?${address}` : ''}`, { replace: next.q !== new URLSearchParams(location.search).get('q') && next.q !== '' });
+  }, []);
+  return { data: data ?? last.current, filters, change };
+}
+
+function PagePage({ id }: { id: string }) {
+  const { data, error } = useLoad<PageData>(`/api/pages/${id}`);
+  return (
+    <Titled title={data?.title ?? 'Page'}>
+      {error?.status === 404 && <ScreenHeader title="There’s no page here" meta="It may have been removed, or you can’t open it." />}
+      {data && <Page page={data} />}
     </Titled>
   );
 }

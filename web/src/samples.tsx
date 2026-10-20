@@ -4,7 +4,8 @@ import { Wordmark } from '@/components/wordmark';
 import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
-import { changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import type { SpaceData } from '@/lib/spaces';
+import { samplePage, samplePages, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -16,6 +17,8 @@ import { Landing } from '@/screens/landing';
 import { Recover } from '@/screens/recover';
 import { SignIn } from '@/screens/sign-in';
 import { Rules, Skills } from '@/screens/guidance';
+import { Page } from '@/screens/page';
+import { Pages, type PageFilters } from '@/screens/pages';
 import { Skill } from '@/screens/skill';
 import { Members, Space } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
@@ -43,6 +46,14 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/home/many-spaces': { label: 'Years in, with a hundred spaces', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} recent={recentMany.map((id) => manySpaces.find((space) => space.id === id)!)} /></InApp> },
   '/spaces/many': { label: 'A space deep among a hundred', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany} spaceId="client-14-Data platform"><Space space={{ ...sampleSpace.root, id: 'client-14-Data platform', name: 'Data platform', parentId: 'client-14', path: [{ id: 'acme', name: 'Acme' }, { id: 'client-14', name: 'Oslo Opera' }] }} view="members"><Members space={sampleSpace.root} /></Space></InApp> },
   '/waiting': { label: 'Everything waiting, by space', render: () => <InApp waiting={5} route={{ name: 'waiting' }}><Waiting waiting={manyWaiting} /></InApp> },
+  '/spaces/pages': { label: 'A space’s pages, years in', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages /></Space></InApp> },
+  '/spaces/pages/few': { label: 'A space with three pages', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="pages"><SamplePages space={sampleSpace.open} data={{ ...samplePages, pages: samplePages.pages.slice(0, 3), total: 3, all: 3, types: [{ type: 'project', count: 1 }, { type: 'person', count: 1 }] }} /></Space></InApp> },
+  '/spaces/pages/search': { label: 'Searching a space’s pages, with nothing found', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages data={{ ...samplePages, pages: [], total: 0 }} filters={{ q: 'sauna', type: '', from: 0 }} /></Space></InApp> },
+  '/spaces/pages/empty': { label: 'A space with no pages yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="pages"><SamplePages space={sampleSpace.root} data={{ pages: [], total: 0, all: 0, types: [] }} /></Space></InApp> },
+  '/page': { label: 'A page, with an update only you see', render: () => <InApp spaceId="northwind"><Page page={samplePage} /></InApp> },
+  '/page/long': { label: 'A long page, searchable within', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Meeting notes, all of 2026', type: 'meeting', items: Array.from({ length: 16 }, (_, index) => ({ ...samplePage.items[index % 5], id: `item-${index}` })) }} /></InApp> },
+  '/page/personal': { label: 'A page in your personal space', render: () => <InApp spaceId="kitchen"><Page page={{ ...samplePage, title: 'Kitchen quotes', type: null, space: { id: 'kitchen', name: 'Kitchen renovation', personal: false, private: true }, items: samplePage.items.filter((item) => !item.shared).map((item) => ({ ...item, replaced: null })) }} /></InApp> },
+  '/page/empty': { label: 'A page with nothing on it yet', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Marte Lunde', type: 'person', items: [] }} /></InApp> },
   '/spaces/rules': { label: 'A space’s rules, as an admin', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="rules"><Rules space={sampleSpace.closed} rules={sampleRules} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/member': { label: 'A space’s rules, as a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="rules"><Rules space={sampleSpace.open} rules={sampleRules.filter((rule) => rule.spaceId !== 'northwind').map((rule) => ({ ...rule, spaceId: rule.spaceId === 'acme' && !rule.shared ? 'website' : rule.spaceId }))} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/from-above': { label: 'Rules from a space you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="rules"><Rules space={sampleSpace.fromAbove} rules={sampleRules.filter((rule) => rule.spaceId === 'acme' && rule.shared).map((rule) => ({ ...rule, spaceName: null }))} actions={sampleRuleActions} /></Space></InApp> },
@@ -152,4 +163,9 @@ export function Samples() {
       </ul>
     </main>
   );
+}
+
+function SamplePages({ space = sampleSpace.closed, data = samplePages, filters: initial = { q: '', type: '', from: 0 } }: { space?: SpaceData; data?: typeof samplePages; filters?: PageFilters }) {
+  const [filters, setFilters] = useState(initial);
+  return <Pages space={space} data={data} filters={filters} onFilters={setFilters} />;
 }

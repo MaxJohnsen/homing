@@ -2,16 +2,18 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
+import { historyOf, pagesIn, readPage, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
-import { listSpaces, spaceView } from './spaces.ts';
+import { listSpaces, peopleNames, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const kinds: RuleKind[] = ['requirement', 'preference'];
+const orders: PageOrder[] = ['recent', 'name', 'match'];
 
 /**
- * The endpoints of the app's own screens: spaces, what's waiting, guidance, and looking after Homing. Each answers only
+ * The endpoints of the app's own screens: spaces, what's waiting, knowledge, guidance, and looking after Homing. Each answers only
  * with what the signed-in person can open, and the database checks the same underneath. Returns
  * whether it answered.
  */
@@ -105,6 +107,64 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             emailed: request.adminsEmailed,
             admins: request.admins,
             decidedBy: request.decider,
+          })),
+        });
+        break;
+      }
+
+      case 'pages': {
+        const query = new URL(req.url ?? '', 'http://homing').searchParams;
+        const order = orders.find((candidate) => candidate === query.get('sort'));
+        const offset = Number.parseInt(query.get('offset') ?? '0', 10);
+        const found = await read(async (s) =>
+          (await spaceView(s, route.id))
+            ? pagesIn(s, route.id, {
+                query: query.get('q')?.slice(0, 200) ?? undefined,
+                type: query.get('type') || undefined,
+                order,
+                offset: Number.isFinite(offset) ? offset : 0,
+              })
+            : undefined,
+        );
+        if (!found) return answer(res, 404, noSpace);
+        json(res, 200, found);
+        break;
+      }
+
+      case 'page': {
+        const found = await read(async (s) => {
+          const page = await readPage(s, route.id);
+          // Guidance and skills open as rules and skills, never as knowledge.
+          if (!page || page.type === 'guidance' || page.type === 'skill') return undefined;
+          const space = await spaceView(s, page.spaceId);
+          if (!space) return undefined;
+          const history = await historyOf(s, page.items.map((item) => item.id));
+          const names = await peopleNames(s, [...page.items, ...history].map((entry) => entry.writtenBy));
+          return { page, space, history, names };
+        });
+        if (!found) return answer(res, 404, { message: 'There’s no page here that you can open.' });
+        const { page, space, history, names } = found;
+        // Who wrote something: a person by name, or nobody named when they're no longer someone the reader shares a space with.
+        const by = (writtenBy: string | null) => (writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person });
+        json(res, 200, {
+          id: page.id,
+          title: page.title,
+          type: page.type,
+          updatedAt: page.updatedAt,
+          space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
+          items: page.items.map((item) => ({
+            id: item.id,
+            text: item.body,
+            shared: item.privateTo === null,
+            by: by(item.writtenBy),
+            agent: item.agent,
+            writtenAt: item.updatedAt,
+            sources: item.sources,
+            // What it replaced, and so what others see when it's your private update to something shared.
+            replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
+            earlier: history
+              .filter((entry) => entry.itemId === item.id)
+              .map((entry) => ({ text: entry.body, by: by(entry.writtenBy), agent: entry.agent, writtenAt: entry.writtenAt, until: entry.replacedAt })),
           })),
         });
         break;
@@ -228,7 +288,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' }
-  | { name: 'space' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'pages' | 'page' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -239,6 +299,8 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/requests') return { name: 'requests' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
+      ['pages', `/api/spaces/${uuid}/pages`],
+      ['page', `/api/pages/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],
       ['skills', `/api/spaces/${uuid}/skills`],
       ['skill', `/api/skills/${uuid}`],
