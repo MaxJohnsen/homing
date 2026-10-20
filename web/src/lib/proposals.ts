@@ -241,7 +241,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   }
   if (action === 'task') {
     if (state === 'approved') return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees the task now, and can tick it off.` };
-    if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'The task stays only yours.' };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: `You decided not to share it, so ${assistant} won’t ask again.` };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
     if (isGone(proposal)) {
       return proposal.task?.shared

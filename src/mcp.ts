@@ -26,7 +26,7 @@ import {
   type Hit,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
-import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, readProposal, requestsIn, suggestSpace, Undecidable, type Proposal } from './proposals.ts';
+import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, readProposal, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
@@ -1081,8 +1081,13 @@ function describeProposal(proposal: Proposal): string {
 }
 
 /** Where a proposal stands, for an agent. */
-function outcome(proposal: Proposal, links: Links, created?: { id: string; name: string } | null): string {
+function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id: string; name: string } | null): string {
   const decider = proposal.request ? 'An admin of the space' : 'The user';
+  // A task shared or done another way leaves nothing to decide.
+  const task = 'task' in proposal ? proposal.task : undefined;
+  if (proposal.state === 'open' && proposal.action === 'share task' && task !== undefined && (!task || task.shared || task.done)) {
+    return task?.shared ? 'The task is shared with the space already, so there is nothing to decide.' : 'The task was done or removed since, so there is nothing to decide.';
+  }
   switch (proposal.state) {
     case 'open':
       return proposal.request
@@ -1100,7 +1105,7 @@ function outcome(proposal: Proposal, links: Links, created?: { id: string; name:
       }
       return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
-      if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. It stays private. Don't propose sharing it again unless they ask.`;
+      if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. Don't propose sharing it again unless they ask.`;
       if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again."}`;
       return proposal.request && !proposal.requestedAt
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`

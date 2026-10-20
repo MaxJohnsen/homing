@@ -284,7 +284,10 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
  * them to approve. Only their own open tasks, never in their personal tree.
  */
 export async function proposeTaskShare(s: Session, input: { taskId: string; why?: string }): Promise<Proposal> {
+  // Held until the proposal is made, so two at once can't both pass the check for one already waiting.
+  await s.tx`select id from tasks where id = ${input.taskId}::uuid for update`;
   const task = await readTask(s, input.taskId);
+  if (task && task.privateTo === null) throw new SpaceRefused('person', 'That task is shared with the space already.');
   if (!task || task.privateTo !== personOf(s.principal)) throw new SpaceRefused('missing', 'There’s no task of the user’s own with that reference to share.');
   const space = await spaceView(s, task.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
@@ -418,7 +421,7 @@ async function placesFor(s: Session, spaces: Space[]): Promise<Place[]> {
 export async function openProposals(s: Session, spaceId: string): Promise<Proposal[]> {
   return s.tx<Proposal[]>`
     select ${columns(s)} from proposals
-    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')}
+    where space_id = ${spaceId}::uuid and ${yours(s)} and state = 'open' and expires_at > now() and ${ruleStands(s, 'proposals')} and ${taskStands(s, 'proposals')}
     order by created_at
   `;
 }
@@ -518,7 +521,7 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
     left join tasks task on task.id = p.task_id
     left join people who on who.id = (p.change->>'person')::uuid
-    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')}
+    where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')} and ${taskStands(s, 'p')}
       and ((p.private_to = ${me}::uuid and p.state = 'open')
            or (p.state = 'requested' and p.private_to <> ${me}::uuid and admin_of(p.space_id)))
     order by coalesce(p.requested_at, p.created_at)
@@ -528,6 +531,14 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
 }
 
 /** A change or removal waits only while its rule is still there; one whose rule was removed has nothing left to decide. */
+/** Sharing a task waits only while the task is still the person's own and open; once shared or done, there's nothing to decide. */
+function taskStands(s: Session, table: string) {
+  const p = s.tx(table);
+  return s.tx`(${p}.task_id is null or exists (
+    select from tasks t where t.id = ${p}.task_id and t.private_to is not null and t.done_at is null
+  ))`;
+}
+
 function ruleStands(s: Session, table: string) {
   const p = s.tx(table);
   return s.tx`(${p}.item_id is null or exists (
