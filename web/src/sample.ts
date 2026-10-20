@@ -1,5 +1,5 @@
 import type { AccountData } from '@/screens/account';
-import type { ChangeData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
+import type { ChangeData, OverviewData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
@@ -356,3 +356,16 @@ export const sampleChanges: ChangeData[] = [
   { itemId: 'c3', pageId: '7d1c2a40-0000-4000-8000-000000000001', title: 'Website relaunch', text: 'The launch is planned for **November 20**.', kind: 'updated', newPage: false, by: { name: 'Ana Berg', you: true }, agent: null, at: daysAgo(1, 4), onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
   { itemId: 'c4', pageId: '7d1c2a40-0000-4000-8000-000000000006', title: 'Fjord Bank app', text: 'Version 3.2 goes to the App Store on October 28.', kind: 'corrected', newPage: false, by: { name: 'Tore Vik', you: false }, agent: null, at: daysAgo(4), onlyYou: false, space: { id: 'fjord', name: 'Fjord Bank', within: null } },
 ];
+
+/** Northwind at a glance, with Ana's own overview over the shared one. */
+export const sampleOverview: OverviewData = {
+  overview: [
+    { id: 'o1', text: 'Northwind’s website relaunch is in testing. The launch moved to **November 20**, and Gunnar wants to talk before anything about scope goes in writing.', shared: false, by: { name: 'Ana Berg', you: true }, agent: 'Claude', writtenAt: daysAgo(0, 4), replacesShared: 'Northwind’s website relaunch is in testing. The launch is planned for November 14.' },
+  ],
+  active: samplePages.pages.slice(0, 4),
+  pages: 1240,
+  collections: samplePages.pages.filter((page) => page.gathers > 0),
+  decisions: samplePages.pages.filter((page) => page.type === 'decision'),
+  waiting: [{ id: 'w1', action: 'add rule', kind: 'requirement', text: 'Copy the CFO on every invoice to Northwind.', assistant: 'Claude', request: { by: 'Cara Lund', yours: false, sent: true } }],
+  spaces: [{ id: 'website', name: 'Website', closed: false }, { id: 'app', name: 'Booking app', closed: true }],
+};

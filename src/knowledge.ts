@@ -446,6 +446,37 @@ export async function linksOf(s: Session, pageId: string) {
   return { collections, mentionedOn };
 }
 
+/** A space's written overview as the viewer sees it, or undefined when nobody they can see has written one. */
+export async function overviewOf(s: Session, spaceId: string): Promise<Page | undefined> {
+  const [page] = await s.tx<{ id: string }[]>`select id from pages where space_id = ${spaceId}::uuid and type = 'overview'`;
+  return page ? readPage(s, page.id) : undefined;
+}
+
+/** The longest an overview may be: a short summary, not a page. */
+export const overviewLength = 2_000;
+
+/**
+ * Writes a space's overview. Shared, it corrects the shared overview for everyone, or starts it.
+ * Your own corrects yours, or explicitly replaces the shared one for you, or starts yours. An
+ * assistant never replaces what a person wrote, so its version then sits beside it instead.
+ */
+export async function writeOverview(s: Session, input: { spaceId: string; text: string; shared?: boolean }): Promise<Item> {
+  await checkSpace(s, input.spaceId, input.shared);
+  const [{ page }] = await s.tx<{ page: string }[]>`select overview_page(${input.spaceId}::uuid) as page`;
+  const items = (await readPage(s, page))?.items ?? [];
+  const me = personOf(s.principal) ?? null;
+  const shared = items.find((item) => item.privateTo === null);
+  const mine = items.find((item) => item.privateTo !== null && item.privateTo === me);
+  if (input.shared) {
+    if (shared) return (await updateItem(s, shared.id, { body: input.text }))!;
+    return insertItem(s, { pageId: page, spaceId: input.spaceId, privateTo: null, kind: 'text', body: input.text });
+  }
+  if (mine) return (await updateItem(s, mine.id, { body: input.text }))!;
+  const replaceable = shared && (s.principal.agent === undefined || shared.agent !== null || shared.writtenBy === null);
+  if (shared && replaceable) return (await supersedeItem(s, shared.id, { body: input.text }))!;
+  return insertItem(s, { pageId: page, spaceId: input.spaceId, privateTo: sideOf(s), kind: 'text', body: input.text });
+}
+
 /** A change to knowledge, as the viewer sees it, for what changed lately. */
 export interface Change {
   itemId: string;
@@ -458,6 +489,8 @@ export interface Change {
   kind: 'added' | 'updated' | 'corrected';
   /** The first thing on its page, which makes it a new page. */
   newPage: boolean;
+  /** On the space's overview rather than a page. */
+  overview: boolean;
   writtenBy: string | null;
   agent: string | null;
   at: Date;
@@ -474,7 +507,7 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
-    select item_id, page_id, space_id, title, text, kind, new_page, written_by, agent, at, only_you from (
+    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, at, only_you, overview from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
              -- Corrected means it has an earlier version; its timestamps alone can differ by a moment when it's written.
              case when c.supersedes is not null then 'updated'
@@ -484,6 +517,7 @@ export async function recentChanges(s: Session, options: { offset?: number; limi
                select from content o where o.page_id = c.page_id and o.kind = 'text' and o.created_at < c.created_at and ${visible(s, 'o')}
              ) as new_page,
              c.written_by, c.agent, c.updated_at as at, c.private_to is not null as only_you,
+             (select p.type from pages p where p.id = c.page_id) is not distinct from 'overview' as overview,
              ${current(s, 'c')} as is_current
       from content c
       where c.kind = 'text' and ${visible(s, 'c')}
@@ -763,9 +797,9 @@ export function current(s: Session, table: string) {
   )`;
 }
 
-/** Knowledge pages, not guidance or skills. */
+/** Knowledge pages, not guidance, skills, or a space's overview, which shows on its own. */
 export function knowledge(s: Session, table: string) {
-  return s.tx`coalesce(${s.tx(table)}.type, '') not in ('guidance', 'skill')`;
+  return s.tx`coalesce(${s.tx(table)}.type, '') not in ('guidance', 'skill', 'overview')`;
 }
 
 /** The page's title as the viewer sees it: their own if they named it, otherwise the shared one. */

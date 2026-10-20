@@ -29,6 +29,7 @@ import {
   supersedeItem,
   updateItem,
   writeItem,
+  writeOverview,
   type Item,
   type Source,
 } from '../src/knowledge.ts';
@@ -425,6 +426,9 @@ describe('through the app’s endpoints', () => {
       const collection = await createPage(s, { spaceId: space, title: `${name}’s 2027`, shared: true });
       await gather(s, { collectionId: collection, pageId: shared, shared: true });
       await gather(s, { collectionId: collection, pageId: own });
+      // The space's overview, shared, and the owner's own version of it.
+      await writeOverview(s, { spaceId: space, text: `${name}’s client is planning 2027`, shared: true });
+      await writeOverview(s, { spaceId: space, text: `${name} keeps a secret overview` });
       return { shared, own, sharedItem, privateItem, sharedSource, privateSource, collection };
     });
     return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages };
@@ -467,6 +471,11 @@ describe('through the app’s endpoints', () => {
       }
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
+      // Nor the other client's overview.
+      assert.equal((await get(`/api/spaces/${target.space}/overview`)).status, 404);
+      const overwritten = await browser.json(`/api/spaces/${target.space}/overview`, { text: 'Hello', shared: true });
+      assert.equal(overwritten.status, 404);
+      seen.push(overwritten.body);
       // What changed shows only the intruder's own.
       const recent = (await get('/api/changes')).body.changes as { space: { id: string | null } }[];
       assert.ok(recent.every((change) => change.space.id === intruder.space || change.space.id === intruder.personalSpaceId));
@@ -573,6 +582,8 @@ describe('through the app’s endpoints', () => {
     assert.equal((await get(`/api/pages/${ana.pages.collection}`)).gathers, 1);
     // What changed shows Cara Ana's shared launch, and nothing she keeps to herself.
     await get('/api/changes');
+    // The overview Cara sees is the shared one, and Ana's own stays hers.
+    assert.deepEqual((await get(`/api/spaces/${ana.space}/overview`)).overview.map((item: { text: string }) => item.text), ['Ana’s client is planning 2027']);
     // Search finds Ana's shared launch for Cara, and nothing she keeps to herself.
     for (const query of ['launch', 'salary', 'raise', 'worries', 'fears', 'diary']) await get(`/api/search?q=${query}`);
     const shared = await get(`/api/pages/${ana.pages.shared}`);
@@ -580,7 +591,7 @@ describe('through the app’s endpoints', () => {
     // Even when the page last changed comes only from what Cara can see.
     const [{ latest }] = await admin`select max(updated_at) as latest from content where page_id = ${ana.pages.shared} and private_to is null`;
     assert.equal(new Date(shared.updatedAt).getTime(), latest.getTime());
-    assert.doesNotMatch(JSON.stringify(seen), /salary|raise|worries|fears|diary/);
+    assert.doesNotMatch(JSON.stringify(seen), /salary|raise|worries|fears|diary|secret/);
     // Nor can she write on what's only Ana's.
     for (const [path, body] of [
       [`/api/pages/${ana.pages.own}/items`, { text: 'Hello' }],

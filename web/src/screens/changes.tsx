@@ -46,12 +46,15 @@ export function ChangeList({ changes, now }: { changes: ChangeData[]; now?: Date
 
 function ChangeRow({ change, now }: { change: ChangeData; now?: Date }) {
   const where = placeName(change.space);
-  const what = change.newPage
-    ? `New page in ${where}`
-    : `${change.kind === 'updated' ? 'Update on' : change.kind === 'corrected' ? 'Corrected on' : 'On'} ${change.title} in ${where}`;
+  const what = change.overview
+    ? `The overview of ${where}`
+    : change.newPage
+      ? `New page in ${where}`
+      : `${change.kind === 'updated' ? 'Update on' : change.kind === 'corrected' ? 'Corrected on' : 'On'} ${change.title} in ${where}`;
+  const href = change.overview ? (change.space.id ? `/spaces/${change.space.id}` : '/changes') : `/pages/${change.pageId}`;
   return (
     <li>
-      <Link href={`/pages/${change.pageId}`} className={cn('flex flex-col gap-1 rounded-xl px-3 py-3 transition-colors hover:bg-muted', focusRing)}>
+      <Link href={href} className={cn('flex flex-col gap-1 rounded-xl px-3 py-3 transition-colors hover:bg-muted', focusRing)}>
         <span className="text-base leading-snug font-semibold break-words">{change.newPage ? change.title : <span className="line-clamp-2">{plain(change.text)}</span>}</span>
         {change.newPage && <span className="line-clamp-2 text-base">{plain(change.text)}</span>}
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">

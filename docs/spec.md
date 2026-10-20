@@ -119,7 +119,7 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 
 **Knowledge without a home stays in its source.** Excerpts remain searchable, and when a subject earns a page, the page is built from them. Nothing is dumped on the overview.
 
-**The overview is a map.** It holds a short summary of the space's current state, plus a list of its active pages that Homing generates. It is never an index written by an agent.
+**The overview is a map.** It holds a short summary of the space's current state, plus a list of its active pages that Homing generates. It is never an index written by an agent. The summary is optional and ordinary knowledge: anyone who may change the space's shared knowledge changes the shared summary, and assistants keep the user's own, shared later like anything else. Someone's own summary takes the shared one's place for them only when it explicitly replaces it.
 
 **Collections group pages without a second hierarchy.** Any page can gather other pages in its space, which makes it a collection, such as "2027 planning". A page can still hold knowledge of its own.
 

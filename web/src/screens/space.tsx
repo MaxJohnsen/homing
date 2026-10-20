@@ -5,13 +5,14 @@ import { Link, type SpaceView } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
 /**
- * A space: where it sits and who it's shared with, then its parts. Knowledge holds its pages,
+ * A space: where it sits and who it's shared with, then its parts. Overview says where it stands, Knowledge holds its pages,
  * Guidance its rules and skills, and Members who can open it. A space in your personal tree has no
  * members but you.
  */
 export function Space({ space, view, children }: { space: SpaceData; view: SpaceView; children: ReactNode }) {
   const tabs = [
-    { label: 'Knowledge', href: `/spaces/${space.id}`, current: view === 'pages' || view === 'collections' || view === 'sources' },
+    { label: 'Overview', href: `/spaces/${space.id}`, current: view === 'overview' },
+    { label: 'Knowledge', href: `/spaces/${space.id}/pages`, current: view === 'pages' || view === 'collections' || view === 'sources' },
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
   ];
@@ -43,7 +44,7 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
         <Parts
           label="Knowledge"
           parts={[
-            { label: 'Pages', href: `/spaces/${space.id}`, current: view === 'pages' },
+            { label: 'Pages', href: `/spaces/${space.id}/pages`, current: view === 'pages' },
             { label: 'Collections', href: `/spaces/${space.id}/collections`, current: view === 'collections' },
             { label: 'Sources', href: `/spaces/${space.id}/sources`, current: view === 'sources' },
           ]}

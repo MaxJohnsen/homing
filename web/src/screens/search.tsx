@@ -124,12 +124,12 @@ function kinds(data: SearchData): { kind: Exclude<SearchKind, 'all'>; title: str
       rows: data.pages.map((page) => (
         <Row
           key={page.id}
-          href={`/pages/${page.id}`}
+          href={page.overview ? (page.space.id ? `/spaces/${page.space.id}` : undefined) : `/pages/${page.id}`}
           title={page.title}
           onlyYou={page.onlyYou && !page.space.private}
           text={page.text ? plain(page.text) : undefined}
           detail={[
-            `${page.type ? capitalize(page.type) : 'A page'} in ${placeName(page.space)}`,
+            page.overview ? `What someone wrote about where ${placeName(page.space)} stands` : `${page.type ? capitalize(page.type) : 'A page'} in ${placeName(page.space)}`,
             page.superseded && 'What it says matched is no longer true',
             page.updatesShared && 'Your update, which others don’t see yet',
           ].filter(Boolean).join('. ')}
