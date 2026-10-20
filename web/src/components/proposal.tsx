@@ -5,7 +5,7 @@ import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar } from '@/components/screen';
-import { placeOf, precedenceOf, type ProposalData } from '@/lib/proposals';
+import { placeOf, precedenceOf, type ProposalData, type PublicationData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -120,7 +120,14 @@ function MemberChangeDetails({ proposal, member }: { proposal: ProposalData; mem
  * how many people that is, and what it rests on that they can't see, which stays yours.
  */
 function PublishDetails({ proposal, publication }: { proposal: ProposalData; publication: NonNullable<ProposalData['publication']> }) {
-  const place = placeOf(proposal);
+  return <SharingDetails place={placeOf(proposal)} publication={publication} />;
+}
+
+/**
+ * What sharing an item with a space does, wherever it's decided: exactly what everyone there would
+ * see, how many people that is, and what it rests on that they won't see.
+ */
+export function SharingDetails({ place, publication }: { place: string; publication: PublicationData }) {
   const others = publication.audience ? publication.audience.people - 1 : 0;
   const count = (n: number) => (n === 1 ? '1 other person' : `${n.toLocaleString('en-US')} other people`);
   const who = publication.audience?.above

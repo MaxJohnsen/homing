@@ -230,6 +230,8 @@ const samplePageActions = {
   ungather: notSaved,
   join: notSaved,
   leave: notSaved,
+  publication: async () => publishProposal.publication!,
+  publish: notSaved,
   find: async (query: string, collections?: boolean) => (collections ? samplePages.pages.filter((page) => page.gathers > 0) : samplePages.pages).filter((page) => page.title.toLowerCase().includes(query.toLowerCase())),
 };
 
