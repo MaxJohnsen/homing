@@ -429,6 +429,25 @@ export const publishProposal: ProposalData = {
   },
 };
 
+/** Claude proposes sharing one of Ana's tasks with everyone in Acme. */
+export const taskProposal: ProposalData = {
+  ...proposal,
+  id: 'task',
+  action: 'task',
+  text: null,
+  alreadyApplies: [],
+  task: {
+    title: 'Book the venue for the launch',
+    description: 'Two options: Hotel Bristol or the Opera foyer.',
+    due: '2026-11-03',
+    done: false,
+    shared: false,
+    shown: 'Book the venue for the launch\n2026-11-03\nTwo options: Hotel Bristol or the Opera foyer.',
+    why: 'Cara can pick it up if I don’t get to it.',
+    audience: { people: 5, above: false },
+  },
+};
+
 /** A space's tasks: Ana's own and the space's, open and done lately. */
 export const sampleTasks = {
   open: [

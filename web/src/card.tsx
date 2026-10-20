@@ -4,7 +4,7 @@ import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type 
 import { ApprovalCard, type Done } from '@/approval-card';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 import type { ProposalData } from '@/lib/proposals';
-import { longProposal, memberProposal, proposal as sample, publishProposal, requestProposal, suggestedSpace } from '@/sample';
+import { longProposal, memberProposal, proposal as sample, publishProposal, requestProposal, suggestedSpace, taskProposal } from '@/sample';
 import './card.css';
 
 // Inside Claude, the card shows the proposal the assistant just made and lets the person decide
@@ -50,7 +50,7 @@ function Card() {
       decide={async (approve, onlyHere, space) => {
         if (!proposal) return;
         const result = await app
-          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text, ...(space && { space }) } })
+          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown, ...(space && { space }) } })
           .catch(() => undefined);
         if (!result) return 'Homing couldn’t be reached. Try again.';
         const decided = (result.structuredContent as Shown | undefined)?.proposal;
@@ -76,7 +76,7 @@ function applyHost(context: McpUiHostContext) {
 /** The card outside an assistant, deciding on sample data, or showing a change made without a decision. */
 function Preview() {
   const [shown, setShown] = useState(
-    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : params.get('sample') === 'members' ? memberProposal : params.get('sample') === 'publish' ? publishProposal : sample,
+    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : params.get('sample') === 'members' ? memberProposal : params.get('sample') === 'publish' ? publishProposal : params.get('sample') === 'task' ? taskProposal : sample,
   );
   const sending = Boolean(shown.request && !shown.request.sent);
   if (params.get('sample') === 'done') {
