@@ -28,17 +28,15 @@ docker compose logs homing   # shows the link for creating the first account
 
 ### Trying it with Claude Code
 
-Until the web app can, a small command-line tool sets up spaces and skills. Each command prints what it creates, and `node src/cli.ts` lists them all.
+Start a space for a client with New space in the sidebar, then connect Claude Code:
 
 ```sh
-docker compose exec homing node src/cli.ts people   # your id
-docker compose exec homing node src/cli.ts add-space <your id> "A client"
 claude mcp add --transport http homing http://localhost:4100/mcp
 ```
 
-The first time Claude Code connects, it opens Homing in your browser: sign in and allow it. Then ask Claude Code to remember something for that client, and ask about it in a new session. Ask it to add a rule for the client: it gives you a link to Homing, where you see the exact rule and approve it. Ask it to write a report for the client, and the rule comes with the context. Your account page lists Claude Code, and disconnecting it there stops it at once.
+The first time Claude Code connects, it opens Homing in your browser: sign in and allow it. You can also ask Claude Code to create the space. Then ask it to remember something for that client, and ask about it in a new session. Ask it to add a rule for the client: it gives you a link to Homing, where you see the exact rule and approve it. Ask it to write a report for the client, and the rule comes with the context. Your account page lists Claude Code, and disconnecting it there stops it at once.
 
-The command line acts as whoever you name, without sign-in, so treat it like the database password. An agent that can run commands on the same machine, such as Claude Code, can use it too, and can change skills with it, so don't rely on "only people change guidance" there.
+Until the web app can, a small command-line tool imports skills, and `node src/cli.ts` lists its commands. It acts as whoever you name, without sign-in, so treat it like the database password. An agent that can run commands on the same machine, such as Claude Code, can use it too, and can change skills with it, so don't rely on "only people change guidance" there.
 
 To add a skill, run the command line from your checkout instead, so it can read the skill's folder on your computer. It connects to the database from Docker Compose.
 

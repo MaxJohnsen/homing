@@ -1,9 +1,22 @@
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import { current, visible } from './knowledge.ts';
-import { accessibleSpaces, listSpaces, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type Space, type Who } from './spaces.ts';
+import type { FindAccount } from './people.ts';
+import { accessibleSpaces, changeMember, listSpaces, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members';
+
+/**
+ * A change of who is in a space: about someone the user shares a space with, by their id, or about
+ * whoever has the email the user gave, which Homing looks up only when the user decides.
+ */
+export interface MembersChange {
+  person?: string;
+  /** The person's name as the user knew it when it was proposed. */
+  personName?: string;
+  email?: string;
+  member: MemberChange;
+}
 
 /** A space an assistant suggests: its name, who it's for, where it goes, and whether it's closed. */
 export interface SpaceChange {
@@ -28,7 +41,7 @@ export interface Proposal {
   action: Action;
   /** The rule it changes or removes. */
   itemId: string | null;
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean } & Partial<SpaceChange>;
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean } & Partial<SpaceChange> & Partial<MembersChange>;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -65,6 +78,11 @@ export interface ProposalView extends Proposal {
   places: Place[];
   /** The space approving it created, if the person can open it: its name now, and where it is and who has it. */
   created: { id: string; name: string; where: string } | null;
+  /**
+   * For a change of members: who it's about, by name when known, and for an email, whether someone
+   * uses Homing with it. That's known only where the person decides, never to an assistant.
+   */
+  member: { change: MemberChange; name: string | null; email: string | null; found: boolean | null } | null;
 }
 
 /** A space a new one can go in. */
@@ -201,8 +219,34 @@ async function rare(s: Session, name: string) {
   if (declined) throw new NotSuggested(`The user didn’t create a space called ${name} when it was suggested on ${declined.at.toISOString().slice(0, 10)}. Don't suggest it again.`, declined.id);
 }
 
+/**
+ * Proposes a change of who is in a space, for an admin to approve (spec §1, §6): adding someone,
+ * which shares the space's knowledge and guidance with them, making them an admin or a member, or
+ * removing them. Someone the user shares a space with is named by id. Anyone else is named by
+ * email, and the proposal is the same whether or not that email has an account.
+ */
+export async function proposeMemberChange(s: Session, input: { spaceId: string; person?: { id: string; name: string }; email?: string; change: MemberChange; why?: string }): Promise<Proposal> {
+  const space = await spaceView(s, input.spaceId);
+  if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
+  if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
+  if (input.person) {
+    const member = space.members.find((candidate) => candidate.id === input.person!.id && candidate.member);
+    if (input.change === 'add' && member) throw new SpaceRefused('person', `${member.name} is already in ${space.name}.`);
+    if ((input.change === 'make member' || input.change === 'remove') && !member) throw new SpaceRefused('person', `They aren’t a member of ${space.name}.`);
+  }
+  return insertProposal(s, {
+    spaceId: space.id,
+    action: 'change members',
+    itemId: null,
+    change: { ...(input.person ? { person: input.person.id, personName: input.person.name } : { email: input.email!.trim().toLowerCase() }), member: input.change },
+    request: false,
+    reason: input.why?.trim() || null,
+  });
+}
+
 /** A proposal the person can see, with what they need to decide it. */
-export async function readProposal(s: Session, proposalId: string): Promise<ProposalView | undefined> {
+export async function readProposal(s: Session, proposalId: string, findAccount?: FindAccount): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
     select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${seen(s)}
   `;
@@ -212,9 +256,11 @@ export async function readProposal(s: Session, proposalId: string): Promise<Prop
   if (!space) return undefined;
   const above = spaces.find((candidate) => candidate.id === space.parentId);
   const rule = proposal.itemId ? await ruleFor(s, proposal.itemId) : undefined;
-  const names = await peopleNames(s, [proposal.privateTo, proposal.decidedBy]);
+  const names = await peopleNames(s, [proposal.privateTo, proposal.decidedBy, proposal.change.person ?? null]);
   const admins = proposal.request ? ((await spaceView(s, proposal.spaceId))?.members ?? []).filter((member) => member.admin).map((member) => member.name) : [];
   const created = proposal.spaceCreated ? spaces.find((candidate) => candidate.id === proposal.spaceCreated) : undefined;
+  // Whether an email has an account is looked up only where the person it was proposed to decides.
+  const account = proposal.change.email && findAccount && proposal.privateTo === personOf(s.principal) ? await findAccount(proposal.change.email) : undefined;
   return {
     ...proposal,
     space: {
@@ -232,6 +278,15 @@ export async function readProposal(s: Session, proposalId: string): Promise<Prop
     admins,
     places: proposal.action === 'add space' && proposal.state === 'open' && proposal.privateTo === personOf(s.principal) ? await placesFor(s, spaces) : [],
     created: created ? { id: created.id, name: created.name, where: whereItIs(created, spaces) } : null,
+    member:
+      proposal.action === 'change members'
+        ? {
+            change: proposal.change.member!,
+            name: proposal.change.person ? (names.get(proposal.change.person) ?? null) : (account?.name ?? null),
+            email: proposal.change.email ?? null,
+            found: proposal.change.person ? true : findAccount && proposal.privateTo === personOf(s.principal) ? Boolean(account) : null,
+          }
+        : null,
   };
 }
 
@@ -356,6 +411,8 @@ export interface Waiting {
   agent: string | null;
   /** For a space: whether the person asked for it, rather than the assistant suggesting it. */
   asked: boolean;
+  /** For a change of members: what changes. The text is who it's about, by name or the email given. */
+  member: MemberChange | null;
   /** For a request: whether it's sent, whether the person asked themselves, and who asked when it's someone else they know. */
   request: boolean;
   sent: boolean;
@@ -374,13 +431,14 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', p.change->>'name', rule.body) as text, p.agent,
-           coalesce((p.change->>'asked')::boolean, false) as asked, p.request, p.state = 'requested' as sent, p.private_to,
+           coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body) as text, p.agent,
+           coalesce((p.change->>'asked')::boolean, false) as asked, p.change->>'member' as member, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
     join spaces s on s.id = p.space_id
     left join spaces above on above.id = s.parent_id and above.id in (${accessibleSpaces(s)})
     left join content rule on rule.id = p.item_id and ${visible(s, 'rule')}
+    left join people who on who.id = (p.change->>'person')::uuid
     where p.space_id in (${accessibleSpaces(s)}) and p.expires_at > now() and ${ruleStands(s, 'p')}
       and ((p.private_to = ${me}::uuid and p.state = 'open')
            or (p.state = 'requested' and p.private_to <> ${me}::uuid and admin_of(p.space_id)))
@@ -413,7 +471,7 @@ function ruleStands(s: Session, table: string) {
 export async function decide(
   s: Session,
   proposalId: string,
-  decision: { approve: boolean; shown?: string; onlyHere?: boolean; decidedIn?: string; space?: Partial<SpaceChange> },
+  decision: { approve: boolean; shown?: string; onlyHere?: boolean; decidedIn?: string; space?: Partial<SpaceChange>; findAccount?: FindAccount },
 ): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
     select ${columns(s)} from proposals where id = ${proposalId}::uuid and ${seen(s)} for update
@@ -429,7 +487,13 @@ export async function decide(
   let created: string | null = null;
   if (decision.approve && !sending) {
     const { change } = proposal;
-    if (proposal.action === 'add space') {
+    if (proposal.action === 'change members') {
+      const person = change.person ?? (change.email && decision.findAccount ? (await decision.findAccount(change.email))?.id : undefined);
+      if (!person) {
+        throw new SpaceRefused('person', 'No one uses Homing with that email yet. Whoever looks after Homing can invite them, and then you can add them.');
+      }
+      await changeMember(s, proposal.spaceId, person, change.member!);
+    } else if (proposal.action === 'add space') {
       // As suggested, or as the person changed it before creating it, checked again now.
       const set = decision.space ?? {};
       created = (
@@ -466,11 +530,11 @@ export async function decide(
     update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}, space_created = ${created}::uuid
     where id = ${proposalId}::uuid and ${seen(s)}
   `;
-  return readProposal(s, proposalId);
+  return readProposal(s, proposalId, decision.findAccount);
 }
 
 /** An action as the app names it. */
-export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space' } as const;
+export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members' } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
 export function proposalData(proposal: ProposalView) {
@@ -520,6 +584,8 @@ export function proposalData(proposal: ProposalView) {
             created: proposal.created,
           }
         : null,
+    // A change of members: who, and what changes.
+    member: proposal.member,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,

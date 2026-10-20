@@ -11,8 +11,8 @@ export interface ProposalData {
   personal: boolean;
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
-  /** A rule to add, change or remove, or a space an assistant suggests. */
-  action: 'add' | 'change' | 'remove' | 'space';
+  /** A rule to add, change or remove, a space an assistant suggests, or a change of who is in a space. */
+  action: 'add' | 'change' | 'remove' | 'space' | 'members';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -46,7 +46,14 @@ export interface ProposalData {
     places: Place[];
     created: { id: string; name: string; where: string } | null;
   } | null;
+  /**
+   * A change of who is in the space: who, by name when known, or the email given, and for an email,
+   * whether someone uses Homing with it.
+   */
+  member?: { change: MemberChange; name: string | null; email: string | null; found: boolean | null } | null;
 }
+
+export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
 
 /** A request you sent to a space's admins, as Home shows it under your requests. */
 export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within' | 'action' | 'kind'> {
@@ -64,6 +71,8 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
   spaceId: string;
   /** For a space: whether you asked for it. */
   asked?: boolean;
+  /** For a change of members: what changes. The text is who, by name or email. */
+  member?: MemberChange | null;
   /** For a request: whether it's yours, who asked when it's someone you know, and whether it's sent. */
   request?: { by: string | null; yours: boolean; sent: boolean } | null;
   /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
@@ -75,8 +84,29 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
  * Who wants what, where: "Claude wants to add a rule to Acme", "Claude wants to ask the admins of Acme
  * to add a rule", or "Cara Lund asks to add a rule to Acme". Under a heading that names the place, without it.
  */
-export function wantsTo(proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & { request?: { by: string | null; yours: boolean } | null; asked?: boolean; suggestion?: { asked: boolean } | null }, withPlace = true): string {
+export function wantsTo(
+  proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & {
+    request?: { by: string | null; yours: boolean } | null;
+    asked?: boolean;
+    suggestion?: { asked: boolean } | null;
+    member?: MemberChange | { change: MemberChange; name: string | null; email: string | null } | null;
+    text?: string | null;
+  },
+  withPlace = true,
+): string {
   const { assistant, action, kind, request } = proposal;
+  if (action === 'members') {
+    const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
+    const who = typeof proposal.member === 'object' && proposal.member ? (proposal.member.name ?? proposal.member.email) : proposal.text;
+    const place = withPlace ? placeOf(proposal) : 'the space';
+    return change === 'remove'
+      ? `${assistant} wants to remove ${who ?? 'someone'} from ${place}`
+      : change === 'make admin'
+        ? `${assistant} wants to make ${who ?? 'someone'} an admin of ${place}`
+        : change === 'make member'
+          ? `${assistant} wants ${who ?? 'someone'} to be a member of ${place}, not an admin`
+          : `${assistant} wants to add ${who ?? 'someone'} to ${place}`;
+  }
   // Whether the user asked is only the assistant's word, so an asked-for space says where it goes instead.
   if (action === 'space') return proposal.asked || proposal.suggestion?.asked ? `${assistant} wants to create a space in ${placeOf(proposal)}` : `${assistant} suggests a new space`;
   const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
@@ -104,8 +134,17 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule'>): boolean
 }
 
 /** The buttons for deciding it, or for a request you haven't sent, for sending it. */
-export function buttonsOf(action: ProposalData['action'], sending = false): { approve: string; reject: string } {
+export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
+  if (action === 'members') {
+    return member === 'remove'
+      ? { approve: 'Remove', reject: 'Keep them' }
+      : member === 'make admin'
+        ? { approve: 'Make admin', reject: 'Don’t' }
+        : member === 'make member'
+          ? { approve: 'Make member', reject: 'Keep as admin' }
+          : { approve: 'Add', reject: 'Don’t add' };
+  }
   if (action === 'space') return { approve: 'Create space', reject: 'Don’t create' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
@@ -129,9 +168,24 @@ export function eitherOf(names: string[]): string {
  * for the reader. A request someone sent waits for the space's admins, so for them it's sent.
  */
 export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejected' | 'expired' | 'gone' | 'sent'; heading: string; detail: string } | undefined {
-  const { action, assistant, state, request, decidedBy, suggestion } = proposal;
+  const { action, assistant, state, request, decidedBy, suggestion, member } = proposal;
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
+  if (action === 'members' && member) {
+    const who = member.name ?? member.email ?? 'They';
+    if (state === 'approved') {
+      return member.change === 'remove'
+        ? { kind: 'approved', heading: `Removed from ${place}`, detail: `${who} no longer has access.` }
+        : member.change === 'make admin'
+          ? { kind: 'approved', heading: `Now an admin of ${place}`, detail: `${who} changes its shared rules and who’s in it, with its other admins.` }
+          : member.change === 'make member'
+            ? { kind: 'approved', heading: `Now a member of ${place}`, detail: `${who} is no longer an admin.` }
+            : { kind: 'approved', heading: `Added to ${place}`, detail: `${who} sees its shared knowledge and rules from now on.` };
+    }
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Nothing changed', detail: `${who}’s access to ${place} stays as it was.` };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing changed. Ask ${assistant} again if you still want it.` };
+    return undefined;
+  }
   if (action === 'space' && suggestion) {
     if (state === 'approved') return { kind: 'approved', heading: 'Space created', detail: suggestion.created?.where ?? 'It’s with your spaces now.' };
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not created', detail: suggestion.asked ? 'Nothing was created.' : `Nothing was created, and ${assistant} won’t suggest a space called ${suggestion.name} again.` };

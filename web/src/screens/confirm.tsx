@@ -33,7 +33,9 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
   const space = draft && suggestion ? spaceOf(draft, suggestion.places) : undefined;
   const sending = isSending(proposal);
   const outcome = outcomeOf(proposal);
-  const buttons = buttonsOf(action, sending);
+  const buttons = buttonsOf(action, sending, proposal.member?.change);
+  // An email nobody uses Homing with can't be added until they're invited.
+  const blocked = (action === 'space' && !space?.name) || proposal.member?.found === false;
   const place = placeOf(proposal);
 
   const choose = async (approve: boolean) => {
@@ -70,13 +72,15 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
               <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>
                 {buttons.reject}
               </Button>
-              <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy || (action === 'space' && !space?.name)} onClick={() => choose(true)}>
+              <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy || blocked} onClick={() => choose(true)}>
                 {buttons.approve}
               </Button>
             </div>
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
             <p className="text-sm text-muted-foreground">
-              {action === 'space'
+              {action === 'members'
+                ? `Only an admin of ${place} can approve this. ${assistant} can’t do it for you.`
+                : action === 'space'
                 ? suggestion?.asked
                   ? `Everyone in ${place} would see its name, so it waits for you. ${assistant} can’t create it without you.`
                   : `Only you can create it. If you don’t, ${assistant} won’t suggest a space called ${suggestion?.name} again.`

@@ -13,6 +13,7 @@ import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
 import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable } from './proposals.ts';
+import { accountFinder } from './people.ts';
 import { SpaceRefused, type Who } from './spaces.ts';
 
 /** What the web app's requests need from the server. */
@@ -172,7 +173,8 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
     const missing = { message: 'There’s nothing for you to decide here.' };
 
     if (req.method === 'GET') {
-      const found = await withPrincipal(app.sql, { person }, (s) => readProposal(s, id));
+      // Signed in, the person deciding sees whether an email has an account (spec §1, #31).
+      const found = await withPrincipal(app.sql, { person }, (s) => readProposal(s, id, accountFinder(app.authPool)));
       return found ? json(res, 200, { person: session.user.name, proposal: proposalData(found) }) : json(res, 404, missing);
     }
 
@@ -186,16 +188,17 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
           shown: typeof body.shown === 'string' ? body.shown : undefined,
           onlyHere: typeof body.onlyHere === 'boolean' ? body.onlyHere : undefined,
           space: spaceAsSet(body.space),
+          findAccount: accountFinder(app.authPool),
         }),
       );
       if (!decided) return json(res, 404, missing);
       // Emailing the admins about a sent request, or the member about the outcome, comes after the decision holds.
       await afterDecision(app, person, decided);
-      const now = await withPrincipal(app.sql, { person }, (s) => readProposal(s, id));
+      const now = await withPrincipal(app.sql, { person }, (s) => readProposal(s, id, accountFinder(app.authPool)));
       return json(res, 200, { person: session.user.name, proposal: proposalData(now ?? decided) });
     } catch (error) {
       if (error instanceof Undecidable) return json(res, error.reason === 'expired' ? 410 : 409, { code: error.reason.toUpperCase(), message: error.message });
-      if (error instanceof SpaceRefused) return json(res, error.reason === 'missing' ? 404 : error.reason === 'admin' ? 403 : 400, { field: error.reason === 'name' ? 'name' : 'in', message: error.message });
+      if (error instanceof SpaceRefused) return json(res, error.status, { field: error.field, message: error.message });
       if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
         return json(res, 403, { message: 'You can’t make this change any more, so nothing changed.' });
       }

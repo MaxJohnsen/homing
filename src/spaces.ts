@@ -44,8 +44,8 @@ export const spaceNameLength = 100;
 
 /** A space Homing won't create or rename as asked, with the reason in words for the person. */
 export class SpaceRefused extends Error {
-  /** What's wrong: the name, where the space would go, rights the person lacks, or a space they can't open. */
-  reason: 'name' | 'where' | 'admin' | 'missing';
+  /** What's wrong: the name, where the space would go, who it's about, rights the person lacks, or a space they can't open. */
+  reason: 'name' | 'where' | 'person' | 'admin' | 'missing';
   /** A space the person can open that already has the name, where the new one would go. */
   existing?: Space;
 
@@ -53,6 +53,16 @@ export class SpaceRefused extends Error {
     super(message);
     this.reason = reason;
     this.existing = existing;
+  }
+
+  /** The answer's status in the app. */
+  get status(): 400 | 403 | 404 {
+    return this.reason === 'admin' ? 403 : this.reason === 'missing' ? 404 : 400;
+  }
+
+  /** The form field it's about, if any. */
+  get field(): string | undefined {
+    return { name: 'name', where: 'in', person: 'person', admin: undefined, missing: undefined }[this.reason];
   }
 }
 
@@ -133,6 +143,32 @@ function cleanName(name: string): string {
 
 /** Whether two names are the same name: case doesn't count, accents do, so Ås and As are two names. */
 const sameName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'accent' }) === 0;
+
+/** A change to who is in a space. Making someone an admin adds them if they aren't in it yet. */
+export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
+
+/**
+ * Changes who is in a space (spec §1): adds someone, makes them an admin or a member, or removes
+ * them. Only its admins do, directly, and never in a personal tree. A space keeps an admin.
+ */
+export async function changeMember(s: Session, spaceId: string, personId: string, change: MemberChange): Promise<void> {
+  const view = await spaceView(s, spaceId);
+  if (!view) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (view.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
+  if (!view.admin) throw new SpaceRefused('admin', `Only ${view.name}’s admins change who’s in it.`);
+  const member = view.members.find((candidate) => candidate.id === personId && candidate.member);
+  if (change === 'add' && member) throw new SpaceRefused('person', `${member.name} is already in ${view.name}.`);
+  if ((change === 'make member' || change === 'remove') && !member) throw new SpaceRefused('person', `They aren’t a member of ${view.name}.`);
+  try {
+    if (change === 'remove') await removeMember(s, spaceId, personId);
+    else await addMember(s, spaceId, personId, change === 'make admin' ? 'admin' : 'member');
+  } catch (error) {
+    if (error instanceof Error && error.message === 'a space keeps at least one admin') {
+      throw new SpaceRefused('person', `${view.name} needs an admin, so make someone else an admin first.`);
+    }
+    throw error;
+  }
+}
 
 /** Adds a person to a space, or changes their role. Needs admin rights. */
 export async function addMember(s: Session, spaceId: string, personId: string, role: Role = 'member') {

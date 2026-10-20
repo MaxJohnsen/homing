@@ -1,6 +1,7 @@
-// Sets up spaces and skills, until Homing's web app and assistants can, and
-// gives people a sign-in link when they can't sign in. Everything here is a
-// person editing directly. Rules change through assistants, with approval.
+// Imports skills, until Homing's web app and assistants can, and gives people
+// a sign-in link when they can't sign in. Everything here is a person editing
+// directly. Spaces and their members are changed in the web app or through an
+// assistant, and rules through assistants, with approval.
 
 import { randomBytes } from 'node:crypto';
 import { Pool } from 'pg';
@@ -10,14 +11,12 @@ import { readSkillFolder, removeSkill, saveSkill, skillsFor } from './skills.ts'
 import { createAuth } from './auth.ts';
 import { operatorSignInLink } from './recovery.ts';
 import { configuredUrl } from './server.ts';
-import { addMember, createSpace, listSpaces, type Space } from './spaces.ts';
+import { listSpaces, type Space } from './spaces.ts';
 
 const usage = `Usage: node src/cli.ts <command>
 
   people                                  Everyone with an account, with their ids
   sign-in-link <email>                    A one-time link for someone who can't sign in
-  add-space <person> <name> [parent]      Prints the new space's id
-  add-member <admin> <space> <person>
   spaces <person>
 
   rules <person> <space>                  The rules that apply in a space, least specific first
@@ -61,10 +60,6 @@ try {
     } finally {
       await pool.end();
     }
-  } else if (command === 'add-space' && (args.length === 2 || args.length === 3)) {
-    console.log(await as(args[0], (s) => createSpace(s, { name: args[1], parentId: args[2] })));
-  } else if (command === 'add-member' && args.length === 3) {
-    await as(args[0], (s) => addMember(s, args[1], args[2]));
   } else if (command === 'spaces' && args.length === 1) {
     for (const space of await as(args[0], listSpaces)) console.log(`${space.id}  ${space.name}`);
   } else if (command === 'rules' && args.length === 2) {

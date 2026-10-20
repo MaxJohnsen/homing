@@ -5,7 +5,8 @@ import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidan
 import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
-import { listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
+import { accountFinder, isEmail } from './people.ts';
+import { changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView } from './spaces.ts';
 import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
@@ -65,6 +66,32 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'add member': {
+        const body = await readJson(req);
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        if (!isEmail(email)) return answer(res, 400, { field: 'email', message: 'Write their email address.' });
+        const space = await read((s) => spaceView(s, route.id));
+        if (!space) return answer(res, 404, noSpace);
+        if (!space.admin || space.privateTo) return answer(res, 403, { message: space.privateTo ? 'Spaces in your personal space are only ever yours, so nobody can be added.' : `Only ${space.name}’s admins change who’s in it.` });
+        // Signed in, an admin learns whether someone uses Homing with that email.
+        const account = await accountFinder(app.authPool)(email);
+        if (!account) {
+          return answer(res, 400, { field: 'email', message: 'No one uses Homing with that email yet. Whoever looks after Homing can invite them, and then you can add them.' });
+        }
+        await write((s) => changeMember(s, route.id, account.id, body.admin === true ? 'make admin' : 'add'));
+        json(res, 200, { id: account.id, name: account.name });
+        break;
+      }
+
+      case 'change member': {
+        const body = await readJson(req);
+        const change = (['make admin', 'make member', 'remove'] as const).find((candidate) => candidate === body.change);
+        if (!change) return answer(res, 400, { message: 'Choose what changes.' });
+        await write((s) => changeMember(s, route.id, route.person, change));
+        json(res, 200, {});
+        break;
+      }
+
       case 'rename space': {
         const body = await readJson(req);
         const space = await write((s) => renameSpace(s, route.id, typeof body.name === 'string' ? body.name : ''));
@@ -105,6 +132,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             kind: item.kind,
             text: item.text,
             asked: item.asked,
+            member: item.member,
             // For a request: who asked, unless it's the person, and whether it's sent.
             request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null,
             createdAt: item.createdAt,
@@ -542,10 +570,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
     }
   } catch (error) {
-    if (error instanceof SpaceRefused) {
-      const status = { name: 400, where: 400, admin: 403, missing: 404 }[error.reason];
-      return answer(res, status, { ...(status === 400 && { field: error.reason === 'name' ? 'name' : 'in' }), message: error.message });
-    }
+    if (error instanceof SpaceRefused) return answer(res, error.status, { field: error.field, message: error.message });
     // The store refuses what the person may not do, such as a member changing a shared rule.
     if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
       return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t make that change here.' });
@@ -587,7 +612,8 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
-  | { name: 'space' | 'rename space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+ | { name: 'change member'; id: string; person: string }
+  | { name: 'space' | 'rename space' | 'add member' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -615,8 +641,11 @@ function routeOf(method: string, path: string): Route | undefined {
   }
   if (method === 'POST') {
     if (path === '/api/spaces') return { name: 'create space' };
+    const member = new RegExp(`^/api/spaces/${uuid}/members/${uuid}$`, 'i').exec(path);
+    if (member) return { name: 'change member', id: member[1].toLowerCase(), person: member[2].toLowerCase() };
     for (const [name, pattern] of [
       ['rename space', `/api/spaces/${uuid}`],
+      ['add member', `/api/spaces/${uuid}/members`],
       ['add page', `/api/spaces/${uuid}/pages`],
       ['write overview', `/api/spaces/${uuid}/overview`],
       ['add item', `/api/pages/${uuid}/items`],

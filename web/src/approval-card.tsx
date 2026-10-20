@@ -88,6 +88,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
               ? proposal.suggestion?.asked
                 ? `Create this space in ${placeOf(proposal)}?`
                 : `Create the space ${proposal.assistant} suggests?`
+              : proposal.action === 'members'
+              ? wantsTo(proposal)
               : sending
               ? `Ask the admins of ${placeOf(proposal)} for this change?`
               : proposal.action === 'add'
@@ -112,8 +114,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           />
           {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
-            <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending).approve}</Button>
-            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending).reject}</Button>
+            <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name) || proposal.member?.found === false} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending, proposal.member?.change).approve}</Button>
+            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending, proposal.member?.change).reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (
