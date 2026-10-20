@@ -15,10 +15,14 @@ export interface Account {
 /** Finds people by the emails they sign in with. */
 export type FindAccount = (email: string) => Promise<Account | undefined>;
 
-/** The account with this email, if there is one. Emails match whatever their case. */
+/**
+ * The account with this email, if there is one and the email is proven theirs: someone who joins
+ * can type any address, and only an invite sent to it verifies it (spec §4: an email is a strong
+ * signal, not proof). Emails match whatever their case.
+ */
 export function accountFinder(authPool: Pool): FindAccount {
   return async (email) => {
-    const { rows } = await authPool.query<Account>('select "id", "name", "email" from auth."user" where lower("email") = lower($1)', [email.trim()]);
+    const { rows } = await authPool.query<Account>('select "id", "name", "email" from auth."user" where lower("email") = lower($1) and "emailVerified"', [email.trim()]);
     return rows[0];
   };
 }

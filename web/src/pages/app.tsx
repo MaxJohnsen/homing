@@ -149,8 +149,9 @@ function memberActions(spaceId: string): MemberActions {
   return {
     add: async (email, admin) => {
       try {
-        await api(`/api/spaces/${spaceId}/members`, { email, admin });
+        const added = await api<{ name: string }>(`/api/spaces/${spaceId}/members`, { email, admin });
         await fresh();
+        return { name: added.name };
       } catch (error) {
         return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.', field: error instanceof ApiError ? error.field : undefined };
       }

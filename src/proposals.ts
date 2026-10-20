@@ -2,7 +2,7 @@ import { AccessDenied, personOf, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import { current, visible } from './knowledge.ts';
 import type { FindAccount } from './people.ts';
-import { accessibleSpaces, changeMember, listSpaces, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
+import { accessibleSpaces, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
 
 export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members';
 
@@ -82,7 +82,16 @@ export interface ProposalView extends Proposal {
    * For a change of members: who it's about, by name when known, and for an email, whether someone
    * uses Homing with it. That's known only where the person decides, never to an assistant.
    */
-  member: { change: MemberChange; name: string | null; email: string | null; found: boolean | null } | null;
+  member: {
+    change: MemberChange;
+    name: string | null;
+    email: string | null;
+    found: boolean | null;
+    /** Whether they're a member of the space now, and the space above it they have access through, if any. */
+    inSpace: boolean;
+    through: string | null;
+    why: string | null;
+  } | null;
 }
 
 /** A space a new one can go in. */
@@ -228,13 +237,9 @@ async function rare(s: Session, name: string) {
 export async function proposeMemberChange(s: Session, input: { spaceId: string; person?: { id: string; name: string }; email?: string; change: MemberChange; why?: string }): Promise<Proposal> {
   const space = await spaceView(s, input.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
-  if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
-  if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
-  if (input.person) {
-    const member = space.members.find((candidate) => candidate.id === input.person!.id && candidate.member);
-    if (input.change === 'add' && member) throw new SpaceRefused('person', `${member.name} is already in ${space.name}.`);
-    if ((input.change === 'make member' || input.change === 'remove') && !member) throw new SpaceRefused('person', `They aren’t a member of ${space.name}.`);
-  }
+  if (input.person) await memberChangeFits(s, space, input.person.id, input.change);
+  else if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
+  else if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
   return insertProposal(s, {
     spaceId: space.id,
     action: 'change members',
@@ -259,8 +264,13 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
   const names = await peopleNames(s, [proposal.privateTo, proposal.decidedBy, proposal.change.person ?? null]);
   const admins = proposal.request ? ((await spaceView(s, proposal.spaceId))?.members ?? []).filter((member) => member.admin).map((member) => member.name) : [];
   const created = proposal.spaceCreated ? spaces.find((candidate) => candidate.id === proposal.spaceCreated) : undefined;
-  // Whether an email has an account is looked up only where the person it was proposed to decides.
-  const account = proposal.change.email && findAccount && proposal.privateTo === personOf(s.principal) ? await findAccount(proposal.change.email) : undefined;
+  // Whether an email has an account is looked up only where the person it was proposed to decides,
+  // while they're an admin of the space.
+  const deciding = proposal.privateTo === personOf(s.principal) && space.admin && findAccount !== undefined;
+  const account = proposal.change.email && deciding ? await findAccount!(proposal.change.email) : undefined;
+  // Who it's about, if the reader can see them, and whether they're in the space now or through a space above.
+  const subject = proposal.change.person && names.has(proposal.change.person) ? proposal.change.person : account?.id;
+  const standing = proposal.action === 'change members' && subject ? (await spaceView(s, proposal.spaceId))?.members.find((member) => member.id === subject) : undefined;
   return {
     ...proposal,
     space: {
@@ -282,9 +292,13 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
       proposal.action === 'change members'
         ? {
             change: proposal.change.member!,
-            name: proposal.change.person ? (names.get(proposal.change.person) ?? null) : (account?.name ?? null),
+            // Someone the reader no longer shares a space with keeps the name they had, and can't be added this way.
+            name: proposal.change.person ? (names.get(proposal.change.person) ?? proposal.change.personName ?? null) : (account?.name ?? null),
             email: proposal.change.email ?? null,
-            found: proposal.change.person ? true : findAccount && proposal.privateTo === personOf(s.principal) ? Boolean(account) : null,
+            found: proposal.change.person ? names.has(proposal.change.person) : deciding ? Boolean(account) : null,
+            inSpace: standing?.member ?? false,
+            through: standing?.through ?? null,
+            why: proposal.reason,
           }
         : null,
   };
@@ -488,10 +502,17 @@ export async function decide(
   if (decision.approve && !sending) {
     const { change } = proposal;
     if (proposal.action === 'change members') {
-      const person = change.person ?? (change.email && decision.findAccount ? (await decision.findAccount(change.email))?.id : undefined);
-      if (!person) {
-        throw new SpaceRefused('person', 'No one uses Homing with that email yet. Whoever looks after Homing can invite them, and then you can add them.');
+      const space = await spaceView(s, proposal.spaceId);
+      if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+      // Approving runs what was shown: someone the user still shares a space with, or the email's owner.
+      if (change.person && !(await peopleNames(s, [change.person])).has(change.person)) {
+        throw new SpaceRefused('person', `You no longer share a space with ${change.personName ?? 'them'}, so they can’t be added this way. Ask for their email instead.`);
       }
+      if (!space.admin && !(change.member === 'remove' && change.person === personOf(s.principal))) {
+        throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
+      }
+      const person = change.person ?? (change.email && decision.findAccount ? (await decision.findAccount(change.email))?.id : undefined);
+      if (!person) throw new SpaceRefused('person', `No one uses Homing with ${change.email} yet. Once they’re invited to Homing, they can be added.`);
       await changeMember(s, proposal.spaceId, person, change.member!);
     } else if (proposal.action === 'add space') {
       // As suggested, or as the person changed it before creating it, checked again now.

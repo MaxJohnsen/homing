@@ -58,7 +58,7 @@ test('an admin adds someone by email, changes their role and removes them, in th
 
   const unknown = await ana.browser.json(`/api/spaces/${acme}/members`, { email: 'nobody@example.test' });
   assert.deepEqual([unknown.status, unknown.body.field], [400, 'email']);
-  assert.match(unknown.body.message, /No one uses Homing with that email yet/);
+  assert.match(unknown.body.message, /No one uses Homing with .+ yet/);
 
   // A member doesn't learn whether an email has an account, nor change who's in it.
   const byMember = await cara.browser.json(`/api/spaces/${acme}/members`, { email: 'nobody@example.test' });
@@ -87,7 +87,7 @@ test('an assistant proposes adding someone the user shares a space with, by name
   assert.ok(!proposed.failed, proposed.text);
   assert.match(proposed.text, /^Waiting for the user's approval \(proposal:.+\)\. Nothing has changed yet\./);
   assert.equal(await canOpen(cara, acme), false);
-  assert.deepEqual((await shown(ana, proposed.proposal!)).member, { change: 'add', name: 'Cara', email: null, found: true });
+  assert.deepEqual((await shown(ana, proposed.proposal!)).member, { change: 'add', name: 'Cara', email: null, found: true, inSpace: false, through: null, why: 'Cara runs the Acme launch.' });
   // Only the user decides, never the assistant.
   assert.equal((await decide(cara, proposed.proposal!)).status, 404);
   assert.equal((await decide(ana, proposed.proposal!)).status, 200);
@@ -106,7 +106,19 @@ test('a name that fits several asks which, and a name nobody known has asks for 
   const which = await act({ space: `space:${acme}`, person: 'Cara', change: 'add' });
   assert.ok(which.failed);
   assert.match(which.text, /Several people are called Cara: (Cara Lund, Cara Berg|Cara Berg, Cara Lund)\. Ask the user which one they mean\./);
-  assert.ok(!(await act({ space: `space:${acme}`, person: 'cara berg', change: 'add' })).failed);
+  const berg = await act({ space: `space:${acme}`, person: 'cara berg', change: 'add' });
+  assert.ok(!berg.failed);
+  // Two of one name can't be told apart by name, so the assistant asks for an email.
+  await admin`update people set name = 'Cara Lund' where id = ${dan.id}`;
+  assert.match((await act({ space: `space:${acme}`, person: 'Cara Lund', change: 'add' })).text, /Ask the user for the email address of the one they mean/);
+  // Someone the user no longer shares a space with can't be added from an old proposal.
+  const team = (await ana.browser.json('/api/spaces')).body.spaces.find((space: { name: string }) => space.name === 'Team').id as string;
+  await ana.browser.json(`/api/spaces/${team}/members/${dan.id}`, { change: 'remove' });
+  assert.deepEqual([(await shown(ana, berg.proposal!)).member.found, (await shown(ana, berg.proposal!)).member.name], [false, 'Cara Berg']);
+  const stale = await decide(ana, berg.proposal!);
+  assert.equal(stale.status, 400);
+  assert.match(stale.body.message, /You no longer share a space with Cara Berg/);
+  assert.equal(await canOpen(dan, acme), false);
   // Ben uses Homing but shares no space with Ana, so his name means nothing to her assistant.
   const stranger = await act({ space: `space:${acme}`, person: 'Ben', change: 'add' });
   assert.match(stranger.text, /No one the user shares a space with is called Ben\. Ask the user for their email address, and use that\./);
@@ -120,11 +132,13 @@ test('by email, the assistant gets the same answer whether or not anyone uses Ho
   assert.equal((await read(known.proposal!)).replace(ben.email, 'X'), (await read(unknown.proposal!)).replace('nobody@example.test', 'X'));
 
   // Where the user decides, signed in, it says.
-  assert.deepEqual((await shown(ana, known.proposal!)).member, { change: 'add', name: 'Ben', email: ben.email, found: true });
-  assert.deepEqual((await shown(ana, unknown.proposal!)).member, { change: 'add', name: null, email: 'nobody@example.test', found: false });
+  const { member: knownShown } = await shown(ana, known.proposal!);
+  const { member: unknownShown } = await shown(ana, unknown.proposal!);
+  assert.deepEqual([knownShown.name, knownShown.email, knownShown.found], ['Ben', ben.email, true]);
+  assert.deepEqual([unknownShown.name, unknownShown.email, unknownShown.found], [null, 'nobody@example.test', false]);
   const nobody = await decide(ana, unknown.proposal!);
   assert.equal(nobody.status, 400);
-  assert.match(nobody.body.message, /No one uses Homing with that email yet/);
+  assert.match(nobody.body.message, /No one uses Homing with .+ yet/);
   assert.equal((await decide(ana, known.proposal!)).status, 200);
   assert.ok(await canOpen(ben, acme));
 });
@@ -139,4 +153,31 @@ test('only an admin proposes a change of members, and never in a personal space'
   const asMember = await bens.call('act', { action: 'members.change', input: { space: `space:${acme}`, person: 'Ana', change: 'remove' } });
   assert.ok(asMember.failed);
   assert.match(asMember.text, /Only Acme’s admins change who’s in it\./);
+});
+
+test('an email counts only once it is proven theirs, by joining from an invite sent to it', async () => {
+  const mallory = await member(homing.url, 'Mallory', { verified: false });
+  const tried = await ana.browser.json(`/api/spaces/${acme}/members`, { email: mallory.email });
+  assert.deepEqual([tried.status, tried.body.field], [400, 'email']);
+  const proposed = await act({ space: `space:${acme}`, person: mallory.email, change: 'add' });
+  assert.equal((await shown(ana, proposed.proposal!)).member.found, false);
+  assert.equal((await decide(ana, proposed.proposal!)).status, 400);
+  assert.equal(await canOpen(mallory, acme), false);
+});
+
+test('anyone can leave a space, and a role changes only where it was given', async () => {
+  // Ben is a member of Acme, not an admin.
+  const notAdmin = await ana.browser.json(`/api/spaces/${acme}/members/${ben.id}`, { change: 'make member' });
+  assert.deepEqual([notAdmin.status, notAdmin.body.message], [400, 'Ben isn’t an admin of Acme.']);
+  // An admin of Acme is an admin of Website too, but only Acme makes them one.
+  const website = await as(ana, (s) => createSpace(s, { name: 'Website', parentId: acme }));
+  await as(ana, (s) => addMember(s, website, ana.id, 'admin'));
+  await as(ana, (s) => addMember(s, acme, ben.id, 'admin'));
+  const above = await ana.browser.json(`/api/spaces/${website}/members/${ben.id}`, { change: 'make member' });
+  assert.equal(above.status, 400);
+  await as(ana, (s) => addMember(s, acme, ben.id, 'member'));
+
+  const left = await ben.browser.json(`/api/spaces/${acme}/members/${ben.id}`, { change: 'remove' });
+  assert.equal(left.status, 200, JSON.stringify(left.body));
+  assert.equal(await canOpen(ben, acme), false);
 });

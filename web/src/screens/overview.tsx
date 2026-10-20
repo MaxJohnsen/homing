@@ -92,7 +92,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                 <li key={item.id}>
                   <Link href={`/proposals/${item.id}`} className={cn('flex flex-col rounded-lg px-2 py-1.5 hover:bg-muted', focusRing)}>
                     <span className="line-clamp-2 text-base leading-snug font-semibold">{item.text ?? 'A rule change'}</span>
-                    <span className="text-sm text-muted-foreground">{item.request && !item.request.yours ? `${item.request.by ?? 'A member'} asks` : item.action === 'add space' ? (item.asked ? 'A new space, waiting for your approval' : `${item.assistant} suggests a space`) : `${item.assistant} proposes`}</span>
+                    <span className="text-sm text-muted-foreground">{item.request && !item.request.yours ? `${item.request.by ?? 'A member'} asks` : item.action === 'add space' ? (item.asked ? 'A new space, waiting for your approval' : `${item.assistant} suggests a space`) : item.action === 'change members' ? `${item.assistant} proposes ${{ add: 'adding them', 'make admin': 'making them an admin', 'make member': 'making them a member, not an admin', remove: 'removing them' }[item.member ?? 'add']}` : `${item.assistant} proposes`}</span>
                   </Link>
                 </li>
               ))}

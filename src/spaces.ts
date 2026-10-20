@@ -154,11 +154,7 @@ export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
 export async function changeMember(s: Session, spaceId: string, personId: string, change: MemberChange): Promise<void> {
   const view = await spaceView(s, spaceId);
   if (!view) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
-  if (view.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
-  if (!view.admin) throw new SpaceRefused('admin', `Only ${view.name}’s admins change who’s in it.`);
-  const member = view.members.find((candidate) => candidate.id === personId && candidate.member);
-  if (change === 'add' && member) throw new SpaceRefused('person', `${member.name} is already in ${view.name}.`);
-  if ((change === 'make member' || change === 'remove') && !member) throw new SpaceRefused('person', `They aren’t a member of ${view.name}.`);
+  await memberChangeFits(s, view, personId, change);
   try {
     if (change === 'remove') await removeMember(s, spaceId, personId);
     else await addMember(s, spaceId, personId, change === 'make admin' ? 'admin' : 'member');
@@ -167,6 +163,25 @@ export async function changeMember(s: Session, spaceId: string, personId: string
       throw new SpaceRefused('person', `${view.name} needs an admin, so make someone else an admin first.`);
     }
     throw error;
+  }
+}
+
+/**
+ * Whether a change of members fits the space as it is: only its admins change who's in it, except
+ * that anyone may leave; never in a personal tree; and a role changes only where it was given.
+ */
+export async function memberChangeFits(s: Session, view: SpaceView, personId: string, change: MemberChange): Promise<void> {
+  const leaving = change === 'remove' && personId === personOf(s.principal);
+  if (view.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only ever yours, so nobody can be added.');
+  if (!view.admin && !leaving) throw new SpaceRefused('admin', `Only ${view.name}’s admins change who’s in it.`);
+  const member = view.members.find((candidate) => candidate.id === personId && candidate.member);
+  if (change === 'add' && member) throw new SpaceRefused('person', `${member.name} is already in ${view.name}.`);
+  if ((change === 'make member' || change === 'remove') && !member) throw new SpaceRefused('person', `They aren’t a member of ${view.name}.`);
+  if (change === 'make member') {
+    const [row] = await s.tx<{ role: Role }[]>`select role from memberships where space_id = ${view.id}::uuid and person_id = ${personId}::uuid`;
+    if (row?.role !== 'admin') {
+      throw new SpaceRefused('person', member!.admin ? `${member!.name} is an admin through a space above ${view.name}, so that’s changed there.` : `${member!.name} isn’t an admin of ${view.name}.`);
+    }
   }
 }
 

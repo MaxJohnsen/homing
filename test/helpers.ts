@@ -37,24 +37,25 @@ export type Person = Awaited<ReturnType<typeof person>>;
 export const refused = { code: '42501' };
 
 /** A new invite, made the way the instance admin will. */
-export async function invite(options: { expired?: boolean } = {}): Promise<string> {
+export async function invite(options: { expired?: boolean; email?: string } = {}): Promise<string> {
   const token = randomBytes(32).toString('base64url');
   const hash = createHash('sha256').update(token).digest();
   await admin`
-    insert into invites (hash, expires_at)
-    values (${hash}, now() + ${options.expired ? '-1 minute' : '1 hour'}::interval)
+    insert into invites (hash, expires_at, email)
+    values (${hash}, now() + ${options.expired ? '-1 minute' : '1 hour'}::interval, ${options.email ?? null})
   `;
   return token;
 }
 
 /**
  * Someone who joined Homing through an invite with a passkey, and is signed
- * in to their own browser. They can also act as a principal.
+ * in to their own browser. They can also act as a principal. The invite went
+ * to their email, which verifies it, unless they joined with another one.
  */
-export async function member(url: URL, name: string) {
+export async function member(url: URL, name: string, { verified = true }: { verified?: boolean } = {}) {
   const browser = new Browser(url);
   const email = `${name.toLowerCase()}-${randomBytes(4).toString('hex')}@example.test`;
-  const joined = await browser.join(await invite(), { name, email });
+  const joined = await browser.join(await invite({ email: verified ? email : undefined }), { name, email });
   assert.equal(joined.status, 200, JSON.stringify(joined.body));
   const id = joined.body.user.id as string;
   const [{ personalSpaceId }] = await admin`select id as personal_space_id from spaces where private_to = ${id} and parent_id is null`;

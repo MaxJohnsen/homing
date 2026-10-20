@@ -83,23 +83,30 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
  */
 function MemberChangeDetails({ proposal, member }: { proposal: ProposalData; member: NonNullable<ProposalData['member']> }) {
   const place = placeOf(proposal);
-  const sees = `They’ll see ${place}’s shared knowledge and rules, including what was shared before they joined, and the spaces in it that aren’t closed.`;
+  const who = member.name ?? member.email ?? 'They';
+  const sees = `${who} will see ${place}’s shared knowledge and rules, including what was shared before they joined, and the spaces in it that aren’t closed.`;
   return (
     <>
       <Who member={member} />
       {member.found === false ? (
         <p className="rounded-xl bg-muted px-4 py-3 text-base">
-          No one uses Homing with {member.email} yet. Whoever looks after Homing can invite them, and then you can add them.
+          {member.email
+            ? `No one uses Homing with ${member.email} yet. Once they’re invited to Homing, they can be added.`
+            : `You no longer share a space with ${who}, so they can’t be added this way. Ask for their email instead.`}
         </p>
       ) : (
         <p className="text-base">
           {member.change === 'add'
             ? sees
             : member.change === 'make admin'
-              ? `${sees} As an admin, they also change its shared rules and who’s in it.`
+              ? member.inSpace
+                ? `${who} already sees ${place}. As an admin, they also change its shared rules and who’s in it.`
+                : `${sees} As an admin, they also change its shared rules and who’s in it.`
               : member.change === 'make member'
-                ? 'They keep their access, but no longer change its shared rules or who’s in it.'
-                : `They lose access to ${place} and the spaces in it at once, unless they’re in a space above it.`}
+                ? `${who} keeps access, but no longer changes its shared rules or who’s in it.`
+                : member.through
+                  ? `${who} will no longer be a member of ${place}, but still has access through ${member.through}.`
+                  : `${who} loses access to ${place} and the spaces in it at once.`}
         </p>
       )}
     </>
@@ -110,8 +117,8 @@ function MemberChangeDetails({ proposal, member }: { proposal: ProposalData; mem
 function Who({ member, settled = false }: { member: NonNullable<ProposalData['member']>; settled?: boolean }) {
   const name = member.name ?? member.email ?? 'Someone';
   return (
-    <div className={cn('flex items-center gap-3 rounded-xl bg-muted px-4 py-3', settled && 'text-muted-foreground')}>
-      <Avatar name={name} className="size-10 text-sm" />
+    <div className={cn('flex items-center gap-3 rounded-xl px-4 py-3', settled ? 'bg-muted text-muted-foreground' : 'bg-change')}>
+      {member.name && <Avatar name={member.name} className="size-10 bg-card text-sm" />}
       <div className="flex min-w-0 flex-col">
         <span className="truncate text-base font-semibold">{name}</span>
         {member.name && member.email && <span className="truncate text-sm text-muted-foreground">{member.email}</span>}

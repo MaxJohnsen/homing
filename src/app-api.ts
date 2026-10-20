@@ -76,7 +76,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         // Signed in, an admin learns whether someone uses Homing with that email.
         const account = await accountFinder(app.authPool)(email);
         if (!account) {
-          return answer(res, 400, { field: 'email', message: 'No one uses Homing with that email yet. Whoever looks after Homing can invite them, and then you can add them.' });
+          return answer(res, 400, { field: 'email', message: `No one uses Homing with ${email} yet. Once they’re invited to Homing, you can add them here.` });
         }
         await write((s) => changeMember(s, route.id, account.id, body.admin === true ? 'make admin' : 'add'));
         json(res, 200, { id: account.id, name: account.name });
@@ -404,7 +404,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           pages: active.all,
           collections: collections.pages,
           decisions: decisions.pages,
-          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
+          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, member: item.member, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
           spaces: spaces.map(({ id, name, closed }) => ({ id, name, closed })),
         });
         break;

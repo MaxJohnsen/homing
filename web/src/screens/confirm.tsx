@@ -53,7 +53,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why) && <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why}”</p>}
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why) && <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why}”</p>}
             </div>
             <ProposalDetails
               proposal={proposal}
@@ -72,14 +72,16 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
               <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>
                 {buttons.reject}
               </Button>
-              <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy || blocked} onClick={() => choose(true)}>
-                {buttons.approve}
-              </Button>
+              {proposal.member?.found !== false && (
+                <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy || blocked} onClick={() => choose(true)}>
+                  {buttons.approve}
+                </Button>
+              )}
             </div>
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
             <p className="text-sm text-muted-foreground">
               {action === 'members'
-                ? `Only an admin of ${place} can approve this. ${assistant} can’t do it for you.`
+                ? `Only you can approve this. ${assistant} can’t do it for you.`
                 : action === 'space'
                 ? suggestion?.asked
                   ? `Everyone in ${place} would see its name, so it waits for you. ${assistant} can’t create it without you.`

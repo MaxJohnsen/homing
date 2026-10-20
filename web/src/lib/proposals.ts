@@ -50,7 +50,17 @@ export interface ProposalData {
    * A change of who is in the space: who, by name when known, or the email given, and for an email,
    * whether someone uses Homing with it.
    */
-  member?: { change: MemberChange; name: string | null; email: string | null; found: boolean | null } | null;
+  member?: {
+    change: MemberChange;
+    name: string | null;
+    email: string | null;
+    found: boolean | null;
+    /** Whether they're in the space now, and the space above it they have access through, if any. */
+    inSpace?: boolean;
+    through?: string | null;
+    /** Why, in the user's words, as the assistant gave it. */
+    why?: string | null;
+  } | null;
 }
 
 export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
@@ -98,14 +108,16 @@ export function wantsTo(
   if (action === 'members') {
     const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
     const who = typeof proposal.member === 'object' && proposal.member ? (proposal.member.name ?? proposal.member.email) : proposal.text;
-    const place = withPlace ? placeOf(proposal) : 'the space';
+    // Under a heading that names the place, it isn't named again.
+    const place = withPlace ? placeOf(proposal) : undefined;
+    const person = who ?? 'someone';
     return change === 'remove'
-      ? `${assistant} wants to remove ${who ?? 'someone'} from ${place}`
+      ? `${assistant} wants to remove ${person}${place ? ` from ${place}` : ''}`
       : change === 'make admin'
-        ? `${assistant} wants to make ${who ?? 'someone'} an admin of ${place}`
+        ? `${assistant} wants to make ${person} an admin${place ? ` of ${place}` : ''}`
         : change === 'make member'
-          ? `${assistant} wants ${who ?? 'someone'} to be a member of ${place}, not an admin`
-          : `${assistant} wants to add ${who ?? 'someone'} to ${place}`;
+          ? `${assistant} wants ${person} to be a member${place ? ` of ${place}` : ''}, not an admin`
+          : `${assistant} wants to add ${person}${place ? ` to ${place}` : ''}`;
   }
   // Whether the user asked is only the assistant's word, so an asked-for space says where it goes instead.
   if (action === 'space') return proposal.asked || proposal.suggestion?.asked ? `${assistant} wants to create a space in ${placeOf(proposal)}` : `${assistant} suggests a new space`;
@@ -140,7 +152,7 @@ export function buttonsOf(action: ProposalData['action'], sending = false, membe
     return member === 'remove'
       ? { approve: 'Remove', reject: 'Keep them' }
       : member === 'make admin'
-        ? { approve: 'Make admin', reject: 'Don’t' }
+        ? { approve: 'Make admin', reject: 'Keep as member' }
         : member === 'make member'
           ? { approve: 'Make member', reject: 'Keep as admin' }
           : { approve: 'Add', reject: 'Don’t add' };
@@ -182,7 +194,15 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
             ? { kind: 'approved', heading: `Now a member of ${place}`, detail: `${who} is no longer an admin.` }
             : { kind: 'approved', heading: `Added to ${place}`, detail: `${who} sees its shared knowledge and rules from now on.` };
     }
-    if (state === 'rejected') return { kind: 'rejected', heading: 'Nothing changed', detail: `${who}’s access to ${place} stays as it was.` };
+    if (state === 'rejected') {
+      return member.change === 'remove'
+        ? { kind: 'rejected', heading: 'Not removed', detail: `${who} is still in ${place}.` }
+        : member.change === 'make admin'
+          ? { kind: 'rejected', heading: 'Not made an admin', detail: `${who} is still a member of ${place}, not an admin.` }
+          : member.change === 'make member'
+            ? { kind: 'rejected', heading: 'Still an admin', detail: `${who} is still an admin of ${place}.` }
+            : { kind: 'rejected', heading: 'Not added', detail: `${who} wasn’t added to ${place}.` };
+    }
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing changed. Ask ${assistant} again if you still want it.` };
     return undefined;
   }

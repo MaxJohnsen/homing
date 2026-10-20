@@ -837,7 +837,8 @@ async function proposeMembers(s: Session, links: Links, input: z.infer<typeof me
   const view = await spaceView(s, spaceId);
   if (!view) throw new Refused('There’s no space there that you can open.');
   if (view.privateTo) throw new Refused('Spaces in your personal space are only ever yours, so nobody can be added.');
-  if (!view.admin) throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
+  // Anyone may leave a space; everything else is for its admins.
+  if (!view.admin && change !== 'remove') throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
   let person: { id: string; name: string } | undefined;
   if (!isEmail(input.person)) {
     // Someone already in the space for a change of role or a removal; anyone the user shares a space with for adding.
@@ -855,10 +856,17 @@ async function proposeMembers(s: Session, links: Links, input: z.infer<typeof me
       );
     }
     if (matches.length > 1) {
-      const names = matches.map((candidate) => (matches.filter((other) => other.name === candidate.name).length > 1 ? `${candidate.name} (in ${candidate.place})` : candidate.name));
-      throw new Refused(`Several people are called ${input.person}: ${[...new Set(names)].join(', ')}. Ask the user which one they mean.`);
+      const names = [...new Set(matches.map((candidate) => candidate.name))];
+      throw new Refused(
+        names.length === matches.length
+          ? `Several people are called ${input.person}: ${names.join(', ')}. Ask the user which one they mean.`
+          : `Several people the user shares a space with are called ${names[0]}. Ask the user for the email address of the one they mean, and use that.`,
+      );
     }
     person = { id: matches[0].id, name: matches[0].name };
+    if (!view.admin && person.id !== personOf(s.principal)) throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
+  } else if (!view.admin) {
+    throw new Refused(`Only ${view.name}’s admins change who’s in it.`);
   }
   let proposal: Proposal;
   try {
@@ -937,6 +945,7 @@ function outcome(proposal: Proposal, links: Links, created?: { id: string; name:
     case 'requested':
       return `Sent to the space's admins on ${day(proposal.requestedAt!)}. Waiting for one of them to decide, until ${day(proposal.expiresAt)}. Nothing has changed yet.`;
     case 'approved':
+      if (proposal.action === 'change members') return `The user approved it on ${day(proposal.decidedAt!)}, and it applies now.`;
       if (proposal.action === 'add space') {
         return created
           ? `The user created it as ${quote(created.name)} (${ref('space', created.id)}) on ${day(proposal.decidedAt!)}. Call \`context\` with it to work there.`
