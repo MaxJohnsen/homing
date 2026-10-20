@@ -410,11 +410,11 @@ describe('through the app’s endpoints', () => {
     // A shared page with a private item on it, and a page only they see.
     const pages = await as(who, async (s) => {
       const shared = await createPage(s, { spaceId: space, title: `${name}’s launch`, shared: true });
-      await writeItem(s, { pageId: shared, body: `${name} launches in March`, shared: true });
-      await writeItem(s, { pageId: shared, body: `${name} worries the launch slips` });
+      const sharedItem = (await writeItem(s, { pageId: shared, body: `${name} launches in March`, shared: true })).id;
+      const privateItem = (await writeItem(s, { pageId: shared, body: `${name} worries the launch slips` })).id;
       const own = await createPage(s, { spaceId: space, title: `${name}’s salary talks` });
       await writeItem(s, { pageId: own, body: `${name} asks for a raise in December` });
-      return { shared, own };
+      return { shared, own, sharedItem, privateItem };
     });
     return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages };
   };
@@ -457,12 +457,19 @@ describe('through the app’s endpoints', () => {
       assert.equal((await get(`/api/skills/${target.skill}`)).status, 404);
       // Neither looks after Homing, so neither sees who else uses it.
       assert.equal((await get('/api/admin')).status, 403);
-      // Nor can they change the other client's guidance through the app.
+      // Nor can they change the other client's guidance or knowledge through the app.
       for (const [path, body] of [
         [`/api/spaces/${target.space}/rules`, { kind: 'requirement', text: 'Hello', shared: true }],
         [`/api/spaces/${target.space}/rules`, { kind: 'requirement', text: 'Hello' }],
         [`/api/rules/${target.rule}`, { text: 'Changed' }],
         [`/api/rules/${target.rule}/remove`, {}],
+        [`/api/spaces/${target.space}/pages`, { title: 'Hello', shared: true }],
+        [`/api/spaces/${target.personalSpaceId}/pages`, { title: 'Hello' }],
+        [`/api/pages/${target.pages.shared}/items`, { text: 'Hello', shared: true }],
+        [`/api/pages/${target.pages.own}/items`, { text: 'Hello' }],
+        [`/api/items/${target.pages.sharedItem}`, { text: 'Changed', shared: true }],
+        [`/api/items/${target.pages.sharedItem}`, { text: 'Changed', shared: false }],
+        [`/api/items/${target.pages.privateItem}`, { text: 'Changed' }],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.equal(changed.status, 404, path);
@@ -480,6 +487,9 @@ describe('through the app’s endpoints', () => {
       order by body
     `;
     assert.deepEqual(kept.map((row) => row.body), ['Ana never shares prices', 'Ben never shares prices']);
+    const spaces = [ana.space, ana.personalSpaceId, ben.space, ben.personalSpaceId];
+    const written = await admin`select count(*)::int as count from content where body in ('Hello', 'Changed') and space_id in ${admin(spaces)}`;
+    assert.equal(written[0].count, 0);
   });
 
   test('a colleague in the same space finds nothing private to someone else', async () => {
@@ -505,6 +515,15 @@ describe('through the app’s endpoints', () => {
     const [{ latest }] = await admin`select max(updated_at) as latest from content where page_id = ${ana.pages.shared} and private_to is null`;
     assert.equal(new Date(shared.updatedAt).getTime(), latest.getTime());
     assert.doesNotMatch(JSON.stringify(seen), /salary|raise|worries/);
+    // Nor can she write on what's only Ana's.
+    for (const [path, body] of [
+      [`/api/pages/${ana.pages.own}/items`, { text: 'Hello' }],
+      [`/api/items/${ana.pages.privateItem}`, { text: 'Changed' }],
+    ] as const) {
+      const answer = await cara.browser.json(path, body);
+      assert.equal(answer.status, 404, path);
+      assert.doesNotMatch(JSON.stringify(answer.body), /salary|raise|worries/);
+    }
   });
 });
 

@@ -2,11 +2,15 @@ import { useEffect, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { cn } from 'cn';
 import empty from '@/assets/illustrations/empty.png';
+import { AudienceChoice, type Audience } from '@/components/audience';
 import { OnlyYou } from '@/components/only-you';
-import { ago, capitalize, count, focusRing } from '@/components/screen';
+import { ago, capitalize, count, focusRing, Section } from '@/components/screen';
+import { Button } from '@/components/ui/button';
+import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { plain, type PageOrder, type PagesData, type PageSummary } from '@/lib/knowledge';
-import { Link } from '@/lib/router';
+import { Label } from '@/components/ui/label';
+import { plain, type NewPage, type PageOrder, type PagesData, type PageSummary } from '@/lib/knowledge';
+import { Link, navigate } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
 /** What the list shows: a search, one type, an order, and where in the list. */
@@ -21,17 +25,19 @@ export const pageSize = 50;
 
 /**
  * Everything a space knows, as pages, findable however many there are: a search within the space,
- * a filter for each type that exists, an order, and fifty at a time.
+ * a filter for each type that exists, an order, and fifty at a time. New pages start here.
  */
-export function Pages({ space, data, filters, onFilters, now }: {
+export function Pages({ space, data, filters, onFilters, create, now }: {
   space: SpaceData;
   /** Undefined while the first answer is on its way. */
   data?: PagesData;
   filters: PageFilters;
   onFilters: (next: PageFilters) => void;
+  create?: NewPage;
   now?: Date;
 }) {
   const [query, setQuery] = useState(filters.q);
+  const [creating, setCreating] = useState(false);
 
   // Searching waits until typing pauses, and starts from the top.
   useEffect(() => {
@@ -41,7 +47,10 @@ export function Pages({ space, data, filters, onFilters, now }: {
   }, [query, filters, onFilters]);
 
   if (!data) return null;
-  if (data.all === 0) return <EmptyKnowledge space={space} />;
+  const form = creating && create && <NewPageForm space={space} types={data.types.map((entry) => entry.type)} create={create} onCancel={() => setCreating(false)} />;
+  if (data.all === 0) {
+    return form || <EmptyKnowledge space={space} onWrite={create && (() => setCreating(true))} />;
+  }
 
   const searching = filters.q.trim() !== '';
   const sort = filters.sort ?? (searching ? 'match' : 'recent');
@@ -51,15 +60,19 @@ export function Pages({ space, data, filters, onFilters, now }: {
 
   return (
     <div className="flex flex-col gap-6">
+      {form}
       <div className="flex flex-col gap-3">
-        <Input
-          type="search"
-          aria-label={`Search pages in ${space.name}`}
-          placeholder={`Search ${count(data.all, 'page', 'pages')} in ${space.name}`}
-          className="h-11 rounded-full border-0 bg-muted px-5 text-base sm:max-w-md"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <Input
+            type="search"
+            aria-label={`Search pages in ${space.name}`}
+            placeholder={`Search ${count(data.all, 'page', 'pages')} in ${space.name}`}
+            className="h-11 rounded-full border-0 bg-muted px-5 text-base sm:max-w-md"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          {create && !creating && <Button variant="outline" size="lg" className="sm:ml-auto" onClick={() => setCreating(true)}>New page</Button>}
+        </div>
         {(typeChoices || data.all > 1) && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
             {typeChoices && (
@@ -168,12 +181,51 @@ function Choose<T extends string>({ label, value, options, onChange }: {
   );
 }
 
-function EmptyKnowledge({ space }: { space: SpaceData }) {
+function EmptyKnowledge({ space, onWrite }: { space: SpaceData; onWrite?: () => void }) {
   return (
     <div className="flex flex-col items-center gap-2 rounded-2xl bg-muted px-6 pt-4 pb-8 text-center">
       <img src={empty} alt="" width={960} height={640} className="w-56" />
       <p className="text-lg font-semibold">Nothing in {space.personal ? 'your personal space' : space.name} yet</p>
       <p className="max-w-sm text-base text-muted-foreground">What you and your assistant save here shows up as pages.</p>
+      {onWrite && <Button size="lg" className="mt-3" onClick={onWrite}>Write a page</Button>}
     </div>
+  );
+}
+
+/** A new page: what it's about, what kind of page it is if that helps, and who sees it. */
+function NewPageForm({ space, types, create, onCancel }: { space: SpaceData; types: string[]; create: NewPage; onCancel: () => void }) {
+  const [title, setTitle] = useState('');
+  const [type, setType] = useState('');
+  const [audience, setAudience] = useState<Audience>('you');
+  const [problem, setProblem] = useState<{ field?: string; message: string }>();
+  const [busy, setBusy] = useState(false);
+  const shared = !space.private && audience === 'space';
+
+  const save = async () => {
+    setBusy(true);
+    const answer = await create({ title: title.trim(), type: type.trim(), shared });
+    setBusy(false);
+    if ('problem' in answer) setProblem({ message: answer.problem });
+    else navigate(`/pages/${answer.id}`);
+  };
+
+  return (
+    <Section title="New page" tone="raised">
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="new-page-title" className="text-base">What is it about?</Label>
+        <Input id="new-page-title" className="h-11 text-base" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="A person, a project, a decision" autoFocus disabled={busy} />
+      </div>
+      <div className="flex flex-col gap-2">
+        <Label htmlFor="new-page-type" className="text-base">What kind of page <span className="font-normal text-muted-foreground">(if it helps)</span></Label>
+        <Input id="new-page-type" list="new-page-types" className="h-11 text-base sm:max-w-xs" value={type} onChange={(event) => setType(event.target.value)} placeholder="person, meeting, decision" disabled={busy} />
+        <datalist id="new-page-types">{types.map((option) => <option key={option} value={option} />)}</datalist>
+      </div>
+      {!space.private && <AudienceChoice space={space.name} people={space.members.length} value={audience} onChange={setAudience} disabled={busy} />}
+      {problem && <FieldError>{problem.message}</FieldError>}
+      <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        <Button variant="outline" size="lg" disabled={busy} onClick={onCancel}>Cancel</Button>
+        <Button size="lg" disabled={busy || !title.trim()} onClick={save}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
+      </div>
+    </Section>
   );
 }

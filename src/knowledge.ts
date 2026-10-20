@@ -40,6 +40,8 @@ export interface Page {
   spaceId: string;
   type: string | null;
   title: string;
+  /** Whether it's on the space's shared side, with a title everyone there sees. */
+  shared: boolean;
   /** When anything the viewer sees on it last changed. */
   updatedAt: Date;
   /** The current items, each with its sources and the earlier item it replaced, if any. */
@@ -215,6 +217,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     spaceId: items[0].spaceId,
     type,
     title: titles[0]?.body ?? 'Untitled',
+    shared: titles.some((title) => title.privateTo === null),
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
     items: items.filter((item) => item.kind !== 'title'),
   };

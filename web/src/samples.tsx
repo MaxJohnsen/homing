@@ -50,10 +50,10 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/pages/few': { label: 'A space with three pages', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="pages"><SamplePages space={sampleSpace.open} data={{ ...samplePages, pages: samplePages.pages.slice(0, 3), total: 3, all: 3, types: [{ type: 'project', count: 1 }, { type: 'person', count: 1 }] }} /></Space></InApp> },
   '/spaces/pages/search': { label: 'Searching a space’s pages, with nothing found', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages data={{ ...samplePages, pages: [], total: 0 }} filters={{ q: 'sauna', type: '', from: 0 }} /></Space></InApp> },
   '/spaces/pages/empty': { label: 'A space with no pages yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="pages"><SamplePages space={sampleSpace.root} data={{ pages: [], total: 0, all: 0, types: [] }} /></Space></InApp> },
-  '/page': { label: 'A page, with an update only you see', render: () => <InApp spaceId="northwind"><Page page={samplePage} /></InApp> },
+  '/page': { label: 'A page, with an update only you see', render: () => <InApp spaceId="northwind"><Page page={samplePage} actions={samplePageActions} /></InApp> },
   '/page/long': { label: 'A long page, searchable within', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Meeting notes, all of 2026', type: 'meeting', items: Array.from({ length: 16 }, (_, index) => ({ ...samplePage.items[index % 5], id: `item-${index}` })) }} /></InApp> },
-  '/page/personal': { label: 'A page in your personal space', render: () => <InApp spaceId="kitchen"><Page page={{ ...samplePage, title: 'Kitchen quotes', type: null, space: { id: 'kitchen', name: 'Kitchen renovation', personal: false, private: true }, items: samplePage.items.filter((item) => !item.shared).map((item) => ({ ...item, replaced: null })) }} /></InApp> },
-  '/page/empty': { label: 'A page with nothing on it yet', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Marte Lunde', type: 'person', items: [] }} /></InApp> },
+  '/page/personal': { label: 'A page in your personal space', render: () => <InApp spaceId="kitchen"><Page page={{ ...samplePage, title: 'Kitchen quotes', type: null, shared: false, space: { id: 'kitchen', name: 'Kitchen renovation', personal: false, private: true, people: 1 }, items: samplePage.items.filter((item) => !item.shared).map((item) => ({ ...item, replaced: null })) }} /></InApp> },
+  '/page/empty': { label: 'A page with nothing on it yet', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Marte Lunde', type: 'person', items: [] }} actions={samplePageActions} /></InApp> },
   '/spaces/rules': { label: 'A space’s rules, as an admin', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="rules"><Rules space={sampleSpace.closed} rules={sampleRules} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/member': { label: 'A space’s rules, as a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="rules"><Rules space={sampleSpace.open} rules={sampleRules.filter((rule) => rule.spaceId !== 'northwind').map((rule) => ({ ...rule, spaceId: rule.spaceId === 'acme' && !rule.shared ? 'website' : rule.spaceId }))} actions={sampleRuleActions} /></Space></InApp> },
   '/spaces/rules/from-above': { label: 'Rules from a space you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="rules"><Rules space={sampleSpace.fromAbove} rules={sampleRules.filter((rule) => rule.spaceId === 'acme' && rule.shared).map((rule) => ({ ...rule, spaceName: null }))} actions={sampleRuleActions} /></Space></InApp> },
@@ -167,5 +167,11 @@ export function Samples() {
 
 function SamplePages({ space = sampleSpace.closed, data = samplePages, filters: initial = { q: '', type: '', from: 0 } }: { space?: SpaceData; data?: typeof samplePages; filters?: PageFilters }) {
   const [filters, setFilters] = useState(initial);
-  return <Pages space={space} data={data} filters={filters} onFilters={setFilters} />;
+  return <Pages space={space} data={data} filters={filters} onFilters={setFilters} create={async () => ({ problem: 'Sample screens don’t save anything.' })} />;
 }
+
+// Writing on the sample screens only says it isn't saved.
+const samplePageActions = {
+  add: async () => 'Sample screens don’t save anything.',
+  correct: async () => 'Sample screens don’t save anything.',
+};
