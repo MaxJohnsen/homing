@@ -335,13 +335,17 @@ export async function suggestArchive(s: Session, input: { spaceId: string; why?:
   if (!asked) {
     const own = waiting.find((proposal) => !proposal.asked);
     if (own) throw new NotSuggested(`Archiving a space already waits for the user (proposal:${own.id}). Don't suggest another until they decide it.`, own.id);
-    // Kept open: turned down, or archived on a suggestion and reopened since, as it's open now.
-    const [kept] = await s.tx<{ id: string; at: Date }[]>`
-      select id, decided_at as at from proposals
-      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid and state in ('rejected', 'approved', 'withdrawn')
+    // Kept open: a suggestion of the assistant's own that was turned down, or an archive the person
+    // approved and that was reopened since, as it's open now.
+    const [kept] = await s.tx<{ id: string; at: Date; approved: boolean }[]>`
+      select id, decided_at as at, state = 'approved' as approved from proposals
+      where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid
+        and (state = 'approved' or (state in ('rejected', 'withdrawn') and not coalesce((change->>'asked')::boolean, false)))
       order by decided_at desc limit 1
     `;
-    if (kept) throw new NotSuggested(`The user kept ${space.name} open after archiving it was suggested on ${kept.at.toISOString().slice(0, 10)}. Don't suggest it again unless they ask.`, kept.id);
+    const on = kept?.at.toISOString().slice(0, 10);
+    if (kept?.approved) throw new NotSuggested(`${space.name} was reopened after the user archived it on ${on}. Don't suggest archiving it again unless they ask.`, kept.id);
+    if (kept) throw new NotSuggested(`The user turned down archiving ${space.name} when it was suggested on ${on}. Don't suggest it again unless they ask.`, kept.id);
   }
   return insertProposal(s, { spaceId: space.id, action: 'archive space', itemId: null, change: asked ? { asked } : {}, request: false, reason: input.why?.trim() || null });
 }
@@ -847,7 +851,8 @@ export async function decide(
       if (decision.shown !== String(spaces.filter((inside) => isInside(inside, proposal.spaceId, spaces)).length)) {
         throw new Undecidable('changed', 'Spaces went in or out of it after you opened this page. Check it again before archiving it.');
       }
-      await archiveSpace(s, proposal.spaceId, true);
+      // Someone else may have archived it while this waited: then nothing changes.
+      if (!(await archiveSpace(s, proposal.spaceId, true)).changed) throw new Undecidable('changed', 'It was archived after you opened this page, so there’s nothing to decide.');
     } else if (proposal.action === 'archive page' || proposal.action === 'reopen page') {
       // As the person, directly, on the page as it was shown: one archived or reopened meanwhile, or
       // that they can no longer see, has nothing left to decide.

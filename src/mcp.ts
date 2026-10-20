@@ -1304,7 +1304,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       if (proposal.action === 'share space') return `The user shared it on ${day(proposal.decidedAt!)}. It's out of their personal space now; add people with members.change.`;
       if (proposal.action === 'archive space') {
         return 'archive' in proposal && proposal.archive && !proposal.archive.archived
-          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since.`
+          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since. Don't suggest archiving it again unless they ask.`
           : `The user archived it on ${day(proposal.decidedAt!)}. It's out of everyday context now, and still searchable.`;
       }
       if (proposal.action === 'archive page') {
@@ -1325,8 +1325,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. Don't propose sharing it again unless they ask.`;
-      if (proposal.action === 'archive space') return `The user kept it open, on ${day(proposal.decidedAt!)}. Don't suggest archiving it again unless they ask.`;
-      if (proposal.action === 'archive page') {
+      if (proposal.action === 'archive space' || proposal.action === 'archive page') {
         return proposal.change.asked
           ? `The user kept it open, on ${day(proposal.decidedAt!)}. Nothing was archived.`
           : `The user turned down archiving it, on ${day(proposal.decidedAt!)}. Don't suggest archiving it again unless they ask.`;

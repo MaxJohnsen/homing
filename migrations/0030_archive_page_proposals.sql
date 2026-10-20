@@ -11,12 +11,17 @@ alter table proposals
   add constraint proposals_archive_page check ((action in ('archive page', 'reopen page')) = (page_id is not null) and (action not in ('archive page', 'reopen page') or not request));
 
 -- A proposal about a page is about a knowledge page in its own space that
--- whoever makes it can see. It's checked for them, not for whoever the row
--- names, so the check never tells anything about someone else.
+-- whoever makes it can see. These checks run before row-level security, so
+-- each refuses first a proposal for someone else, and checks only what the
+-- person making it can see: refusing never tells anything about someone else
+-- or a space they can't open.
 create function check_proposal_page() returns trigger
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
+  if new.private_to is distinct from current_person_id() then
+    raise exception 'a proposal is for whoever makes it' using errcode = 'insufficient_privilege';
+  end if;
   if new.page_id is not null
      and not exists (
        select from pages p
@@ -36,12 +41,15 @@ for each row execute function check_proposal_page();
 
 grant insert (page_id) on proposals to homing_app;
 
--- The same for sharing a task (0023): checked for whoever makes the proposal,
--- so it never tells whether a task is someone else's.
+-- The same for sharing a task (0023), so it never tells whether a task is
+-- someone else's.
 create or replace function check_proposal_task() returns trigger
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
+  if new.private_to is distinct from current_person_id() then
+    raise exception 'a proposal is for whoever makes it' using errcode = 'insufficient_privilege';
+  end if;
   if new.task_id is not null
      and not exists (
        select from tasks t join spaces s on s.id = t.space_id
@@ -52,6 +60,79 @@ begin
   return new;
 end
 $$;
+
+-- And for a rule or an item to share (0015): an item the person making the
+-- proposal can see in its space, so it never tells whether an item is in a
+-- space they can't open, or on someone else's private side.
+create or replace function check_proposal_rule() returns trigger
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  if new.private_to is distinct from current_person_id() then
+    raise exception 'a proposal is for whoever makes it' using errcode = 'insufficient_privilege';
+  end if;
+  if new.item_id is not null
+     and not exists (
+       select from content c
+       where c.id = new.item_id and c.space_id = new.space_id and c.space_id in (select accessible_spaces())
+         and (c.private_to is null or c.private_to = current_person_id())
+     ) then
+    raise exception 'that rule isn''t in this space' using errcode = 'insufficient_privilege';
+  end if;
+  return new;
+end
+$$;
+
+-- Archiving a space says whether it changed anything too, for the same reason.
+drop function archive_space(uuid, boolean);
+
+create function archive_space(space uuid, archived boolean) returns boolean
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  target spaces;
+begin
+  if current_person_id() is null or not (direct_edit() or current_agent() is not null) then
+    raise exception 'only people archive spaces' using errcode = 'insufficient_privilege';
+  end if;
+  -- Held to the end, as renaming does, so the count and who can open it hold while it changes.
+  perform pg_advisory_xact_lock(hashtext('homing.space_access'));
+  select * into target from spaces s where s.id = archive_space.space and s.id in (select accessible_spaces()) for update;
+  if not found then
+    raise exception 'there''s no space there that you can open' using errcode = 'insufficient_privilege';
+  end if;
+  if target.private_to is not null and target.parent_id is null then
+    raise exception 'your personal space stays open' using errcode = 'check_violation';
+  end if;
+  if not exists (select from space_access a where a.space_id = target.id and a.person_id = current_person_id() and a.admin) then
+    raise exception 'only its admins archive a space' using errcode = 'insufficient_privilege';
+  end if;
+  if current_agent() is not null then
+    if exists (select from space_access a where a.space_id = target.id and a.person_id <> current_person_id()) then
+      raise exception 'others can open that space, so a person archives it' using errcode = 'insufficient_privilege';
+    end if;
+    if (
+      select count(*) from space_archives l
+      where l.person_id = current_person_id() and l.agent is not null and l.at > now() - interval '1 hour'
+    ) >= 20 then
+      raise exception 'an assistant archives at most 20 spaces an hour' using errcode = 'insufficient_privilege';
+    end if;
+  end if;
+  if archived and target.archived_at is null then
+    update spaces set archived_at = clock_timestamp(), archived_by = current_person_id() where id = target.id;
+    insert into space_archives (space_id, archived) values (target.id, true);
+    return true;
+  elsif not archived and target.archived_at is not null then
+    update spaces set archived_at = null, archived_by = null where id = target.id;
+    insert into space_archives (space_id, archived) values (target.id, false);
+    return true;
+  end if;
+  return false;
+end
+$$;
+
+revoke execute on function archive_space from public;
+grant execute on function archive_space to homing_app;
 
 -- Archiving a page now says whether it changed anything, so approving a
 -- proposal can refuse when someone else got there first. An assistant

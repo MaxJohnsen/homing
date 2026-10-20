@@ -5,6 +5,7 @@
 // evidence that the page is no longer active. Reopening one works the same way.
 
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl, type Session } from '../src/db.ts';
 import { addRule } from '../src/guidance.ts';
@@ -333,6 +334,26 @@ test('straight against the database, an assistant only proposes, about a page th
     `).then(() => 'made', (error: Error) => error.message);
   assert.equal(await forCara('page_id', carasDraft), await forCara('page_id', davesDraft));
   assert.equal(await forCara('task_id', carasTask), await forCara('task_id', davesTask));
+
+  // The same for a rule: none Ana can't see, whether it's on someone's private side in Acme or in a
+  // space she can't open, and refused alike, however the row names its person.
+  const ben = await member(homing.url, 'Ben');
+  const [beta, bensRule] = await as({ ...ben, direct: true }, async (s) => {
+    const beta = await createSpace(s, { name: 'Beta' });
+    return [beta, (await addRule(s, { spaceId: beta, kind: 'preference', body: 'Invoice in NOK.', shared: true })).id];
+  });
+  const [carasRule, davesRule] = [
+    (await as({ ...cara, direct: true }, (s) => addRule(s, { spaceId: space, kind: 'preference', body: 'Answer in Norwegian.', shared: false }))).id,
+    (await as({ ...dave, direct: true }, (s) => addRule(s, { spaceId: space, kind: 'preference', body: 'Answer briefly.', shared: false }))).id,
+  ];
+  const aboutRule = (spaceId: string, ruleId: string, privateTo: string) =>
+    asAssistant((s) => s.tx`
+      insert into proposals (space_id, private_to, action, item_id, change) values (${spaceId}, ${privateTo}, 'remove rule', ${ruleId}, '{}')
+    `).then(() => 'made', (error: Error) => error.message);
+  const unknown = randomUUID();
+  assert.equal(await aboutRule(space, carasRule, ana.id), await aboutRule(space, unknown, ana.id));
+  assert.equal(await aboutRule(space, carasRule, cara.id), await aboutRule(space, davesRule, cara.id));
+  assert.equal(await aboutRule(beta, bensRule, ana.id), await aboutRule(beta, unknown, ana.id));
 
   // Once proposed, the assistant can't approve it, nor archive the page itself.
   const [{ id }] = await propose(vendor);
