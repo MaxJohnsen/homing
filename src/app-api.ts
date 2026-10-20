@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
+import { archivePage, createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
@@ -278,6 +278,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
                 offset: clamp(offset),
                 collections: query.get('collections') === '1',
                 in: collection ?? undefined,
+                archived: query.get('archived') === '1',
+                countArchived: true,
               })
             : undefined,
         );
@@ -294,7 +296,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           const space = await spaceView(s, page.spaceId);
           if (!space) return undefined;
           const history = await historyOf(s, page.items.map((item) => item.id));
-          const names = await peopleNames(s, [...[...page.items, ...history].map((entry) => entry.writtenBy), ...page.items.map((item) => item.publishedBy)]);
+          const names = await peopleNames(s, [...[...page.items, ...history].map((entry) => entry.writtenBy), ...page.items.map((item) => item.publishedBy), page.archived?.by ?? null]);
           const links = await linksOf(s, page.id);
           const { total: gathers } = await pagesIn(s, page.spaceId, { in: page.id, limit: 1 });
           return { page, space, history, names, links, gathers };
@@ -313,6 +315,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           gathers,
           collections: links.collections,
           mentionedOn: links.mentionedOn,
+          // When it was archived and by whom, unless that's someone the reader doesn't share a space with.
+          archived: page.archived && { at: page.archived.at, by: by(page.archived.by) },
           space: {
             id: space.id,
             name: space.name,
@@ -428,6 +432,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             text: hit.kind === 'item' ? hit.text : null,
             onlyYou: hit.private,
             superseded: hit.superseded,
+            archived: hit.archived,
             updatesShared: hit.updatesShared,
             space: where(hit.spaceId),
           });
@@ -568,6 +573,16 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         });
         if (!found) return answer(res, 404, noItem);
         json(res, 200, found);
+        break;
+      }
+
+      case 'archive page': {
+        const body = await readJson(req);
+        if (typeof body.archived !== 'boolean') return answer(res, 400, { message: 'Archive it or reopen it.' });
+        const done = await write((s) => archivePage(s, route.id, body.archived as boolean));
+        if (done === undefined) return answer(res, 404, noPage);
+        if (!done) return answer(res, 400, { message: 'Rules, skills and the overview aren’t archived.' });
+        json(res, 200, { id: route.id, archived: body.archived });
         break;
       }
 
@@ -746,7 +761,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -794,6 +809,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['ungather', `/api/pages/${uuid}/gather/remove`],
       ['correct item', `/api/items/${uuid}`],
       ['publish item', `/api/items/${uuid}/publish`],
+      ['archive page', `/api/pages/${uuid}/archive`],
       ['add rule', `/api/spaces/${uuid}/rules`],
       ['edit rule', `/api/rules/${uuid}`],
       ['remove rule', `/api/rules/${uuid}/remove`],

@@ -49,6 +49,8 @@ export interface Page {
   shared: boolean;
   /** When anything the viewer sees on it last changed. */
   updatedAt: Date;
+  /** When it was archived and by whom, if it is. */
+  archived: { at: Date; by: string | null } | null;
   /**
    * The current items, each with its sources and the earlier item it replaced, if any. Your own
    * private items also say what everyone sees from your earlier share of them, if anything.
@@ -82,6 +84,8 @@ export interface Hit {
   text: string;
   private: boolean;
   superseded: boolean;
+  /** On an archived page. */
+  archived: boolean;
   /** A private item that replaced a shared one, which others still see. */
   updatesShared: boolean;
   /** What the matching content is: a title, knowledge, a rule or a skill's file. Null for a source. */
@@ -232,7 +236,9 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     order by coalesce(first.created_at, content.created_at), content.created_at
   `;
   if (items.length === 0) return undefined;
-  const [{ type }] = await s.tx`select type from pages where id = ${pageId}::uuid`;
+  const [{ type, archivedAt, archivedBy }] = await s.tx<{ type: string | null; archivedAt: Date | null; archivedBy: string | null }[]>`
+    select type, archived_at, archived_by from pages where id = ${pageId}::uuid
+  `;
   // Your own title for a page comes before the shared one.
   const titles = items.filter((item) => item.kind === 'title').sort((a, b) => Number(!a.privateTo) - Number(!b.privateTo));
   return {
@@ -242,6 +248,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     title: titles[0]?.body ?? 'Untitled',
     shared: titles.some((title) => title.privateTo === null),
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
+    archived: archivedAt ? { at: archivedAt, by: archivedBy } : null,
     items: items.filter((item) => item.kind !== 'title'),
   };
 }
@@ -346,15 +353,38 @@ export async function readItem(s: Session, itemId: string) {
 }
 
 /** The knowledge pages in a space that the viewer can see, most recently changed first. */
-export async function listPages(s: Session, spaceId: string) {
-  return s.tx<{ id: string; type: string | null; title: string | null; updatedAt: Date }[]>`
-    select c.page_id as id, p.type, ${titleOf(s, s.tx`c.page_id`)} as title, max(c.updated_at) as updated_at
+export async function listPages(s: Session, spaceId: string, options: { withArchived?: boolean } = {}) {
+  return s.tx<{ id: string; type: string | null; title: string | null; updatedAt: Date; archived: boolean }[]>`
+    select c.page_id as id, p.type, ${titleOf(s, s.tx`c.page_id`)} as title, max(c.updated_at) as updated_at, p.archived_at is not null as archived
     from content c
     join pages p on p.id = c.page_id
-    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
-    group by c.page_id, p.type
-    order by updated_at desc
+    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and ${options.withArchived ? s.tx`true` : s.tx`p.archived_at is null`}
+      and ${visible(s, 'c')} and ${current(s, 'c')}
+    group by c.page_id, p.type, p.archived_at
+    order by p.archived_at is not null, updated_at desc
   `;
+}
+
+/** How many archived pages in a space the viewer can see. */
+export async function archivedPages(s: Session, spaceId: string): Promise<number> {
+  const [{ count }] = await s.tx<{ count: number }[]>`
+    select count(distinct c.page_id)::int as count
+    from content c join pages p on p.id = c.page_id
+    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and p.archived_at is not null and ${visible(s, 'c')} and ${current(s, 'c')}
+  `;
+  return count;
+}
+
+/**
+ * Archives a page the person can see, or reopens it (spec §3): for everyone who sees it, recorded,
+ * and nothing deleted. Undefined when there's no such page; false for one that isn't knowledge.
+ */
+export async function archivePage(s: Session, pageId: string, archived: boolean): Promise<boolean | undefined> {
+  const page = await readPage(s, pageId);
+  if (!page) return undefined;
+  if (page.type === 'guidance' || page.type === 'skill' || page.type === 'overview') return false;
+  await s.tx`select archive_page(${pageId}::uuid, ${archived})`;
+  return true;
 }
 
 /** A knowledge page in a list, as the viewer sees it. */
@@ -371,6 +401,8 @@ export interface PageSummary {
   gathers: number;
   /** Listing a collection's pages: whether it's in the collection for everyone, or only for the viewer. */
   gatheredShared?: boolean;
+  /** Archived, which a collection still lists. */
+  archived: boolean;
 }
 
 export type PageOrder = 'recent' | 'name' | 'match';
@@ -394,11 +426,17 @@ export async function pagesIn(
     collections?: boolean;
     /** Only the pages this collection gathers. */
     in?: string;
+    /** Only archived pages, instead of only the others. A collection lists both. */
+    archived?: boolean;
+    /** Also how many archived pages there are, for the way to them. */
+    countArchived?: boolean;
   } = {},
-): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[] }> {
+): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[]; archived: number }> {
   const terms = termsOf(options.query ?? '');
   const limit = options.limit ?? 50;
   const order = options.order === 'match' && !terms ? 'recent' : (options.order ?? (terms ? 'match' : 'recent'));
+  // Archived pages show only on request, except in a collection, which lists what it gathers.
+  const shelved = options.in ? s.tx`true` : options.archived ? s.tx`p.archived_at is not null` : s.tx`p.archived_at is null`;
   // Each page's title, first item, last change and best match, from the items the viewer sees now.
   const here = s.tx`
     select c.page_id as id,
@@ -415,7 +453,7 @@ export async function pagesIn(
     from content c
     join pages p on p.id = c.page_id
     where c.space_id = ${spaceId}::uuid and c.kind in ('title', 'text')
-      and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
+      and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')} and ${shelved}
     group by c.page_id
   `;
   const typed = options.type === undefined ? s.tx`true` : s.tx`p.type = ${options.type}`;
@@ -427,7 +465,7 @@ export async function pagesIn(
       : s.tx`true`;
   const sorted = { recent: s.tx`h.updated_at desc`, name: s.tx`lower(h.title), h.updated_at desc`, match: s.tx`h.rank desc, h.updated_at desc` }[order];
   const list = (offset: number) => s.tx<(Omit<PageSummary, 'gathers'> & { total: number })[]>`
-    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, count(*) over ()::int as total
+    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, p.archived_at is not null as archived, count(*) over ()::int as total
     from (${here}) h
     join pages p on p.id = h.id
     where h.hit and ${typed} and ${kept}
@@ -446,6 +484,7 @@ export async function pagesIn(
     order by count(*) desc, p.type
   `;
   const gathers = await gatheredCounts(s, rows.map((row) => row.id));
+  const archived = options.countArchived && !options.in && !options.archived ? await archivedPages(s, spaceId) : 0;
   const sides = options.in && rows.length > 0
     ? new Map((await s.tx<{ pageId: string; shared: boolean }[]>`
         select g.page_id, bool_or(g.private_to is null) as shared from gathered g
@@ -458,6 +497,7 @@ export async function pagesIn(
     total: rows[0]?.total ?? 0,
     all: types.reduce((sum, { count }) => sum + count, 0),
     types: types.filter((entry): entry is { type: string; count: number } => entry.type !== null),
+    archived,
   };
 }
 
@@ -737,7 +777,7 @@ function termsOf(query: string): string | undefined {
 export async function search(
   s: Session,
   query: string,
-  options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources' } = {},
+  options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources'; active?: boolean } = {},
 ): Promise<Hit[]> {
   const terms = termsOf(query);
   if (!terms) return [];
@@ -748,13 +788,14 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, updates_shared, item_kind from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, item_kind from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
              c.space_id, c.page_id, (select p.type from pages p where p.id = c.page_id) as page_type, ${titleOf(s, s.tx`c.page_id`)} as title,
              case c.kind when 'file' then ${titleOf(s, s.tx`c.page_id`)} else c.body end as text,
              c.private_to is not null as private, not ${current(s, 'c')} as superseded,
+             coalesce((select p.archived_at is not null from pages p where p.id = c.page_id), false) as archived,
              c.private_to is not null and c.supersedes is not null and exists (
                select from content r where r.id = first_of(c.id) and r.private_to is null and ${visible(s, 'r')}
              ) as updates_shared,
@@ -765,7 +806,7 @@ export async function search(
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${within('c')}
         and ${options.only !== 'sources'}
       union all
-      select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false,
+      select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false,
              ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
@@ -775,6 +816,7 @@ export async function search(
     -- A skill's file that's no longer current doesn't find it. Only knowledge leaves out rules and skills.
     -- Your own original shows as one with what you shared from it while they agree.
     where not (${options.current ?? false} and superseded) and not (item_kind = 'file' and superseded) and not agrees_with_shared
+      and not (${options.active ?? false} and archived)
       and not (${options.knowledge ?? false} and coalesce(page_type, '') in ('guidance', 'skill'))
     order by kind, id, superseded, rank desc
     ) best
