@@ -130,7 +130,7 @@ export function WaitingRow({ item, now, compact }: { item: WaitingData; now?: Da
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <span className="text-base font-semibold">{wantsTo(item, !compact)}</span>
           {/* A change of members names who, and archiving names the space, in the line above. */}
-          {item.text && item.action !== 'members' && item.action !== 'archive' && <span className={cn('line-clamp-2 whitespace-pre-line', compact ? 'text-base' : 'text-lg leading-snug')}>{item.text}</span>}
+          {item.text && item.action !== 'members' && item.action !== 'archive' && item.action !== 'convert' && <span className={cn('line-clamp-2 whitespace-pre-line', compact ? 'text-base' : 'text-lg leading-snug')}>{item.text}</span>}
           <span className="text-sm text-muted-foreground">{capitalize(ago(item.createdAt, now))}</span>
         </div>
         <span className="hidden shrink-0 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors group-hover:bg-primary/90 sm:block">

@@ -1,3 +1,4 @@
+import { firstChoice, shareButton, shareOf, type ShareChoice } from '@/components/share-space-fields';
 import { useState } from 'react';
 import { OutcomeIcon, ProposalDetails, SettledChange } from '@/components/proposal';
 import { Button } from '@/components/ui/button';
@@ -52,13 +53,17 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<{ field?: string; message: string }>();
   const space = draft && proposal?.suggestion ? spaceOf(draft, proposal.suggestion.places) : undefined;
+  const [choice, setChoice] = useState<ShareChoice>(firstChoice);
   const outcome = proposal && outcomeOf(proposal);
   const sending = proposal ? isSending(proposal) : false;
+  const buttons = proposal?.conversion
+    ? { approve: shareButton(proposal.space, choice, proposal.conversion), reject: 'Keep it only mine' }
+    : proposal && buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal));
 
   const choose = async (approve: boolean) => {
     if (!decide) return;
     setBusy(true);
-    const answer = await decide(approve, onlyHere, approve ? space : undefined);
+    const answer = await decide(approve, onlyHere, approve ? space : undefined, approve && proposal?.conversion ? shareOf(choice, proposal.conversion) : undefined);
     setProblem(typeof answer === 'string' ? { message: answer } : answer);
     setBusy(false);
   };
@@ -90,7 +95,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
     <section aria-label={proposal || !initialMessage ? 'Approve a change' : 'Homing'} className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
       <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
         <Wordmark className="text-sm text-foreground" />
-        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' || proposal.action === 'task' ? shareStatus[outcome.kind] : proposal.action === 'archive' ? archiveStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
+        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' || proposal.action === 'task' || proposal.action === 'convert' ? shareStatus[outcome.kind] : proposal.action === 'archive' ? archiveStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
       </div>
 
       {!proposal ? (
@@ -111,6 +116,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
               ? `Share this task with ${placeOf(proposal)}?`
               : proposal.action === 'archive'
               ? `Archive ${placeOf(proposal)}?`
+              : proposal.action === 'convert'
+              ? `Share ${proposal.space} with others?`
               : sending
               ? `Ask the admins of ${placeOf(proposal)} for this change?`
               : proposal.action === 'add'
@@ -119,8 +126,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why) && (
-            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why}”</p>
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why}”</p>
           )}
           <ProposalDetails
             proposal={proposal}
@@ -134,13 +141,15 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
             problem={problem}
             disabled={busy}
             idPrefix="card"
+            share={choice}
+            onShareChange={setChoice}
           />
           {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
             {proposal.member?.found !== false && (
-              <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal)).approve}</Button>
+              <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttons!.approve}</Button>
             )}
-            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal)).reject}</Button>
+            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttons!.reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (

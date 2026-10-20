@@ -1,3 +1,4 @@
+import type { ConversionData } from '@/components/share-space-fields';
 import type { RuleKind } from '@/components/proposed-change';
 import type { Place, Who } from '@/components/space-fields';
 
@@ -13,7 +14,7 @@ export interface ProposalData {
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
   /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, or sharing an item or a task. */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive';
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -53,6 +54,8 @@ export interface ProposalData {
    */
   publication?: PublicationData | null;
   task?: TaskShareData | null;
+  /** Sharing a space from your personal tree: what it would do, while it's still there, and why. */
+  conversion?: (ConversionData & { why: string | null }) | null;
   /** Archiving the space: how many spaces in it go with it, whether only you have it, whether it's archived now, and why. */
   archive?: { spaces: number; private: boolean; archived: boolean; asked?: boolean; why: string | null } | null;
   member?: {
@@ -150,6 +153,7 @@ export function wantsTo(
 ): string {
   const { assistant, action, kind, request } = proposal;
   if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
+  if (action === 'convert') return `${assistant} wants to share ${proposal.space} with others`;
   if (action === 'task') return withPlace ? `${assistant} wants to share a task with ${placeOf(proposal)}` : `${assistant} wants to share a task`;
   // Whether the user asked is only the assistant's word, so it's said as the assistant's wish.
   if (action === 'archive') {
@@ -192,7 +196,8 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 }
 
 /** Whether a change or removal lost its rule before anyone decided. */
-export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'state'>): boolean {
+export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'conversion' | 'state'>): boolean {
+  if (proposal.action === 'convert') return proposal.state === 'open' && !proposal.conversion;
   if (proposal.action === 'archive') return proposal.state === 'open' && Boolean(proposal.archive?.archived);
   if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
   if (proposal.action === 'task') return proposal.state === 'open' && (!proposal.task || proposal.task.shared || proposal.task.done);
@@ -215,6 +220,7 @@ export function buttonsOf(action: ProposalData['action'], sending = false, membe
   }
   if (action === 'space') return { approve: 'Create space', reject: 'Don’t create' };
   if (action === 'archive') return { approve: 'Archive', reject: 'Keep it open' };
+  if (action === 'convert') return { approve: 'Share', reject: 'Keep it only mine' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
     : action === 'change'
@@ -247,6 +253,13 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
     if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
+    return undefined;
+  }
+  if (action === 'convert') {
+    if (state === 'approved') return { kind: 'approved', heading: `Shared ${proposal.space}`, detail: 'It’s out of your personal space. Add people to it, and share what’s in it when you want others to see it.' };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Kept only yours', detail: 'It stays in your personal space.' };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want to share it.` };
+    if (isGone(proposal)) return { kind: 'gone', heading: 'Shared already', detail: 'It left your personal space since, so there’s nothing to decide.' };
     return undefined;
   }
   if (action === 'archive') {

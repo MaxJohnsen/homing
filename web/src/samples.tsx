@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal } from '@/sample';
+import { sampleChanges, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -127,6 +127,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/publish': { label: 'Confirm sharing something with a space', render: () => <SampleConfirm proposal={publishProposal} /> },
   '/confirm/publish/beta': { label: 'Confirm sharing what rests on another client', render: () => <SampleConfirm proposal={{ ...publishProposal, publication: { ...publishProposal.publication!, hidden: [{ space: 'Beta', reference: null }], why: null } }} /> },
   '/confirm/publish/shared': { label: 'Shared with a space', render: () => <SampleConfirm proposal={{ ...publishProposal, state: 'approved' }} /> },
+  '/confirm/convert': { label: 'Confirm sharing a space from your personal space', render: () => <SampleConfirm proposal={convertProposal} /> },
   '/confirm/archive': { label: 'Confirm archiving a space Claude suggests', render: () => <SampleConfirm proposal={archiveProposal} /> },
   '/confirm/archive/done': { label: 'A space archived from a suggestion', render: () => <SampleConfirm proposal={{ ...archiveProposal, spaceId: 'rebrand', state: 'approved' }} /> },
   '/confirm/task': { label: 'Confirm sharing a task with a space', render: () => <SampleConfirm proposal={taskProposal} /> },
@@ -150,6 +151,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview/request': { label: 'Approval card for a request', render: () => <CardPreview sample="request" /> },
   '/card-preview/long': { label: 'Approval card with a longer rule', render: () => <CardPreview sample="long" /> },
   '/card-preview/publish': { label: 'The card for sharing something', render: () => <CardPreview sample="publish" /> },
+  '/card-preview/convert': { label: 'The card for sharing a space from your personal space', render: () => <CardPreview sample="convert" /> },
   '/card-preview/archive': { label: 'The card for archiving a space', render: () => <CardPreview sample="archive" /> },
   '/card-preview/task': { label: 'The card for sharing a task', render: () => <CardPreview sample="task" /> },
   '/card-preview/members': { label: 'The card for adding someone to a space', render: () => <CardPreview sample="members" /> },

@@ -430,6 +430,24 @@ export const publishProposal: ProposalData = {
   },
 };
 
+/** Claude proposes sharing Ana's kitchen renovation with others, at her request. */
+export const convertProposal: ProposalData = {
+  ...proposal,
+  id: 'convert',
+  action: 'convert',
+  space: 'Kitchen renovation',
+  personal: false,
+  within: 'your personal space',
+  text: null,
+  alreadyApplies: [],
+  conversion: {
+    rulesLeaving: [{ kind: 'preference', text: 'Keep answers short, with the most important point first.', from: 'your personal space' }],
+    skillsLeaving: [],
+    places: [{ id: 'family', name: 'Berg family', label: 'Berg family', people: 4, above: false }],
+    why: 'Jonas should see the quotes and the plan too.',
+  },
+};
+
 /** Claude suggests archiving Acme's finished rebrand. */
 export const archiveProposal: ProposalData = {
   ...proposal,

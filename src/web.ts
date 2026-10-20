@@ -188,6 +188,7 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
           shown: typeof body.shown === 'string' ? body.shown : undefined,
           onlyHere: typeof body.onlyHere === 'boolean' ? body.onlyHere : undefined,
           space: spaceAsSet(body.space),
+          share: shareAsSet(body.share),
           findAccount: accountFinder(app.authPool),
         }),
       );
@@ -210,6 +211,16 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
 }
 
 /** A suggested space as the person set it before creating it, or undefined to create it as suggested. */
+/** Where a shared space goes and what becomes of its rules, as the person set them on the decision page. */
+function shareAsSet(value: unknown): { in: string | null; closed: boolean; rules: 'keep' | 'share' | 'drop' } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const share = value as Record<string, unknown>;
+  const rules = (['keep', 'share', 'drop'] as const).find((choice) => choice === share.rules);
+  if (!rules) throw new SpaceRefused('where', 'Choose what becomes of the rules that stop applying.');
+  if (share.in !== null && (typeof share.in !== 'string' || !/^[0-9a-f-]{36}$/i.test(share.in))) throw new SpaceRefused('where', 'Choose where the space goes.');
+  return { in: share.in === null ? null : (share.in as string).toLowerCase(), closed: share.closed === true, rules };
+}
+
 function spaceAsSet(value: unknown): { name?: string; who?: Who; in?: string | null; closed?: boolean } | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const space = value as Record<string, unknown>;

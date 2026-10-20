@@ -4,7 +4,7 @@ import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type 
 import { ApprovalCard, type Done } from '@/approval-card';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 import type { ProposalData } from '@/lib/proposals';
-import { longProposal, memberProposal, proposal as sample, publishProposal, requestProposal, suggestedSpace, taskProposal, archiveProposal } from '@/sample';
+import { longProposal, memberProposal, proposal as sample, publishProposal, requestProposal, suggestedSpace, taskProposal, archiveProposal, convertProposal } from '@/sample';
 import './card.css';
 
 // Inside Claude, the card shows the proposal the assistant just made and lets the person decide
@@ -47,10 +47,10 @@ function Card() {
       done={done}
       onOpen={(link) => void app.openLink({ url: link }).catch(() => {})}
       message={message}
-      decide={async (approve, onlyHere, space) => {
+      decide={async (approve, onlyHere, space, share) => {
         if (!proposal) return;
         const result = await app
-          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : undefined), ...(space && { space }) } })
+          .callServerTool({ name: 'decide', arguments: { proposal: proposal.id, approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : undefined), ...(space && { space }), ...(share && { share }) } })
           .catch(() => undefined);
         if (!result) return 'Homing couldn’t be reached. Try again.';
         const decided = (result.structuredContent as Shown | undefined)?.proposal;
@@ -76,7 +76,7 @@ function applyHost(context: McpUiHostContext) {
 /** The card outside an assistant, deciding on sample data, or showing a change made without a decision. */
 function Preview() {
   const [shown, setShown] = useState(
-    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : params.get('sample') === 'members' ? memberProposal : params.get('sample') === 'publish' ? publishProposal : params.get('sample') === 'task' ? taskProposal : params.get('sample') === 'archive' ? archiveProposal : sample,
+    params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : params.get('sample') === 'space' ? suggestedSpace : params.get('sample') === 'members' ? memberProposal : params.get('sample') === 'publish' ? publishProposal : params.get('sample') === 'task' ? taskProposal : params.get('sample') === 'archive' ? archiveProposal : params.get('sample') === 'convert' ? convertProposal : sample,
   );
   const sending = Boolean(shown.request && !shown.request.sent);
   if (params.get('sample') === 'done') {

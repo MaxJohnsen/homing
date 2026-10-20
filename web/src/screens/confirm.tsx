@@ -1,3 +1,4 @@
+import { firstChoice, shareButton, shareOf, type ShareChoice } from '@/components/share-space-fields';
 import { useState } from 'react';
 import { OutcomeIcon, ProposalDetails, SettledChange } from '@/components/proposal';
 import { Button } from '@/components/ui/button';
@@ -12,7 +13,10 @@ import { Link } from '@/lib/router';
  * Approves or rejects, keeping a new rule to its space if asked, or creating a suggested space as
  * the person set it. Resolves to what to show, if anything, and which field it's about.
  */
-export type Decide = (approve: boolean, onlyHere: boolean, space?: SpaceSet) => Promise<string | { field?: string; message: string } | undefined>;
+/** Sharing a space from your personal tree: where it goes, whether it's closed there, and what becomes of its rules. */
+export type ShareSet = { in: string | null; closed: boolean; rules: 'keep' | 'share' | 'drop' };
+
+export type Decide = (approve: boolean, onlyHere: boolean, space?: SpaceSet, share?: ShareSet) => Promise<string | { field?: string; message: string } | undefined>;
 
 /**
  * The decision an assistant links to, where the person decides a change it proposed. It opens inside
@@ -33,7 +37,10 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
   const space = draft && suggestion ? spaceOf(draft, suggestion.places) : undefined;
   const sending = isSending(proposal);
   const outcome = outcomeOf(proposal);
-  const buttons = buttonsOf(action, sending, proposal.member?.change, placeOf(proposal));
+  const [choice, setChoice] = useState<ShareChoice>(firstChoice);
+  const buttons = proposal.conversion
+    ? { approve: shareButton(proposal.space, choice, proposal.conversion), reject: 'Keep it only mine' }
+    : buttonsOf(action, sending, proposal.member?.change, placeOf(proposal));
   // An email nobody uses Homing with can't be added until they're invited.
   const blocked = (action === 'space' && !space?.name) || proposal.member?.found === false;
   const place = placeOf(proposal);
@@ -41,7 +48,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
   const choose = async (approve: boolean) => {
     if (!decide) return;
     setBusy(true);
-    const answer = await decide(approve, onlyHere, approve ? space : undefined);
+    const answer = await decide(approve, onlyHere, approve ? space : undefined, approve && proposal.conversion ? shareOf(choice, proposal.conversion) : undefined);
     setProblem(typeof answer === 'string' ? { message: answer } : answer);
     setBusy(false);
   };
@@ -53,8 +60,8 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why) && (
-                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why}”</p>
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why) && (
+                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why}”</p>
               )}
             </div>
             <ProposalDetails
@@ -69,6 +76,8 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
               problem={problem}
               disabled={busy}
               idPrefix="page"
+              share={choice}
+              onShareChange={setChoice}
             />
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => choose(false)}>
@@ -84,6 +93,8 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             <p className="text-sm text-muted-foreground">
               {action === 'members' || action === 'archive'
                 ? `Only you can approve this. ${assistant} can’t do it for you.`
+                : action === 'convert'
+                ? `Only you can share it. ${assistant} can’t do it for you, and everything in it stays only yours until you share it.`
                 : action === 'publish' || action === 'task'
                 ? `Only you can share it. ${assistant} can’t do it for you, and until you do, it stays only yours.`
                 : action === 'space'
@@ -110,6 +121,11 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             {proposal.action === 'publish' && proposal.state === 'approved' && proposal.publication && (
               <Link href={`/pages/${proposal.publication.pageId}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
                 Open {proposal.publication.page}
+              </Link>
+            )}
+            {proposal.action === 'convert' && proposal.state === 'approved' && proposal.spaceId && (
+              <Link href={`/spaces/${proposal.spaceId}/members`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+                Add people to {proposal.space}
               </Link>
             )}
             {proposal.action === 'archive' && proposal.state === 'approved' && proposal.spaceId && (
