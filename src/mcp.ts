@@ -324,7 +324,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
           case 'space.share':
             return proposeSpaceSharing(s, links, inputFor(action, shareSpaceInput, input), card);
           case 'proposal.withdraw':
-            return withdrawFor(s, inputFor(action, withdrawInput, input), card);
+            return withdrawFor(s, links, inputFor(action, withdrawInput, input), card);
         }
       }),
   );
@@ -1119,7 +1119,7 @@ async function suggestArchiving(s: Session, links: Links, input: z.infer<typeof 
 }
 
 /** Withdraws a proposal or request of the user's that still waits. It ends, and nothing changes. */
-async function withdrawFor(s: Session, input: z.infer<typeof withdrawInput>, card: boolean): Promise<string | Answer> {
+async function withdrawFor(s: Session, links: Links, input: z.infer<typeof withdrawInput>, card: boolean): Promise<string | Answer> {
   const proposalId = parseRef(input.proposal, 'proposal');
   let withdrawn: ProposalView | undefined;
   try {
@@ -1129,7 +1129,7 @@ async function withdrawFor(s: Session, input: z.infer<typeof withdrawInput>, car
     throw error;
   }
   if (!withdrawn) throw new Refused('There is no proposal of the user\'s with that reference.');
-  const text = `Withdrawn: ${describeProposal(withdrawn)} (${ref('proposal', proposalId)}). It ended, and nothing changed.`;
+  const text = `Withdrawn: ${describeProposal(withdrawn)} (${ref('proposal', proposalId)}). ${outcome(withdrawn, links)}`;
   const done = { heading: 'Withdrawn', detail: 'It ended, and nothing changed.' };
   return card ? { text, structuredContent: { done, note: text } } : text;
 }
@@ -1281,8 +1281,11 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       return proposal.request && !proposal.requestedAt
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
-    case 'withdrawn':
-      return `Withdrawn on ${day(proposal.decidedAt!)}, so it ended and nothing changed.`;
+    case 'withdrawn': {
+      // A suggestion of the assistant's own that was withdrawn counts as turned down.
+      const own = (proposal.action === 'add space' || proposal.action === 'archive space') && !proposal.change.asked;
+      return `Withdrawn by ${proposal.decidedIn ?? 'the user'} on ${day(proposal.decidedAt!)}, so it ended and nothing changed.${own ? " Don't suggest it again unless the user asks." : ''}`;
+    }
     case 'expired':
       return proposal.action === 'add space'
         ? `Nobody decided it before ${day(proposal.expiresAt)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again unless the user asks."}`

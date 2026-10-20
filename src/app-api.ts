@@ -258,6 +258,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             emailed: request.adminsEmailed,
             admins: request.admins,
             decidedBy: request.decider,
+            withdrawnBy: request.state === 'withdrawn' ? request.decidedIn : null,
           })),
         });
         break;

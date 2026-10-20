@@ -31,6 +31,8 @@ export interface ProposalData {
   request?: { by: string | null; yours: boolean; why: string | null; sent: boolean; emailed?: boolean | null; admins: string[] } | null;
   /** Who decided it, when that was someone else. */
   decidedBy?: string | null;
+  /** The assistant that withdrew it, when you didn't yourself. */
+  withdrawnBy?: string | null;
   /** The rules that already apply where a new one would go. */
   alreadyApplies: { kind: RuleKind; text: string; from: string }[];
   /**
@@ -120,6 +122,8 @@ export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within
   emailed: boolean | null;
   admins: string[];
   decidedBy: string | null;
+  /** The assistant that withdrew it, when you didn't yourself. */
+  withdrawnBy?: string | null;
 }
 
 /** A change waiting for you, as Home and the list of everything waiting show it. */
@@ -247,7 +251,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
   // Withdrawn by you or your assistant: it ended without being decided.
-  if (state === 'withdrawn') return { kind: 'gone', heading: 'Withdrawn', detail: 'It ended before anyone decided it, and nothing changed.' };
+  if (state === 'withdrawn') return { kind: 'gone', heading: 'Withdrawn', detail: `${proposal.withdrawnBy ? `${proposal.withdrawnBy} withdrew it` : 'You withdrew it'} before anyone decided it, so nothing changed.` };
   if (action === 'publish') {
     if (state === 'approved') {
       return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees it now, and that you shared it.${proposal.publication?.copy ? ' Where it came from stays only yours.' : ''}` };

@@ -21,6 +21,8 @@ begin
     if new.decided_in is distinct from old.decided_in or new.space_created is distinct from old.space_created then
       raise exception 'withdrawing changes nothing else' using errcode = 'check_violation';
     end if;
+    -- Who withdrew it: the person, and the assistant if one did it for them.
+    new.decided_in := current_agent();
     new.decided_by := current_person_id();
     new.decided_at := clock_timestamp();
     return new;

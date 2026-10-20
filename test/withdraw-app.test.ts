@@ -9,7 +9,7 @@ import { proposeRule } from '../src/proposals.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { as, db, member, refused, type Member } from './helpers.ts';
+import { admin, as, db, member, refused, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -40,11 +40,22 @@ after(() => homing.close());
 test('the assistant withdraws a proposal the user no longer wants, which decides nothing', async () => {
   const proposal = proposalOf((await propose('Write reports in Norwegian.')).text);
   const withdrawn = await claude.call('act', { action: 'proposal.withdraw', input: { proposal: `proposal:${proposal}` } });
-  assert.match(withdrawn.text, /^Withdrawn: .+ It ended, and nothing changed\./);
+  assert.match(withdrawn.text, /^Withdrawn: .+ Withdrawn by Claude on .+ nothing changed\./);
   assert.equal(await stateOf(ana, proposal), 'withdrawn');
   assert.equal((await ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: true })).status, 409, 'withdrawn, it can no longer be approved');
-  assert.match((await claude.call('read', { ref: `proposal:${proposal}` })).text, /Withdrawn on .+ nothing changed/);
-  assert.match((await claude.call('act', { action: 'proposal.withdraw', input: { proposal: `proposal:${proposal}` } })).text, /decided already/);
+  assert.match((await claude.call('read', { ref: `proposal:${proposal}` })).text, /Withdrawn by Claude on .+ nothing changed/);
+  assert.equal((await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal.withdrawnBy, 'Claude');
+  assert.match((await claude.call('act', { action: 'proposal.withdraw', input: { proposal: `proposal:${proposal}` } })).text, /withdrawn already/);
+
+  // A suggestion of the assistant's own, withdrawn, counts as turned down: it isn't made again.
+  const garden = proposalOf((await claude.call('act', { action: 'space.suggest', input: { name: 'Garden', who: 'just me', why: 'You keep mentioning the garden.' } })).text);
+  assert.match((await claude.call('act', { action: 'proposal.withdraw', input: { proposal: `proposal:${garden}` } })).text, /Don't suggest it again unless the user asks/);
+  assert.match((await claude.call('act', { action: 'space.suggest', input: { name: 'Garden', who: 'just me', why: 'Still the garden.' } })).text, /Don't suggest it again/);
+
+  // An expired one can't be withdrawn.
+  const late = proposalOf((await propose('Answer within a day.')).text);
+  await admin`update proposals set expires_at = now() - interval '1 minute' where id = ${late}::uuid`;
+  assert.equal((await ana.browser.json(`/api/proposals/${late}/withdraw`, {})).status, 410);
 });
 
 test('the assistant learns how a proposal ended from Homing, not from what it said before', async () => {
@@ -64,11 +75,13 @@ test('a member withdraws a request they sent to the admins, and only they can', 
   assert.equal((await cara.browser.json(`/api/proposals/${request.id}/decide`, { approve: true })).status, 200, 'Cara sends it');
   assert.equal(await stateOf(cara, request.id), 'requested');
   assert.equal((await ana.browser.json(`/api/proposals/${request.id}/withdraw`, {})).status, 404, 'not the admin');
+  await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`update proposals set state = 'withdrawn' where id = ${request.id}::uuid`), refused, 'not even straight against the database');
   assert.equal((await cara.browser.json(`/api/proposals/${request.id}/withdraw`, {})).status, 200);
   assert.equal(await stateOf(cara, request.id), 'withdrawn');
   assert.equal((await ana.browser.json(`/api/proposals/${request.id}/decide`, { approve: true })).status, 409, 'nothing left for the admins to decide');
   const mine = (await cara.browser.json('/api/requests')).body.requests as { id: string; state: string }[];
-  assert.equal(mine.find((sent) => sent.id === request.id)?.state, 'withdrawn');
+  const withdrawn = mine.find((sent) => sent.id === request.id) as { state: string; withdrawnBy: string | null } | undefined;
+  assert.deepEqual([withdrawn?.state, withdrawn?.withdrawnBy], ['withdrawn', null]);
 });
 
 test('straight against the database, withdrawing is the only change an assistant makes to a proposal', async () => {
