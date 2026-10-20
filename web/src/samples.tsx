@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal } from '@/sample';
+import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -138,6 +138,12 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/convert': { label: 'Confirm sharing a space from your personal space', render: () => <SampleConfirm proposal={convertProposal} /> },
   '/confirm/archive': { label: 'Confirm archiving a space Claude suggests', render: () => <SampleConfirm proposal={archiveProposal} /> },
   '/confirm/archive/done': { label: 'A space archived from a suggestion', render: () => <SampleConfirm proposal={{ ...archiveProposal, spaceId: 'rebrand', state: 'approved' }} /> },
+  '/confirm/page-archive': { label: 'Confirm archiving a page others see, as Claude suggests', render: () => <SampleConfirm proposal={pageArchiveProposal} /> },
+  '/confirm/page-archive/asked': { label: 'Confirm archiving a page others see, as you asked', render: () => <SampleConfirm proposal={{ ...pageArchiveProposal, page: { ...pageArchiveProposal.page!, asked: true, why: null } }} /> },
+  '/confirm/page-archive/reopen': { label: 'Confirm reopening a page others see', render: () => <SampleConfirm proposal={{ ...pageArchiveProposal, action: 'reopen page', page: { ...pageArchiveProposal.page!, archived: true, asked: true, why: null } }} /> },
+  '/confirm/page-archive/done': { label: 'A page archived from a suggestion', render: () => <SampleConfirm proposal={{ ...pageArchiveProposal, state: 'approved', page: { ...pageArchiveProposal.page!, archived: true } }} /> },
+  '/confirm/page-archive/kept': { label: 'A page kept open', render: () => <SampleConfirm proposal={{ ...pageArchiveProposal, state: 'rejected' }} /> },
+  '/confirm/page-archive/gone': { label: 'A page archived before deciding', render: () => <SampleConfirm proposal={{ ...pageArchiveProposal, page: { ...pageArchiveProposal.page!, archived: true } }} /> },
   '/confirm/task': { label: 'Confirm sharing a task with a space', render: () => <SampleConfirm proposal={taskProposal} /> },
   '/confirm/task/shared': { label: 'A task shared with a space', render: () => <SampleConfirm proposal={{ ...taskProposal, spaceId: 'acme', state: 'approved' }} /> },
   '/confirm/members': { label: 'Confirm adding someone to a space', render: () => <SampleConfirm proposal={memberProposal} /> },
@@ -161,6 +167,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview/publish': { label: 'The card for sharing something', render: () => <CardPreview sample="publish" /> },
   '/card-preview/convert': { label: 'The card for sharing a space from your personal space', render: () => <CardPreview sample="convert" /> },
   '/card-preview/archive': { label: 'The card for archiving a space', render: () => <CardPreview sample="archive" /> },
+  '/card-preview/page-archive': { label: 'The card for archiving a page others see', render: () => <CardPreview sample="page-archive" /> },
   '/card-preview/task': { label: 'The card for sharing a task', render: () => <CardPreview sample="task" /> },
   '/card-preview/members': { label: 'The card for adding someone to a space', render: () => <CardPreview sample="members" /> },
   '/card-preview/space': { label: 'The card for a space Claude suggests', render: () => <CardPreview sample="space" /> },

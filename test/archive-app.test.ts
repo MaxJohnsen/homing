@@ -9,7 +9,7 @@ import { createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, changeMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { as, db, member, refused, type Member } from './helpers.ts';
+import { admin, as, db, member, refused, until, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -151,9 +151,9 @@ test('an assistant suggests archiving a finished space, rarely, and the user arc
   // Reopened, it counts as kept open, like one turned down: not suggested again unless the user asks.
   assert.equal((await archive(ana, done, false)).status, 200);
   assert.match((await claude.call('read', { ref: `proposal:${proposal}` })).text, /reopened since/);
-  assert.match((await act({ space: `space:${done}` })).text, /kept Summer campaign open .+ Don't suggest it again/);
+  assert.match((await act({ space: `space:${done}` })).text, /Summer campaign was reopened after the user archived it on .+ Don't suggest archiving it again unless they ask/);
   const again = await act({ space: `space:${turnedDown === 'Spring fair' ? spring : autumn}` });
-  assert.ok(again.failed && new RegExp(`kept ${turnedDown} open`).test(again.text), 'turned down, it isn’t suggested again');
+  assert.ok(again.failed && new RegExp(`The user kept ${turnedDown} open when archiving it was proposed on`).test(again.text), 'turned down, it isn’t suggested again');
 
   // Asked for, a few may wait, and the card says it's what the user asked for.
   const asked = proposalOf((await act({ space: `space:${done}`, asked: true })).text);
@@ -271,4 +271,77 @@ test('an assistant archives only what nobody else can open, at most 20 an hour, 
   assert.equal(burst.filter((result) => result.status === 'fulfilled').length, 0);
   // Still, the person archives directly as much as they like.
   assert.equal((await archive(solo, more[18])).status, 200);
+});
+
+test('approving refuses when someone else archives the space at the same moment', async () => {
+  // Cara looks after the trade fair too.
+  const fair = await as({ ...ana, direct: true }, async (s) => {
+    const fair = await createSpace(s, { name: 'Trade fair' });
+    await addMember(s, fair, cara.id, 'admin');
+    return fair;
+  });
+  const act = (input: Record<string, unknown>) => claude.call('act', { action: 'space.archive', input });
+  const proposalOf = (text: string) => /proposal:([0-9a-f-]{36})/.exec(text)![1];
+  const id = proposalOf((await act({ space: `space:${fair}`, asked: true })).text);
+  const shown = String((await ana.browser.json(`/api/proposals/${id}`)).body.proposal.archive.spaces);
+
+  // Cara archives it directly, and her change is still on its way while Ana approves.
+  let approving: ReturnType<Member['browser']['json']> | undefined;
+  await as({ ...cara, direct: true }, async (s) => {
+    await s.tx`select archive_space(${fair}::uuid, true)`;
+    approving = ana.browser.json(`/api/proposals/${id}/decide`, { approve: true, shown });
+    await until(async () => {
+      const [{ waits }] = await admin`
+        select exists (select from pg_stat_activity where wait_event_type = 'Lock' and query like '%archive_space%' and pid <> pg_backend_pid()) as waits
+      `;
+      return waits;
+    });
+  });
+  const answer = await approving!;
+  assert.equal(answer.status, 409);
+  assert.match(answer.body.message, /It was archived after you opened this page, so there’s nothing to decide/);
+  assert.equal((await ana.browser.json(`/api/proposals/${id}`)).body.proposal.state, 'open');
+  assert.deepEqual((await admin`select person_id from space_archives where space_id = ${fair}`).map((row) => row.personId), [cara.id]);
+
+  assert.equal((await archive(ana, fair, false)).status, 200);
+  for (const item of (await ana.browser.json('/api/waiting')).body.waiting as { id: string; action: string }[]) {
+    if (item.action === 'archive') await ana.browser.json(`/api/proposals/${item.id}/withdraw`, {});
+  }
+
+  // Kept open when the user had asked for it, it isn't suggested later either.
+  const expo = await as({ ...ana, direct: true }, async (s) => {
+    const expo = await createSpace(s, { name: 'Expo' });
+    await addMember(s, expo, cara.id);
+    return expo;
+  });
+  const keptOpen = proposalOf((await act({ space: `space:${expo}`, asked: true })).text);
+  assert.equal((await ana.browser.json(`/api/proposals/${keptOpen}/decide`, { approve: false })).status, 200);
+  assert.match((await act({ space: `space:${expo}`, why: 'The expo is over.' })).text, /The user kept Expo open when archiving it was proposed on/);
+
+  // Asked for and withdrawn, a proposal doesn't keep the assistant from suggesting it later.
+  const asked = proposalOf((await act({ space: `space:${fair}`, asked: true })).text);
+  await claude.call('act', { action: 'proposal.withdraw', input: { proposal: `proposal:${asked}` } });
+  assert.match((await act({ space: `space:${fair}`, why: 'The fair ended in May.' })).text, /^Waiting for the user's approval/);
+});
+
+test('a proposal to archive a space changes only with archiving its person can see', async () => {
+  const bob = await member(homing.url, 'Bob');
+  const [northwind, board] = await as({ ...ana, direct: true }, async (s) => {
+    const northwind = await createSpace(s, { name: 'Northwind' });
+    const board = await createSpace(s, { name: 'Board', parentId: northwind, closed: true });
+    await addMember(s, board, bob.id, 'admin');
+    return [northwind, board];
+  });
+  const assistant = new Assistant(homing.url, assistants.claude);
+  await assistant.connect(bob.browser);
+  const bobs = await assistant.open();
+  const id = /proposal:([0-9a-f-]{36})/.exec((await bobs.call('act', { action: 'space.archive', input: { space: `space:${board}`, asked: true } })).text)![1];
+
+  // Ana archives Northwind and reopens it. Bob can't open Northwind, so for him nothing changed.
+  assert.equal((await archive(ana, northwind)).status, 200);
+  assert.equal((await archive(ana, northwind, false)).status, 200);
+  assert.ok(((await bob.browser.json('/api/waiting')).body.waiting as { id: string }[]).some((item) => item.id === id));
+  assert.match((await bobs.call('read', { ref: `proposal:${id}` })).text, /Waiting for the user's approval/);
+  const [{ changed }] = await as(bob, (s) => s.tx<{ changed: Date | null }[]>`select archive_changed(${northwind}::uuid) as changed`);
+  assert.equal(changed, null);
 });

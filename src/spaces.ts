@@ -134,8 +134,9 @@ export async function renameSpace(s: Session, spaceId: string, name: string): Pr
 /**
  * Archives a space the person looks after, or reopens it (spec §1). It and the spaces in it leave
  * everyday context, and stay searchable. A space archived with one above it reopens with that one.
+ * Says whether it changed it, since someone else may have got there first while this waited.
  */
-export async function archiveSpace(s: Session, spaceId: string, archived: boolean): Promise<Space> {
+export async function archiveSpace(s: Session, spaceId: string, archived: boolean): Promise<Space & { changed: boolean }> {
   const spaces = await listSpaces(s);
   const space = spaces.find((candidate) => candidate.id === spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
@@ -147,8 +148,8 @@ export async function archiveSpace(s: Session, spaceId: string, archived: boolea
     const above = spaces.find((candidate) => candidate.id === space.archivedIn);
     throw new SpaceRefused('where', `It’s archived with ${above ? above.name : 'the space above it'}, so it reopens with that one.`);
   }
-  await s.tx`select archive_space(${spaceId}::uuid, ${archived})`;
-  return (await listSpaces(s)).find((candidate) => candidate.id === spaceId)!;
+  const [{ changed }] = await s.tx<{ changed: boolean }[]>`select archive_space(${spaceId}::uuid, ${archived}) as changed`;
+  return { ...(await listSpaces(s)).find((candidate) => candidate.id === spaceId)!, changed };
 }
 
 /** "in Acme", "in your personal space" or "on its own": where a space sits. */

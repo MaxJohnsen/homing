@@ -1,7 +1,7 @@
 // Issue #6, archiving a page (spec §3). Anyone who can see a page archives it directly, for
 // everyone who sees it: it leaves everyday context and the space's list of pages, stays
-// searchable, and is recorded. An assistant archives at once only a page nobody else has anything
-// on; one others see is a person's to archive. Nothing is deleted.
+// searchable, and is recorded. An assistant archives at once only a page in a space nobody else can
+// open; in one others can open, it waits for a person to approve it. Nothing is deleted.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -80,14 +80,25 @@ test('anyone who sees a page archives it for everyone, and it stays searchable a
   assert.equal((await archive(ana, overview)).status, 400);
 });
 
-test('an assistant archives at once only a page nobody else has anything on', async () => {
+test('an assistant archives at once only a page in a space nobody else can open', async () => {
   const act = (input: Record<string, unknown>) => claude.call('act', { action: 'page.archive', input });
-  assert.match((await act({ page: `page:${notes}` })).text, /^Archived "My call notes"/);
-  assert.equal((await titles(ana)).archived, 1);
-  assert.match((await act({ page: `page:${notes}`, reopen: true })).text, /^Reopened "My call notes"/);
+  const paint = await as({ ...ana, direct: true }, async (s) => {
+    const kitchen = await createSpace(s, { name: 'Kitchen', parentId: ana.personalSpaceId });
+    const paint = await createPage(s, { spaceId: kitchen, title: 'Paint colours' });
+    await writeItem(s, { pageId: paint, body: 'The walls are Linen White.' });
+    return paint;
+  });
+  assert.match((await act({ page: `page:${paint}` })).text, /^Archived "Paint colours"/);
+  assert.ok((await ana.browser.json(`/api/pages/${paint}`)).body.archived);
+  assert.match((await act({ page: `page:${paint}`, reopen: true })).text, /^Reopened "Paint colours"/);
 
-  // Cara sees the vendor page, so Ana archives it in Homing; Cara's own draft Ana can't see at all.
-  assert.match((await act({ page: `page:${vendor}` })).text, /Others see that page, so the user archives it in Homing/);
+  // Cara can open Acme, so archiving there waits for Ana, even her own notes, and as Claude's own
+  // idea only with a reason; Cara's own draft Ana can't see at all.
+  for (const page of [notes, vendor]) {
+    const answer = await act({ page: `page:${page}` });
+    assert.ok(answer.failed);
+    assert.match(answer.text, /Say why the page is no longer active/);
+  }
   assert.match((await act({ page: `page:${carasDraft}` })).text, /no page with that reference/);
 
   // Straight against the database too, and never without acting directly or through an assistant.

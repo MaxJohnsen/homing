@@ -377,14 +377,15 @@ export async function archivedPages(s: Session, spaceId: string): Promise<number
 
 /**
  * Archives a page the person can see, or reopens it (spec §3): for everyone who sees it, recorded,
- * and nothing deleted. Undefined when there's no such page; false for one that isn't knowledge.
+ * and nothing deleted. Says whether that changed it, or whether it was archived, or open, already.
+ * Undefined when there's no such page; reserved for one that isn't knowledge.
  */
-export async function archivePage(s: Session, pageId: string, archived: boolean): Promise<boolean | undefined> {
+export async function archivePage(s: Session, pageId: string, archived: boolean): Promise<'changed' | 'unchanged' | 'reserved' | undefined> {
   const page = await readPage(s, pageId);
   if (!page) return undefined;
-  if (page.type === 'guidance' || page.type === 'skill' || page.type === 'overview') return false;
-  await s.tx`select archive_page(${pageId}::uuid, ${archived})`;
-  return true;
+  if (page.type === 'guidance' || page.type === 'skill' || page.type === 'overview') return 'reserved';
+  const [{ changed }] = await s.tx<{ changed: boolean }[]>`select archive_page(${pageId}::uuid, ${archived}) as changed`;
+  return changed ? 'changed' : 'unchanged';
 }
 
 /** A knowledge page in a list, as the viewer sees it. */

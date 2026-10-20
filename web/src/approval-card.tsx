@@ -12,6 +12,7 @@ const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired',
 const spaceStatus = { ...status, approved: 'Created', rejected: 'Not created' };
 const shareStatus = { ...status, approved: 'Shared', rejected: 'Not shared' };
 const archiveStatus = { ...status, approved: 'Archived', rejected: 'Kept open' };
+const reopenStatus = { ...status, approved: 'Reopened', rejected: 'Kept archived' };
 
 /** "Add Cara Lund to Acme?": a change of members as the card asks it. */
 function memberQuestion(proposal: ProposalData, member: NonNullable<ProposalData['member']>): string {
@@ -95,7 +96,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
     <section aria-label={proposal || !initialMessage ? 'Approve a change' : 'Homing'} className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
       <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
         <Wordmark className="text-sm text-foreground" />
-        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' || proposal.action === 'task' || proposal.action === 'convert' ? shareStatus[outcome.kind] : proposal.action === 'archive' ? archiveStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
+        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' || proposal.action === 'task' || proposal.action === 'convert' ? shareStatus[outcome.kind] : proposal.action === 'archive' || proposal.action === 'archive page' ? archiveStatus[outcome.kind] : proposal.action === 'reopen page' ? reopenStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
       </div>
 
       {!proposal ? (
@@ -116,6 +117,10 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
               ? `Share this task with ${placeOf(proposal)}?`
               : proposal.action === 'archive'
               ? `Archive ${placeOf(proposal)}?`
+              : proposal.action === 'archive page'
+              ? `Archive this page in ${placeOf(proposal)}?`
+              : proposal.action === 'reopen page'
+              ? `Reopen this page in ${placeOf(proposal)}?`
               : proposal.action === 'convert'
               ? `Share ${proposal.space} with others?`
               : sending
@@ -126,8 +131,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why) && (
-            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why}”</p>
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why}”</p>
           )}
           <ProposalDetails
             proposal={proposal}

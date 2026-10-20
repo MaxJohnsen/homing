@@ -28,7 +28,7 @@ import {
   type Hit,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
-import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
+import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePageArchive, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
@@ -124,6 +124,10 @@ const archiveInput = z.strictObject({
 
 const pageArchiveInput = z.strictObject({
   page: text().describe('The page that is no longer active, such as page:…'),
+  why: text().max(500).optional().describe(
+    "The evidence that it's no longer active, such as a finished project or someone who has left, shown when the user decides. Age is not evidence. Needed when archiving a page in a space others can open is your own idea",
+  ),
+  asked: z.boolean().optional().describe('True only when the user asked you to archive it'),
   reopen: z.boolean().optional().describe('True to reopen an archived page the user asked you to reopen'),
 }).describe('For page.archive');
 
@@ -288,7 +292,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'Suggest it only when the user says so or it clearly is. A space only the user has is archived, or reopened, as soon as they ask; ' +
         'one others have, or your own idea, waits for their approval. ' +
         'page.archive takes a page that is no longer active, such as a finished project or someone who has left, out of everyday context; it stays searchable. ' +
-        'Only when the user asks, or with clear evidence; age is not evidence. A page only the user has is archived, or reopened, at once. ' +
+        'Only when the user asks, or with clear evidence; age is not evidence. A page in a space only the user has is archived, or reopened, at once; ' +
+        'in a space others can open, it waits for their approval, and when archiving it is your own idea, give the evidence as why. ' +
         'proposal.withdraw withdraws a proposal or request of the user\'s that still waits, when they no longer want it; it never decides it. ' +
         'Whether a proposal still waits, and how it ended, comes from Homing: `read` it rather than going by what you said before. ' +
         "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once.",
@@ -1152,21 +1157,24 @@ async function proposeTaskSharing(s: Session, links: Links, input: z.infer<typeo
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
-/** Archives or reopens a page only the user has; one others see is theirs to archive in Homing. */
+/**
+ * Archives or reopens a page in a space only the user has at once; in a space others can open, it
+ * waits for the user's approval, whatever is on the page.
+ */
 async function archivePageFor(s: Session, links: Links, input: z.infer<typeof pageArchiveInput>, card: boolean): Promise<string | Answer> {
   const pageId = parseRef(input.page, 'page');
-  let done: boolean | undefined;
+  let done: Awaited<ReturnType<typeof archivePage>>;
   try {
     done = await s.tx.savepoint((sp) => archivePage({ ...s, tx: sp }, pageId, !input.reopen));
   } catch (error) {
-    if (error instanceof postgres.PostgresError && error.message === 'others see that page, so a person archives it') {
-      throw new Refused(`Others see that page, so the user ${input.reopen ? 'reopens' : 'archives'} it in Homing. Nothing changed. Give them this link: ${links.page(pageId)}`);
+    if (error instanceof postgres.PostgresError && error.message === 'others can open that page\'s space, so a person archives it') {
+      return proposePageArchiving(s, links, pageId, input, card);
     }
     if (error instanceof postgres.PostgresError && error.code === '42501') throw new Refused(`${error.message[0].toUpperCase()}${error.message.slice(1)}. Nothing changed.`);
     throw error;
   }
   if (done === undefined) throw new Refused('There is no page with that reference that you can see.');
-  if (!done) throw new Refused('Rules, skills and the overview aren’t archived.');
+  if (done === 'reserved') throw new Refused('Rules, skills and the overview aren’t archived.');
   const page = (await readPage(s, pageId))!;
   const text = input.reopen
     ? `Reopened ${quote(page.title)} (${ref('page', pageId)}). It's back in everyday context.`
@@ -1175,6 +1183,26 @@ async function archivePageFor(s: Session, links: Links, input: z.infer<typeof pa
     ? { heading: 'Page reopened', name: page.title, detail: 'It’s back in everyday context.', link: links.page(pageId) }
     : { heading: 'Page archived', name: page.title, detail: 'It’s out of everyday context, and still searchable. You can reopen it on the page.', link: links.page(pageId) };
   return card ? { text, structuredContent: { done: answer, note: text } } : text;
+}
+
+/** Proposes archiving, or reopening, a page in a space others can open, for the user to approve. */
+async function proposePageArchiving(s: Session, links: Links, pageId: string, input: z.infer<typeof pageArchiveInput>, card: boolean): Promise<string | Answer> {
+  let proposal: Proposal;
+  try {
+    proposal = await proposePageArchive(s, { pageId, reopen: input.reopen, why: input.why, asked: input.asked });
+  } catch (error) {
+    if (error instanceof SpaceRefused || error instanceof NotSuggested) throw new Refused(error.message);
+    throw error;
+  }
+  const space = (await listSpaces(s)).find((candidate) => candidate.id === proposal.spaceId);
+  const doing = input.reopen ? 'reopening' : 'archiving';
+  const where = card
+    ? `Homing shows them what ${doing} does in a card here, to ${input.reopen ? 'reopen it or keep it archived' : 'archive it or keep it open'}. If they can't see the card, give them this link instead: ${links.proposal(proposal.id)}`
+    : `Give them this link to see what ${doing} does, and decide: ${links.proposal(proposal.id)}`;
+  const text =
+    `Waiting for the user's approval (${ref('proposal', proposal.id)}), since others can open ${space?.name ?? 'its space'}. Nothing is ${input.reopen ? 'reopened' : 'archived'} yet. ${where}\n\n` +
+    `Only they can decide, so never say it is ${input.reopen ? 'reopened' : 'archived'} until \`read\` shows it is approved.`;
+  return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
 /**
@@ -1227,6 +1255,8 @@ function describeProposal(proposal: Proposal): string {
   if (proposal.action === 'publish') return `Share ${ref('item', proposal.itemId!)} with everyone in the space`;
   if (proposal.action === 'share task') return `Share ${ref('task', proposal.taskId!)} with everyone in the space`;
   if (proposal.action === 'archive space') return 'Archive the space, and the spaces in it';
+  if (proposal.action === 'archive page') return `Archive the page ${ref('page', proposal.pageId!)}`;
+  if (proposal.action === 'reopen page') return `Reopen the page ${ref('page', proposal.pageId!)}`;
   if (proposal.action === 'share space') return 'Share the space from the user’s personal space with others';
   if (proposal.action === 'change members') {
     const who = change.personName ?? change.email!;
@@ -1250,6 +1280,16 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     return task?.shared ? 'The task is shared with the space already, so there is nothing to decide.' : 'The task was done or removed since, so there is nothing to decide.';
   }
   if (proposal.state === 'open' && 'archive' in proposal && proposal.archive?.archived) return 'The space is archived already, so there is nothing to decide.';
+  if (proposal.state === 'open' && 'archive' in proposal && proposal.archive && !proposal.archive.stands) {
+    return 'It no longer stands: the space was archived and reopened since it was proposed, so there is nothing to decide.';
+  }
+  // A page archived or reopened another way, or one the user can no longer see, leaves nothing to decide.
+  const page = 'page' in proposal ? proposal.page : undefined;
+  if (proposal.state === 'open' && proposal.pageId && page !== undefined) {
+    if (!page) return 'The user can no longer see the page, so there is nothing to decide.';
+    if (page.archived === (proposal.action === 'archive page')) return `The page is ${page.archived ? 'archived' : 'open'} already, so there is nothing to decide.`;
+    if (!page.stands) return 'It no longer stands: the page was archived or reopened since it was proposed, so there is nothing to decide.';
+  }
   if (proposal.state === 'open' && proposal.action === 'share space' && 'conversion' in proposal && !proposal.conversion) return 'The space was shared or archived since, so there is nothing to decide.';
   switch (proposal.state) {
     case 'open':
@@ -1264,8 +1304,18 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       if (proposal.action === 'share space') return `The user shared it on ${day(proposal.decidedAt!)}. It's out of their personal space now; add people with members.change.`;
       if (proposal.action === 'archive space') {
         return 'archive' in proposal && proposal.archive && !proposal.archive.archived
-          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since.`
+          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since. Don't suggest archiving it again unless they ask.`
           : `The user archived it on ${day(proposal.decidedAt!)}. It's out of everyday context now, and still searchable.`;
+      }
+      if (proposal.action === 'archive page') {
+        return page && !page.archived
+          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since. Don't suggest archiving it again unless they ask.`
+          : `The user archived it on ${day(proposal.decidedAt!)}. It's out of everyday context now, and still searchable.`;
+      }
+      if (proposal.action === 'reopen page') {
+        return page?.archived
+          ? `The user reopened it on ${day(proposal.decidedAt!)}, and it was archived again since.`
+          : `The user reopened it on ${day(proposal.decidedAt!)}. It's back in everyday context.`;
       }
       if (proposal.action === 'add space') {
         return created
@@ -1275,7 +1325,10 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. Don't propose sharing it again unless they ask.`;
-      if (proposal.action === 'archive space') return `The user kept it open, on ${day(proposal.decidedAt!)}. Don't suggest archiving it again unless they ask.`;
+      if (proposal.action === 'archive space' || proposal.action === 'archive page') {
+        return `The user kept it open, on ${day(proposal.decidedAt!)}. Nothing was archived. Don't suggest archiving it again unless they ask.`;
+      }
+      if (proposal.action === 'reopen page') return `The user kept it archived, on ${day(proposal.decidedAt!)}. Nothing changed.`;
       if (proposal.action === 'share space') return `The user kept it in their personal space, on ${day(proposal.decidedAt!)}. Nothing changed. Don't propose sharing it again unless they ask.`;
       if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again."}`;
       return proposal.request && !proposal.requestedAt
@@ -1283,7 +1336,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
     case 'withdrawn': {
       // A suggestion of the assistant's own that was withdrawn counts as turned down.
-      const own = (proposal.action === 'add space' || proposal.action === 'archive space') && !proposal.change.asked;
+      const own = (proposal.action === 'add space' || proposal.action === 'archive space' || proposal.action === 'archive page') && !proposal.change.asked;
       return `Withdrawn by ${proposal.decidedIn ?? 'the user'} on ${day(proposal.decidedAt!)}, so it ended and nothing changed.${own ? " Don't suggest it again unless the user asks." : ''}`;
     }
     case 'expired':
