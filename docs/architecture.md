@@ -37,6 +37,7 @@ Chosen for fast context retrieval, simple self-hosting, reliable concurrency and
 
 - The server code runs without a build step. Only the web app has one, and it runs when the image is built.
 - One image runs every component. A setting chooses its role (everything, MCP and web, or workers), so an installation can be split later without code changes. Heavy parsing runs in worker processes.
+- Each of Homing's transactions turns off PostgreSQL's JIT compilation and plans every query for its own values. Row-level security makes the planner overestimate costs, so JIT compiled queries that run in milliseconds, for up to a second, and plans cached for any values made context and search 2 to 3 times slower.
 - No Redis, search engine, vector database or graph database. One is added only if a benchmark shows Postgres falls short. For search, the fallback is a ranking extension inside Postgres, such as ParadeDB's `pg_search`, not a new service.
 - Graphile Worker and pgvector are preferred, not committed, until they are tested.
 - Homing is a server, even for one person. There is no embedded or single-binary variant in v1.
