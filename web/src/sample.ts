@@ -430,6 +430,18 @@ export const publishProposal: ProposalData = {
   },
 };
 
+/** Claude suggests archiving Acme's finished rebrand. */
+export const archiveProposal: ProposalData = {
+  ...proposal,
+  id: 'archive',
+  action: 'archive',
+  space: 'Rebrand 2025',
+  within: 'Acme',
+  text: null,
+  alreadyApplies: [],
+  archive: { spaces: 2, private: false, archived: false, why: 'The new brand launched on 1 October, and nothing has happened there since.' },
+};
+
 /** Claude proposes sharing one of Ana's tasks with everyone in Acme. */
 export const taskProposal: ProposalData = {
   ...proposal,

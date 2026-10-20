@@ -26,7 +26,7 @@ import {
   type Hit,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
-import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, readProposal, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
+import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePublish, proposeRule, proposeTaskShare, readProposal, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
@@ -112,6 +112,12 @@ const taskShareInput = z.strictObject({
   task: text().describe("The user's private task to share, such as task:…"),
   why: text().optional().describe("Why it should be shared, in the user's words, shown when they decide"),
 }).describe('For task.share');
+
+const archiveInput = z.strictObject({
+  space: text().describe('The space whose work is done, such as space:…'),
+  why: text().optional().describe("Why it's done, in the user's words or from what you know, shown when they decide"),
+  asked: z.boolean().optional().describe('True only when the user asked you to archive it'),
+}).describe('For space.archive');
 
 const shareSpaceInput = z.strictObject({
   space: text().describe("The space in the user's personal space to share, such as space:…"),
@@ -263,11 +269,13 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         "knowledge.publish proposes sharing one of the user's private items with everyone in its space, when they want it shared: " +
         'they approve exactly what is shared. ' +
         "task.share proposes sharing one of the user's private tasks with everyone in its space, such as one for the team: keep it with `remember` first. " +
+        'space.archive suggests archiving a space whose work is done, such as a finished project or a past trip: only when the user says so or it clearly is. ' +
+        'The user archives it by approving, which takes it and the spaces in it out of everyday context; nothing is deleted. ' +
         "space.share, for a space in the user's personal space they want to share with others, gives them the link where they decide it in Homing.",
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.share']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'space.share']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, shareSpaceInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, shareSpaceInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -289,6 +297,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             return proposePublishing(s, links, inputFor(action, publishInput, input), card);
           case 'task.share':
             return proposeTaskSharing(s, links, inputFor(action, taskShareInput, input), card);
+          case 'space.archive':
+            return suggestArchiving(s, links, inputFor(action, archiveInput, input), card);
           case 'space.share':
             return shareSpaceLink(s, links, inputFor(action, shareSpaceInput, input));
         }
@@ -1023,6 +1033,24 @@ async function proposePublishing(s: Session, links: Links, input: z.infer<typeof
   return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
 }
 
+/** Suggests archiving a space whose work is done, for the user to approve. */
+async function suggestArchiving(s: Session, links: Links, input: z.infer<typeof archiveInput>, card: boolean): Promise<string | Answer> {
+  let proposal: Proposal;
+  try {
+    proposal = await suggestArchive(s, { spaceId: parseRef(input.space, 'space'), why: input.why, asked: input.asked });
+  } catch (error) {
+    if (error instanceof SpaceRefused || error instanceof NotSuggested) throw new Refused(error.message);
+    throw error;
+  }
+  const where = card
+    ? `Homing shows them what archiving does in a card here, to archive it or keep it open. If they can't see the card, give them this link instead: ${links.proposal(proposal.id)}`
+    : `Give them this link to see what archiving does, and decide: ${links.proposal(proposal.id)}`;
+  const text =
+    `Waiting for the user's approval (${ref('proposal', proposal.id)}). Nothing is archived yet. ${where}\n\n` +
+    'Only they can decide, so never say it is archived until `read` shows it is approved.';
+  return card ? { text, structuredContent: { proposal: proposal.id, link: links.proposal(proposal.id), note: text } } : text;
+}
+
 /** Proposes sharing one of the user's private tasks with its space, for them to approve. */
 async function proposeTaskSharing(s: Session, links: Links, input: z.infer<typeof taskShareInput>, card: boolean): Promise<string | Answer> {
   let proposal: Proposal;
@@ -1080,6 +1108,7 @@ function describeProposal(proposal: Proposal): string {
   if (proposal.action === 'add space') return `Create a space called ${quote(change.name!)}, ${change.who === 'just me' ? 'just for the user' : 'with others'}${change.closed ? ', closed' : ''}`;
   if (proposal.action === 'publish') return `Share ${ref('item', proposal.itemId!)} with everyone in the space`;
   if (proposal.action === 'share task') return `Share ${ref('task', proposal.taskId!)} with everyone in the space`;
+  if (proposal.action === 'archive space') return 'Archive the space, and the spaces in it';
   if (proposal.action === 'change members') {
     const who = change.personName ?? change.email!;
     return { add: `Add ${who} to the space`, 'make admin': `Make ${who} an admin of the space`, 'make member': `Make ${who} a member of the space, not an admin`, remove: `Remove ${who} from the space` }[change.member!];
@@ -1101,6 +1130,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
   if (proposal.state === 'open' && proposal.action === 'share task' && task !== undefined && (!task || task.shared || task.done)) {
     return task?.shared ? 'The task is shared with the space already, so there is nothing to decide.' : 'The task was done or removed since, so there is nothing to decide.';
   }
+  if (proposal.state === 'open' && 'archive' in proposal && proposal.archive?.archived) return 'The space is archived already, so there is nothing to decide.';
   switch (proposal.state) {
     case 'open':
       return proposal.request
@@ -1111,6 +1141,11 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     case 'approved':
       if (proposal.action === 'change members') return `The user approved it on ${day(proposal.decidedAt!)}, and it applies now.`;
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user shared it on ${day(proposal.decidedAt!)}. Everyone in the space sees it now.`;
+      if (proposal.action === 'archive space') {
+        return 'archive' in proposal && proposal.archive && !proposal.archive.archived
+          ? `The user archived it on ${day(proposal.decidedAt!)}, and it was reopened since.`
+          : `The user archived it on ${day(proposal.decidedAt!)}. It's out of everyday context now, and still searchable.`;
+      }
       if (proposal.action === 'add space') {
         return created
           ? `The user created it as ${quote(created.name)} (${ref('space', created.id)}) on ${day(proposal.decidedAt!)}. Call \`context\` with it to work there.`
@@ -1119,6 +1154,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       return `${decider} approved it on ${day(proposal.decidedAt!)}, and it applies now. Call \`context\` for the rules as they are.`;
     case 'rejected':
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. Don't propose sharing it again unless they ask.`;
+      if (proposal.action === 'archive space') return `The user kept it open, on ${day(proposal.decidedAt!)}. Don't suggest archiving it again unless they ask.`;
       if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again."}`;
       return proposal.request && !proposal.requestedAt
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
