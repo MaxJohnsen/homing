@@ -200,3 +200,42 @@ test('in the app, Ana shares her own items straight from the page, after seeing 
   assert.ok((await pageAs(cara, page)).items.some((entry) => entry.text === 'Travel has 35,000 more.'));
   assert.equal((await ana.browser.json(`/api/items/${(await as(ana, (s) => createPage(s, { spaceId: ana.personalSpaceId, title: 'Mine' })))}/publication`)).status, 404);
 });
+
+test('what the page and the panel say others see stays true after corrections, on either side', async () => {
+  const { page, shared, update } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Hotel', shared: true });
+    const shared = (await writeItem(s, { pageId: page, body: 'The hotel is Grand.', shared: true })).id;
+    const update = (await supersedeItem(s, shared, { body: 'The hotel is Bristol.' }))!.id;
+    return { page, shared, update };
+  });
+  // Sharing an update for the first time says what it replaces.
+  assert.equal((await ana.browser.json(`/api/items/${update}/publication`)).body.sharedText, 'The hotel is Grand.');
+  await ana.browser.json(`/api/items/${update}/publish`, { shown: 'The hotel is Bristol.' });
+  // Ana corrects it again for herself: the page says what the others see now, not what they saw first.
+  const again = (await as({ person: ana.id, agent: 'Claude' }, (s) => supersedeItem(s, update, { body: 'The hotel is Bristol, room 12.' })))!.id;
+  const mine = ((await ana.browser.json(`/api/pages/${page}`)).body.items as { id: string; replaced: { text: string } | null }[]).find((entry) => entry.id === again);
+  assert.equal(mine?.replaced?.text, 'The hotel is Bristol.');
+  assert.ok(shared);
+
+  // A copy Cara corrects for everyone: Ana's own version only says what the others see.
+  const { copyPage, original } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const copyPage = await createPage(s, { spaceId: acme, title: 'Venue notes', shared: true });
+    const email = await addSource(s, { spaceId: acme, reference: 'Email from the venue', excerpt: 'Doors open at 18.' });
+    return { copyPage, original: (await writeItem(s, { pageId: copyPage, body: 'Doors open at 18.', sources: [email.id] })).id };
+  });
+  await ana.browser.json(`/api/items/${original}/publish`, { shown: 'Doors open at 18.' });
+  const copy = ((await cara.browser.json(`/api/pages/${copyPage}`)).body.items as { id: string }[])[0].id;
+  assert.equal((await cara.browser.json(`/api/items/${copy}`, { text: 'Doors open at 17.', shared: true })).status, 200);
+  const anas = ((await ana.browser.json(`/api/pages/${copyPage}`)).body.items as { id: string; sharedAs: string | null }[]).find((entry) => entry.id === original);
+  assert.equal(anas?.sharedAs, 'Doors open at 17.');
+  // Sharing hers again shows what it would replace.
+  assert.equal((await ana.browser.json(`/api/items/${original}/publication`)).body.sharedText, 'Doors open at 17.');
+});
+
+test('the overview is shared another way, so it has nothing to share from the page', async () => {
+  const [{ id }] = await as({ person: ana.id, direct: true }, async (s) => {
+    const { writeOverview } = await import('../src/knowledge.ts');
+    return [await writeOverview(s, { spaceId: acme, text: 'Acme plans 2027.' })];
+  });
+  assert.equal((await ana.browser.json(`/api/items/${id}/publication`)).status, 404);
+});

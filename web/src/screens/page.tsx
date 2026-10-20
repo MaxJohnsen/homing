@@ -1,4 +1,4 @@
-import { useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
@@ -102,6 +102,14 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   const [open, setOpen] = useState(false);
   const [correcting, setCorrecting] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [shared, setShared] = useState<string>();
+  // Where focus goes back to once sharing closes: the button that opened it.
+  const opener = useRef<HTMLButtonElement | null>(null);
+  const share = (event: MouseEvent<HTMLButtonElement>) => {
+    opener.current = event.currentTarget;
+    setShared(undefined);
+    setSharing(true);
+  };
   const onlyYou = marked && !item.shared && !page.space.private;
   // Your own item in a space with a shared side can be shared with everyone there.
   const shareable = Boolean(actions) && !item.shared && !page.space.private;
@@ -117,7 +125,16 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   if (sharing && actions) {
     return (
       <div className="-mx-2 flex flex-col gap-3 rounded-xl bg-card px-2 py-3 sm:-mx-4 sm:px-4">
-        <ShareItem item={item} page={page} actions={actions} onDone={() => setSharing(false)} />
+        <ShareItem
+          item={item}
+          page={page}
+          actions={actions}
+          onDone={(done) => {
+            setSharing(false);
+            if (done) setShared(`Shared with ${page.space.name}.`);
+            else requestAnimationFrame(() => opener.current?.focus());
+          }}
+        />
       </div>
     );
   }
@@ -155,12 +172,14 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
       {(yourUpdate || item.sharedAs) && (
         <div className="flex flex-col items-start gap-3 rounded-lg bg-card px-4 py-3">
           <p className="text-base">
-            <span className="font-semibold">Your version is newer.</span> Others in {page.space.name} still see “{plain(item.sharedAs ?? item.replaced!.text)}”
+            {/* What you shared may since have been corrected by someone else, so only an update of yours is called newer. */}
+            <span className="font-semibold">{item.sharedAs ? 'Only you see this version.' : 'Your version is newer.'}</span> Others in {page.space.name} {item.sharedAs ? 'see' : 'still see'} “{plain(item.sharedAs ?? item.replaced!.text)}”
           </p>
-          {shareable && <Button variant="outline" size="sm" onClick={() => setSharing(true)}>Share yours with {page.space.name}</Button>}
+          {shareable && <Button variant="outline" size="sm" onClick={share}>Share yours with {page.space.name}</Button>}
         </div>
       )}
-      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} onShare={shareable && !yourUpdate && !item.sharedAs ? () => setSharing(true) : undefined} space={page.space.name} />}
+      {shared && <p role="status" className="text-sm text-muted-foreground">{shared}</p>}
+      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} onShare={shareable && !yourUpdate && !item.sharedAs ? share : undefined} space={page.space.name} />}
     </div>
   );
 }
@@ -172,7 +191,7 @@ function wrote(by: Author, agent: string | null): string {
 }
 
 /** Who wrote it and when, its sources, and what it said before: small, under the item it's about. */
-function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemData; yourUpdate: boolean; onCorrect?: () => void; onShare?: () => void; space: string }) {
+function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemData; yourUpdate: boolean; onCorrect?: () => void; onShare?: (event: MouseEvent<HTMLButtonElement>) => void; space: string }) {
   const byPerson = item.by !== null && item.agent === null;
   // What it said before, newest first: its own earlier wording, then what it replaced.
   const earlier = [
@@ -217,17 +236,25 @@ function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemDa
  * Sharing one of your items with everyone in the space, in place: exactly what they'd see, how many
  * people that is, and what it rests on that they won't, before you decide.
  */
-function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: PageData; actions: PageActions; onDone: () => void }) {
+function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: PageData; actions: PageActions; onDone: (shared: boolean) => void }) {
   const [publication, setPublication] = useState<PublicationData | null>();
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const heading = useRef<HTMLHeadingElement>(null);
+  // The page's actions are made anew on each render, so they're read when needed, not watched.
+  const latest = useRef(actions);
+  latest.current = actions;
   useEffect(() => {
+    heading.current?.focus();
     let live = true;
-    actions.publication(item.id).then((found) => live && setPublication(found ?? null));
+    latest.current
+      .publication(item.id)
+      .then((found) => live && setPublication(found))
+      .catch(() => live && setProblem('Homing couldn’t say what would be shared. Try again in a moment.'));
     return () => {
       live = false;
     };
-  }, [actions, item.id]);
+  }, [item.id, item.text]);
 
   const share = async () => {
     if (!publication) return;
@@ -235,19 +262,21 @@ function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: Page
     const answer = await actions.publish(item.id, publication.text);
     setBusy(false);
     if (answer) setProblem(answer);
-    else onDone();
+    else onDone(true);
   };
+  const id = `share-${item.id}`;
 
   return (
-    <section aria-label={`Share with ${page.space.name}`} className="flex flex-col gap-4">
-      <h3 className="text-base font-semibold">Share this with {page.space.name}?</h3>
-      {publication === undefined && <p className="text-sm text-muted-foreground">Getting what would be shared…</p>}
+    <section aria-labelledby={id} className="flex flex-col gap-4">
+      <h2 id={id} ref={heading} tabIndex={-1} className="text-base font-semibold outline-none">Share this with {page.space.name}?</h2>
+      {publication === undefined && !problem && <p className="text-sm text-muted-foreground">Getting what would be shared…</p>}
       {publication === null && <p className="text-base">There’s nothing of yours here to share any more.</p>}
-      {publication && <SharingDetails place={page.space.name} publication={publication} />}
+      {publication && !publication.current && <p className="text-base">This changed since. Close this and look at it again.</p>}
+      {publication?.current && <SharingDetails place={page.space.name} publication={publication} />}
       {problem && <FieldError>{problem}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-        <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onDone} autoFocus>Don’t share</Button>
-        {publication && <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={share}>Share with {page.space.name}</Button>}
+        <Button variant="outline" size="lg" disabled={busy} onClick={() => onDone(false)}>Cancel</Button>
+        {publication?.current && <Button size="lg" disabled={busy} onClick={share}>Share with {page.space.name}</Button>}
       </div>
     </section>
   );

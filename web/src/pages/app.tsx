@@ -369,8 +369,9 @@ function pageActions(page: PageData, gatheredPath: string): PageActions {
     publication: async (itemId) => {
       try {
         return await api<PublicationData>(`/api/items/${itemId}/publication`);
-      } catch {
-        return undefined;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return null;
+        throw error;
       }
     },
     // Shared directly, as the person: what they were shown, and the page as it is now.

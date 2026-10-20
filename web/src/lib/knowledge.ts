@@ -84,8 +84,8 @@ export interface PageActions {
   leave: (collectionId: string, shared: boolean) => Promise<string | undefined>;
   /** Finds pages in the page's space by what they say, or only collections. */
   find: (query: string, collections?: boolean) => Promise<PageSummary[]>;
-  /** What sharing one of your items with the space would do, and sharing it, exactly as shown. */
-  publication: (itemId: string) => Promise<PublicationData | undefined>;
+  /** What sharing one of your items with the space would do, or null when there's nothing of yours to share, and sharing it, exactly as shown. */
+  publication: (itemId: string) => Promise<PublicationData | null>;
   publish: (itemId: string, shown: string) => Promise<string | undefined>;
 }
 
