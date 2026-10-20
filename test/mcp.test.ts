@@ -130,7 +130,8 @@ test('replacing shared knowledge updates only your own view, and keeps the earli
   const context = (await anas.call('context', { request: 'launch', space: acmeRef })).text;
   assert.match(context, /Acme launches on 1 April/);
   assert.doesNotMatch(context, /1 March/);
-  assert.match((await anas.call('read', { ref: `item:${launch.id}` })).text, /No longer true since/);
+  // The shared item is still what everyone else sees, which reading it says.
+  assert.match((await anas.call('read', { ref: `item:${launch.id}` })).text, /the user's private update item:\S+ replaces it for them\. Others in the space still see this\./);
   await anas.close();
 
   const caras = await session(assistants.cara);

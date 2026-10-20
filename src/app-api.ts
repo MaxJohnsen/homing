@@ -337,10 +337,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             // Who shared it from their own private side, and when.
             sharedBy: item.publishedBy && item.privateTo === null ? by(item.publishedBy) : null,
             sharedAt: item.privateTo === null ? item.publishedAt : null,
-            // Your own version of something you shared before, while what everyone sees is different.
-            sharedAs: item.sharedAs !== item.body ? item.sharedAs : null,
             sources: item.sources,
-            // What it replaced, and so what others see when it's your private update to something shared.
+            // What it replaced, and so what others still see when it's your private update to something shared.
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
             earlier: history
               .filter((entry) => entry.itemId === item.id)

@@ -139,7 +139,7 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 | Operation | Rule |
 |---|---|
 | Write or update an item | Only from evidence. New evidence updates only the items it affects. The agent finds them; there is no automatic dependency chain. |
-| Supersede an item | When evidence justifies it, such as an explicit change or a decision by someone with authority. The old item is kept as "was true until…". Newer isn't automatically right, so when it's unclear, both are marked uncertain. A private update can replace shared knowledge in your own view without changing what others see, and it shows that others still see the earlier version. Homing suggests sharing meaningful updates when appropriate. |
+| Supersede an item | When evidence justifies it, such as an explicit change or a decision by someone with authority. The old item is kept as "was true until…". Newer isn't automatically right, so when it's unclear, both are marked uncertain. A private update replaces shared knowledge only in your own view, and only when it names the item it replaces, never because it is newer. It takes that item's place for you and says that others still see the earlier version, which you can look at, until you share it (§5). Others see no trace of it. Homing suggests sharing meaningful updates when appropriate. |
 | Improve wording | Items written by agents only, and always regenerated from the item's sources, never from its previous text, so errors can't compound. |
 | Combine duplicates | Keep one item, citing both sources. |
 | Create, split or move | Items written by agents only. Text written by a person stays where it is and gets a link. |
@@ -191,9 +191,9 @@ Homing learns privately by default and shares automatically only when sharing is
 
 **Sources never change audience; knowledge is published from them.**
 
-- Publishing creates or updates shared knowledge that stays linked to its private origin (`published_from`). The link is lineage, not sync. When your private version changes, you get a suggestion, unless a binding already covers the update. What others see never changes by itself.
+- Publishing creates shared knowledge that stays linked to its private origin (`published_from`). The link is lineage, not sync: what others see never changes by itself.
 - Others see who published something and when. They don't see the source, its sender or its subject. A source that is itself shared is cited normally.
-- In your own view, the private and shared versions show as one while they agree, and the difference shows when they don't.
+- In your own view, what you shared shows once: what everyone sees, with your own sources. Changing it is your private update of it (§3), which you get a suggestion to share, unless a binding already covers the update. Sharing it is publishing like any other, with the same checks and approvals, and replaces the earlier version for everyone, so you all see the same again.
 - Something you wrote yourself, such as a note or a draft page, simply moves to the shared side when you share it.
 
 **Publishing checks the content's sources, not just who publishes.** Content that cites sources the destination's audience isn't authorized for never publishes automatically, and the approval says so: "includes information from Beta". Content with unknown sources never publishes automatically either. Provenance travels with the content, so the check still holds weeks later. Only a source shared in the same space is one its members can always see, future members included; any other, private or another space's, even the space above, counts as one they can't.

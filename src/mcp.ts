@@ -26,6 +26,7 @@ import {
   updateItem,
   writeItem,
   type Hit,
+  type Item,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePageArchive, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
@@ -720,8 +721,19 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
       '',
       `${what}${ref('item', item.id)} on ${ref('page', item.pageId)}, ${side(item.privateTo)}. ` +
         `Written by ${author(item.writtenBy, item.agent)} on ${day(item.updatedAt)}.`,
-      ...(item.replacedBy ? [`No longer true since ${day(item.replacedBy.at)}: replaced by ${ref('item', item.replacedBy.id)}.`] : []),
-      ...(item.supersedes ? [`It replaced ${ref('item', item.supersedes)}.`] : []),
+      ...(item.replacedBy
+        ? [
+            item.replacedBy.shared || item.privateTo
+              ? `No longer true since ${day(item.replacedBy.at)}: replaced by ${ref('item', item.replacedBy.id)}.`
+              : `Since ${day(item.replacedBy.at)}, the user's private update ${ref('item', item.replacedBy.id)} replaces it for them. Others in the space still see this.`,
+          ]
+        : []),
+      // Your update of something shared says what the others still see.
+      ...(item.updates
+        ? [`A private update: for the user it replaces ${ref('item', item.updates)}, which others in the space still see.${item.supersedes !== item.updates ? ` It replaced ${ref('item', item.supersedes!)}.` : ''}`]
+        : item.supersedes
+          ? [`It replaced ${ref('item', item.supersedes)}.`]
+          : []),
       ...item.sources.map((source) => `- Source: ${describeSource(source)}`),
       ...(item.history.length
         ? [
@@ -783,23 +795,27 @@ async function remember(
       throw new Refused('There is no item with that reference in this space that you can see.');
     }
     if (item.kind !== 'text') throw new Refused(onlyPeople);
+    let saved: Item;
     if (input.updates) {
       if (item.privateTo !== personOf(s.principal)) {
         throw new Refused("remember can't rewrite shared knowledge. Use replaces to update it in your own view.");
       }
-      await updateItem(s, itemId, { body: input.text, sources });
-      return `Updated ${ref('item', itemId)}. What it said before is kept in its history.`;
+      saved = (await updateItem(s, itemId, { body: input.text, sources }))!;
+      if (saved.id === itemId) return `Updated ${ref('item', itemId)}. What it said before is kept in its history.`;
+    } else {
+      // Knowledge never reaches down, so what remember can read here, it can change.
+      saved = (await supersedeItem(s, itemId, { body: input.text, sources }))!;
     }
-    // Knowledge never reaches down, so what remember can read here, it can change.
-    const replacement = (await supersedeItem(s, itemId, { body: input.text, sources }))!;
-    // Replacing your own update to something shared still leaves the others seeing the shared version.
-    const [first] = await s.tx<{ id: string; shared: boolean }[]>`
-      select id, private_to is null as shared from content where id = first_of(${replacement.id}::uuid)
-    `;
-    if (item.privateTo === null || first?.shared) {
-      return `Saved as ${ref('item', replacement.id)} on your private side. For you it replaces ${ref('item', itemId)}, and others in the space still see ${item.privateTo === null ? 'the earlier version' : `the shared version, ${ref('item', first!.id)}`}.`;
-    }
-    return `Saved as ${ref('item', replacement.id)}. ${ref('item', itemId)} is kept as what used to be true.`;
+    // An update of something shared leaves the others seeing the shared version until the user shares it.
+    const shared = (await readItem(s, saved.id))?.updates;
+    if (!shared) return `Saved as ${ref('item', saved.id)}. ${ref('item', itemId)} is kept as what used to be true.`;
+    const what =
+      shared === itemId
+        ? `For you it replaces ${ref('item', itemId)}, and others in the space still see the earlier version.`
+        : saved.supersedes === shared
+          ? `The user shared ${ref('item', itemId)} as ${ref('item', shared)}, so for you this replaces that, and others in the space still see the shared version.`
+          : `For you it replaces ${ref('item', itemId)}, and others in the space still see the shared version, ${ref('item', shared)}.`;
+    return `Saved as ${ref('item', saved.id)} on your private side. ${what}`;
   }
 
   const page = await pageFor(s, spaceId, input.page, input.type);
@@ -1361,7 +1377,8 @@ async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
     const where = `in ${space?.name ?? 'a space above'}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
-      hit.superseded && 'No longer true.',
+      hit.replacedForYou && "What others still see. The user's private update replaces it for them.",
+      hit.superseded && !hit.replacedForYou && 'No longer true.',
       hit.archived && !hit.superseded && 'On an archived page.',
     ].filter(Boolean);
     return `- ${label} (${ref(hit.kind, hit.id)}, ${where})${notes.length ? `. ${notes.join(' ')}` : ''}`;

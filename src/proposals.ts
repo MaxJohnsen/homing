@@ -297,6 +297,9 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
   const space = await spaceView(s, publication.item.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (space.privateTo) throw new SpaceRefused('where', 'Your personal space has no shared side: what’s in it stays yours.');
+  if (publication.sharedAs) {
+    throw new SpaceRefused('person', `The user shared it already: everyone sees item:${publication.sharedAs}. To share a change, save it with \`remember\` first and share what that returns.`);
+  }
   if (!publication.current) throw new SpaceRefused('person', 'That item was replaced since. Share the one that replaced it.');
   const [waiting] = await s.tx<{ id: string }[]>`
     select id from proposals where ${yours(s)} and action = 'publish' and item_id = ${input.itemId}::uuid and state = 'open' and expires_at > now()
@@ -496,7 +499,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     // Once shared, the item may have moved to the shared side: it still shows what was shared.
     const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
     const [title] = item ? await s.tx<{ body: string }[]>`select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and ${visible(s, 'content')} order by private_to is null limit 1` : [];
-    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, copy: false, sharedText: null, current: false };
+    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, copy: false, sharedText: null, current: false, sharedAs: null };
   }
   const task: Task | undefined = proposal.taskId ? await readTask(s, proposal.taskId) : undefined;
   const audienceOf = proposal.action === 'publish' || proposal.action === 'share task' ? await spaceView(s, proposal.spaceId) : undefined;
