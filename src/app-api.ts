@@ -192,7 +192,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           const space = await spaceView(s, page.spaceId);
           if (!space) return undefined;
           const history = await historyOf(s, page.items.map((item) => item.id));
-          const names = await peopleNames(s, [...page.items, ...history].map((entry) => entry.writtenBy));
+          const names = await peopleNames(s, [...[...page.items, ...history].map((entry) => entry.writtenBy), ...page.items.map((item) => item.publishedBy)]);
           const links = await linksOf(s, page.id);
           const { total: gathers } = await pagesIn(s, page.spaceId, { in: page.id, limit: 1 });
           return { page, space, history, names, links, gathers };
@@ -227,6 +227,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             by: by(item.writtenBy),
             agent: item.agent,
             writtenAt: item.updatedAt,
+            // Who shared it from their own private side, and when.
+            sharedBy: item.publishedBy && item.privateTo === null ? by(item.publishedBy) : null,
+            sharedAt: item.privateTo === null ? item.publishedAt : null,
             sources: item.sources,
             // What it replaced, and so what others see when it's your private update to something shared.
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },

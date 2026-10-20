@@ -38,6 +38,9 @@ export interface ItemData {
   /** The assistant that wrote it for that person, or null when they wrote it themselves. */
   agent: string | null;
   writtenAt: string;
+  /** Who shared it with the space from their own private side, and when, if someone did. */
+  sharedBy?: Author;
+  sharedAt?: string | null;
   sources: { id: string; reference: string | null; excerpt: string }[];
   /** What it replaced. When it's your private update to something shared, the others still see that. */
   replaced: { text: string; shared: boolean; until: string } | null;

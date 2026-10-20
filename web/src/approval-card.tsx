@@ -103,6 +103,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                 : `Create the space ${proposal.assistant} suggests?`
               : proposal.action === 'members' && proposal.member
               ? memberQuestion(proposal, proposal.member)
+              : proposal.action === 'publish'
+              ? `Share this with ${placeOf(proposal)}?`
               : sending
               ? `Ask the admins of ${placeOf(proposal)} for this change?`
               : proposal.action === 'add'
@@ -111,7 +113,9 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why) && <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why}”</p>}
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why}”</p>
+          )}
           <ProposalDetails
             proposal={proposal}
             onlyHere={onlyHere}

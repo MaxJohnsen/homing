@@ -21,6 +21,11 @@ export interface Item {
   supersedes: string | null;
   /** Guidance that also applies in the spaces below its own. Knowledge never does. */
   reachesDown: boolean;
+  /** For shared knowledge published from someone's private side: the private original, which only they see. */
+  publishedFrom: string | null;
+  /** Who shared it from their private side, and when. */
+  publishedBy: string | null;
+  publishedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -210,6 +215,12 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     left join chain on chain.id = content.id
     left join content first on first.id = chain.first
     where content.page_id = ${pageId}::uuid and content.kind <> 'removed' and ${visibleContent(s, 'content')} and ${current(s, 'content')}
+      -- Your private original and what you shared from it show as one while they agree (spec §5).
+      and not (content.private_to is not null and exists (
+        select from content shared
+        where shared.published_from = content.id and shared.private_to is null and shared.body = content.body
+          and ${visible(s, 'shared')} and ${current(s, 'shared')}
+      ))
     order by coalesce(first.created_at, content.created_at), content.created_at
   `;
   if (items.length === 0) return undefined;
@@ -225,6 +236,74 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
     items: items.filter((item) => item.kind !== 'title'),
   };
+}
+
+/** What sharing one of your private items with its space would do, for you to decide. */
+export interface Publication {
+  item: Item;
+  pageTitle: string;
+  /**
+   * What it rests on that the space's members can't see: your own sources, or another space's,
+   * by the space's name. Someone else's or a space's you can no longer open count without a name.
+   */
+  hidden: { reference: string | null; excerpt: string; space: string | null }[];
+  hiddenUnseen: number;
+  /** Whether it's shared as a copy citing only what everyone there sees, rather than moving. */
+  copy: boolean;
+  /** Whether it was shared before, so sharing again updates what everyone sees. */
+  updates: boolean;
+  /** Whether it's still your current item, so it can be shared. */
+  current: boolean;
+}
+
+/** What sharing the item would do, if it's one of your own private items in a shared space. */
+export async function publicationOf(s: Session, itemId: string): Promise<Publication | undefined> {
+  const me = personOf(s.principal) ?? null;
+  const [item] = await s.tx<Item[]>`
+    select ${itemColumns(s)} from content
+    where id = ${itemId}::uuid and private_to = ${me}::uuid and kind = 'text' and ${visible(s, 'content')}
+  `;
+  if (!item) return undefined;
+  const hidden = await s.tx<{ reference: string | null; excerpt: string; space: string | null }[]>`
+    select src.reference, src.excerpt, case when src.private_to is null then sp.name end as space
+    from citations ci
+    join sources src on src.id = ci.source_id
+    left join spaces sp on sp.id = src.space_id
+    where ci.content_id = ${itemId}::uuid and ${visible(s, 'src')}
+      and (src.private_to is not null or src.space_id <> ${item.spaceId}::uuid)
+    order by src.created_at
+  `;
+  const [{ restsOnHidden, replacedPrivate, updates, current: isCurrent, title }] = await s.tx`
+    select rests_on_hidden(${itemId}::uuid) as rests_on_hidden,
+           exists (select from content r where r.id = ${item.supersedes}::uuid and r.private_to is not null) as replaced_private,
+           exists (
+             select from content c
+             where c.published_from in (${itemId}::uuid, ${item.supersedes}::uuid) and c.private_to is null and ${visible(s, 'c')}
+           ) as updates,
+           not exists (
+             select from content r where r.supersedes = ${itemId}::uuid and ${visible(s, 'r')}
+           ) as current,
+           ${titleOf(s, s.tx`${item.pageId}::uuid`)} as title
+  `;
+  return {
+    item,
+    pageTitle: title ?? 'Untitled',
+    hidden,
+    // A source cited that you can no longer see, such as another space's after you left it.
+    hiddenUnseen: restsOnHidden && hidden.length === 0 ? 1 : 0,
+    copy: restsOnHidden || replacedPrivate || updates,
+    updates,
+    current: isCurrent,
+  };
+}
+
+/**
+ * Shares one of your private items with everyone in its space (spec §5): directly, as a person, or
+ * by approving what your assistant proposed. Returns the shared item.
+ */
+export async function publishItem(s: Session, itemId: string): Promise<string> {
+  const [{ id }] = await s.tx<{ id: string }[]>`select publish_item(${itemId}::uuid) as id`;
+  return id;
 }
 
 /** An item with its sources, its earlier versions, and what replaced it, if anything. */
@@ -679,9 +758,9 @@ export async function search(
 }
 
 export function itemColumns(s: Session, table?: string) {
-  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, created_at, updated_at`;
+  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at`;
   const t = s.tx(table);
-  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.created_at, ${t}.updated_at`;
+  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at`;
 }
 
 function sourceColumns(s: Session) {

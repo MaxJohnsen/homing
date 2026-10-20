@@ -406,3 +406,24 @@ export const memberProposal: ProposalData = {
   alreadyApplies: [],
   member: { change: 'add', name: 'Cara Lund', email: 'cara@acme.example', found: true },
 };
+
+/** Claude proposes sharing something Ana learned from an email with everyone in Acme. */
+export const publishProposal: ProposalData = {
+  ...proposal,
+  id: 'publish',
+  action: 'publish',
+  text: null,
+  alreadyApplies: [],
+  publication: {
+    text: 'The launch moves to 14 November, in Oslo. Gunnar confirmed the venue on Friday.',
+    page: 'Website launch',
+    pageId: 'launch',
+    hidden: [{ space: null, reference: 'Email from Gunnar, Re: launch' }],
+    hiddenUnseen: 0,
+    copy: true,
+    updates: false,
+    current: true,
+    why: 'Cara plans the launch too.',
+    audience: { people: 5, above: false },
+  },
+};

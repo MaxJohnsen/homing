@@ -1,10 +1,10 @@
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type Rule, type RuleKind } from './guidance.ts';
-import { current, visible } from './knowledge.ts';
+import { current, itemColumns, publicationOf, publishItem, visible, type Publication } from './knowledge.ts';
 import type { FindAccount } from './people.ts';
 import { accessibleSpaces, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish';
 
 /**
  * A change of who is in a space: about someone the user shares a space with, by their id, or about
@@ -74,6 +74,10 @@ export interface ProposalView extends Proposal {
   names: { proposedTo: string | null; decidedBy: string | null };
   /** For a request, the space's admins as far as the reader can see them. */
   admins: string[];
+  /** For sharing an item: what it says, and what sharing it would do, for the person it's proposed to. */
+  publication: Publication | null;
+  /** For sharing an item: how many people would see it, as Members shows them, and whether people above too. */
+  audience: { people: number; above: boolean } | null;
   /** For a suggested space: where the person may put it, and the space it became, if they can open it. */
   places: Place[];
   /** The space approving it created, if the person can open it: its name now, and where it is and who has it. */
@@ -250,6 +254,22 @@ export async function proposeMemberChange(s: Session, input: { spaceId: string; 
   });
 }
 
+/**
+ * Proposes sharing one of the person's private items with everyone in its space (spec §5), for
+ * them to approve. Only their own items, never in their personal tree.
+ */
+export async function proposePublish(s: Session, input: { itemId: string; why?: string }): Promise<Proposal> {
+  const publication = await publicationOf(s, input.itemId);
+  if (!publication) throw new SpaceRefused('missing', 'There’s no item of yours with that reference to share.');
+  const space = await spaceView(s, publication.item.spaceId);
+  if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (space.privateTo) throw new SpaceRefused('where', 'Your personal space has no shared side: what’s in it stays yours.');
+  if (!publication.current) throw new SpaceRefused('person', 'That item was replaced since. Share the one that replaced it.');
+  const [{ type }] = await s.tx<{ type: string | null }[]>`select type from pages where id = ${publication.item.pageId}::uuid`;
+  if (['guidance', 'skill', 'overview'].includes(type ?? '')) throw new SpaceRefused('where', 'Rules, skills and the overview are shared another way.');
+  return insertProposal(s, { spaceId: space.id, action: 'publish', itemId: input.itemId, change: {}, request: false, reason: input.why?.trim() || null });
+}
+
 /** A proposal the person can see, with what they need to decide it. */
 export async function readProposal(s: Session, proposalId: string, findAccount?: FindAccount): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
@@ -260,7 +280,15 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
   const space = spaces.find((candidate) => candidate.id === proposal.spaceId);
   if (!space) return undefined;
   const above = spaces.find((candidate) => candidate.id === space.parentId);
-  const rule = proposal.itemId ? await ruleFor(s, proposal.itemId) : undefined;
+  const rule = proposal.itemId && proposal.action !== 'publish' ? await ruleFor(s, proposal.itemId) : undefined;
+  let publication = proposal.action === 'publish' && proposal.itemId ? ((await publicationOf(s, proposal.itemId)) ?? null) : null;
+  if (proposal.action === 'publish' && !publication && proposal.itemId) {
+    // Once shared, the item may have moved to the shared side: it still shows what was shared.
+    const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
+    const [title] = item ? await s.tx<{ body: string }[]>`select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and ${visible(s, 'content')} order by private_to is null limit 1` : [];
+    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', hidden: [], hiddenUnseen: 0, copy: false, updates: false, current: false };
+  }
+  const audienceOf = proposal.action === 'publish' ? await spaceView(s, proposal.spaceId) : undefined;
   const names = await peopleNames(s, [proposal.privateTo, proposal.decidedBy, proposal.change.person ?? null]);
   const admins = proposal.request ? ((await spaceView(s, proposal.spaceId))?.members ?? []).filter((member) => member.admin).map((member) => member.name) : [];
   const created = proposal.spaceCreated ? spaces.find((candidate) => candidate.id === proposal.spaceCreated) : undefined;
@@ -286,6 +314,8 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
       decidedBy: proposal.decidedBy && proposal.decidedBy !== personOf(s.principal) ? (names.get(proposal.decidedBy) ?? null) : null,
     },
     admins,
+    publication,
+    audience: audienceOf ? { people: audienceOf.members.length, above: audienceOf.reachedFromAbove } : null,
     places: proposal.action === 'add space' && proposal.state === 'open' && proposal.privateTo === personOf(s.principal) ? await placesFor(s, spaces) : [],
     created: created ? { id: created.id, name: created.name, where: whereItIs(created, spaces) } : null,
     member:
@@ -501,7 +531,15 @@ export async function decide(
   let created: string | null = null;
   if (decision.approve && !sending) {
     const { change } = proposal;
-    if (proposal.action === 'change members') {
+    if (proposal.action === 'publish') {
+      // Approving shares exactly what was shown: if the item changed since, it's shown again.
+      const publication = await publicationOf(s, proposal.itemId!);
+      if (!publication?.current) throw new Undecidable('changed', 'This was changed or replaced after you opened this page, so there’s nothing to share.');
+      if (decision.shown !== undefined && publication.item.body !== decision.shown) {
+        throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
+      }
+      await publishItem(s, proposal.itemId!);
+    } else if (proposal.action === 'change members') {
       const space = await spaceView(s, proposal.spaceId);
       if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
       // Approving runs what was shown: someone the user still shares a space with, or the email's owner.
@@ -555,7 +593,7 @@ export async function decide(
 }
 
 /** An action as the app names it. */
-export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members' } as const;
+export const shortAction = { 'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish' } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
 export function proposalData(proposal: ProposalView) {
@@ -607,6 +645,21 @@ export function proposalData(proposal: ProposalView) {
         : null,
     // A change of members: who, and what changes.
     member: proposal.member,
+    // Sharing an item: what it says, on which page, what of it others won't see, and who will see it.
+    publication: proposal.publication
+      ? {
+          text: proposal.publication.item.body,
+          page: proposal.publication.pageTitle,
+          pageId: proposal.publication.item.pageId,
+          hidden: proposal.publication.hidden.map((source) => (source.space ? { space: source.space, reference: null } : { space: null, reference: source.reference ?? source.excerpt.slice(0, 80) })),
+          hiddenUnseen: proposal.publication.hiddenUnseen,
+          copy: proposal.publication.copy,
+          updates: proposal.publication.updates,
+          current: proposal.publication.current,
+          why: proposal.reason,
+          audience: proposal.audience,
+        }
+      : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,
