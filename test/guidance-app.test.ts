@@ -61,8 +61,9 @@ test('a space’s rules say where each comes from, in the order the assistant ge
   ]);
   // Cara gets Acme's shared rule on the website, and none of Ana's own.
   assert.deepEqual(await rules(cara, website), ['Never send prices by email (shared, Acme)']);
-  // Eli gets it too, but can't open Acme, so it stays unnamed.
+  // Eli gets it too, but can't open Acme, so it stays unnamed, and so does its id.
   assert.deepEqual(await rules(eli, website), ['Never send prices by email (shared, unnamed)']);
+  assert.deepEqual(((await eli.browser.json(`/api/spaces/${website}/rules`)).body.rules as { spaceId: string | null }[]).map((rule) => rule.spaceId), [null]);
   // And nobody gets the rules of a space they can't open.
   assert.equal((await cara.browser.json(`/api/spaces/${northwind}/rules`)).status, 404);
 });

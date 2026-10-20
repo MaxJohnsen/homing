@@ -56,8 +56,8 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             <p className="text-sm text-muted-foreground">
               {sending
                 ? `Only the admins of ${place} change its shared rules, so this asks them. Nothing changes until one of them approves it.`
-                : request?.by
-                  ? `Any admin of ${place} can decide this. ${request.by.split(' ')[0]} can’t approve it.`
+                : request && !request.yours
+                  ? `Any admin of ${place} can decide this. ${request.by ? request.by.split(' ')[0] : 'The member who asked'} can’t approve it.`
                   : `Only you can approve this. ${assistant} can’t do it for you.`}
             </p>
           </>

@@ -3,7 +3,8 @@ import type { RuleKind } from '@/components/proposed-change';
 /** A rule that applies in a space, as the space's Guidance shows it. */
 export interface RuleData {
   id: string;
-  spaceId: string;
+  /** The rule's space, or null when it's a space above that you can't open. */
+  spaceId: string | null;
   /** The name of the rule's space, or null when you can't open it. */
   spaceName: string | null;
   /** Whether it's in your personal space, whose rules follow you everywhere. */
@@ -26,7 +27,8 @@ export interface SkillSummary {
   id: string;
   name: string;
   description: string;
-  spaceId: string;
+  /** Null when it's set in a space above that you can't open. */
+  spaceId: string | null;
   spaceName: string | null;
   shared: boolean;
   /** Whether your assistant gets this one here. */

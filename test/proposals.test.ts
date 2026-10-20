@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { after, before, mock, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { addRule, editRule, rulesFor } from '../src/guidance.ts';
+import { addRule, editRule, removeRule, rulesFor } from '../src/guidance.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -358,4 +358,28 @@ test('the log says what assistants asked for, never what they wrote', async () =
   } finally {
     await logged.close();
   }
+});
+
+test('a change to a rule that was removed meanwhile stops waiting, since there’s nothing left to decide', async () => {
+  const { ana, space, ref, claude } = await acme();
+  const rule = await as(direct(ana), (s) => addRule(s, { spaceId: space, kind: 'preference', body: 'Write in British English' }));
+  const { id } = await propose(claude.ana, { space: ref, change: 'change', rule: `item:${rule.id}`, text: 'Write in American English' });
+  const waitingIds = async () => ((await ana.browser.json('/api/waiting')).body.waiting as { id: string }[]).map((item) => item.id);
+  assert.deepEqual(await waitingIds(), [id]);
+  await as(direct(ana), (s) => removeRule(s, rule.id));
+  assert.deepEqual(await waitingIds(), []);
+  assert.doesNotMatch((await claude.ana.call('context', { request: 'Write a note', space: ref })).text, new RegExp(id));
+});
+
+test('the store keeps a proposal to rules in its own space', async () => {
+  const { ana, space } = await acme();
+  const other = await as(ana, (s) => createSpace(s, { name: 'Beta' }));
+  const rule = await as(direct(ana), (s) => addRule(s, { spaceId: other, kind: 'preference', body: 'Write in Finnish', shared: true }));
+  await assert.rejects(
+    as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`
+      insert into proposals (space_id, private_to, action, item_id, change)
+      values (${space}, ${ana.id}, 'remove rule', ${rule.id}, '{}'::jsonb)
+    `),
+    refused,
+  );
 });

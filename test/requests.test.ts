@@ -66,7 +66,7 @@ test('a member sends a request, an admin approves it, and the member’s assista
   const id = await request(claude, { space: ref, change: 'add', kind: 'requirement', text: 'Copy the CFO on every invoice', shared: true, why: 'The CFO asked for it at Monday’s meeting' });
 
   // It waits for Cara to send it, and the admins don't see it yet.
-  assert.deepEqual((await waiting(cara)).map(({ id: shown, request }) => [shown, request]), [[id, { by: null, sent: false }]]);
+  assert.deepEqual((await waiting(cara)).map(({ id: shown, request }) => [shown, request]), [[id, { by: null, yours: true, sent: false }]]);
   assert.equal((await page(ana, id)).status, 404);
   assert.deepEqual(await waiting(ana), []);
 
@@ -77,7 +77,7 @@ test('a member sends a request, an admin approves it, and the member’s assista
   assert.deepEqual(await rules(cara, space), []);
 
   // Now it waits for every admin, saying who asked and why, and no longer for Cara.
-  for (const admin of [ana, jon]) assert.deepEqual((await waiting(admin)).map((item) => [item.id, item.request]), [[id, { by: 'Cara', sent: true }]]);
+  for (const admin of [ana, jon]) assert.deepEqual((await waiting(admin)).map((item) => [item.id, item.request]), [[id, { by: 'Cara', yours: false, sent: true }]]);
   assert.deepEqual(await waiting(cara), []);
   const shown = (await page(jon, id)).body.proposal;
   assert.deepEqual([shown.request.by, shown.request.why, shown.state], ['Cara', 'The CFO asked for it at Monday’s meeting', 'requested']);
@@ -201,4 +201,44 @@ test('when the admins can’t be emailed, the request still waits for them, and 
   assert.equal((await page(cara, id)).body.proposal.request.emailed, false);
   assert.equal((await cara.browser.json('/api/requests')).body.requests[0].emailed, false);
   assert.deepEqual((await waiting(ana)).map((item) => item.id), [id]);
+});
+
+test('an admin of a space inside another decides a request from someone they can’t see, and the emails name only what each reader sees', async () => {
+  const { ana, cara, space, claude } = await acme();
+  // Ben looks after the website, which everyone in Acme can open, but he isn't in Acme himself.
+  const ben = await member(homing.url, 'Ben');
+  const website = await as(ana, async (s) => {
+    const website = await createSpace(s, { name: 'Website', parentId: space });
+    await addMember(s, website, ben.id, 'admin');
+    return website;
+  });
+  const id = await request(claude, { space: `space:${website}`, change: 'add', kind: 'preference', text: 'Write the release notes in English', shared: true });
+  outbox.length = 0;
+  await decide(cara, id, { approve: true });
+
+  // Ben shares no space with Cara and can't open Acme, so neither is named, but the request is his to decide.
+  assert.deepEqual((await waiting(ben)).map((item) => [item.id, item.request]), [[id, { by: null, yours: false, sent: true }]]);
+  const forBen = (await page(ben, id)).body.proposal;
+  assert.deepEqual([forBen.within, forBen.request.yours, forBen.request.by], [null, false, null]);
+  const benEmail = outbox.find((email) => email.to === ben.email)!;
+  assert.match(benEmail.subject, /^A member asks to add a rule to Website$/);
+  assert.doesNotMatch(benEmail.text, /Cara|Acme/);
+
+  assert.equal((await decide(ben, id, { approve: true })).body.proposal.state, 'approved');
+  assert.deepEqual(await rules(cara, website), ['Write the release notes in English']);
+  // Cara learns the outcome. She can open the website, so she knows Ben as one of its admins.
+  const caraEmail = outbox.find((email) => email.to === cara.email)!;
+  assert.equal(caraEmail.subject, 'Ben approved your request for Website in Acme');
+});
+
+test('the store refuses a decision from someone who stopped being an admin', async () => {
+  const { ana, jon, cara, space, ref, claude } = await acme();
+  const id = await request(claude, { space: ref, change: 'add', kind: 'preference', text: 'Plan in quarters', shared: true });
+  await decide(cara, id, { approve: true });
+  await as(ana, (s) => addMember(s, space, jon.id, 'member'));
+  // Straight against the database, as Jon editing directly: the row isn't his to change any more.
+  const changed = await as({ person: jon.id, direct: true }, (s) => s.tx`update proposals set state = 'approved' where id = ${id}::uuid returning id`);
+  assert.equal(changed.length, 0);
+  const [stored] = await admin`select state from proposals where id = ${id}`;
+  assert.equal(stored.state, 'requested');
 });
