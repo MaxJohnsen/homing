@@ -164,7 +164,7 @@ function ImportSpacePage() {
           const answer = await send<ImportPreviewData>('/api/import/preview', file);
           return 'problem' in answer ? answer : { preview: answer };
         },
-        import: (file, name) => send<{ id: string }>(`/api/import?name=${encodeURIComponent(name)}`, file),
+        import: (file, name, hash) => send<{ id: string }>(`/api/import?${new URLSearchParams({ name, hash })}`, file),
       }}
       onImported={async (id) => {
         await reload('/api/spaces');

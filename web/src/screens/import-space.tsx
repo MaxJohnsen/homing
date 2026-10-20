@@ -15,13 +15,16 @@ export interface ImportPreviewData {
   /** How much of it the export shared, and how much was private to whoever exported it. */
   shared: number;
   private: number;
+  /** Each rule word for word, with what it refers to in the export by name. */
   rules: { space: string; kind: 'requirement' | 'preference'; text: string; onlyHere: boolean; private: boolean }[];
   skills: { space: string; name: string; private: boolean }[];
+  /** A fingerprint of the export, so the import is of exactly what was shown. */
+  hash: string;
 }
 
 export interface ImportActions {
   preview: (file: File) => Promise<{ preview: ImportPreviewData } | { problem: string }>;
-  import: (file: File, name: string) => Promise<{ id: string } | { problem: string; field?: string }>;
+  import: (file: File, name: string, hash: string) => Promise<{ id: string } | { problem: string; field?: string }>;
 }
 
 /**
@@ -57,9 +60,9 @@ export function ImportSpace({ actions, onImported, onCancel, shown }: {
   };
 
   const bring = async () => {
-    if (!file || !name.trim()) return;
+    if (!file || !preview || !name.trim()) return;
     setBusy(true);
-    const answer = await actions.import(file, name.trim());
+    const answer = await actions.import(file, name.trim(), preview.hash);
     setBusy(false);
     if ('problem' in answer) setProblem({ field: answer.field, message: answer.problem });
     else onImported(answer.id);
@@ -99,7 +102,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown }: {
           {preview && (
             <>
               <p className="text-base">
-                {top} was exported from {hostOf(preview.from.instance)} by {exporter} on {dateOf(preview.from.exportedAt)}.
+                The file says {top} was exported from {hostOf(preview.from.instance)} by {exporter} on {dateOf(preview.from.exportedAt)}.
               </p>
               <div className="flex flex-col gap-2">
                 <Label htmlFor="import-name">Name</Label>

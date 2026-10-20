@@ -102,50 +102,7 @@ export class ZipRefused extends Error {
  * is at most so large once unpacked. Nothing else in the zip is unpacked.
  */
 export function fileIn(zip: Buffer, name: string, limits: { files: number; size: number }): Buffer {
-  const read = <T>(fn: () => T): T => {
-    try {
-      return fn();
-    } catch (error) {
-      if (error instanceof ZipRefused) throw error;
-      throw new ZipRefused('damaged');
-    }
-  };
-  // The end record is in the last 64 KB or so, after any comment.
-  let end = -1;
-  for (let at = zip.length - 22; at >= Math.max(0, zip.length - 22 - 0xffff); at--) {
-    if (zip.readUInt32LE(at) === 0x06054b50) {
-      end = at;
-      break;
-    }
-  }
-  if (end < 0) throw new ZipRefused('not a zip');
-  let count = zip.readUInt16LE(end + 10);
-  let offset = zip.readUInt32LE(end + 16);
-  if ((count === 0xffff || offset === 0xffffffff) && end >= 20 && zip.readUInt32LE(end - 20) === 0x07064b50) {
-    const end64 = read(() => Number(zip.readBigUInt64LE(end - 12)));
-    if (read(() => zip.readUInt32LE(end64)) !== 0x06064b50) throw new ZipRefused('damaged');
-    count = read(() => Number(zip.readBigUInt64LE(end64 + 32)));
-    offset = read(() => Number(zip.readBigUInt64LE(end64 + 48)));
-  }
-  if (count > limits.files) throw new ZipRefused('too many files');
-
-  let found: { method: number; crc: number; packed: number; size: number; local: number } | undefined;
-  for (let n = 0, at = offset; n < count; n++) {
-    if (read(() => zip.readUInt32LE(at)) !== 0x02014b50) throw new ZipRefused('damaged');
-    const nameLength = zip.readUInt16LE(at + 28);
-    const entry = read(() => zip.subarray(at + 46, at + 46 + nameLength).toString());
-    if (entry === name) {
-      if (found) throw new ZipRefused('damaged');
-      found = { method: zip.readUInt16LE(at + 10), crc: zip.readUInt32LE(at + 16), packed: zip.readUInt32LE(at + 20), size: zip.readUInt32LE(at + 24), local: zip.readUInt32LE(at + 42) };
-    }
-    at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
-  }
-  if (!found) throw new ZipRefused('missing');
-  if (found.size > limits.size) throw new ZipRefused('too large');
-  const { method, crc, packed, local } = found;
-  if (read(() => zip.readUInt32LE(local)) !== 0x04034b50) throw new ZipRefused('damaged');
-  const start = local + 30 + zip.readUInt16LE(local + 26) + zip.readUInt16LE(local + 28);
-  if (start + packed > zip.length) throw new ZipRefused('damaged');
+  const { method, crc, packed, size, start } = entryIn(zip, name, limits);
   const data = zip.subarray(start, start + packed);
   let file: Buffer;
   if (method === 0) file = data;
@@ -157,6 +114,52 @@ export function fileIn(zip: Buffer, name: string, limits: { files: number; size:
       throw new ZipRefused(error instanceof RangeError ? 'too large' : 'damaged');
     }
   } else throw new ZipRefused('damaged');
-  if (file.length !== found.size || crc32(file) !== crc) throw new ZipRefused('damaged');
+  if (file.length !== size || crc32(file) !== crc) throw new ZipRefused('damaged');
   return file;
+}
+
+/** Where a file is in a zip, as its records say. Anything they say that points outside the zip is damage. */
+function entryIn(zip: Buffer, name: string, limits: { files: number; size: number }) {
+  try {
+    // The end record is in the last 64 KB or so, after any comment.
+    let end = -1;
+    for (let at = zip.length - 22; at >= Math.max(0, zip.length - 22 - 0xffff); at--) {
+      if (zip.readUInt32LE(at) === 0x06054b50) {
+        end = at;
+        break;
+      }
+    }
+    if (end < 0) throw new ZipRefused('not a zip');
+    let count = zip.readUInt16LE(end + 10);
+    let offset = zip.readUInt32LE(end + 16);
+    if ((count === 0xffff || offset === 0xffffffff) && end >= 20 && zip.readUInt32LE(end - 20) === 0x07064b50) {
+      const end64 = Number(zip.readBigUInt64LE(end - 12));
+      if (zip.readUInt32LE(end64) !== 0x06064b50) throw new ZipRefused('damaged');
+      count = Number(zip.readBigUInt64LE(end64 + 32));
+      offset = Number(zip.readBigUInt64LE(end64 + 48));
+    }
+    if (count > limits.files) throw new ZipRefused('too many files');
+
+    let found: { method: number; crc: number; packed: number; size: number; local: number } | undefined;
+    for (let n = 0, at = offset; n < count; n++) {
+      if (zip.readUInt32LE(at) !== 0x02014b50) throw new ZipRefused('damaged');
+      const nameLength = zip.readUInt16LE(at + 28);
+      if (at + 46 + nameLength > zip.length) throw new ZipRefused('damaged');
+      if (zip.subarray(at + 46, at + 46 + nameLength).toString() === name) {
+        if (found) throw new ZipRefused('damaged');
+        found = { method: zip.readUInt16LE(at + 10), crc: zip.readUInt32LE(at + 16), packed: zip.readUInt32LE(at + 20), size: zip.readUInt32LE(at + 24), local: zip.readUInt32LE(at + 42) };
+      }
+      at += 46 + nameLength + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+    }
+    if (!found) throw new ZipRefused('missing');
+    if (found.size > limits.size) throw new ZipRefused('too large');
+    if (zip.readUInt32LE(found.local) !== 0x04034b50) throw new ZipRefused('damaged');
+    const start = found.local + 30 + zip.readUInt16LE(found.local + 26) + zip.readUInt16LE(found.local + 28);
+    if (start + found.packed > zip.length) throw new ZipRefused('damaged');
+    return { ...found, start };
+  } catch (error) {
+    if (error instanceof ZipRefused) throw error;
+    // Reading past the end, wherever the records pointed.
+    throw new ZipRefused('damaged');
+  }
 }

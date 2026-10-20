@@ -143,8 +143,9 @@ begin
 end
 $$;
 
--- A shared copy keeps who wrote its private original, imported or not,
--- unless it comes in an import that says who wrote it.
+-- A shared copy keeps who wrote its private original, imported or not, and
+-- the import it came in, so it's the same person there. An import that says
+-- who wrote the copy keeps that.
 create function copy_imported_author() returns trigger
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -152,7 +153,7 @@ begin
   if new.imported ? 'author' then
     return new;
   end if;
-  new.imported := coalesce(new.imported - 'author', '{}') || coalesce((select imported_author(o.imported) - 'import' from content o where o.id = new.published_from), '{}');
+  new.imported := coalesce(new.imported - 'author', '{}') || coalesce((select imported_author(o.imported) from content o where o.id = new.published_from), '{}');
   if new.imported = '{}' then
     new.imported := null;
   end if;
@@ -222,6 +223,24 @@ begin
 end
 $$;
 
+-- Whether the person may write on a page, as before. Every item on a page is
+-- in the page's space, so whether they can open it is looked up once, for the
+-- page, instead of listing every space they can open for each item written,
+-- which made writing many items slow for someone in many spaces, as imports
+-- make them.
+create or replace function page_open_to_writer(page uuid) returns boolean
+language sql stable security definer set search_path = public, pg_temp
+as $$
+  select exists (select from pages p where p.id = page and p.type in ('guidance', 'skill', 'overview'))
+    or not exists (select from content c where c.page_id = page)
+    or (exists (select from content c where c.page_id = page and (c.private_to is null or c.private_to = current_person_id()))
+        and exists (
+          select from pages p
+          left join space_access a on a.person_id = current_person_id() and a.space_id = p.space_id
+          where p.id = page and (a.person_id is not null or p.space_id = current_space_id())
+        ))
+$$;
+
 -- A time from an export, never later than now. None stays none.
 create function not_later(at timestamptz) returns timestamptz
 language sql stable
@@ -233,11 +252,19 @@ as $$ select case when at > now() then now() else at end $$;
 -- before it, with the person as their only admin, and writes only into
 -- them, so nothing it holds can reach a space that existed before. Shared
 -- things go on the new spaces' shared side, and private ones become the
--- person's. Nobody here is recorded as having written any of it: who did
--- comes in as imported provenance, by name, and times are kept, never later
--- than now.
+-- person's. Nobody here is recorded as having made or written any of it: who
+-- did comes in as imported provenance, by name, and times are kept, never
+-- later than now.
+--
+-- Each row says which space it goes in, and nothing is joined to find it:
+-- the spaces are checked against those just made, the composite keys keep a
+-- row in its page's space, and what rows point to is checked against what
+-- the import lists, so writing stays in step with the size of the export.
+-- The checks on each row written are the same lookup each time, so they keep
+-- their plans while it runs, instead of being planned again for each row as
+-- every other query of a transaction is.
 create function import_bundle(bundle jsonb) returns uuid
-language plpgsql security definer set search_path = public, pg_temp
+language plpgsql security definer set search_path = public, pg_temp set plan_cache_mode = auto
 as $$
 declare
   me uuid := current_person_id();
@@ -256,8 +283,8 @@ begin
     if (parent is null) <> (cardinality(made) = 0) or (parent is not null and not parent = any (made)) then
       raise exception 'the spaces in an import hang together under the first' using errcode = 'check_violation';
     end if;
-    insert into spaces (id, name, parent_id, closed, created_at, archived_at, imported)
-    values ((entry ->> 'id')::uuid, entry ->> 'name', parent, parent is not null and (entry ->> 'closed')::boolean,
+    insert into spaces (id, name, parent_id, closed, created_by, agent, created_at, archived_at, imported)
+    values ((entry ->> 'id')::uuid, entry ->> 'name', parent, parent is not null and (entry ->> 'closed')::boolean, null, null,
             coalesce(not_later((entry ->> 'createdAt')::timestamptz), clock_timestamp()), not_later((entry ->> 'archivedAt')::timestamptz), entry -> 'imported');
     insert into memberships (space_id, person_id, role) values ((entry ->> 'id')::uuid, me, 'admin');
     made := made || (entry ->> 'id')::uuid;
@@ -296,70 +323,80 @@ begin
     raise exception 'an import writes only into its own spaces' using errcode = 'insufficient_privilege';
   end if;
 
-  -- In the order they were written, so what replaced something comes after it.
+  -- In the order they were written, so what replaced something comes after it. The page's space is
+  -- the item's, and what it replaces is on its page, by their keys.
   insert into content (id, page_id, space_id, private_to, kind, path, body, supersedes, reaches_down, published_from, published_at,
                        written_by, agent, created_at, updated_at, imported)
-  select (i ->> 'id')::uuid, pg.id, pg.space_id, case when (i ->> 'private')::boolean then me end, i ->> 'kind', i ->> 'path', i ->> 'body',
+  select (i ->> 'id')::uuid, (i ->> 'page')::uuid, (i ->> 'space')::uuid, case when (i ->> 'private')::boolean then me end, i ->> 'kind', i ->> 'path', i ->> 'body',
          (i ->> 'supersedes')::uuid, coalesce((i ->> 'reachesDown')::boolean, false), (i ->> 'publishedFrom')::uuid, not_later((i ->> 'publishedAt')::timestamptz),
          null, null, not_later((i ->> 'createdAt')::timestamptz), not_later((i ->> 'writtenAt')::timestamptz),
          (i -> 'imported') || jsonb_build_object('import', import)
   from jsonb_array_elements(bundle -> 'items') with ordinality as e(i, ord)
-  join pages pg on pg.id = (i ->> 'page')::uuid and pg.space_id = any (made)
+  where (i ->> 'space')::uuid = any (made)
   order by ord;
   get diagnostics n = row_count;
   if n <> jsonb_array_length(bundle -> 'items') then
     raise exception 'an import writes only into its own spaces' using errcode = 'insufficient_privilege';
   end if;
-  -- What an item replaced, or was shared from, is on its own page.
+  -- What an item was shared from is one of the person's own on its page, from this import.
   if exists (
-    select from content c
-    where c.space_id = any (made)
-      and ((c.supersedes is not null and not exists (select from content t where t.id = c.supersedes and t.page_id = c.page_id))
-        or (c.published_from is not null and not exists (select from content t where t.id = c.published_from and t.page_id = c.page_id and t.private_to = me)))
+    select (i ->> 'publishedFrom')::uuid, (i ->> 'page')::uuid from jsonb_array_elements(bundle -> 'items') i where i ->> 'publishedFrom' is not null
+    except
+    select (i ->> 'id')::uuid, (i ->> 'page')::uuid from jsonb_array_elements(bundle -> 'items') i where (i ->> 'private')::boolean
   ) then
-    raise exception 'an import replaces only what it brings' using errcode = 'insufficient_privilege';
+    raise exception 'an import shares only what it brings' using errcode = 'insufficient_privilege';
   end if;
 
+  -- Citations of what this import brought.
   insert into citations (content_id, source_id)
-  select c.id, s.id
-  from jsonb_array_elements(bundle -> 'citations') x
-  join content c on c.id = (x ->> 'item')::uuid and c.space_id = any (made)
-  join sources s on s.id = (x ->> 'source')::uuid and s.space_id = any (made);
-  get diagnostics n = row_count;
-  if n <> jsonb_array_length(bundle -> 'citations') then
+  select (x ->> 'item')::uuid, (x ->> 'source')::uuid from jsonb_array_elements(bundle -> 'citations') x;
+  if exists (
+    select (x ->> 'item')::uuid from jsonb_array_elements(bundle -> 'citations') x
+    except select (i ->> 'id')::uuid from jsonb_array_elements(bundle -> 'items') i
+  ) or exists (
+    select (x ->> 'source')::uuid from jsonb_array_elements(bundle -> 'citations') x
+    except select (s ->> 'id')::uuid from jsonb_array_elements(bundle -> 'sources') s
+  ) then
     raise exception 'an import cites only what it brings' using errcode = 'insufficient_privilege';
   end if;
 
-  -- Earlier versions are private whenever their item is.
+  -- Earlier versions of what this import brought, in its space, and private whenever their item is.
   insert into revisions (content_id, space_id, private_to, body, written_by, agent, written_at, replaced_at, imported)
-  select c.id, c.space_id, case when c.private_to is not null or (r ->> 'private')::boolean then me end, r ->> 'body', null, null,
+  select (r ->> 'item')::uuid, (r ->> 'space')::uuid, case when (r ->> 'private')::boolean then me end, r ->> 'body', null, null,
          not_later((r ->> 'writtenAt')::timestamptz), not_later((r ->> 'replacedAt')::timestamptz),
          (r -> 'imported') || jsonb_build_object('import', import)
   from jsonb_array_elements(bundle -> 'revisions') with ordinality as e(r, ord)
-  join content c on c.id = (r ->> 'item')::uuid and c.space_id = any (made)
   order by ord;
-  get diagnostics n = row_count;
-  if n <> jsonb_array_length(bundle -> 'revisions') then
-    raise exception 'an import writes only into its own spaces' using errcode = 'insufficient_privilege';
+  if exists (
+    select (r ->> 'item')::uuid, (r ->> 'space')::uuid from jsonb_array_elements(bundle -> 'revisions') r
+    except select (i ->> 'id')::uuid, (i ->> 'space')::uuid from jsonb_array_elements(bundle -> 'items') i
+  ) or exists (
+    select (r ->> 'item')::uuid from jsonb_array_elements(bundle -> 'revisions') r where not (r ->> 'private')::boolean
+    except select (i ->> 'id')::uuid from jsonb_array_elements(bundle -> 'items') i where not (i ->> 'private')::boolean
+  ) then
+    raise exception 'an import keeps the history only of what it brings' using errcode = 'insufficient_privilege';
   end if;
 
+  -- The collection and the page are in the row's space, by their keys.
   insert into gathered (collection_id, page_id, space_id, private_to, added_by, agent, created_at, imported)
-  select c.id, p.id, c.space_id, case when (g ->> 'private')::boolean then me end, null, null, not_later((g ->> 'createdAt')::timestamptz),
-         (g -> 'imported') || jsonb_build_object('import', import)
-  from jsonb_array_elements(bundle -> 'gathered') g
-  join pages c on c.id = (g ->> 'collection')::uuid and c.space_id = any (made)
-  join pages p on p.id = (g ->> 'page')::uuid and p.space_id = c.space_id;
+  select (g ->> 'collection')::uuid, (g ->> 'page')::uuid, (g ->> 'space')::uuid, case when (g ->> 'private')::boolean then me end, null, null,
+         not_later((g ->> 'createdAt')::timestamptz), (g -> 'imported') || jsonb_build_object('import', import)
+  from jsonb_array_elements(bundle -> 'gathered') with ordinality as e(g, ord)
+  where (g ->> 'space')::uuid = any (made)
+  order by ord;
   get diagnostics n = row_count;
   if n <> jsonb_array_length(bundle -> 'gathered') then
     raise exception 'an import gathers only what it brings' using errcode = 'insufficient_privilege';
   end if;
 
   insert into page_archives (page_id, archived, person_id, agent, at, imported)
-  select p.id, (a ->> 'archived')::boolean, null, null, not_later((a ->> 'at')::timestamptz), (a -> 'imported') || jsonb_build_object('import', import)
-  from jsonb_array_elements(bundle -> 'pageArchives') a
-  join pages p on p.id = (a ->> 'page')::uuid and p.space_id = any (made);
-  get diagnostics n = row_count;
-  if n <> jsonb_array_length(bundle -> 'pageArchives') then
+  select (a ->> 'page')::uuid, (a ->> 'archived')::boolean, null, null, not_later((a ->> 'at')::timestamptz), (a -> 'imported') || jsonb_build_object('import', import)
+  from jsonb_array_elements(bundle -> 'pageArchives') with ordinality as e(a, ord)
+  order by ord;
+  if exists (
+    select (a ->> 'page')::uuid from jsonb_array_elements(bundle -> 'pageArchives') a
+    except select (p ->> 'id')::uuid from jsonb_array_elements(bundle -> 'pages') p
+  ) then
     raise exception 'an import archives only what it brings' using errcode = 'insufficient_privilege';
   end if;
 

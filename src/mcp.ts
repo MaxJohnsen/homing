@@ -73,7 +73,7 @@ const guidanceInput = z.strictObject({
     .enum(['requirement', 'preference'])
     .optional()
     .describe('For a new rule. A requirement must always be followed; a preference gives way to a more specific one'),
-  text: text().optional().describe("The new rule, or the rule's new wording, exactly as the user wants it"),
+  text: text().max(4000).optional().describe("The new rule, or the rule's new wording, exactly as the user wants it"),
   shared: z
     .boolean()
     .optional()
@@ -251,8 +251,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
             'The knowledge, in Markdown, written so it still reads true later. ' +
               "Leave out remarks about this conversation, such as what you searched for or couldn't find.",
           ),
-        page: text().optional().describe('The title of the page for its subject, or a page reference'),
-        type: text().optional().describe('The type of a new page, such as person, project or decision'),
+        page: text().max(200).optional().describe('The title of the page for its subject, or a page reference'),
+        type: text().max(40).optional().describe('The type of a new page, such as person, project or decision'),
         replaces: text().optional().describe('An item that is no longer true because of this'),
         updates: text().optional().describe('An item of yours to rewrite with this text'),
         overview: z.boolean().optional().describe('Saves the text as the user\'s own overview of the space: a short summary of where it stands, under 2,000 characters.'),

@@ -6,15 +6,17 @@
 // damaged, changed or too big is refused, with nothing created.
 
 import assert from 'node:assert/strict';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { after, before, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { authDatabaseUrl } from '../src/db.ts';
 import { rewriteReferences, type Manifest } from '../src/export.ts';
 import { addRule, removeRule } from '../src/guidance.ts';
+import { ImportRefused, importSpace, readForImport } from '../src/import.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
-import { addMember, createSpace } from '../src/spaces.ts';
+import { addMember, archiveSpace, createSpace } from '../src/spaces.ts';
 import { addTask, changeTask } from '../src/tasks.ts';
 import { zip } from '../src/zip.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -24,12 +26,12 @@ import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
 let ana: Member, cara: Member, ben: Member, otherCara: Member;
-let acme: string;
+let acme: string, notes: string;
 
 before(async () => {
   homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
   [ana, cara, ben, otherCara] = [await member(homing.url, 'Ana'), await member(homing.url, 'Cara'), await member(homing.url, 'Ben'), await member(homing.url, 'Cara')];
-  let gunnar = '', plan = '';
+  let gunnar = '', plan = '', legal = '';
   acme = await as({ ...ana, direct: true }, async (s) => {
     const acme = await createSpace(s, { name: 'Acme' });
     await addMember(s, acme, cara.id, 'admin');
@@ -52,6 +54,10 @@ before(async () => {
     await writeItem(s, { pageId: gunnar, body: 'The budget is 2 MNOK.', sources: [notebook.id] });
     plan = await createPage(s, { spaceId: acme, title: 'Launch plan', type: 'project', shared: true });
     await writeItem(s, { pageId: plan, body: `[Gunnar](page:${gunnar}) signs off the launch.`, shared: true });
+    // Shared after she'd changed it on her own: what it said before stays only hers.
+    const draft = await writeItem(s, { pageId: plan, body: 'The launch budget is 1 MNOK.' });
+    await updateItem(s, draft.id, { body: 'The launch budget is 1.5 MNOK.' });
+    await publishItem(s, draft.id, 'The launch budget is 1.5 MNOK.');
     const launch = await createPage(s, { spaceId: acme, title: 'Launch 2027', shared: true });
     await gather(s, { collectionId: launch, pageId: plan, shared: true });
     const worries = await createPage(s, { spaceId: acme, title: 'My launch worries' });
@@ -65,10 +71,15 @@ before(async () => {
     await addRule(s, { spaceId: acme, kind: 'preference', body: 'Keep status notes under 200 words.', shared: true, onlyHere: true });
     await addRule(s, { spaceId: acme, kind: 'preference', body: 'Draft in Norwegian first.' });
     await removeRule(s, (await addRule(s, { spaceId: acme, kind: 'preference', body: 'Use the old logo.', shared: true })).id);
-    await saveSkill(s, {
-      spaceId: acme, shared: true,
-      files: [{ path: 'SKILL.md', body: '---\nname: status-report\ndescription: Writes the weekly status report.\n---\n\nStart with what changed.\n' }, { path: 'references/tone.md', body: 'Plain, short sentences.\n' }],
-    });
+    // Rules that refer to a page, in the export and outside it.
+    await addRule(s, { spaceId: acme, kind: 'requirement', body: `Check [Gunnar](page:${gunnar}) before writing about the budget.`, shared: true });
+    notes = await createPage(s, { spaceId: ana.personalSpaceId, title: 'My own notes' });
+    await addRule(s, { spaceId: acme, kind: 'preference', body: `Keep my own notes on page:${notes}.` });
+    // A skill whose file refers to a page, and which no longer has another file.
+    const skillMd = { path: 'SKILL.md', body: '---\nname: status-report\ndescription: Writes the weekly status report.\n---\n\nStart with what changed.\n' };
+    const tone = { path: 'references/tone.md', body: `Plain, short sentences, as [Gunnar](page:${gunnar}) likes them.\n` };
+    await saveSkill(s, { spaceId: acme, shared: true, files: [skillMd, tone, { path: 'references/old.md', body: 'The old template.\n' }] });
+    await saveSkill(s, { spaceId: acme, shared: true, files: [skillMd, tone] });
     await addTask(s, { spaceId: acme, title: 'Send the brief to Gunnar', description: 'With the budget.', due: '2026-11-02', assignee: cara.id, shared: true });
     await addTask(s, { spaceId: acme, title: 'Book a bigger venue' });
     const banners = await addTask(s, { spaceId: acme, title: 'Order the banners', shared: true });
@@ -76,10 +87,13 @@ before(async () => {
     const website = await createSpace(s, { name: 'Website', parentId: acme });
     const booking = await createPage(s, { spaceId: website, title: 'Booking flow', shared: true });
     await writeItem(s, { pageId: booking, body: 'Jon builds the booking flow.', shared: true });
-    const legal = await createSpace(s, { name: 'Legal', parentId: acme, closed: true });
+    legal = await createSpace(s, { name: 'Legal', parentId: acme, closed: true });
     await addRule(s, { spaceId: legal, kind: 'requirement', body: 'Contracts go through Ola.', shared: true });
+    await archiveSpace(s, await createSpace(s, { name: 'Old site', parentId: acme }), true);
     return acme;
   });
+  // A space whose creator isn't known, as when they've left.
+  await admin`update spaces set created_by = null, agent = null where id = ${legal}`;
   await as({ person: ana.id, agent: 'Claude' }, (s) => writeItem(s, { pageId: gunnar, body: 'Gunnar asked for the budget by Friday.' }));
   await as({ ...cara, direct: true }, async (s) => {
     await writeItem(s, { pageId: plan, body: 'The launch party is at Bislett.', shared: true });
@@ -99,11 +113,20 @@ async function exported(who: Member, spaceId: string) {
   return { bytes, manifest: JSON.parse(strFromU8(unzipSync(bytes)['homing.json'])) as Manifest };
 }
 
-/** Sends a zip to be previewed, or imported under a name. */
-async function upload(who: Member, bytes: Buffer, name?: string) {
-  const path = name === undefined ? '/api/import/preview' : `/api/import?name=${encodeURIComponent(name)}`;
+/** Sends a zip to be previewed, or imported under a name, as what was previewed with that fingerprint. */
+async function upload(who: Member, bytes: Buffer, name?: string, hash = '') {
+  const path = name === undefined ? '/api/import/preview' : `/api/import?${new URLSearchParams({ name, hash })}`;
   const response = await who.browser.fetch(path, { method: 'POST', body: new Uint8Array(bytes), headers: { 'content-type': 'application/zip' } });
   return { status: response.status, body: await response.json() as Record<string, any> };
+}
+
+/** Previews a zip, then imports it under a name, as the app does, and returns the new space. */
+async function imported(who: Member, bytes: Buffer, name: string): Promise<string> {
+  const preview = await upload(who, bytes);
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  const answer = await upload(who, bytes, name, preview.body.hash);
+  assert.equal(answer.status, 200, JSON.stringify(answer.body));
+  return answer.body.id;
 }
 
 const spacesOf = async (who: Member) => (await admin`select count(*)::int as n from space_access where person_id = ${who.id}`)[0].n as number;
@@ -116,32 +139,49 @@ test('an export comes back as a new space only you have, and exported again it s
   assert.equal(preview.status, 200);
   assert.equal(preview.body.name, 'Acme');
   assert.deepEqual(preview.body.from, { instance: homing.url.origin, exportedBy: 'Ana', exportedAt: before.manifest.exportedAt });
-  // Website and Legal were made at the same moment, so either may come first.
-  assert.deepEqual(preview.body.spaces.map((space: { name: string; depth: number; closed: boolean }) => [space.name, space.depth, space.closed]).sort(), [['Acme', 0, false], ['Legal', 1, true], ['Website', 1, false]]);
+  // The spaces in Acme were made at the same moment, so any may come first.
+  assert.deepEqual(
+    preview.body.spaces.map((space: { name: string; depth: number; closed: boolean; archived: boolean }) => [space.name, space.depth, space.closed, space.archived]).sort(),
+    [['Acme', 0, false, false], ['Legal', 1, true, false], ['Old site', 1, false, true], ['Website', 1, false, false]],
+  );
   assert.deepEqual(preview.body.spaces[0], { name: 'Acme', depth: 0, closed: false, archived: false, pages: 5, sources: 2, tasks: 3 });
+  // Rules word for word, saying by name what they refer to in the export, and as written what they refer to outside it.
   assert.deepEqual(preview.body.rules, [
     { space: 'Acme', kind: 'requirement', text: 'Write dates as YYYY-MM-DD.', onlyHere: false, private: false },
     { space: 'Acme', kind: 'preference', text: 'Keep status notes under 200 words.', onlyHere: true, private: false },
     { space: 'Acme', kind: 'preference', text: 'Draft in Norwegian first.', onlyHere: false, private: true },
+    { space: 'Acme', kind: 'requirement', text: 'Check Gunnar (page “Gunnar Holm”) before writing about the budget.', onlyHere: false, private: false },
+    { space: 'Acme', kind: 'preference', text: `Keep my own notes on page:${notes}.`, onlyHere: false, private: true },
     { space: 'Legal', kind: 'requirement', text: 'Contracts go through Ola.', onlyHere: false, private: false },
   ]);
   assert.deepEqual(preview.body.skills, [{ space: 'Acme', name: 'status-report', private: false }]);
   const spaces = await spacesOf(ana);
 
   // A space called the same as one she has is refused; another name is a new space at the top.
-  const taken = await upload(ana, before.bytes, 'Acme');
+  const taken = await upload(ana, before.bytes, 'Acme', preview.body.hash);
   assert.equal(taken.status, 400);
   assert.equal(taken.body.field, 'name');
   assert.equal(await spacesOf(ana), spaces);
-  const imported = await upload(ana, before.bytes, 'Acme, from the old Homing');
-  assert.equal(imported.status, 200);
-  const copy = imported.body.id as string;
+  const copy = await imported(ana, before.bytes, 'Acme, from the old Homing');
   const [root] = await admin`select name, parent_id, private_to, closed from spaces where id = ${copy}`;
   assert.deepEqual({ ...root }, { name: 'Acme, from the old Homing', parentId: null, privateTo: null, closed: false });
   // Only Ana has it and the spaces in it, the closed one too.
   const members = await admin`select distinct person_id from space_access where space_id in (select space_subtree(${copy}))`;
   assert.deepEqual(members.map((row) => row.personId), [ana.id]);
-  assert.equal(await spacesOf(ana), spaces + 3);
+  assert.equal(await spacesOf(ana), spaces + 4);
+  // Nobody here made them: who did comes along by name, if the export says.
+  assert.equal((await admin`select count(*)::int as n from spaces where id in (select space_subtree(${copy})) and (created_by is not null or agent is not null)`)[0].n, 0);
+  // References in rules and skills' files follow what they point to in the export; others stay as written.
+  const [{ page: gunnarHere }] = await admin`select page_id as page from content where space_id = ${copy} and kind = 'title' and body = 'Gunnar Holm'`;
+  const followed = await admin`select body from content where space_id = ${copy} and kind in ('requirement', 'preference', 'file') and body like '%page:%' order by body`;
+  assert.deepEqual(followed.map((row) => row.body), [
+    `Check [Gunnar](page:${gunnarHere}) before writing about the budget.`,
+    `Keep my own notes on page:${notes}.`,
+    `Plain, short sentences, as [Gunnar](page:${gunnarHere}) likes them.\n`,
+  ]);
+  // What a shared item said before it was shared stays only hers.
+  const [draft] = await admin`select private_to from revisions where space_id in (select space_subtree(${copy})) and body = 'The launch budget is 1 MNOK.'`;
+  assert.equal(draft.privateTo, ana.id);
 
   // Exported again, it means the same, with new ids.
   const after = await exported(ana, copy);
@@ -156,14 +196,13 @@ test('an export comes back as a new space only you have, and exported again it s
   assert.equal(leads.imported?.by, after.manifest.exportedBy.person);
 
   // And once more around: importing the second export brings the same again.
-  const again = await upload(ana, after.bytes, 'Acme, once more');
-  assert.equal(again.status, 200);
-  assert.deepEqual(meaning((await exported(ana, again.body.id)).manifest), meaning(before.manifest));
+  const again = await imported(ana, after.bytes, 'Acme, once more');
+  assert.deepEqual(meaning((await exported(ana, again)).manifest), meaning(before.manifest));
 });
 
 test('who wrote imported knowledge comes along by name, credited to nobody here', async () => {
   const { bytes } = await exported(ana, acme);
-  const copy = (await upload(ana, bytes, 'Acme, authors')).body.id as string;
+  const copy = await imported(ana, bytes, 'Acme, authors');
   // Nothing in it is recorded as written by anyone here, Ana included.
   const local = await admin`
     select count(*)::int as n from content where space_id in (select space_subtree(${copy})) and (written_by is not null or agent is not null or not imported ? 'author')
@@ -215,9 +254,30 @@ test('who wrote imported knowledge comes along by name, credited to nobody here'
   assert.equal(await as(ana, async (s) => (await s.tx`select hidden_sources(${update!.id}) as n`)[0].n), 1);
 });
 
+test('sharing an imported item keeps who wrote it, as the one person they were', async () => {
+  const { bytes } = await exported(ana, acme);
+  const copy = await imported(ana, bytes, 'Acme, shared on');
+  const [{ item, page }] = await admin`select id as item, page_id as page from content where space_id = ${copy} and body = 'Prefers calls before nine.'`;
+  // It rests on Ana's call diary, which only she sees, so the people in the space get a copy of it.
+  await as({ ...ana, direct: true }, (s) => publishItem(s, item, 'Prefers calls before nine.'));
+  const [shared] = await admin`select id, written_by, imported from content where published_from = ${item}`;
+  assert.equal(shared.writtenBy, null);
+  // The app says who wrote it, imported, and an assistant can't rewrite it.
+  await as({ ...ana, direct: true }, (s) => addMember(s, copy, cara.id));
+  const seen = (await cara.browser.json(`/api/pages/${page}`)).body;
+  assert.deepEqual(seen.items.find((entry: { id: string }) => entry.id === shared.id).by, { name: 'Ana', you: false, imported: true });
+  await assert.rejects(as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${shared.id}`), refused);
+  // Exported again, the copy and what it was shared from are by the same Ana, and the copy says it came in the import.
+  const again = (await exported(ana, copy)).manifest;
+  const original = again.items.find((entry) => entry.body === 'Prefers calls before nine.' && entry.visibility === 'private')!;
+  const copied = again.items.find((entry) => entry.publishedFrom === original.id)!;
+  assert.equal(copied.author.person, original.author.person);
+  assert.equal(copied.imported?.from, homing.url.origin);
+});
+
 test('nobody else sees anything of an import', async () => {
   const { bytes } = await exported(ana, acme);
-  const copy = (await upload(ana, bytes, 'Acme, private')).body.id as string;
+  const copy = await imported(ana, bytes, 'Acme, private');
   const inside = await admin`select id from spaces where id in (select space_subtree(${copy}))`;
   for (const who of [cara, ben]) {
     const listed = (await who.browser.json('/api/spaces')).body.spaces as { id: string }[];
@@ -258,9 +318,10 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
     ['a removal that reaches elsewhere than its rule', bundle((m) => { const removal = m.items.find((item) => item.kind === 'removed')!; removal.reachesDown = !removal.reachesDown; }), /reaches further or less far/],
     ['a citation of nothing', bundle((m) => { m.items.find((item) => item.sources.length)!.sources = [crypto.randomUUID()]; }), /cites a source that isn’t in the export/],
     ['a wrong type', bundle((m) => Object.assign(m.items[0], { body: 42 })), /changed or damaged/],
-    ['a name nobody can see', bundle((m) => { m.spaces[1].name = 'Web‮site'; }), /name Homing doesn’t take/],
-    ['too much unpacked', zip([['homing.json', ' '.repeat(151 * 1024 * 1024)]]), /larger than Homing imports at once/],
-    ['too much unpacked, though it says otherwise', zip([['homing.json', ' '.repeat(151 * 1024 * 1024)]]).then(understated), /larger than Homing imports at once/],
+    ['a name nobody can see', bundle((m) => { m.spaces[1].name = 'Web\u202esite'; }), /name Homing doesn’t take/],
+    ['too much unpacked', zip([['homing.json', ' '.repeat(65 * 1024 * 1024)]]), /larger than Homing imports at once/],
+    ['too much unpacked, though it says otherwise', zip([['homing.json', ' '.repeat(65 * 1024 * 1024)]]).then(understated), /larger than Homing imports at once/],
+    ['a damaged zip', damaged(), /damaged/],
   ];
   for (const [what, zipped, message] of refusals) {
     const answer = await upload(ana, await zipped, 'Acme, refused');
@@ -278,6 +339,85 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
   assert.equal((await stranger.fetch('/api/import?name=Acme', { method: 'POST', body: new Uint8Array(await exportOf(manifest)) })).status, 401);
 });
 
+/** 36 bytes: an end record saying its one file is listed just before it, where the list starts and stops. */
+function damaged(): Buffer {
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(1, 8);
+  end.writeUInt16LE(1, 10);
+  end.writeUInt32LE(46, 12);
+  end.writeUInt32LE(10, 16);
+  return Buffer.concat([Buffer.alloc(10), Buffer.from('PK\x01\x02'), end]);
+}
+
+test('an export is held to what Homing keeps, and to rules and names that hide nothing', async () => {
+  const { manifest } = await exported(ana, acme);
+  const bundle = (change: (m: Manifest) => void) => {
+    const copy = structuredClone(manifest);
+    change(copy);
+    return exportOf(copy);
+  };
+  const item = (m: Manifest, body: string) => m.items.find((entry) => entry.body === body)!;
+  const file = (m: Manifest, path: string) => m.items.find((entry) => entry.path === path)!;
+  // A page type Homing hasn't seen is just a type, whatever it's called.
+  for (const type of ['constructor', 'toString', '__proto__']) {
+    const answer = await upload(ana, await bundle((m) => { m.pages.find((page) => page.type === 'person')!.type = type; }));
+    assert.equal(answer.status, 200, type);
+  }
+  const refusals: [string, (m: Manifest) => void, RegExp][] = [
+    ['knowledge too long', (m) => { item(m, 'Prefers calls before nine.').body = 'x'.repeat(20_001); }, /longer than Homing keeps/],
+    ['a rule too long', (m) => { item(m, 'Write dates as YYYY-MM-DD.').body = 'x'.repeat(4_001); }, /longer than Homing keeps/],
+    ['an overview too long', (m) => { item(m, 'The launch is in November.').body = 'x'.repeat(2_001); }, /longer than Homing keeps/],
+    ['a title too long', (m) => { item(m, 'Launch plan').body = 'x'.repeat(201); }, /longer than Homing keeps/],
+    ['a page type too long', (m) => { m.pages.find((page) => page.type === 'person')!.type = 'x'.repeat(41); }, /changed or damaged/],
+    ['a skill name Homing doesn’t take', (m) => { item(m, 'status-report').body = 'Status Report'; }, /name Homing doesn’t take/],
+    ['a skill named otherwise in its SKILL.md', (m) => { item(m, 'status-report').body = 'weekly-report'; }, /named differently in its SKILL\.md/],
+    ['a skill’s file too large', (m) => { file(m, 'references/tone.md').body = 'x'.repeat(512 * 1024 + 1); }, /changed or damaged/],
+    ['two files at one place', (m) => { m.items.push({ ...file(m, 'references/tone.md'), id: crypto.randomUUID() }); }, /two files at one place/],
+    ['two spaces with one name', (m) => { m.spaces.find((space) => space.name === 'Legal')!.name = 'website'; }, /both called/],
+    ['a person’s name over two lines', (m) => { m.people[0].name = 'Ana\nBen'; }, /characters nobody sees/],
+    ['an agent’s name turned around', (m) => { item(m, 'Gunnar asked for the budget by Friday.').author.agent = 'Cl‮aude'; }, /characters nobody sees/],
+    ['the exporter’s name with a space nobody sees', (m) => { m.exportedBy.name = 'A​na'; }, /characters nobody sees/],
+    ['a rule turned around', (m) => { item(m, 'Write dates as YYYY-MM-DD.').body = 'Write dates as ‮DD-MM-YYYY.'; }, /hide what it says/],
+    ['a skill’s file with hidden words', (m) => { file(m, 'SKILL.md').body += '\u{E0049}\u{E0047}\u{E004E}'; }, /hide what it says/],
+  ];
+  for (const [what, change, message] of refusals) {
+    const answer = await upload(ana, await bundle(change));
+    assert.equal(answer.status, 400, what);
+    assert.match(answer.body.message, message, what);
+  }
+});
+
+test('an import is of exactly the export that was looked at', async () => {
+  const { bytes, manifest } = await exported(ana, acme);
+  const preview = await upload(ana, bytes);
+  const changed = structuredClone(manifest);
+  changed.items.find((entry) => entry.body === 'Write dates as YYYY-MM-DD.')!.body = 'Always write dates as DD.MM.YYYY.';
+  const spaces = await spacesOf(ana);
+  for (const hash of [preview.body.hash, '']) {
+    const answer = await upload(ana, await exportOf(changed), 'Acme, changed', hash);
+    assert.equal(answer.status, 400);
+    assert.match(answer.body.message, /isn’t the export you looked at/);
+  }
+  assert.equal(await spacesOf(ana), spaces);
+});
+
+test('an export made to be heavy is refused, and Homing keeps answering meanwhile', async () => {
+  // A small zip that unpacks to twenty million empty objects.
+  const heavy = await zip([['homing.json', `{"pad":[${'{},'.repeat(20_000_000)}{}]}`]]);
+  assert.ok(heavy.length < 1024 * 1024);
+  const delay = monitorEventLoopDelay({ resolution: 10 });
+  delay.enable();
+  // Read one at a time: another at the same moment waits its turn.
+  const answers = await Promise.all([upload(ana, heavy), upload(cara, heavy)]);
+  delay.disable();
+  assert.deepEqual(answers.map((answer) => answer.status).sort(), [400, 429]);
+  assert.match(answers.find((answer) => answer.status === 400)!.body.message, /larger than Homing imports at once/);
+  // Homing's own work never waited more than a moment at a time.
+  assert.ok(delay.max < 1e9, `${Math.round(delay.max / 1e6)} ms`);
+  assert.equal((await ana.browser.json('/api/spaces')).status, 200);
+});
+
 /** A zip whose list says its homing.json is tiny, however large it really is. */
 function understated(bytes: Buffer): Buffer {
   const entry = bytes.lastIndexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));
@@ -288,6 +428,21 @@ function understated(bytes: Buffer): Buffer {
 function exportOf(manifest: Manifest): Promise<Buffer> {
   return zip([['homing.json', JSON.stringify(manifest)]]);
 }
+
+test('an import that takes too long is refused, with nothing created', async () => {
+  const { bytes } = await exported(ana, acme);
+  const { hash } = (await upload(ana, bytes)).body;
+  const payload = await readForImport(bytes, 'Acme, slowly', hash);
+  const spaces = await spacesOf(ana);
+  await assert.rejects(
+    as({ ...ana, direct: true }, async (s) => {
+      await s.tx`set local statement_timeout = 1`;
+      return importSpace(s, 'Acme, slowly', payload);
+    }),
+    (error: Error) => error instanceof ImportRefused && /took too long/.test(error.message),
+  );
+  assert.equal(await spacesOf(ana), spaces);
+});
 
 test('the store writes an import only into spaces it makes, and only for a person, directly', async () => {
   const payload = (space: string) => ({
@@ -341,7 +496,10 @@ function meaning(m: Manifest) {
       createdAt: entry.createdAt, writtenAt: entry.writtenAt, onlyHere: entry.onlyHere, reachesDown: entry.reachesDown, supersedes: item(entry.supersedes), publishedFrom: item(entry.publishedFrom),
       published: entry.published && { by: someone(entry.published.by), at: entry.published.at }, sources: entry.sources.map((id) => sources.get(id)), sourcesElsewhere: entry.sourcesElsewhere,
     })),
-    spaces: m.spaces.map((space) => ({ path: path(space.id), closed: space.closed, private: space.private, creator: by(space.creator), archived: space.archived && { at: space.archived.at, by: someone(space.archived.by) } })),
+    spaces: m.spaces.map((space) => ({
+      path: path(space.id), closed: space.closed, private: space.private, creator: by(space.creator), createdAt: space.createdAt,
+      archived: space.archived && { at: space.archived.at, by: someone(space.archived.by) },
+    })),
     pages: m.pages.map((page) => ({
       page: pages.get(page.id), createdAt: page.createdAt, archived: page.archived && { at: page.archived.at, by: someone(page.archived.by) },
       archives: m.pageArchives.filter((archive) => archive.page === page.id).map((archive) => [archive.archived, archive.at, by(archive.author)]),

@@ -317,10 +317,12 @@ const sampleImportPreview: ImportPreviewData = {
   rules: [
     { space: 'Northwind', kind: 'requirement', text: 'Write dates as YYYY-MM-DD.', onlyHere: false, private: false },
     { space: 'Northwind', kind: 'preference', text: 'Status reports go to Gunnar on Fridays, in Norwegian.', onlyHere: false, private: false },
+    { space: 'Northwind', kind: 'requirement', text: 'Quote prices from page “Price list 2026”, never from memory.', onlyHere: false, private: false },
     { space: 'Contracts', kind: 'requirement', text: 'Never quote prices before legal has looked at them.', onlyHere: true, private: false },
     { space: 'Northwind', kind: 'preference', text: 'Keep my notes short.', onlyHere: false, private: true },
   ],
   skills: [{ space: 'Northwind', name: 'status-report', private: false }],
+  hash: '',
 };
 
 const sampleImport: ImportActions = {

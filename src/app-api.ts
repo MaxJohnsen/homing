@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
-import { ImportRefused, importLimits, importSpace, previewOf, readExport } from './import.ts';
+import { ImportRefused, importLimits, importSpace, previewExport, readForImport } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
@@ -10,13 +10,13 @@ import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { addTask, changeTask, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
-import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, renameSpace, SpaceRefused, spaceView, type Space } from './spaces.ts';
+import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, SpaceRefused, spaceView, type Space } from './spaces.ts';
 import { json, readJson, readUpload, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
-/** Who is exporting a space right now, until it has been sent, and who is importing one. */
+/** Who is exporting a space right now, until it has been sent, and who is reading an export to import it, one at a time. */
 const exporting = new Set<string>();
-const importing = new Set<string>();
+let importing: string | undefined;
 /** How long an export may take to make and send before it's given up on. */
 const exportTimeout = 5 * 60_000;
 const kinds: RuleKind[] = ['requirement', 'preference'];
@@ -232,9 +232,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
 
       case 'import preview':
       case 'import': {
-        // One at a time for each person, and only a few at once, like exports.
-        if (importing.has(person) || importing.size >= 2) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
-        importing.add(person);
+        // One at a time on the whole instance: reading a big export takes a lot of memory, and an
+        // import holds up creating spaces for everyone while it's written.
+        if (importing) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
+        importing = person;
         try {
           // An export from Homing, as the zip itself, which is read here and never kept.
           const zip = await readUpload(req, importLimits.upload);
@@ -242,12 +243,15 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             res.setHeader('connection', 'close');
             return answer(res, 413, { message: `That file is larger than Homing imports at once, ${importLimits.upload / 1024 / 1024} MB.` });
           }
-          const manifest = readExport(zip);
-          if (route.name === 'import preview') return answer(res, 200, previewOf(manifest));
-          const id = await write((s) => importSpace(s, manifest, new URL(req.url ?? '', app.url).searchParams.get('name') ?? ''));
+          if (route.name === 'import preview') return answer(res, 200, await previewExport(zip));
+          const params = new URL(req.url ?? '', app.url).searchParams;
+          // Whether the name is free, before the export is read, and again as it's imported.
+          const { name } = await write((s) => placeSpace(s, { name: params.get('name') ?? '', who: 'with others' }));
+          const payload = await readForImport(zip, name, params.get('hash') ?? '');
+          const id = await write((s) => importSpace(s, name, payload));
           json(res, 200, { id });
         } finally {
-          importing.delete(person);
+          importing = undefined;
         }
         break;
       }
