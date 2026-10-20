@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, gather, historyOf, linksOf, pagesIn, readItem, readPage, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, type PageOrder } from './knowledge.ts';
+import { createPage, gather, historyOf, linksOf, pagesIn, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, peopleNames, spaceView } from './spaces.ts';
@@ -258,20 +258,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           // The same search assistants get, as many results as a person would look through, of each kind.
           hits: query ? [...(await search(s, query, { limit: 200, only: 'content' })), ...(await search(s, query, { limit: 200, only: 'sources' }))] : [],
         }));
-        const byId = new Map(spaces.map((space) => [space.id, space]));
-        // Where something is: "your personal space", "Website in Acme", or unnamed when it's a space above the person can't open.
-        const where = (spaceId: string) => {
-          const space = byId.get(spaceId);
-          if (!space) return { id: null, name: null, within: null };
-          const above = space.parentId ? byId.get(space.parentId) : undefined;
-          const personal = (candidate: typeof space) => candidate.privateTo !== null && candidate.parentId === null;
-          return {
-            id: space.id,
-            name: personal(space) ? 'your personal space' : space.name,
-            within: above ? (personal(above) ? 'your personal space' : above.name) : null,
-            private: space.privateTo !== null,
-          };
-        };
+        const where = placeIn(spaces);
         const words = query.toLowerCase().split(/\s+/).filter(Boolean);
         const pages = new Map<string, unknown>();
         for (const hit of hits) {
@@ -302,6 +289,33 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           sources: hits
             .filter((hit) => hit.kind === 'source')
             .map((hit) => ({ id: hit.id, reference: hit.title, excerpt: hit.text, onlyYou: hit.private, space: where(hit.spaceId) })),
+        });
+        break;
+      }
+
+      case 'changes': {
+        const query = new URL(req.url ?? '', 'http://homing').searchParams;
+        const limit = Math.min(50, Math.max(1, Number.parseInt(query.get('limit') ?? '50', 10) || 50));
+        const { spaces, found, names } = await read(async (s) => {
+          const found = await recentChanges(s, { offset: clamp(Number.parseInt(query.get('offset') ?? '0', 10)), limit });
+          return { spaces: await listSpaces(s), found, names: await peopleNames(s, found.changes.map((change) => change.writtenBy)) };
+        });
+        const where = placeIn(spaces);
+        json(res, 200, {
+          more: found.more,
+          changes: found.changes.map((change) => ({
+            itemId: change.itemId,
+            pageId: change.pageId,
+            title: change.title,
+            text: change.text,
+            kind: change.kind,
+            newPage: change.newPage,
+            by: change.writtenBy === null ? null : { name: names.get(change.writtenBy) ?? null, you: change.writtenBy === person },
+            agent: change.agent,
+            at: change.at,
+            onlyYou: change.onlyYou,
+            space: where(change.spaceId),
+          })),
         });
         break;
       }
@@ -462,6 +476,26 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
   return true;
 }
 
+/**
+ * Where something is, for someone who can open these spaces: "your personal space", "Website in
+ * Acme", or unnamed when it's in a space above that they can't open.
+ */
+function placeIn(spaces: Awaited<ReturnType<typeof listSpaces>>) {
+  const byId = new Map(spaces.map((space) => [space.id, space]));
+  const personal = (space: (typeof spaces)[number]) => space.privateTo !== null && space.parentId === null;
+  return (spaceId: string) => {
+    const space = byId.get(spaceId);
+    if (!space) return { id: null, name: null, within: null };
+    const above = space.parentId ? byId.get(space.parentId) : undefined;
+    return {
+      id: space.id,
+      name: personal(space) ? 'your personal space' : space.name,
+      within: above ? (personal(above) ? 'your personal space' : above.name) : null,
+      private: space.privateTo !== null,
+    };
+  };
+}
+
 /** Where in a long list to start: from the top, and never past what any list could hold. */
 function clamp(offset: number): number {
   return Number.isFinite(offset) ? Math.min(Math.max(0, Math.floor(offset)), 1_000_000) : 0;
@@ -473,7 +507,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' }
   | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
@@ -484,6 +518,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/admin') return { name: 'admin' };
     if (path === '/api/requests') return { name: 'requests' };
     if (path === '/api/search') return { name: 'search' };
+    if (path === '/api/changes') return { name: 'changes' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],

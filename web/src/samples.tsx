@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { sampleChanges, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -20,6 +20,7 @@ import { SignIn } from '@/screens/sign-in';
 import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
+import { Changes } from '@/screens/changes';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
@@ -41,9 +42,11 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/join/taken': { label: 'Join: email already has an account', render: () => <Join state={{ step: 'form', kind: 'invite' }} problem={{ field: 'email', message: 'There is already an account with this email. Sign in instead.' }} /> },
   '/join/expired': { label: 'Invite expired', render: () => <Join state={{ step: 'expired', kind: 'invite' }} /> },
   '/join/signed-in': { label: 'Invite opened while signed in', render: () => <Join state={{ step: 'signed-in', email: 'ana@acme.no' }} /> },
-  '/home': { label: 'Home, with changes waiting and your requests', render: () => <InApp waiting={3}><Home data={{ name: 'Ana Berg', waiting: sampleWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl, requests: sampleRequests }} /></InApp> },
+  '/home': { label: 'Home, with changes waiting and your requests', render: () => <InApp waiting={3}><Home data={{ name: 'Ana Berg', waiting: sampleWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl, requests: sampleRequests, changes: sampleChanges.slice(0, 3), moreChanges: true }} /></InApp> },
   '/home/many': { label: 'Home, with more waiting than it shows', render: () => <InApp waiting={5}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
-  '/home/quiet': { label: 'Home, with nothing waiting', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/home/quiet': { label: 'Home on a quiet day: what changed', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl, changes: sampleChanges, moreChanges: true }} /></InApp> },
+  '/home/nothing': { label: 'Home, with nothing waiting and nothing changed', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
+  '/changes': { label: 'Everything that changed', render: () => <InApp route={{ name: 'changes' }}><Changes changes={sampleChanges} more from={0} onFrom={() => {}} /></InApp> },
   '/home/not-emailed': { label: 'Home, with a request the admins weren’t emailed about', render: () => <InApp waiting={0}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 2, mcpUrl: sampleAccount.mcpUrl, requests: [{ ...sampleRequests[0], emailed: false }] }} /></InApp> },
   '/home/new': { label: 'Home, just joined', render: () => <InApp waiting={0} spaces={sampleSpaces.filter((space) => space.personal)}><Home data={{ name: 'Ana Berg', waiting: [], assistants: 0, mcpUrl: sampleAccount.mcpUrl }} /></InApp> },
   '/home/many-spaces': { label: 'Years in, with a hundred spaces', render: () => <InApp waiting={30} spaces={manySpaces} recent={recentMany}><Home data={{ name: 'Ana Berg', waiting: manyWaiting, assistants: 2, mcpUrl: sampleAccount.mcpUrl }} recent={recentMany.map((id) => manySpaces.find((space) => space.id === id)!)} /></InApp> },

@@ -2,10 +2,12 @@ import { ChevronRight } from 'lucide-react';
 import { cn } from 'cn';
 import welcome from '@/assets/illustrations/welcome.png';
 import { ago, capitalize, count, focusRing, ScreenHeader } from '@/components/screen';
+import type { ChangeData } from '@/lib/knowledge';
 import { eitherOf, placeOf, wantsTo, type RequestData, type WaitingData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import type { SpaceSummary } from '@/lib/spaces';
 import { CopyAddress } from '@/screens/account';
+import { ChangeList } from '@/screens/changes';
 
 /** What Home needs: what waits for you, and whether an assistant is connected yet. */
 export interface HomeData {
@@ -16,6 +18,9 @@ export interface HomeData {
   mcpUrl: string;
   /** Requests you sent to a space's admins. */
   requests?: RequestData[];
+  /** The latest changes to what Homing knows, and whether there are more. */
+  changes?: ChangeData[];
+  moreChanges?: boolean;
 }
 
 const shown = 3;
@@ -33,11 +38,23 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
         <ScreenHeader title={waiting.length === 1 ? 'One change is waiting for you' : `${count(waiting.length, 'change', 'changes')} are waiting for you`} />
         <WaitingList waiting={waiting} now={now} />
         <RecentSpaces spaces={recent} />
+        <WhatChanged changes={data.changes ?? []} more={data.moreChanges} now={now} />
         <YourRequests requests={data.requests ?? []} now={now} />
       </>
     );
   }
   if (data.assistants === 0) return <Welcome data={data} />;
+  // A quiet day: nothing needs you, so Home leads with what changed.
+  if (data.changes?.length) {
+    return (
+      <>
+        <ScreenHeader title="What changed" meta="Nothing is waiting for you. This is what’s new in your spaces." />
+        <RecentSpaces spaces={recent} />
+        <WhatChanged changes={data.changes} more={data.moreChanges} now={now} heading={false} />
+        <YourRequests requests={data.requests ?? []} now={now} />
+      </>
+    );
+  }
   return (
     <>
       <ScreenHeader
@@ -47,6 +64,22 @@ export function Home({ data, recent = [], now }: { data: HomeData; recent?: Spac
       <RecentSpaces spaces={recent} />
       <YourRequests requests={data.requests ?? []} now={now} />
     </>
+  );
+}
+
+/** The latest few changes, with the way to all of them. */
+function WhatChanged({ changes, more, now, heading = true }: { changes: ChangeData[]; more?: boolean; now?: Date; heading?: boolean }) {
+  if (changes.length === 0) return null;
+  return (
+    <section aria-labelledby={heading ? 'what-changed' : undefined} aria-label={heading ? undefined : 'What changed'} className="flex flex-col gap-4">
+      {heading && <h2 id="what-changed" className="text-lg leading-snug font-semibold">What changed</h2>}
+      <ChangeList changes={changes} now={now} />
+      {more && (
+        <Link href="/changes" className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+          See everything that changed
+        </Link>
+      )}
+    </section>
   );
 }
 

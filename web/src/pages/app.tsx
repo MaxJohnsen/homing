@@ -3,7 +3,7 @@ import { Shell } from '@/components/app-shell';
 import { failed, LoadFailed, ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
-import type { NewPage, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
+import type { ChangeData, NewPage, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
 import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
@@ -18,6 +18,7 @@ import { Home } from '@/screens/home';
 import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
+import { Changes } from '@/screens/changes';
 import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
@@ -79,6 +80,8 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
       return <Titled title="Home"><HomePage me={me} waiting={waiting} recent={recent} /></Titled>;
     case 'search':
       return <Titled title="Search"><SearchPage /></Titled>;
+    case 'changes':
+      return <Titled title="What changed"><ChangesPage /></Titled>;
     case 'waiting':
       return <Titled title="Waiting for you">{waiting && <Waiting waiting={waiting} />}</Titled>;
     case 'account':
@@ -100,10 +103,16 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
 
 function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
   const { data, error } = useLoad<{ requests: RequestData[] }>('/api/requests');
+  const changes = useLoad<{ changes: ChangeData[]; more: boolean }>('/api/changes?limit=5');
   const requests = data?.requests;
-  if (failed(error)) return <LoadFailed paths={['/api/requests', '/api/waiting']} />;
-  if (!waiting || !requests) return null;
-  return <Home data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl, requests }} recent={recent} />;
+  if (failed(error, changes.error)) return <LoadFailed paths={['/api/requests', '/api/waiting', '/api/changes?limit=5']} />;
+  if (!waiting || !requests || !changes.data) return null;
+  return (
+    <Home
+      data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl, requests, changes: changes.data.changes, moreChanges: changes.data.more }}
+      recent={recent}
+    />
+  );
 }
 
 function SpacePage({ id, view }: { id: string; view: SpaceView }) {
@@ -195,6 +204,25 @@ function PagePage({ id }: { id: string }) {
       {failed(error) && <LoadFailed paths={[`/api/pages/${id}`]} />}
       {data && !error && <Page page={data} actions={pageActions(data, gatheredPath)} gathered={gathered} gatheredFrom={from} onGatheredFrom={setFrom} />}
     </Titled>
+  );
+}
+
+/** Everything that changed, fifty at a time, with the place in the list in the address. */
+function ChangesPage() {
+  const from = Math.max(0, Number.parseInt(new URLSearchParams(location.search).get('from') ?? '0', 10) || 0);
+  const path = `/api/changes${from ? `?offset=${from}` : ''}`;
+  const { data, error } = useLoad<{ changes: ChangeData[]; more: boolean }>(path);
+  if (failed(error)) return <LoadFailed paths={[path]} />;
+  return (
+    <Changes
+      changes={data?.changes}
+      more={data?.more ?? false}
+      from={from}
+      onFrom={(next) => {
+        navigate(next ? `/changes?from=${next}` : '/changes');
+        scrollTo({ top: 0 });
+      }}
+    />
   );
 }
 

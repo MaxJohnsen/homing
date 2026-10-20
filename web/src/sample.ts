@@ -1,5 +1,5 @@
 import type { AccountData } from '@/screens/account';
-import type { PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
+import type { ChangeData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
@@ -348,3 +348,11 @@ export const sampleSearch: SearchData = {
   skills: [{ id: 'skill-1', name: 'launch-checklist', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
   sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'New launch date November 20, but he hasn’t told his team yet.', onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } }],
 };
+
+/** What changed lately in Ana's spaces. */
+export const sampleChanges: ChangeData[] = [
+  { itemId: 'c1', pageId: '7d1c2a40-0000-4000-8000-000000000002', title: 'Gunnar Holm', text: 'Becomes CTO on November 1. Marte takes over day-to-day content questions.', kind: 'added', newPage: false, by: { name: 'Cara Lund', you: false }, agent: 'Claude', at: daysAgo(0, 3), onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+  { itemId: 'c2', pageId: '7d1c2a40-0000-4000-8000-000000000004', title: 'Launch moved to November 14', text: 'Decided at the steering group on October 9: the launch moves from November 1 to November 14, so the booking flow gets two more weeks of testing.', kind: 'added', newPage: true, by: { name: 'Ana Berg', you: true }, agent: 'Claude', at: daysAgo(1), onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+  { itemId: 'c3', pageId: '7d1c2a40-0000-4000-8000-000000000001', title: 'Website relaunch', text: 'The launch is planned for **November 20**.', kind: 'updated', newPage: false, by: { name: 'Ana Berg', you: true }, agent: null, at: daysAgo(1, 4), onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+  { itemId: 'c4', pageId: '7d1c2a40-0000-4000-8000-000000000006', title: 'Fjord Bank app', text: 'Version 3.2 goes to the App Store on October 28.', kind: 'corrected', newPage: false, by: { name: 'Tore Vik', you: false }, agent: null, at: daysAgo(4), onlyYou: false, space: { id: 'fjord', name: 'Fjord Bank', within: null } },
+];

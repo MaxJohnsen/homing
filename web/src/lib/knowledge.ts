@@ -130,3 +130,22 @@ export interface SourceData {
   space: { id: string; name: string; personal: boolean; private: boolean };
   pages: { id: string; title: string; items: { id: string; text: string; shared: boolean }[] }[];
 }
+
+/** A change to knowledge, for what changed lately. */
+export interface ChangeData {
+  itemId: string;
+  pageId: string;
+  /** The page's title. */
+  title: string;
+  /** Markdown. */
+  text: string;
+  /** Added, replacing what was true, or corrected where it stood. */
+  kind: 'added' | 'updated' | 'corrected';
+  /** The first thing on its page, which makes it a new page. */
+  newPage: boolean;
+  by: Author;
+  agent: string | null;
+  at: string;
+  onlyYou: boolean;
+  space: { id: string | null; name: string | null; within: string | null; private?: boolean };
+}
