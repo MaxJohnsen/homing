@@ -6,13 +6,14 @@ export interface ProposalData {
   id: string;
   /** The assistant that proposed it, such as Claude. */
   assistant: string;
+  spaceId?: string;
   space: string;
   /** Whether the space is the person's personal space, whose rules follow them everywhere. */
   personal: boolean;
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
-  /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, or sharing an item. */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish';
+  /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, or sharing an item or a task. */
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -51,6 +52,7 @@ export interface ProposalData {
    * whether someone uses Homing with it.
    */
   publication?: PublicationData | null;
+  task?: TaskShareData | null;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -86,6 +88,21 @@ export interface PublicationData {
   current: boolean;
   why: string | null;
   /** Who would see it: how many people, and whether people above it you can't open too. */
+  audience: { people: number; above: boolean } | null;
+}
+
+/** Sharing one of your private tasks with everyone in its space, as the decision page and the card show it. */
+export interface TaskShareData {
+  title: string;
+  description: string | null;
+  /** The day it's due, as YYYY-MM-DD. */
+  due: string | null;
+  done: boolean;
+  /** Already on the space's shared side. */
+  shared: boolean;
+  /** The task as it's shown, which approving sends back, so only what was shown is shared. */
+  shown: string;
+  why: string | null;
   audience: { people: number; above: boolean } | null;
 }
 
@@ -130,6 +147,7 @@ export function wantsTo(
 ): string {
   const { assistant, action, kind, request } = proposal;
   if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
+  if (action === 'task') return withPlace ? `${assistant} wants to share a task with ${placeOf(proposal)}` : `${assistant} wants to share a task`;
   if (action === 'members') {
     const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
     const who = typeof proposal.member === 'object' && proposal.member ? (proposal.member.name ?? proposal.member.email) : proposal.text;
@@ -166,8 +184,9 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 }
 
 /** Whether a change or removal lost its rule before anyone decided. */
-export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'state'>): boolean {
+export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'state'>): boolean {
   if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
+  if (proposal.action === 'task') return proposal.state === 'open' && (!proposal.task || proposal.task.shared || proposal.task.done);
   return (proposal.action === 'change' || proposal.action === 'remove') && !proposal.rule?.current;
 }
 
@@ -175,7 +194,7 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publica
 export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange, place?: string): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
   // The button names who will see it.
-  if (action === 'publish') return { approve: place ? `Share with ${place}` : 'Share', reject: 'Don’t share' };
+  if (action === 'publish' || action === 'task') return { approve: place ? `Share with ${place}` : 'Share', reject: 'Don’t share' };
   if (action === 'members') {
     return member === 'remove'
       ? { approve: 'Remove', reject: 'Keep them' }
@@ -218,6 +237,17 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
     if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
+    return undefined;
+  }
+  if (action === 'task') {
+    if (state === 'approved') return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees the task now, and can tick it off.` };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: `You decided not to share it, so ${assistant} won’t ask again.` };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
+    if (isGone(proposal)) {
+      return proposal.task?.shared
+        ? { kind: 'gone', heading: 'Already shared', detail: `Everyone in ${place} sees the task already, so there’s nothing to decide.` }
+        : { kind: 'gone', heading: 'Nothing to share', detail: 'The task was done or removed since, so there’s nothing to decide.' };
+    }
     return undefined;
   }
   if (action === 'members' && member) {

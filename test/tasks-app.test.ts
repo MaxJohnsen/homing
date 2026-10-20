@@ -136,3 +136,84 @@ test('an assistant never rewrites a task the user wrote, and keeps a task and kn
   assert.ok(both.failed && /A task goes alone/.test(both.text), both.text);
   assert.ok(!(await tasksAs(ana)).open.some((task) => task.title === 'Call before 15'), 'nothing was saved');
 });
+
+test('an assistant proposes sharing a task, and the person shares exactly what they were shown', async () => {
+  const kept = await remember({ title: 'Book the caterer', due: '2026-11-20' });
+  const id = /task:([0-9a-f-]{36})/.exec(kept.text)![1];
+  const act = (input: Record<string, unknown>) => claude.call('act', { action: 'task.share', input });
+  const proposed = await act({ task: `task:${id}`, why: 'Cara can pick it up.' });
+  const proposal = /proposal:([0-9a-f-]{36})/.exec(proposed.text)![1];
+  assert.match(proposed.text, /Waiting for the user's approval .+ The task stays theirs alone until then/);
+  assert.match((await act({ task: `task:${id}` })).text, /already waits for the user/);
+  assert.ok(!(await tasksAs(cara)).open.some((task) => task.title === 'Book the caterer'), 'nothing is shared before Ana decides');
+
+  const shown = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal;
+  assert.equal(shown.action, 'task');
+  assert.deepEqual([shown.task.title, shown.task.due, shown.task.why], ['Book the caterer', '2026-11-20', 'Cara can pick it up.']);
+  // The assistant changes the task after Ana opened it: approving what she saw shares nothing.
+  await remember({ ref: `task:${id}`, title: 'Book the caterer and the band' });
+  const decide = (text: string) => ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: true, shown: text });
+  assert.equal((await decide(shown.task.shown)).status, 409);
+  const again = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal;
+  assert.equal((await decide(again.task.shown)).status, 200);
+  assert.ok((await tasksAs(cara)).open.some((task) => task.title === 'Book the caterer and the band'));
+  assert.match((await claude.call('read', { ref: `proposal:${proposal}` })).text, /The user shared it on .+\. Everyone in the space sees it now\./);
+
+  // Only the user's own open tasks, and only where there's a shared side.
+  assert.ok((await act({ task: `task:${id}` })).failed, 'it is shared already');
+  const mine = await claude.call('remember', { space: `space:${ana.personalSpaceId}`, task: { title: 'Water the plants' } });
+  assert.match((await act({ task: /task:[0-9a-f-]{36}/.exec(mine.text)![0] })).text, /personal space has no shared side/);
+  // Straight against the database, a proposal names only the person's own task in its own space.
+  const caras = await as(cara, (s) => s.tx<{ id: string }[]>`insert into tasks (space_id, private_to, title) values (${acme}::uuid, ${cara.id}::uuid, 'Cara’s own') returning id`);
+  await assert.rejects(
+    as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`insert into proposals (space_id, private_to, action, task_id, change) values (${acme}::uuid, ${ana.id}::uuid, 'share task', ${caras[0].id}::uuid, '{}')`),
+    refused,
+  );
+});
+
+test('a proposal to share a task ends when the task is shared or done another way, and only the user sees it', async () => {
+  const act = (input: Record<string, unknown>) => claude.call('act', { action: 'task.share', input });
+  const idOf = (text: string) => /task:([0-9a-f-]{36})/.exec(text)![1];
+  const proposalOf = (text: string) => /proposal:([0-9a-f-]{36})/.exec(text)![1];
+  const waiting = async () => ((await ana.browser.json('/api/waiting')).body.waiting as { id: string }[]).map((item) => item.id);
+
+  // Ana shares it herself while the proposal waits: it leaves what's waiting, and can't be approved.
+  const task = idOf((await remember({ title: 'Order the badges', due: '2026-11-10' })).text);
+  const proposal = proposalOf((await act({ task: `task:${task}` })).text);
+  const shown = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal;
+  assert.ok((await waiting()).includes(proposal));
+  assert.equal((await cara.browser.json(`/api/proposals/${proposal}`)).status, 404);
+  assert.equal((await cara.browser.json(`/api/proposals/${proposal}/decide`, { approve: true, shown: shown.task.shown })).status, 404);
+  assert.equal((await ana.browser.json(`/api/tasks/${task}/share`, {})).status, 200);
+  assert.ok(!(await waiting()).includes(proposal));
+  assert.match((await claude.call('read', { ref: `proposal:${proposal}` })).text, /shared with the space already, so there is nothing to decide/);
+  assert.equal((await ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: true, shown: shown.task.shown })).status, 409);
+  assert.match((await act({ task: `task:${task}` })).text, /shared with the space already/);
+
+  // A new due date after it was shown is a change too; a done task has nothing to share.
+  const next = idOf((await remember({ title: 'Print the programme', due: '2026-11-12' })).text);
+  const asked = proposalOf((await act({ task: `task:${next}`, why: 'Cara prints too.' })).text);
+  const first = (await ana.browser.json(`/api/proposals/${asked}`)).body.proposal;
+  await remember({ ref: `task:${next}`, due: '2026-11-13' });
+  assert.equal((await ana.browser.json(`/api/proposals/${asked}/decide`, { approve: true, shown: first.task.shown })).status, 409);
+  assert.equal((await ana.browser.json(`/api/proposals/${asked}/decide`, { approve: false })).status, 200);
+  assert.match((await claude.call('read', { ref: `proposal:${asked}` })).text, /decided not to share it/);
+  await remember({ ref: `task:${next}`, done: true });
+  assert.match((await act({ task: `task:${next}` })).text, /That task is done/);
+
+  // Nor from a space in the personal tree, and straight against the database, only an open task
+  // of the person's own, in its own space, with a shared side, and never as a request.
+  const side = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Side', parentId: ana.personalSpaceId }));
+  const sideTask = idOf((await claude.call('remember', { space: `space:${side}`, task: { title: 'Sort the receipts' } })).text);
+  assert.match((await act({ task: `task:${sideTask}` })).text, /personal space has no shared side/);
+  const open = idOf((await remember({ title: 'Call the printer' })).text);
+  const insert = (space: string, taskId: string, request = false) =>
+    as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`
+      insert into proposals (space_id, private_to, action, task_id, change, request)
+      values (${space}::uuid, ${ana.id}::uuid, 'share task', ${taskId}::uuid, '{}', ${request})
+    `);
+  await assert.rejects(insert(side, sideTask), refused);
+  await assert.rejects(insert(acme, next), refused, 'a done task');
+  await assert.rejects(insert(ana.personalSpaceId, open), refused, 'another space');
+  await assert.rejects(insert(acme, open, true), { code: '23514' });
+});

@@ -24,7 +24,7 @@ export function ProposalPage({ id }: { id: string }) {
       proposal={proposal}
       decide={async (approve, onlyHere, space) => {
         try {
-          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text, space });
+          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown, space });
           // A created space joins the sidebar.
           await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests'), space && reload('/api/spaces')]);
         } catch (error) {

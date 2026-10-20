@@ -4,8 +4,8 @@ import { AlreadyApplies } from '@/components/already-applies';
 import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
-import { Avatar } from '@/components/screen';
-import { placeOf, precedenceOf, type ProposalData, type PublicationData } from '@/lib/proposals';
+import { Avatar, dateOf } from '@/components/screen';
+import { placeOf, precedenceOf, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -27,6 +27,7 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
   const { action, kind, rule, shared, personal, space } = proposal;
   if (action === 'members') return proposal.member ? <MemberChangeDetails proposal={proposal} member={proposal.member} /> : null;
   if (action === 'publish') return proposal.publication ? <PublishDetails proposal={proposal} publication={proposal.publication} /> : null;
+  if (action === 'task') return proposal.task ? <TaskShareDetails place={placeOf(proposal)} task={proposal.task} /> : null;
   if (action === 'space') {
     if (!draft || !onDraftChange || !proposal.suggestion) return null;
     // Who has the shared space it would go in, from Homing, since the card can't ask for it.
@@ -71,6 +72,7 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
   const { action, kind, state, rule, suggestion, member } = proposal;
   if (action === 'members') return member && <Who member={member} settled />;
   if (action === 'publish') return proposal.publication && <ProposedChange kind="preference" label={`On ${proposal.publication.page}`} text={proposal.publication.text} settled />;
+  if (action === 'task') return proposal.task && <ProposedChange kind="preference" label="Task" text={proposal.task.title} settled />;
   if (action === 'space') {
     return suggestion && <p className="rounded-xl bg-muted px-4 py-3 text-base text-muted-foreground">{suggestion.created?.name ?? suggestion.name}</p>;
   }
@@ -128,11 +130,7 @@ function PublishDetails({ proposal, publication }: { proposal: ProposalData; pub
  * see, how many people that is, and what it rests on that they won't see.
  */
 export function SharingDetails({ place, publication }: { place: string; publication: PublicationData }) {
-  const others = publication.audience ? publication.audience.people - 1 : 0;
-  const count = (n: number) => (n === 1 ? '1 other person' : `${n.toLocaleString('en-US')} other people`);
-  const who = publication.audience?.above
-    ? `Everyone in ${place} will see it: ${others > 0 ? `${count(others)} now, ` : ''}everyone who can open the space above it, and anyone who joins later.`
-    : `Everyone in ${place} will see it: ${others > 0 ? count(others) : 'only you'} now, and anyone who joins later.`;
+  const who = whoWillSee(place, publication.audience);
   const sources = [
     ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your source “${source.reference}”`)),
     ...(publication.hiddenUnseen > 0 ? [publication.hiddenUnseen === 1 ? 'a source you can no longer open' : `${publication.hiddenUnseen} sources you can no longer open`] : []),
@@ -157,6 +155,26 @@ export function SharingDetails({ place, publication }: { place: string; publicat
       {publication.sharesTitle && (
         <p className="text-base">Only you have the page “{publication.page}”, so its title is shared too. The rest of it stays yours.</p>
       )}
+    </>
+  );
+}
+
+/** "Everyone in Acme will see it: 25 other people now, and anyone who joins later." */
+function whoWillSee(place: string, audience: { people: number; above: boolean } | null): string {
+  const others = audience ? audience.people - 1 : 0;
+  const count = (n: number) => (n === 1 ? '1 other person' : `${n.toLocaleString('en-US')} other people`);
+  return audience?.above
+    ? `Everyone in ${place} will see it: ${others > 0 ? `${count(others)} now, ` : ''}everyone who can open the space above it, and anyone who joins later.`
+    : `Everyone in ${place} will see it: ${others > 0 ? count(others) : 'only you'} now, and anyone who joins later.`;
+}
+
+/** Sharing one of your private tasks: the task as everyone in the space would see it, and who that is. */
+function TaskShareDetails({ place, task }: { place: string; task: TaskShareData }) {
+  const due = task.due ? `, due ${dateOf(new Date(`${task.due}T12:00:00`).toISOString())}` : '';
+  return (
+    <>
+      <ProposedChange kind="preference" label={`Task${due}`} text={task.description ? `${task.title}\n\n${task.description}` : task.title} />
+      <p className="text-base">{whoWillSee(place, task.audience)} Any of them can tick it off.</p>
     </>
   );
 }

@@ -53,8 +53,8 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why) && (
-                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why}”</p>
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why) && (
+                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why}”</p>
               )}
             </div>
             <ProposalDetails
@@ -84,7 +84,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             <p className="text-sm text-muted-foreground">
               {action === 'members'
                 ? `Only you can approve this. ${assistant} can’t do it for you.`
-                : action === 'publish'
+                : action === 'publish' || action === 'task'
                 ? `Only you can share it. ${assistant} can’t do it for you, and until you do, it stays only yours.`
                 : action === 'space'
                 ? suggestion?.asked
@@ -110,6 +110,11 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
             {proposal.action === 'publish' && proposal.state === 'approved' && proposal.publication && (
               <Link href={`/pages/${proposal.publication.pageId}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
                 Open {proposal.publication.page}
+              </Link>
+            )}
+            {proposal.action === 'task' && proposal.state === 'approved' && proposal.spaceId && (
+              <Link href={`/spaces/${proposal.spaceId}/tasks`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+                Open {proposal.space}’s tasks
               </Link>
             )}
             {suggestion?.created && (

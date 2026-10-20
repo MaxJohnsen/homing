@@ -290,6 +290,14 @@ describe('straight against the database', () => {
         insert into tasks (space_id, title, assignee) values (${intruder.space}, 'Hello', ${target.person.id})
       `), { code: '23514' });
 
+      // Nor a proposal to share the other client's task, in either space.
+      for (const space of [target.space, intruder.space]) {
+        await assert.rejects(as({ ...me, agent: 'Claude' }, (s) => s.tx`
+          insert into proposals (space_id, private_to, action, task_id, change)
+          values (${space}, ${me.id}, 'share task', ${target.tasks[1]}, '{}')
+        `), refused);
+      }
+
       // Nor a rule on the other client's guidance page, editing directly.
       await assert.rejects(as(me, (s) => s.tx`select guidance_page(${target.space})`), refused);
       const [rule] = target.rules;
