@@ -15,6 +15,7 @@ import { addRule } from '../src/guidance.ts';
 import { migrate } from '../src/migrate.ts';
 import { proposeRule } from '../src/proposals.ts';
 import { startServer } from '../src/server.ts';
+import { createPage, gather, writeItem } from '../src/knowledge.ts';
 import { saveSkill } from '../src/skills.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 
@@ -185,6 +186,34 @@ async function big() {
   `;
   await admin`update sources set created_at = now() - random() * interval '3 years'`;
   console.log();
+  await collections(spaces[5].id);
+}
+
+/** Collections in Northwind, made the way Ana would: pages that gather others, a few only for her, and some mentions. */
+async function collections(spaceId: string) {
+  await as({ person: ana.id, direct: true }, async (s) => {
+    const shared = await s.tx<{ id: string; title: string }[]>`
+      select p.id, t.body as title from pages p join content t on t.page_id = p.id and t.kind = 'title' and t.private_to is null
+      where p.space_id = ${spaceId}::uuid and p.type is distinct from 'guidance' and p.type is distinct from 'skill'
+      order by p.id
+    `;
+    const names = ['2027 planning', 'Website relaunch', 'Renewal 2026', 'People at Northwind', 'Steering group meetings', 'Budget decisions', 'Security review', 'Things to raise with Gunnar'];
+    for (const [index, name] of names.entries()) {
+      const mine = name.startsWith('Things');
+      const collection = await createPage(s, { spaceId, title: name, shared: !mine });
+      await writeItem(s, { pageId: collection, body: `Everything about ${name.toLowerCase()} for Northwind.`, shared: !mine });
+      const picked = shared.filter((_, at) => (at + index * 7) % between(9, 40) === 0).slice(0, 60);
+      for (const page of picked) await gather(s, { collectionId: collection, pageId: page.id, shared: !mine && random() < 0.9 });
+      // A collection can be gathered into another.
+      if (index === 1) await gather(s, { collectionId: (await s.tx`select page_id from content where body = '2027 planning' and kind = 'title' limit 1`)[0].pageId, pageId: collection, shared: true });
+    }
+    // Some pages link to others in what they say, which is mentioning, not gathering.
+    for (const page of shared.slice(0, 30)) {
+      const other = pick(shared);
+      await writeItem(s, { pageId: page.id, body: `See also [${other.title}](page:${other.id}).`, shared: true });
+    }
+  });
+  console.log('8 collections in Northwind');
 }
 
 /** Pages with a few items each, and sources behind them, written by one person in one go. */

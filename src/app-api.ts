@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, withPrincipal, type Session } from './db.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
-import { createPage, historyOf, pagesIn, readItem, readPage, sourcesIn, sourceView, supersedeItem, updateItem, writeItem, type PageOrder } from './knowledge.ts';
+import { createPage, gather, historyOf, linksOf, pagesIn, readItem, readPage, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, type PageOrder } from './knowledge.ts';
 import { requestsSent, waitingFor } from './proposals.ts';
 import { readSkill, skillsHere } from './skills.ts';
 import { listSpaces, peopleNames, spaceView } from './spaces.ts';
@@ -118,6 +118,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const query = new URL(req.url ?? '', 'http://homing').searchParams;
         const order = orders.find((candidate) => candidate === query.get('sort'));
         const offset = Number.parseInt(query.get('offset') ?? '0', 10);
+        const collection = query.get('in');
+        if (collection !== null && !new RegExp(`^${uuid}$`, 'i').test(collection)) return answer(res, 404, noPage);
         const found = await read(async (s) =>
           (await spaceView(s, route.id))
             ? pagesIn(s, route.id, {
@@ -125,6 +127,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
                 type: query.get('type') || undefined,
                 order,
                 offset: Number.isFinite(offset) ? offset : 0,
+                collections: query.get('collections') === '1',
+                in: collection ?? undefined,
               })
             : undefined,
         );
@@ -142,10 +146,12 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           if (!space) return undefined;
           const history = await historyOf(s, page.items.map((item) => item.id));
           const names = await peopleNames(s, [...page.items, ...history].map((entry) => entry.writtenBy));
-          return { page, space, history, names };
+          const links = await linksOf(s, page.id);
+          const { total: gathers } = await pagesIn(s, page.spaceId, { in: page.id, limit: 1 });
+          return { page, space, history, names, links, gathers };
         });
         if (!found) return answer(res, 404, noPage);
-        const { page, space, history, names } = found;
+        const { page, space, history, names, links, gathers } = found;
         // Who wrote something: a person by name, or nobody named when they're no longer someone the reader shares a space with.
         const by = (writtenBy: string | null) => (writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person });
         json(res, 200, {
@@ -154,6 +160,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           type: page.type,
           shared: page.shared,
           updatedAt: page.updatedAt,
+          // How many pages it gathers, the collections it's in, and the pages that mention it, as the reader sees them.
+          gathers,
+          collections: links.collections,
+          mentionedOn: links.mentionedOn,
           space: {
             id: space.id,
             name: space.name,
@@ -222,6 +232,21 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
           pages: [...pages.values()],
         });
+        break;
+      }
+
+      case 'gather':
+      case 'ungather': {
+        const body = await readJson(req);
+        const pageId = typeof body.pageId === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.pageId) ? body.pageId.toLowerCase() : undefined;
+        if (!pageId) return answer(res, 404, noPage);
+        const input = { collectionId: route.id, pageId, shared: body.shared === true };
+        if (route.name === 'gather') {
+          await write((s) => gather(s, input));
+        } else if (!(await write((s) => ungather(s, input)))) {
+          return answer(res, 404, noPage);
+        }
+        json(res, 200, {});
         break;
       }
 
@@ -372,7 +397,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
   } catch (error) {
     // The store refuses what the person may not do, such as a member changing a shared rule.
     if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
-      return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t change this rule.' });
+      return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t make that change here.' });
     }
     throw error;
   }
@@ -386,7 +411,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' }
-  | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'gather' | 'ungather' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -413,6 +438,8 @@ function routeOf(method: string, path: string): Route | undefined {
     for (const [name, pattern] of [
       ['add page', `/api/spaces/${uuid}/pages`],
       ['add item', `/api/pages/${uuid}/items`],
+      ['gather', `/api/pages/${uuid}/gather`],
+      ['ungather', `/api/pages/${uuid}/gather/remove`],
       ['correct item', `/api/items/${uuid}`],
       ['add rule', `/api/spaces/${uuid}/rules`],
       ['edit rule', `/api/rules/${uuid}`],

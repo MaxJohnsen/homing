@@ -1,4 +1,4 @@
-import { useState, type MouseEvent } from 'react';
+import { useState, type MouseEvent, type ReactNode } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
@@ -9,8 +9,9 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { nameOf, plain, type Author, type ItemData, type PageActions, type PageData } from '@/lib/knowledge';
+import { nameOf, plain, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
+import { AboutPage, CollectionPages } from '@/screens/collection';
 
 /** Long pages can be searched within, from this many items. */
 const findFrom = 12;
@@ -20,8 +21,18 @@ const findFrom = 12;
  * marked where it stands. Who wrote each item, its sources and what it said before open on it
  * when asked, and the person adds to it and corrects it here.
  */
-export function Page({ page, actions, now }: { page: PageData; actions?: PageActions; now?: Date }) {
+export function Page({ page, actions, gathered, gatheredFrom = 0, onGatheredFrom = () => {}, now }: {
+  page: PageData;
+  actions?: PageActions;
+  /** The pages it gathers, fifty at a time from gatheredFrom, when it's a collection. */
+  gathered?: PagesData;
+  gatheredFrom?: number;
+  onGatheredFrom?: (from: number) => void;
+  now?: Date;
+}) {
   const [find, setFind] = useState('');
+  const [picking, setPicking] = useState(false);
+  const collection = page.gathers > 0 || picking;
   const words = find.toLowerCase().split(/\s+/).filter(Boolean);
   const shown = words.length ? page.items.filter((item) => words.every((word) => plain(item.text).toLowerCase().includes(word))) : page.items;
   const onlyYou = !page.space.private && !page.shared;
@@ -29,26 +40,37 @@ export function Page({ page, actions, now }: { page: PageData; actions?: PageAct
   return (
     <>
       <ScreenHeader title={page.title} aside={onlyYou && <OnlyYou />} meta={<About page={page} now={now} />} />
-      <div className="flex max-w-[44rem] flex-col gap-6">
-        {page.items.length >= findFrom && (
-          <Input
-            type="search"
-            aria-label="Find on this page"
-            placeholder={`Find in ${page.items.length} items on this page`}
-            value={find}
-            onChange={(event) => setFind(event.target.value)}
-            className="h-10 rounded-full border-0 bg-muted px-5 text-base sm:max-w-sm"
-          />
-        )}
-        {page.items.length === 0 ? (
-          <p className="text-base text-muted-foreground">Nothing on this page yet.</p>
-        ) : (
-          <article aria-label={page.title} className="flex flex-col gap-1">
-            {shown.map((item) => <Item key={item.id} item={item} page={page} marked={!onlyYou} actions={actions} />)}
-            {shown.length === 0 && <p className="text-base text-muted-foreground">Nothing on this page says “{find.trim()}”.</p>}
-          </article>
-        )}
-        {actions && <AddToPage page={page} add={actions.add} initiallyOpen={page.items.length === 0} />}
+      <div className="grid gap-10 lg:grid-cols-[minmax(0,44rem)_15rem] lg:justify-between">
+        <div className="flex min-w-0 flex-col gap-6">
+          {page.items.length >= findFrom && (
+            <Input
+              type="search"
+              aria-label="Find on this page"
+              placeholder={`Find in ${page.items.length} items on this page`}
+              value={find}
+              onChange={(event) => setFind(event.target.value)}
+              className="h-10 rounded-full border-0 bg-muted px-5 text-base sm:max-w-sm"
+            />
+          )}
+          {page.items.length === 0 ? (
+            !collection && <p className="text-base text-muted-foreground">Nothing on this page yet.</p>
+          ) : (
+            <article aria-label={page.title} className="flex flex-col gap-1">
+              {shown.map((item) => <Item key={item.id} item={item} page={page} marked={!onlyYou} actions={actions} />)}
+              {shown.length === 0 && <p className="text-base text-muted-foreground">Nothing on this page says “{find.trim()}”.</p>}
+            </article>
+          )}
+          {actions && (
+            <AddToPage
+              page={page}
+              add={actions.add}
+              initiallyOpen={page.items.length === 0 && !collection}
+              beside={!collection && <Button variant="ghost" size="lg" onClick={() => setPicking(true)}>Gather pages here</Button>}
+            />
+          )}
+          {collection && <CollectionPages page={page} gathered={gathered} from={gatheredFrom} onFrom={onGatheredFrom} actions={actions} picking={picking} onPicking={setPicking} />}
+        </div>
+        <AboutPage page={page} actions={actions} />
       </div>
     </>
   );
@@ -217,7 +239,7 @@ function Correct({ item, page, correct, onDone }: { item: ItemData; page: PageDa
 }
 
 /** Adding to the page, saying who will see it before it's saved. */
-function AddToPage({ page, add, initiallyOpen }: { page: PageData; add: PageActions['add']; initiallyOpen: boolean }) {
+function AddToPage({ page, add, initiallyOpen, beside }: { page: PageData; add: PageActions['add']; initiallyOpen: boolean; beside?: ReactNode }) {
   const [open, setOpen] = useState(initiallyOpen);
   const [text, setText] = useState('');
   const [audience, setAudience] = useState<Audience>('you');
@@ -229,8 +251,9 @@ function AddToPage({ page, add, initiallyOpen }: { page: PageData; add: PageActi
 
   if (!open) {
     return (
-      <div>
+      <div className="flex flex-wrap gap-2">
         <Button variant="outline" size="lg" onClick={() => setOpen(true)}>Add to this page</Button>
+        {beside}
       </div>
     );
   }
@@ -262,6 +285,8 @@ function AddToPage({ page, add, initiallyOpen }: { page: PageData; add: PageActi
       {choice && <AudienceChoice space={page.space.name} people={page.space.people} value={audience} onChange={setAudience} disabled={busy} />}
       {problem && <FieldError>{problem}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+        {/* A new page can start as a collection instead. */}
+        {initiallyOpen && beside && <div className="sm:mr-auto">{beside}</div>}
         {!initiallyOpen && <Button variant="outline" size="lg" disabled={busy} onClick={() => setOpen(false)}>Cancel</Button>}
         <Button size="lg" disabled={busy || !text.trim()} onClick={save}>{shared ? `Share with ${page.space.name}` : 'Save for you'}</Button>
       </div>

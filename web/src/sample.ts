@@ -244,12 +244,12 @@ export const samplePages: PagesData = {
     { type: 'project', count: 37 },
   ],
   pages: [
-    { id: '7d1c2a40-0000-4000-8000-000000000001', type: 'project', title: 'Website relaunch', excerpt: 'Northwind’s public website is being rebuilt with a new design system and a **booking flow**, so customers can book service appointments online.', updatedAt: daysAgo(0, 5), onlyYou: false },
-    { id: '7d1c2a40-0000-4000-8000-000000000002', type: 'person', title: 'Gunnar Holm', excerpt: 'Head of digital at Northwind, and our main contact for the relaunch.', updatedAt: daysAgo(0, 9), onlyYou: false },
-    { id: '7d1c2a40-0000-4000-8000-000000000003', type: null, title: 'Pricing thoughts before the renewal', excerpt: 'They will push for a lower day rate. Start at 1,450 and settle at 1,350 at the lowest.', updatedAt: daysAgo(1), onlyYou: true },
-    { id: '7d1c2a40-0000-4000-8000-000000000004', type: 'decision', title: 'Launch moved to November 14', excerpt: 'Decided at the steering group: the launch moves two weeks, to November 14, so the booking flow can be tested properly.', updatedAt: daysAgo(3), onlyYou: false },
-    { id: '7d1c2a40-0000-4000-8000-000000000005', type: 'meeting', title: 'Steering group, October 9', excerpt: '- Design is signed off\n- Content is late\n- Next meeting October 23', updatedAt: daysAgo(11), onlyYou: false },
-    { id: '7d1c2a40-0000-4000-8000-000000000006', type: 'person', title: 'Marte Lunde', excerpt: 'Marte works on the payment provider at Northwind.', updatedAt: daysAgo(40), onlyYou: false },
+    { id: '7d1c2a40-0000-4000-8000-000000000001', type: 'project', title: 'Website relaunch', excerpt: 'Northwind’s public website is being rebuilt with a new design system and a **booking flow**, so customers can book service appointments online.', updatedAt: daysAgo(0, 5), onlyYou: false, gathers: 3 },
+    { id: '7d1c2a40-0000-4000-8000-000000000002', type: 'person', title: 'Gunnar Holm', excerpt: 'Head of digital at Northwind, and our main contact for the relaunch.', updatedAt: daysAgo(0, 9), onlyYou: false, gathers: 0 },
+    { id: '7d1c2a40-0000-4000-8000-000000000003', type: null, title: 'Pricing thoughts before the renewal', excerpt: 'They will push for a lower day rate. Start at 1,450 and settle at 1,350 at the lowest.', updatedAt: daysAgo(1), onlyYou: true, gathers: 0 },
+    { id: '7d1c2a40-0000-4000-8000-000000000004', type: 'decision', title: 'Launch moved to November 14', excerpt: 'Decided at the steering group: the launch moves two weeks, to November 14, so the booking flow can be tested properly.', updatedAt: daysAgo(3), onlyYou: false, gathers: 0 },
+    { id: '7d1c2a40-0000-4000-8000-000000000005', type: 'meeting', title: 'Steering group, October 9', excerpt: '- Design is signed off\n- Content is late\n- Next meeting October 23', updatedAt: daysAgo(11), onlyYou: false, gathers: 0 },
+    { id: '7d1c2a40-0000-4000-8000-000000000006', type: 'person', title: 'Marte Lunde', excerpt: 'Marte works on the payment provider at Northwind.', updatedAt: daysAgo(40), onlyYou: false, gathers: 0 },
   ],
 };
 
@@ -260,6 +260,9 @@ export const samplePage: PageData = {
   type: 'project',
   shared: true,
   updatedAt: daysAgo(0, 5),
+  gathers: 3,
+  collections: [{ id: '7d1c2a40-0000-4000-8000-000000000010', title: '2026 renewal', shared: true }, { id: '7d1c2a40-0000-4000-8000-000000000011', title: 'Things to raise with Gunnar', shared: false }],
+  mentionedOn: [{ id: '7d1c2a40-0000-4000-8000-000000000005', title: 'Steering group, October 9' }],
   space: { id: 'northwind', name: 'Northwind', personal: false, private: false, people: 4 },
   items: [
     {
@@ -318,5 +321,17 @@ export const sampleSource: SourceData = {
   pages: [
     { id: samplePage.id, title: 'Website relaunch', items: [{ id: 'item-1', text: samplePage.items[0].text, shared: true }] },
     { id: '7d1c2a40-0000-4000-8000-000000000003', title: 'Pricing thoughts before the renewal', items: [{ id: 'item-9', text: 'The booking flow is the part they care most about, so it carries the price.', shared: false }] },
+  ],
+};
+
+/** The pages the sample collection gathers. */
+export const sampleGathered: PagesData = {
+  total: 3,
+  all: 1180,
+  types: [],
+  pages: [
+    { id: '7d1c2a40-0000-4000-8000-000000000004', type: 'decision', title: 'Launch moved to November 14', excerpt: 'Decided at the steering group: the launch moves two weeks, to November 14.', updatedAt: daysAgo(3), onlyYou: false, gathers: 0, gatheredShared: true },
+    { id: '7d1c2a40-0000-4000-8000-000000000003', type: null, title: 'Pricing thoughts before the renewal', excerpt: 'They will push for a lower day rate.', updatedAt: daysAgo(1), onlyYou: true, gathers: 0, gatheredShared: false },
+    { id: '7d1c2a40-0000-4000-8000-000000000005', type: 'meeting', title: 'Steering group, October 9', excerpt: '- Design is signed off\n- Content is late', updatedAt: daysAgo(11), onlyYou: false, gathers: 0, gatheredShared: true },
   ],
 };

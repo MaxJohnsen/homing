@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { cn } from 'cn';
 import empty from '@/assets/illustrations/empty.png';
@@ -27,15 +27,18 @@ export const pageSize = 50;
  * Everything a space knows, as pages, findable however many there are: a search within the space,
  * a filter for each type that exists, an order, and fifty at a time. New pages start here.
  */
-export function Pages({ space, data, filters, onFilters, create, now }: {
+export function Pages({ space, data, filters, onFilters, create, collections = false, now }: {
   space: SpaceData;
   /** Undefined while the first answer is on its way. */
   data?: PagesData;
   filters: PageFilters;
   onFilters: (next: PageFilters) => void;
   create?: NewPage;
+  /** Only the pages that gather others. */
+  collections?: boolean;
   now?: Date;
 }) {
+  const noun: [string, string] = collections ? ['collection', 'collections'] : ['page', 'pages'];
   const [query, setQuery] = useState(filters.q);
   const [creating, setCreating] = useState(false);
 
@@ -48,6 +51,13 @@ export function Pages({ space, data, filters, onFilters, create, now }: {
 
   if (!data) return null;
   const form = creating && create && <NewPageForm space={space} types={data.types.map((entry) => entry.type)} create={create} onCancel={() => setCreating(false)} />;
+  if (data.all === 0 && collections) {
+    return (
+      <p className="max-w-[65ch] text-base text-muted-foreground">
+        No collections in {space.personal ? 'your personal space' : space.name} yet. Any page can gather other pages, such as “2027 planning”: open it and choose Gather pages here. A page can be in several collections, and it stays where it is.
+      </p>
+    );
+  }
   if (data.all === 0) {
     return form || <EmptyKnowledge space={space} onWrite={create && (() => setCreating(true))} />;
   }
@@ -65,13 +75,13 @@ export function Pages({ space, data, filters, onFilters, create, now }: {
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
           <Input
             type="search"
-            aria-label={`Search pages in ${space.name}`}
-            placeholder={`Search ${count(data.all, 'page', 'pages')} in ${space.name}`}
+            aria-label={`Search ${noun[1]} in ${space.name}`}
+            placeholder={`Search ${count(data.all, ...noun)} in ${space.name}`}
             className="h-11 rounded-full border-0 bg-muted px-5 text-base sm:max-w-md"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
           />
-          {create && !creating && <Button variant="outline" size="lg" className="sm:ml-auto" onClick={() => setCreating(true)}>New page</Button>}
+          {create && !creating && !collections && <Button variant="outline" size="lg" className="sm:ml-auto" onClick={() => setCreating(true)}>New page</Button>}
         </div>
         {(typeChoices || data.all > 1) && (
           <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
@@ -104,36 +114,45 @@ export function Pages({ space, data, filters, onFilters, create, now }: {
 
       {data.pages.length > 0 ? (
         <div className="flex flex-col gap-4">
-          <Pager total={data.total} from={filters.from} onChange={(from) => onFilters({ ...filters, from })} />
-          <ul className="-mx-3 flex flex-col gap-1">
-            {data.pages.map((page) => <PageRow key={page.id} page={page} space={space} now={now} />)}
-          </ul>
-          {data.total > pageSize && <Pager total={data.total} from={filters.from} onChange={(from) => { onFilters({ ...filters, from }); scrollTo({ top: 0 }); }} />}
+          <Pager total={data.total} from={filters.from} onChange={(from) => onFilters({ ...filters, from })} noun={noun} />
+          <PageRows pages={data.pages} space={space} now={now} />
+          {data.total > pageSize && <Pager total={data.total} from={filters.from} onChange={(from) => { onFilters({ ...filters, from }); scrollTo({ top: 0 }); }} noun={noun} />}
         </div>
       ) : (
         <p className="text-base text-muted-foreground">
-          {searching ? `No pages in ${space.name} match “${filters.q.trim()}”.` : `No pages in ${space.name} are of that type.`}
+          {searching ? `No ${noun[1]} in ${space.name} match “${filters.q.trim()}”.` : `No ${noun[1]} in ${space.name} are of that type.`}
         </p>
       )}
     </div>
   );
 }
 
-function PageRow({ page, space, now }: { page: PageSummary; space: SpaceData; now?: Date }) {
-  const updated = `updated ${ago(page.updatedAt, now)}`;
+/** Pages in a list, each with a glimpse of what it says, what it is and when it changed. */
+export function PageRows({ pages, space, now, aside }: { pages: PageSummary[]; space: Pick<SpaceData, 'private'>; now?: Date; aside?: (page: PageSummary) => ReactNode }) {
   return (
-    <li>
-      <Link href={`/pages/${page.id}`} className={cn('group flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-muted', focusRing)}>
+    <ul className="-mx-3 flex flex-col gap-1">
+      {pages.map((page) => <PageRow key={page.id} page={page} space={space} now={now} aside={aside?.(page)} />)}
+    </ul>
+  );
+}
+
+function PageRow({ page, space, now, aside }: { page: PageSummary; space: Pick<SpaceData, 'private'>; now?: Date; aside?: ReactNode }) {
+  const updated = `updated ${ago(page.updatedAt, now)}`;
+  const kind = page.gathers > 0 ? `Collection of ${count(page.gathers, 'page', 'pages')}` : page.type && capitalize(page.type);
+  return (
+    <li className="group flex items-center gap-1 rounded-xl transition-colors hover:bg-muted">
+      <Link href={`/pages/${page.id}`} className={cn('flex min-w-0 flex-1 items-center gap-3 rounded-xl px-3 py-3', focusRing)}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex min-w-0 flex-wrap items-center gap-2 text-base leading-snug font-semibold">
             <span className="min-w-0 break-words">{page.title}</span>
-            {page.onlyYou && !space.private && <OnlyYou />}
+            {(page.onlyYou || page.gatheredShared === false) && !space.private && <OnlyYou />}
           </span>
           {page.excerpt && <span className="line-clamp-2 text-sm text-muted-foreground">{plain(page.excerpt)}</span>}
-          <span className="text-sm text-muted-foreground">{page.type ? `${capitalize(page.type)}, ${updated}` : capitalize(updated)}</span>
+          <span className="text-sm text-muted-foreground">{kind ? `${kind}, ${updated}` : capitalize(updated)}</span>
         </div>
-        <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+        {!aside && <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />}
       </Link>
+      {aside && <div className="shrink-0 pr-2">{aside}</div>}
     </li>
   );
 }

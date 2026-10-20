@@ -12,8 +12,8 @@ export type Route =
   | { name: 'skill'; id: string }
   | { name: 'proposal'; id: string };
 
-/** The parts of a space: its pages and sources under Knowledge, its rules and skills under Guidance, and its members. */
-export type SpaceView = 'pages' | 'sources' | 'rules' | 'skills' | 'members';
+/** The parts of a space: its pages, collections and sources under Knowledge, its rules and skills under Guidance, and its members. */
+export type SpaceView = 'pages' | 'collections' | 'sources' | 'rules' | 'skills' | 'members';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const patterns: [RegExp, (id: string, view?: string) => Route][] = [
@@ -21,7 +21,7 @@ const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
   [/^\/admin$/, () => ({ name: 'admin' })],
-  [new RegExp(`^/spaces/${uuid}(?:/(pages|sources|rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
+  [new RegExp(`^/spaces/${uuid}(?:/(pages|collections|sources|rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
   [new RegExp(`^/pages/${uuid}$`, 'i'), (id) => ({ name: 'page', id: id.toLowerCase() })],
   [new RegExp(`^/sources/${uuid}$`, 'i'), (id) => ({ name: 'source', id: id.toLowerCase() })],
   [new RegExp(`^/skills/${uuid}$`, 'i'), (id) => ({ name: 'skill', id: id.toLowerCase() })],

@@ -18,6 +18,7 @@ import { addRule, editRule, removeRule, rulesFor } from '../src/guidance.ts';
 import {
   addSource,
   createPage,
+  gather,
   listPages,
   pagesIn,
   readItem,
@@ -420,7 +421,11 @@ describe('through the app’s endpoints', () => {
       const privateItem = (await writeItem(s, { pageId: shared, body: `${name} worries the launch slips`, sources: [privateSource, sharedSource] })).id;
       const own = await createPage(s, { spaceId: space, title: `${name}’s salary talks` });
       await writeItem(s, { pageId: own, body: `${name} asks for a raise in December` });
-      return { shared, own, sharedItem, privateItem, sharedSource, privateSource };
+      // A collection gathering the shared page for everyone, and the salary talks only for its owner.
+      const collection = await createPage(s, { spaceId: space, title: `${name}’s 2027`, shared: true });
+      await gather(s, { collectionId: collection, pageId: shared, shared: true });
+      await gather(s, { collectionId: collection, pageId: own });
+      return { shared, own, sharedItem, privateItem, sharedSource, privateSource, collection };
     });
     return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages };
   };
@@ -462,6 +467,15 @@ describe('through the app’s endpoints', () => {
       }
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
+      // Nor what the other client's collection gathers, even asked about from their own space.
+      assert.equal((await get(`/api/spaces/${target.space}/pages?in=${target.pages.collection}`)).status, 404);
+      assert.deepEqual((await get(`/api/spaces/${intruder.space}/pages?in=${target.pages.collection}`)).body.pages, []);
+      const gatherings = await as(intruder.who, (s) => s.tx`select collection_id from gathered`);
+      assert.ok(gatherings.every((row) => row.collectionId === intruder.pages.collection));
+      await assert.rejects(
+        as(intruder.who, (s) => s.tx`insert into gathered (collection_id, page_id, space_id) values (${target.pages.collection}, ${target.pages.own}, ${target.space})`),
+        refused,
+      );
       assert.equal((await get(`/api/skills/${target.skill}`)).status, 404);
       // Neither looks after Homing, so neither sees who else uses it.
       assert.equal((await get('/api/admin')).status, 403);
@@ -478,9 +492,12 @@ describe('through the app’s endpoints', () => {
         [`/api/items/${target.pages.sharedItem}`, { text: 'Changed', shared: true }],
         [`/api/items/${target.pages.sharedItem}`, { text: 'Changed', shared: false }],
         [`/api/items/${target.pages.privateItem}`, { text: 'Changed' }],
+        [`/api/pages/${target.pages.collection}/gather`, { pageId: target.pages.own }],
+        [`/api/pages/${target.pages.collection}/gather/remove`, { pageId: target.pages.shared, shared: true }],
+        [`/api/pages/${intruder.pages.collection}/gather`, { pageId: target.pages.shared }],
       ] as const) {
         const changed = await browser.json(path, body);
-        assert.equal(changed.status, 404, path);
+        assert.ok([403, 404].includes(changed.status), path);
         seen.push(changed.body);
       }
 
@@ -498,6 +515,13 @@ describe('through the app’s endpoints', () => {
     const spaces = [ana.space, ana.personalSpaceId, ben.space, ben.personalSpaceId];
     const written = await admin`select count(*)::int as count from content where body in ('Hello', 'Changed') and space_id in ${admin(spaces)}`;
     assert.equal(written[0].count, 0);
+    const gathered = await admin`select collection_id, page_id, private_to is null as shared from gathered where space_id in ${admin(spaces)} order by created_at`;
+    assert.deepEqual(gathered.map((row) => [row.collectionId, row.pageId, row.shared]), [
+      [ana.pages.collection, ana.pages.shared, true],
+      [ana.pages.collection, ana.pages.own, false],
+      [ben.pages.collection, ben.pages.shared, true],
+      [ben.pages.collection, ben.pages.own, false],
+    ]);
   });
 
   test('a colleague in the same space finds nothing private to someone else', async () => {
@@ -514,7 +538,8 @@ describe('through the app’s endpoints', () => {
     for (const query of ['', '?q=salary', '?q=raise', '?q=worries', '?q=launch', '?sort=name', '?sort=match&q=Ana']) {
       const found = await get(`/api/spaces/${ana.space}/pages${query}`);
       assert.ok(!found.pages.some((page: { id: string }) => page.id === ana.pages.own), query);
-      assert.ok(found.all <= 1 && found.total <= 1, query);
+      // Two shared pages: the launch, and the collection gathering it.
+      assert.ok(found.all <= 2 && found.total <= 2, query);
     }
     await get(`/api/pages/${ana.pages.own}`);
     // Ana's diary isn't among the sources, in the list, the count or a search, nor on its own.
@@ -529,6 +554,13 @@ describe('through the app’s endpoints', () => {
     assert.deepEqual(plan.pages.map((page: { items: { text: string }[] }) => page.items.map((item) => item.text)), [['Ana launches in March']]);
     const listed = await get(`/api/spaces/${ana.space}/sources`);
     assert.equal(listed.sources[0].pages, 1);
+    // Ana's collection gathers only the shared page for Cara, in its list, its count and on the page.
+    const gathered = await get(`/api/spaces/${ana.space}/pages?in=${ana.pages.collection}`);
+    assert.deepEqual(gathered.pages.map((page: { id: string }) => page.id), [ana.pages.shared]);
+    assert.equal(gathered.total, 1);
+    const collections = await get(`/api/spaces/${ana.space}/pages?collections=1`);
+    assert.deepEqual(collections.pages.map((page: { gathers: number }) => page.gathers), [1]);
+    assert.equal((await get(`/api/pages/${ana.pages.collection}`)).gathers, 1);
     const shared = await get(`/api/pages/${ana.pages.shared}`);
     assert.deepEqual(shared.items.map((item: { text: string }) => item.text), ['Ana launches in March']);
     // Even when the page last changed comes only from what Cara can see.

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Shell } from '@/components/app-shell';
 import { ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
@@ -99,6 +99,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const rules = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '').data?.rules;
   const skills = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '').data?.skills;
   const pages = useList<PagesData>(view === 'pages' ? `/api/spaces/${id}/pages` : undefined);
+  const collections = useList<PagesData>(view === 'collections' ? `/api/spaces/${id}/pages` : undefined, { collections: '1' });
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
   return (
     <Titled title={space?.name ?? 'Space'}>
@@ -106,6 +107,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
       {space && (
         <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
           {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} create={newPage(id)} />}
+          {view === 'collections' && <Pages space={space} data={collections.data} filters={collections.filters} onFilters={collections.change} collections />}
           {view === 'sources' && <Sources space={space} data={sources.data} filters={sources.filters} onFilters={sources.change} />}
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
@@ -120,7 +122,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
  * A long list, such as a space's pages, as the search, type, order and place in the address ask,
  * so the back button returns to the same list. While a new answer is on its way, the last one stays.
  */
-function useList<T>(path: string | undefined) {
+function useList<T>(path: string | undefined, fixed: Record<string, string> = {}) {
   const search = new URLSearchParams(location.search);
   const filters: PageFilters = {
     q: search.get('q') ?? '',
@@ -133,7 +135,7 @@ function useList<T>(path: string | undefined) {
   if (filters.type) query.set('type', filters.type);
   if (filters.sort) query.set('sort', filters.sort);
   if (filters.from) query.set('from', String(filters.from));
-  const api = new URLSearchParams(query);
+  const api = new URLSearchParams({ ...fixed, ...Object.fromEntries(query) });
   api.delete('from');
   if (filters.from) api.set('offset', String(filters.from));
   const { data } = useLoad<T>(path ? `${path}${api.size ? `?${api}` : ''}` : '');
@@ -163,10 +165,14 @@ function SourcePage({ id }: { id: string }) {
 
 function PagePage({ id }: { id: string }) {
   const { data, error } = useLoad<PageData>(`/api/pages/${id}`);
+  // A collection's pages, by name, fifty at a time.
+  const [from, setFrom] = useState(0);
+  const gatheredPath = data && data.gathers > 0 ? `/api/spaces/${data.space.id}/pages?in=${id}&sort=name${from ? `&offset=${from}` : ''}` : '';
+  const gathered = useLoad<PagesData>(gatheredPath).data;
   return (
     <Titled title={data?.title ?? 'Page'}>
       {error?.status === 404 && <ScreenHeader title="There’s no page here" meta="It may have been removed, or you can’t open it." />}
-      {data && <Page page={data} actions={pageActions(data)} />}
+      {data && <Page page={data} actions={pageActions(data, gatheredPath)} gathered={gathered} gatheredFrom={from} onGatheredFrom={setFrom} />}
     </Titled>
   );
 }
@@ -182,20 +188,33 @@ function newPage(spaceId: string): NewPage {
   };
 }
 
-/** Writing on a page directly, then showing it as it is now, and the space's list with it. */
-function pageActions(page: PageData): PageActions {
+/** Writing on a page directly, then showing it as it is now, with the pages it gathers. */
+function pageActions(page: PageData, gatheredPath: string): PageActions {
   const run = async (action: () => Promise<unknown>) => {
+    const fresh = () => Promise.all([reload(`/api/pages/${page.id}`), gatheredPath && reload(gatheredPath)]);
     try {
       await action();
-      await reload(`/api/pages/${page.id}`);
+      await fresh();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) await reload(`/api/pages/${page.id}`);
+      if (error instanceof ApiError && error.status === 404) await fresh();
       return error instanceof Error ? error.message : 'Something went wrong. Try again.';
     }
   };
   return {
     add: (text, shared) => run(() => api(`/api/pages/${page.id}/items`, { text, shared })),
     correct: (itemId, text, shared) => run(() => api(`/api/items/${itemId}`, { text, shared })),
+    gather: (pageId, shared) => run(() => api(`/api/pages/${page.id}/gather`, { pageId, shared })),
+    ungather: (pageId, shared) => run(() => api(`/api/pages/${page.id}/gather/remove`, { pageId, shared })),
+    join: (collectionId, shared) => run(() => api(`/api/pages/${collectionId}/gather`, { pageId: page.id, shared })),
+    leave: (collectionId, shared) => run(() => api(`/api/pages/${collectionId}/gather/remove`, { pageId: page.id, shared })),
+    find: async (query, collections) => {
+      const search = new URLSearchParams({ sort: query ? 'match' : 'name', ...(query && { q: query }), ...(collections && { collections: '1' }) });
+      try {
+        return (await api<PagesData>(`/api/spaces/${page.space.id}/pages?${search}`)).pages;
+      } catch {
+        return [];
+      }
+    },
   };
 }
 

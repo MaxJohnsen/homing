@@ -262,6 +262,10 @@ export interface PageSummary {
   updatedAt: Date;
   /** Nobody else sees any of it. */
   onlyYou: boolean;
+  /** How many pages it gathers that the viewer can see, which makes it a collection. */
+  gathers: number;
+  /** Listing a collection's pages: whether it's in the collection for everyone, or only for the viewer. */
+  gatheredShared?: boolean;
 }
 
 export type PageOrder = 'recent' | 'name' | 'match';
@@ -275,7 +279,17 @@ export type PageOrder = 'recent' | 'name' | 'match';
 export async function pagesIn(
   s: Session,
   spaceId: string,
-  options: { query?: string; type?: string; order?: PageOrder; offset?: number; limit?: number } = {},
+  options: {
+    query?: string;
+    type?: string;
+    order?: PageOrder;
+    offset?: number;
+    limit?: number;
+    /** Only collections. */
+    collections?: boolean;
+    /** Only the pages this collection gathers. */
+    in?: string;
+  } = {},
 ): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[] }> {
   const terms = termsOf(options.query ?? '');
   const limit = options.limit ?? 50;
@@ -300,12 +314,18 @@ export async function pagesIn(
     group by c.page_id
   `;
   const typed = options.type === undefined ? s.tx`true` : s.tx`p.type = ${options.type}`;
+  // Only collections, which gather a page the viewer can see, or only what one collection gathers.
+  const kept = options.in
+    ? s.tx`exists (select from gathered g where g.collection_id = ${options.in}::uuid and g.page_id = h.id and ${visible(s, 'g')})`
+    : options.collections
+      ? s.tx`exists (select from gathered g where g.collection_id = h.id and ${seenGathering(s, 'g')})`
+      : s.tx`true`;
   const sorted = { recent: s.tx`h.updated_at desc`, name: s.tx`lower(h.title), h.updated_at desc`, match: s.tx`h.rank desc, h.updated_at desc` }[order];
-  const list = (offset: number) => s.tx<(PageSummary & { total: number })[]>`
+  const list = (offset: number) => s.tx<(Omit<PageSummary, 'gathers'> & { total: number })[]>`
     select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, count(*) over ()::int as total
     from (${here}) h
     join pages p on p.id = h.id
-    where h.hit and ${typed}
+    where h.hit and ${typed} and ${kept}
     order by ${sorted}, h.id
     limit ${limit} offset ${offset}
   `;
@@ -316,15 +336,110 @@ export async function pagesIn(
     select p.type, count(*)::int as count
     from (${here}) h
     join pages p on p.id = h.id
+    where ${kept}
     group by p.type
     order by count(*) desc, p.type
   `;
+  const gathers = await gatheredCounts(s, rows.map((row) => row.id));
+  const sides = options.in && rows.length > 0
+    ? new Map((await s.tx<{ pageId: string; shared: boolean }[]>`
+        select g.page_id, bool_or(g.private_to is null) as shared from gathered g
+        where g.collection_id = ${options.in}::uuid and g.page_id in ${s.tx(rows.map((row) => row.id))} and ${visible(s, 'g')}
+        group by g.page_id
+      `).map((row) => [row.pageId, row.shared]))
+    : undefined;
   return {
-    pages: rows.map(({ total: _, ...page }) => page),
+    pages: rows.map(({ total: _, ...page }) => ({ ...page, gathers: gathers.get(page.id) ?? 0, ...(sides && { gatheredShared: sides.get(page.id) ?? false }) })),
     total: rows[0]?.total ?? 0,
     all: types.reduce((sum, { count }) => sum + count, 0),
     types: types.filter((entry): entry is { type: string; count: number } => entry.type !== null),
   };
+}
+
+/** A gathering the viewer can see, of a page whose title they can see. */
+function seenGathering(s: Session, table: string) {
+  const g = s.tx(table);
+  return s.tx`${visible(s, table)} and exists (
+    select from content t where t.page_id = ${g}.page_id and t.kind = 'title' and ${visible(s, 't')}
+  )`;
+}
+
+/** How many pages each of these gathers, as far as the viewer can see. */
+async function gatheredCounts(s: Session, pageIds: string[]): Promise<Map<string, number>> {
+  if (pageIds.length === 0) return new Map();
+  const rows = await s.tx<{ collectionId: string; count: number }[]>`
+    select g.collection_id, count(distinct g.page_id)::int as count
+    from gathered g
+    where g.collection_id in ${s.tx(pageIds)} and ${seenGathering(s, 'g')}
+    group by g.collection_id
+  `;
+  return new Map(rows.map((row) => [row.collectionId, row.count]));
+}
+
+/**
+ * Puts a page in a collection, on the shared side or the writer's own. Both are knowledge pages
+ * in the same space that the writer can see, and a shared gathering joins two shared pages. The
+ * store checks the same. Gathering a page that's already there does nothing.
+ */
+export async function gather(s: Session, input: { collectionId: string; pageId: string; shared?: boolean }): Promise<boolean> {
+  const privateTo = sideOf(s, input.shared);
+  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; shared: boolean }[]>`
+    select p.id, p.space_id, p.type, bool_or(t.private_to is null) as shared
+    from pages p
+    join content t on t.page_id = p.id and t.kind = 'title' and ${visible(s, 't')}
+    where p.id in (${input.collectionId}::uuid, ${input.pageId}::uuid)
+    group by p.id
+  `;
+  if (pages.length < 2 || input.collectionId === input.pageId || pages.some((page) => ['guidance', 'skill'].includes(page.type ?? ''))) {
+    throw new AccessDenied('There is no page with that reference that you can see.');
+  }
+  if (pages[0].spaceId !== pages[1].spaceId) throw new AccessDenied('A collection gathers pages from its own space.');
+  await checkSpace(s, pages[0].spaceId, input.shared);
+  if (input.shared && !pages.every((page) => page.shared)) {
+    throw new AccessDenied('Only you see one of those pages, so only you can put it in a collection.');
+  }
+  const added = await s.tx`
+    insert into gathered (collection_id, page_id, space_id, private_to)
+    values (${input.collectionId}::uuid, ${input.pageId}::uuid, ${pages[0].spaceId}::uuid, ${privateTo}::uuid)
+    on conflict do nothing
+    returning collection_id
+  `;
+  return added.length > 0;
+}
+
+/** Takes a page out of a collection, on the side given. The page itself stays. Says whether it was there. */
+export async function ungather(s: Session, input: { collectionId: string; pageId: string; shared?: boolean }): Promise<boolean> {
+  const privateTo = input.shared ? null : (personOf(s.principal) ?? null);
+  const removed = await s.tx`
+    delete from gathered g
+    where g.collection_id = ${input.collectionId}::uuid and g.page_id = ${input.pageId}::uuid
+      and g.private_to is not distinct from ${privateTo}::uuid and ${visible(s, 'g')}
+    returning g.page_id
+  `;
+  return removed.length > 0;
+}
+
+/** A page as it sits among others: the collections it's in, and the pages that mention it. */
+export async function linksOf(s: Session, pageId: string) {
+  const collections = await s.tx<{ id: string; title: string; shared: boolean }[]>`
+    select g.collection_id as id, ${titleOf(s, s.tx`g.collection_id`)} as title, bool_or(g.private_to is null) as shared
+    from gathered g
+    where g.page_id = ${pageId}::uuid and ${visible(s, 'g')}
+      and exists (select from content t where t.page_id = g.collection_id and t.kind = 'title' and ${visible(s, 't')})
+    group by g.collection_id
+    order by 2
+  `;
+  // Mentions are links in what the page's space says about it, as each viewer sees it.
+  const mentionedOn = await s.tx<{ id: string; title: string }[]>`
+    select distinct c.page_id as id, ${titleOf(s, s.tx`c.page_id`)} as title
+    from content c
+    join pages p on p.id = c.page_id
+    where c.space_id = (select space_id from pages where id = ${pageId}::uuid) and c.page_id <> ${pageId}::uuid
+      and c.kind = 'text' and c.body like ${`%page:${pageId}%`}
+      and ${knowledge(s, 'p')} and ${visible(s, 'c')} and ${current(s, 'c')}
+    order by 2
+  `;
+  return { collections, mentionedOn };
 }
 
 /** A source in a list, as the viewer sees it. */

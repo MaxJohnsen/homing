@@ -5,7 +5,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
+import { sampleGathered, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -55,7 +55,10 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/sources/empty': { label: 'A space with no sources yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="sources"><Sources space={sampleSpace.root} data={{ sources: [], total: 0, all: 0 }} filters={{ q: '', type: '', from: 0 }} onFilters={() => {}} /></Space></InApp> },
   '/source': { label: 'A source, and the pages using it', render: () => <InApp spaceId="northwind"><Source source={sampleSource} /></InApp> },
   '/source/unused': { label: 'A source not on a page yet', render: () => <InApp spaceId="northwind"><Source source={{ ...sampleSource, reference: 'https://northwind.example/notes/steering-october-9', shared: false, by: { name: 'Ana Berg', you: true }, agent: null, pages: [] }} /></InApp> },
-  '/page': { label: 'A page, with an update only you see', render: () => <InApp spaceId="northwind"><Page page={samplePage} actions={samplePageActions} /></InApp> },
+  '/page': { label: 'A collection, with an update only you see', render: () => <InApp spaceId="northwind"><Page page={samplePage} actions={samplePageActions} gathered={sampleGathered} /></InApp> },
+  '/page/plain': { label: 'A page in no collection', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, gathers: 0, collections: [], mentionedOn: [] }} actions={samplePageActions} /></InApp> },
+  '/spaces/collections': { label: 'A space’s collections', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="collections"><Pages space={sampleSpace.closed} data={{ ...samplePages, total: 1, all: 1, types: [], pages: samplePages.pages.filter((page) => page.gathers > 0) }} filters={{ q: '', type: '', from: 0 }} onFilters={() => {}} collections /></Space></InApp> },
+  '/spaces/collections/empty': { label: 'A space with no collections yet', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="collections"><Pages space={sampleSpace.closed} data={{ pages: [], total: 0, all: 0, types: [] }} filters={{ q: '', type: '', from: 0 }} onFilters={() => {}} collections /></Space></InApp> },
   '/page/long': { label: 'A long page, searchable within', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Meeting notes, all of 2026', type: 'meeting', items: Array.from({ length: 16 }, (_, index) => ({ ...samplePage.items[index % 5], id: `item-${index}` })) }} /></InApp> },
   '/page/personal': { label: 'A page in your personal space', render: () => <InApp spaceId="kitchen"><Page page={{ ...samplePage, title: 'Kitchen quotes', type: null, shared: false, space: { id: 'kitchen', name: 'Kitchen renovation', personal: false, private: true, people: 1 }, items: samplePage.items.filter((item) => !item.shared).map((item) => ({ ...item, replaced: null })) }} /></InApp> },
   '/page/empty': { label: 'A page with nothing on it yet', render: () => <InApp spaceId="northwind"><Page page={{ ...samplePage, title: 'Marte Lunde', type: 'person', items: [] }} actions={samplePageActions} /></InApp> },
@@ -176,9 +179,15 @@ function SamplePages({ space = sampleSpace.closed, data = samplePages, filters: 
 }
 
 // Writing on the sample screens only says it isn't saved.
+const notSaved = async () => 'Sample screens don’t save anything.';
 const samplePageActions = {
-  add: async () => 'Sample screens don’t save anything.',
-  correct: async () => 'Sample screens don’t save anything.',
+  add: notSaved,
+  correct: notSaved,
+  gather: notSaved,
+  ungather: notSaved,
+  join: notSaved,
+  leave: notSaved,
+  find: async (query: string, collections?: boolean) => (collections ? samplePages.pages.filter((page) => page.gathers > 0) : samplePages.pages).filter((page) => page.title.toLowerCase().includes(query.toLowerCase())),
 };
 
 function SampleSources() {
