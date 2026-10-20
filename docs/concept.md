@@ -57,6 +57,7 @@ You have a private side in every space you can access, including spaces you can 
 4. **Conflicts.** The more specific preference wins. Requirements always apply. If two requirements can't both be met, the affected action stops, and you are told which rules conflict so they can be fixed.
 5. **Spaces point to places, people hold keys.** A space says where its things live, for example "our tasks are in Acme's Asana". Each person reaches those places through their own **connections**, and agents act as that person. A space can have its own connections for shared automation.
 6. **Homing adapts to how you already work.** Files, repositories and apps stay where they are and remain authoritative. Homing is the context layer around them.
+7. **Homing looks after itself, without becoming a chore.** It notices when a new space, collection or rule would help, and suggests it, rarely and only for a good reason. Often the best improvement is none. Almost everything you can do in the app, you can also do through your assistant, with the same permissions and your approval where it matters. Upkeep happens quietly, and decisions stay yours.
 
 ## How you use it
 
