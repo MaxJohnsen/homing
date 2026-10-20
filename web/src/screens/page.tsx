@@ -179,7 +179,7 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
           </p>
           <div className="flex flex-wrap gap-2">
             {shareable && <Button variant="outline" size="sm" onClick={share}>Share this update</Button>}
-            <Button variant="outline" size="sm" aria-expanded={othersSee} aria-controls={`others-${item.id}`} onClick={() => setOthersSee(!othersSee)}>
+            <Button variant="outline" size="sm" aria-expanded={othersSee} aria-controls={othersSee ? `others-${item.id}` : undefined} onClick={() => setOthersSee(!othersSee)}>
               {othersSee ? 'Hide what others see' : 'Show what others see'}
             </Button>
           </div>

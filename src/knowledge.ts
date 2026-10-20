@@ -459,9 +459,9 @@ export async function pagesIn(
   const here = s.tx`
     select c.page_id as id,
            coalesce((array_agg(c.body order by c.private_to is null) filter (where c.kind = 'title'))[1], 'Untitled') as title,
-           -- A replacement stands where what it replaced stood.
+           -- A replacement stands where what it replaced stood, and your original of something you shared shows as the copy.
            (array_agg(c.body order by coalesce((select r.created_at from content r where r.id = c.supersedes), c.created_at))
-             filter (where c.kind = 'text'))[1] as excerpt,
+             filter (where c.kind = 'text' and not ${sharedAsCopy(s, 'c')}))[1] as excerpt,
            max(c.updated_at) as updated_at,
            bool_and(c.private_to is not null) as only_you,
            ${terms ? s.tx`bool_or(c.search @@ to_tsquery('simple', ${terms}))` : s.tx`true`} as hit,

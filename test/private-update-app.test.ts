@@ -84,6 +84,9 @@ test('Ana’s update of what she shared stands in its place for her, and the oth
   assert.deepEqual((await pageAs(ana, page)).items.map((item) => [item.id, item.text, item.shared, item.replaced?.text, item.replaced?.shared, item.sources.map((source) => source.reference)]), [
     [update, 'The launch is on 21 November.', false, 'The launch is on 14 November.', true, ['Email from Gunnar, 2 October', 'Email from Gunnar, 16 October']],
   ]);
+  // The space's list of pages gives her update as the page's glimpse too.
+  const listed = (await ana.browser.json(`/api/spaces/${acme}/pages`)).body.pages as { id: string; excerpt: string }[];
+  assert.equal(listed.find((entry) => entry.id === page)?.excerpt, 'The launch is on 21 November.');
   // Her assistant agrees: the update is what's current for her, and the others still see the earlier one.
   const context = (await anas.call('context', { request: 'When is the launch?', space })).text;
   assert.match(context, /The launch is on 21 November\..*A private update: others still see the earlier version\./);
