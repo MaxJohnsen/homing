@@ -146,12 +146,15 @@ for (const [layer, sql] of [
       await assertUntouched();
     });
 
-    test('nobody gives themselves access to another client', async () => {
+    test('nobody gives themselves access to another client, or renames its spaces', async () => {
       for (const { intruder, target } of attempts()) {
         const me = intruder.person;
         await assert.rejects(as(me, (s) => addMember(s, target.space, me.id), sql), refused);
         await assert.rejects(as(me, (s) => createSpace(s, { name: 'Way in', parentId: target.space }), sql), refused);
+        await assert.rejects(as(me, (s) => s.tx`select rename_space(${target.space}::uuid, 'Way in')`, sql), refused);
+        await assert.rejects(as(me, (s) => s.tx`select rename_space(${target.person.personalSpaceId}::uuid, 'Way in')`, sql), refused);
       }
+      assert.equal((await admin`select name from spaces where name = 'Way in'`).length, 0);
     });
 
     test('nobody sees or follows another client’s guidance', async () => {
@@ -514,11 +517,17 @@ describe('through the app’s endpoints', () => {
         [`/api/pages/${target.pages.collection}/gather`, { pageId: target.pages.own }],
         [`/api/pages/${target.pages.collection}/gather/remove`, { pageId: target.pages.shared, shared: true }],
         [`/api/pages/${intruder.pages.collection}/gather`, { pageId: target.pages.shared }],
+        [`/api/spaces`, { name: 'Hello', who: 'with others', in: target.space }],
+        [`/api/spaces`, { name: 'Hello', who: 'just me', in: target.personalSpaceId }],
+        [`/api/spaces/${target.space}`, { name: 'Hello' }],
+        [`/api/spaces/${target.personalSpaceId}`, { name: 'Hello' }],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.ok([403, 404].includes(changed.status), path);
         seen.push(changed.body);
       }
+      // The other client's spaces keep their names, and nothing was created in them.
+      assert.equal((await admin`select name from spaces where name = 'Hello' or parent_id = ${target.space}`).length, 0);
 
       // Nothing they got back names the other client, what it asked for, or its guidance.
       assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report`));

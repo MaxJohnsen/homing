@@ -232,10 +232,10 @@ test('short words match only whole words', async () => {
 });
 
 test('searching a space includes the spaces below it, and nothing beside it', async () => {
-  const { claude, space } = await acme();
+  const { ana, claude, space } = await acme();
+  // People create spaces others see; the assistant writes in them.
+  const [website, beta] = await as(ana, async (s) => [await createSpace(s, { name: 'Website', parentId: space }), await createSpace(s, { name: 'Beta' })]);
   await as(claude, async (s) => {
-    const website = await createSpace(s, { name: 'Website', parentId: space });
-    const beta = await createSpace(s, { name: 'Beta' });
     for (const [spaceId, body] of [
       [website, 'The website launches with the new logo'],
       [beta, 'Beta launches in the autumn'],

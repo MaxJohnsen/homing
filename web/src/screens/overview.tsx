@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Plus } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
 import { Markdown } from '@/components/markdown';
@@ -99,9 +99,9 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
             </ul>
           </Part>
         )}
-        {data.spaces.length > 0 && (
+        {(data.spaces.length > 0 || space.admin) && (
           <Part title="Spaces inside">
-            <ul className="-mx-2 flex flex-col">
+            <ul className="-mx-2 flex flex-col empty:hidden">
               {data.spaces.map((inside) => (
                 <li key={inside.id}>
                   <Link href={`/spaces/${inside.id}`} className={cn('flex items-center gap-2 rounded-lg px-2 py-1.5 text-base leading-snug font-semibold hover:bg-muted', focusRing)}>
@@ -111,6 +111,12 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                 </li>
               ))}
             </ul>
+            {space.admin && (
+              <Link href={`/spaces/new?in=${space.id}`} className={cn('flex items-center gap-2 rounded-lg px-2 py-1.5 -mx-2 text-base text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}>
+                <Plus aria-hidden="true" className="size-4" />
+                New space in {space.personal ? 'your personal space' : space.name}
+              </Link>
+            )}
           </Part>
         )}
       </aside>

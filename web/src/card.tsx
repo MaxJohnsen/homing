@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App, applyDocumentTheme, applyHostFonts, applyHostStyleVariables, type McpUiHostContext } from '@modelcontextprotocol/ext-apps';
-import { ApprovalCard } from '@/approval-card';
+import { ApprovalCard, type Done } from '@/approval-card';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 import type { ProposalData } from '@/lib/proposals';
 import { longProposal, proposal as sample, requestProposal } from '@/sample';
@@ -21,11 +21,15 @@ let connecting: Promise<void> | undefined;
 function Card() {
   const [proposal, setProposal] = useState<ProposalData>();
   const [message, setMessage] = useState<string>();
+  const [done, setDone] = useState<Done>();
 
   useEffect(() => {
     // The host can draw the card again later, so it always asks Homing how things stand now.
     app.ontoolresult = async (result) => {
-      const id = (result.structuredContent as { proposal?: string } | undefined)?.proposal;
+      const { proposal: id, done } = (result.structuredContent ?? {}) as { proposal?: string; done?: Done };
+      // A change that needed no decision, such as a new space, shows what was done. A refused one, that nothing changed.
+      if (done) setDone(done);
+      if (!id && !done) setMessage(result.isError ? 'Nothing changed in Homing.' : undefined);
       if (!id) return;
       const shown = await app.callServerTool({ name: 'approval', arguments: { proposal: id } }).catch(() => undefined);
       const current = (shown?.structuredContent as Shown | undefined)?.proposal;
@@ -40,6 +44,8 @@ function Card() {
     <ApprovalCard
       key={proposal?.id}
       proposal={proposal}
+      done={done}
+      onOpen={(link) => void app.openLink({ url: link }).catch(() => {})}
       message={message}
       decide={async (approve, onlyHere) => {
         if (!proposal) return;
@@ -67,10 +73,14 @@ function applyHost(context: McpUiHostContext) {
   if (context.styles?.css?.fonts) applyHostFonts(context.styles.css.fonts);
 }
 
-/** The card outside an assistant, deciding on sample data. */
+/** The card outside an assistant, deciding on sample data, or showing a change made without a decision. */
 function Preview() {
   const [shown, setShown] = useState(params.get('sample') === 'long' ? longProposal : params.get('sample') === 'request' ? requestProposal : sample);
   const sending = Boolean(shown.request && !shown.request.sent);
+  if (params.get('sample') === 'done') {
+    return <ApprovalCard done={{ heading: 'Space created', name: 'Globex', detail: 'A space of its own. Only you have it so far.', link: '/' }} onOpen={() => {}} />;
+  }
+  if (params.get('sample') === 'refused') return <ApprovalCard message="Nothing changed in Homing." />;
   return (
     <ApprovalCard
       proposal={shown}

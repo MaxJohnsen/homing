@@ -46,7 +46,7 @@ You can see a space's shared side if you have access to the space, and you alway
 
 **Your personal tree is private.** Spaces you create under your personal space are only yours. Nobody else can be given access, everything in them is on your private side, and Homing never suggests sharing there. Creating a space asks: "Just me, or with others?"
 
-**Assistants can suggest a space.** When a project or an area of life keeps coming up and no existing space or collection fits, an assistant can suggest a space for it. The suggestion is a proposal (§6) with the space's name, where it sits and who will see it, and the person can change these before creating it. A space the person asks for is simply created. A declined suggestion isn't made again, and creating a space never moves or shares anything.
+**Assistants can suggest a space.** When a project or an area of life keeps coming up and no existing space or collection fits, an assistant can suggest a space for it. The suggestion is a proposal (§6) with the space's name, where it sits and who will see it, and the person can change these before creating it. A space the person asks for is created at once when only they will have it. A space's name is seen by everyone who can open it, so a space others would see, or a new name for one, needs the person to create it or approve it. A declined suggestion isn't made again, and creating a space never moves or shares anything.
 
 **Making a space collaborative** is a deliberate conversion. Inviting someone to a space in your personal tree starts it, or you can start it directly. Homing:
 

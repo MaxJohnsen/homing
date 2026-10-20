@@ -207,7 +207,7 @@ const dist = new URL('../web/dist/app/', import.meta.url);
 
 /** The pages outside the app, and the app's own screens. Each one loads the same single-page app. */
 const pages = new Set(['/sign-in', '/setup', '/join', '/connect', '/recover', '/', '/waiting', '/account', '/admin']);
-const screens = /^\/(search|changes|spaces\/[0-9a-f-]{36}(\/(pages|collections|sources|rules|skills|members))?|(pages|sources|proposals|skills)\/[0-9a-f-]{36})$/i;
+const screens = /^\/(search|changes|spaces\/new|spaces\/[0-9a-f-]{36}(\/(pages|collections|sources|rules|skills|members|settings))?|(pages|sources|proposals|skills)\/[0-9a-f-]{36})$/i;
 
 const types: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',

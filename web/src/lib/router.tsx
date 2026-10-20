@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type AnchorHTMLAttributes, type MouseEvent } from 'react';
+import { useSyncExternalStore, type ComponentProps, type MouseEvent } from 'react';
 
 /** A screen inside the app. Each has an address of its own, so links from assistants and the back button work. */
 export type Route =
@@ -8,14 +8,15 @@ export type Route =
   | { name: 'waiting' }
   | { name: 'account' }
   | { name: 'admin' }
+  | { name: 'new space' }
   | { name: 'space'; id: string; view?: SpaceView }
   | { name: 'page'; id: string }
   | { name: 'source'; id: string }
   | { name: 'skill'; id: string }
   | { name: 'proposal'; id: string };
 
-/** The parts of a space: its overview, its pages, collections and sources under Knowledge, its rules and skills under Guidance, and its members. */
-export type SpaceView = 'overview' | 'pages' | 'collections' | 'sources' | 'rules' | 'skills' | 'members';
+/** The parts of a space: its overview, its pages, collections and sources under Knowledge, its rules and skills under Guidance, its members and its settings. */
+export type SpaceView = 'overview' | 'pages' | 'collections' | 'sources' | 'rules' | 'skills' | 'members' | 'settings';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 const patterns: [RegExp, (id: string, view?: string) => Route][] = [
@@ -25,7 +26,8 @@ const patterns: [RegExp, (id: string, view?: string) => Route][] = [
   [/^\/waiting$/, () => ({ name: 'waiting' })],
   [/^\/account$/, () => ({ name: 'account' })],
   [/^\/admin$/, () => ({ name: 'admin' })],
-  [new RegExp(`^/spaces/${uuid}(?:/(pages|collections|sources|rules|skills|members))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
+  [/^\/spaces\/new$/, () => ({ name: 'new space' })],
+  [new RegExp(`^/spaces/${uuid}(?:/(pages|collections|sources|rules|skills|members|settings))?$`, 'i'), (id, view) => ({ name: 'space', id: id.toLowerCase(), view: view as SpaceView | undefined })],
   [new RegExp(`^/pages/${uuid}$`, 'i'), (id) => ({ name: 'page', id: id.toLowerCase() })],
   [new RegExp(`^/sources/${uuid}$`, 'i'), (id) => ({ name: 'source', id: id.toLowerCase() })],
   [new RegExp(`^/skills/${uuid}$`, 'i'), (id) => ({ name: 'skill', id: id.toLowerCase() })],
@@ -50,6 +52,7 @@ export function addressOf(route: Route): string {
     case 'waiting': return '/waiting';
     case 'account': return '/account';
     case 'admin': return '/admin';
+    case 'new space': return '/spaces/new';
     case 'space': return `/spaces/${route.id}${route.view ? `/${route.view}` : ''}`;
     case 'page': return `/pages/${route.id}`;
     case 'source': return `/sources/${route.id}`;
@@ -91,7 +94,7 @@ export function navigate(to: string, options: { replace?: boolean } = {}) {
  * new tab, or a link to anywhere else, works as usual. The development server shows each screen at
  * an address of its own, so there every link loads the page.
  */
-export function Link({ href, onClick, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { href: string }) {
+export function Link({ href, onClick, ...rest }: ComponentProps<'a'> & { href: string }) {
   const follow = (event: MouseEvent<HTMLAnchorElement>) => {
     onClick?.(event);
     if (import.meta.env.DEV || event.defaultPrevented || event.button !== 0) return;
