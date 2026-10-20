@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { Shell } from '@/components/app-shell';
-import { ScreenHeader } from '@/components/screen';
+import { failed, LoadFailed, ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
 import type { NewPage, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
@@ -26,8 +26,10 @@ import { Waiting } from '@/screens/waiting';
 export function AppPage() {
   const address = useAddress();
   const route = routeOf(location.pathname) ?? { name: 'home' };
-  const me = useLoad<AccountData>('/api/me').data;
-  const spaces = useLoad<{ spaces: SpaceSummary[] }>('/api/spaces').data?.spaces;
+  const meLoad = useLoad<AccountData>('/api/me');
+  const spacesLoad = useLoad<{ spaces: SpaceSummary[] }>('/api/spaces');
+  const me = meLoad.data;
+  const spaces = spacesLoad.data?.spaces;
   const waiting = useLoad<{ waiting: WaitingData[] }>('/api/waiting').data?.waiting;
 
   const skill = useLoad<SkillData>(route.name === 'skill' ? `/api/skills/${route.id}` : '').data;
@@ -45,7 +47,11 @@ export function AppPage() {
     if (me && visited) opened(visited);
   }, [me, visited, opened]);
 
-  if (!me || !spaces) return null;
+  if (!me || !spaces) {
+    return failed(meLoad.error, spacesLoad.error) ? (
+      <main className="mx-auto max-w-xl px-4 py-16"><LoadFailed paths={['/api/me', '/api/spaces']} /></main>
+    ) : null;
+  }
   return (
     <Shell
       person={me}
@@ -89,23 +95,31 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
 }
 
 function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingData[]; recent: SpaceSummary[] }) {
-  const requests = useLoad<{ requests: RequestData[] }>('/api/requests').data?.requests;
+  const { data, error } = useLoad<{ requests: RequestData[] }>('/api/requests');
+  const requests = data?.requests;
+  if (failed(error)) return <LoadFailed paths={['/api/requests', '/api/waiting']} />;
   if (!waiting || !requests) return null;
   return <Home data={{ name: me.name, waiting, assistants: me.assistants.length, mcpUrl: me.mcpUrl, requests }} recent={recent} />;
 }
 
 function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
-  const rules = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '').data?.rules;
-  const skills = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '').data?.skills;
+  const rulesLoad = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '');
+  const skillsLoad = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '');
+  const rules = rulesLoad.data?.rules;
+  const skills = skillsLoad.data?.skills;
   const pages = useList<PagesData>(view === 'pages' ? `/api/spaces/${id}/pages` : undefined);
   const collections = useList<PagesData>(view === 'collections' ? `/api/spaces/${id}/pages` : undefined, { collections: '1' });
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
   return (
     <Titled title={space?.name ?? 'Space'}>
       {error?.status === 404 && <ScreenHeader title="There’s no space here" meta="It may have been removed, or you can’t open it." />}
-      {space && (
+      {failed(error) && <LoadFailed paths={[`/api/spaces/${id}`]} />}
+      {space && !error && (
         <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
+          {failed(rulesLoad.error, skillsLoad.error, pages.error, collections.error, sources.error) && (
+            <LoadFailed paths={[pages.path, collections.path, sources.path, view === 'rules' ? `/api/spaces/${id}/rules` : '', view === 'skills' ? `/api/spaces/${id}/skills` : ''].filter(Boolean)} />
+          )}
           {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} create={newPage(id)} />}
           {view === 'collections' && <Pages space={space} data={collections.data} filters={collections.filters} onFilters={collections.change} collections />}
           {view === 'sources' && <Sources space={space} data={sources.data} filters={sources.filters} onFilters={sources.change} />}
@@ -138,7 +152,8 @@ function useList<T>(path: string | undefined, fixed: Record<string, string> = {}
   const api = new URLSearchParams({ ...fixed, ...Object.fromEntries(query) });
   api.delete('from');
   if (filters.from) api.set('offset', String(filters.from));
-  const { data } = useLoad<T>(path ? `${path}${api.size ? `?${api}` : ''}` : '');
+  const address = path ? `${path}${api.size ? `?${api}` : ''}` : '';
+  const { data, error } = useLoad<T>(address);
   const last = useRef<T>(undefined);
   if (data) last.current = data;
   const change = useCallback((next: PageFilters) => {
@@ -147,10 +162,10 @@ function useList<T>(path: string | undefined, fixed: Record<string, string> = {}
     if (next.type) address.set('type', next.type);
     if (next.sort) address.set('sort', next.sort);
     if (next.from) address.set('from', String(next.from));
-    // Typing a search replaces the address instead of adding to the history.
-    navigate(`${location.pathname}${address.size ? `?${address}` : ''}`, { replace: next.q !== new URLSearchParams(location.search).get('q') && next.q !== '' });
+    // Typing a search, or clearing it, replaces the address instead of adding to the history.
+    navigate(`${location.pathname}${address.size ? `?${address}` : ''}`, { replace: next.q !== (new URLSearchParams(location.search).get('q') ?? '') });
   }, []);
-  return { data: data ?? last.current, filters, change };
+  return { data: data ?? last.current, error, path: address, filters, change };
 }
 
 function SourcePage({ id }: { id: string }) {
@@ -158,7 +173,8 @@ function SourcePage({ id }: { id: string }) {
   return (
     <Titled title={data?.reference ?? 'Source'}>
       {error?.status === 404 && <ScreenHeader title="There’s no source here" meta="It may have been removed, or you can’t open it." />}
-      {data && <Source source={data} />}
+      {failed(error) && <LoadFailed paths={[`/api/sources/${id}`]} />}
+      {data && !error && <Source source={data} />}
     </Titled>
   );
 }
@@ -172,7 +188,8 @@ function PagePage({ id }: { id: string }) {
   return (
     <Titled title={data?.title ?? 'Page'}>
       {error?.status === 404 && <ScreenHeader title="There’s no page here" meta="It may have been removed, or you can’t open it." />}
-      {data && <Page page={data} actions={pageActions(data, gatheredPath)} gathered={gathered} gatheredFrom={from} onGatheredFrom={setFrom} />}
+      {failed(error) && <LoadFailed paths={[`/api/pages/${id}`]} />}
+      {data && !error && <Page page={data} actions={pageActions(data, gatheredPath)} gathered={gathered} gatheredFrom={from} onGatheredFrom={setFrom} />}
     </Titled>
   );
 }
@@ -196,7 +213,8 @@ function pageActions(page: PageData, gatheredPath: string): PageActions {
       await action();
       await fresh();
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) await fresh();
+      // Gone, refused or changed meanwhile: show the page as it is now, with the reason.
+      if (error instanceof ApiError && [403, 404, 409].includes(error.status)) await fresh();
       return error instanceof Error ? error.message : 'Something went wrong. Try again.';
     }
   };
@@ -239,6 +257,7 @@ function ruleActions(spaceId: string): RuleActions {
 function AdminPage() {
   const { data, error } = useLoad<AdminData>('/api/admin');
   if (error?.status === 403) return <ScreenHeader title="Looking after Homing" meta="Only whoever looks after Homing sees this page." />;
+  if (failed(error)) return <LoadFailed paths={['/api/admin']} />;
   if (!data) return null;
   return (
     <Admin
@@ -259,7 +278,8 @@ function SkillPage({ id }: { id: string }) {
   return (
     <Titled title={data?.name ?? 'Skill'}>
       {error?.status === 404 && <ScreenHeader title="There’s no skill here" meta="It may have been removed, or it doesn’t reach you." />}
-      {data && <Skill skill={data} />}
+      {failed(error) && <LoadFailed paths={[`/api/skills/${id}`]} />}
+      {data && !error && <Skill skill={data} />}
     </Titled>
   );
 }

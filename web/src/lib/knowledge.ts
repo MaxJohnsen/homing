@@ -60,7 +60,7 @@ export interface PageData {
   /** The pages whose items link to it. */
   mentionedOn: { id: string; title: string }[];
   /** Where it is, and how many people see what's shared there now. */
-  space: { id: string; name: string; personal: boolean; private: boolean; people: number };
+  space: { id: string; name: string; personal: boolean; private: boolean; people: number; above: boolean };
   items: ItemData[];
 }
 

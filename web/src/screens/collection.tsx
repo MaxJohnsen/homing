@@ -114,7 +114,7 @@ function Picker({ page, actions, onDone }: { page: PageData; actions: PageAction
         />
         <Button variant="ghost" size="icon" aria-label="Done adding pages" onClick={onDone}><X /></Button>
       </div>
-      {choice && <AudienceChoice space={page.space.name} people={page.space.people} value={audience} onChange={setAudience} />}
+      {choice && <AudienceChoice space={page.space.name} people={page.space.people} above={page.space.above} value={audience} onChange={setAudience} />}
       {problem && <FieldError>{problem}</FieldError>}
       {found.length > 0 && (
         <ul className="flex flex-col gap-1">

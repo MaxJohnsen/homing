@@ -126,7 +126,7 @@ test('your own version of a shared item is only yours, and others still see thei
 
   // Nobody else can correct what's only Ana's, or the shared item once she replaced it for herself.
   assert.equal((await post(cara, `/api/items/${mine}`, { text: 'Hello' })).status, 404);
-  assert.equal((await post(ana, `/api/items/${budget.item}`, { text: 'Hello', shared: true })).status, 403);
+  assert.equal((await post(ana, `/api/items/${budget.item}`, { text: 'Hello', shared: true })).status, 409);
 });
 
 test('rules and skills aren’t corrected as knowledge', async () => {

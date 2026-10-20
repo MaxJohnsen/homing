@@ -50,7 +50,7 @@ export interface AccountActions {
 export type AccountNotice = 'recovered' | 'verified';
 
 const notices: Record<AccountNotice, (account: AccountData) => { title: string; text: string }> = {
-  recovered: () => ({ title: "You're signed in", text: 'Add a passkey on this device now, so you can sign in next time.' }),
+  recovered: () => ({ title: "You’re signed in", text: 'Add a passkey on this device now, so you can sign in next time.' }),
   verified: () => ({ title: 'Your email is verified', text: 'If you ever can’t sign in, Homing can send you a sign-in link.' }),
 };
 
@@ -218,7 +218,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
             </div>
             {removing === passkey.id && (
               <div className="flex flex-col gap-3 rounded-lg bg-card p-3 sm:flex-row sm:items-center sm:justify-between">
-                <p className="text-sm">You won't be able to sign in with this passkey any more.</p>
+                <p className="text-sm">You won’t be able to sign in with this passkey any more.</p>
                 <div className="flex shrink-0 gap-2">
                   <Button variant="outline" size="sm" onClick={() => setRemoving(undefined)}>Keep it</Button>
                   <Button variant="destructive" size="sm" disabled={busy} onClick={() => actions && run(async () => {
@@ -239,7 +239,9 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
             <KeyRound data-icon="inline-start" />Add a passkey
           </Button>
         </div>
-        <p className="text-sm text-muted-foreground">Add another passkey as a backup.</p>
+        <p className="text-sm text-muted-foreground">
+          {account.passkeys.length ? 'Add another passkey as a backup.' : 'A passkey signs you in with your face, fingerprint or screen lock.'}
+        </p>
         {message && (
           <div className="flex flex-wrap items-center gap-3">
             <FieldError>{message}</FieldError>
@@ -262,7 +264,7 @@ function VerifyEmail({ actions }: { actions?: AccountActions }) {
   const [state, setState] = useState<'idle' | 'sent' | string>('idle');
   return (
     <div className="flex flex-col gap-3 pt-2">
-      <p className="text-base">Verify your email, so Homing can send you a sign-in link if you ever can't sign in.</p>
+      <p className="text-base">Verify your email, so Homing can send you a sign-in link if you ever can’t sign in.</p>
       {state === 'sent' ? (
         <p className="text-sm text-muted-foreground" role="status">Check your email for the link.</p>
       ) : (

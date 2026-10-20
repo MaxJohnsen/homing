@@ -142,7 +142,7 @@ const open = async (who: Member, page: string) => {
 test('a page shows each person the shared items and their own, with who wrote them and from where', async () => {
   const forAna = await open(ana, launch);
   assert.equal(forAna.title, 'Website launch');
-  assert.deepEqual(forAna.space, { id: acme, name: 'Acme', personal: false, private: false, people: 2 });
+  assert.deepEqual(forAna.space, { id: acme, name: 'Acme', personal: false, private: false, people: 2, above: false });
   // Ana's newer date stands where the shared one did, and says what the others still see.
   assert.deepEqual(forAna.items.map((item) => [item.text, item.shared]), [
     ['The launch moved to 20 November.', false],

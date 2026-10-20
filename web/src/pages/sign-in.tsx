@@ -41,7 +41,7 @@ export function SignInPage() {
       } catch (error) {
         // Stopped to ask another way, such as "Use your passkey", or to start over.
         if (aborted(error)) return;
-        if (!cancelled(error)) setNotice("That passkey didn't work. Try again, or use your password.");
+        if (!cancelled(error)) setNotice("That passkey didn’t work. Try again, or use your password.");
         setTimeout(offer, 1000);
       }
     };
@@ -63,7 +63,7 @@ export function SignInPage() {
             signedIn(await signInWithPasskey());
           } catch (error) {
             if (cancelled(error)) return undefined;
-            return "That passkey didn't work. Try again, or use your password.";
+            return "That passkey didn’t work. Try again, or use your password.";
           }
         },
         async password(email, password) {

@@ -9,7 +9,7 @@ export function CardPreview({ sample }: { sample?: 'long' | 'request' }) {
         <Wordmark />
         <h1 className="text-2xl font-semibold tracking-tight">Approval card</h1>
         <p className="max-w-prose text-sm text-muted-foreground">
-          The card takes the host's colors, font and corners. These frames use approximate host styles; a real conversation sends its own.
+          The card takes the host’s colors, font and corners. These frames use approximate host styles; a real conversation sends its own.
         </p>
       </div>
       <div className="grid gap-5 md:grid-cols-3">

@@ -1,4 +1,4 @@
-import { ScreenHeader } from '@/components/screen';
+import { failed, LoadFailed, ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import { reload, useLoad } from '@/lib/load';
 import type { ProposalData } from '@/lib/proposals';
@@ -14,6 +14,7 @@ export function ProposalPage({ id }: { id: string }) {
   if (error?.status === 404) {
     return <ScreenHeader title="Nothing to decide here" meta="This link is for someone else, or it doesn’t lead anywhere." />;
   }
+  if (failed(error) && !data) return <LoadFailed paths={[path]} />;
   if (!data) return null;
 
   const { proposal } = data;
@@ -27,9 +28,10 @@ export function ProposalPage({ id }: { id: string }) {
           await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status === 403) return error instanceof Error ? error.message : undefined;
-          // It changed, expired or was decided elsewhere: show it as it is now.
+          // It changed, expired or was decided elsewhere: show it as it is now, which says what happened.
           await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests')]);
-          return error.code === 'CHANGED' ? error.message : undefined;
+          if (error.code === 'CHANGED') return error.message;
+          return [409, 410].includes(error.status) ? undefined : error.message;
         }
       }}
     />

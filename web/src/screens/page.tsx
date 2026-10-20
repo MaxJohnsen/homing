@@ -218,8 +218,9 @@ function Correct({ item, page, correct, onDone }: { item: ItemData; page: PageDa
 
   return (
     <div className="flex flex-col gap-3">
+      {!item.shared && !page.space.private && <OnlyYou className="self-start" />}
       <Textarea aria-label="What it should say" value={text} onChange={(event) => setText(event.target.value)} rows={Math.min(12, Math.max(3, text.split('\n').length + 1))} className="bg-card text-base" autoFocus disabled={busy} />
-      {shared && <AudienceChoice space={page.space.name} people={page.space.people} value={audience} onChange={setAudience} disabled={busy} />}
+      {shared && <AudienceChoice space={page.space.name} people={page.space.people} above={page.space.above} value={audience} onChange={setAudience} disabled={busy} />}
       <p className="text-sm text-muted-foreground">
         {forEveryone
           ? 'Everyone sees your correction. What it said before stays in its history, and assistants won’t rewrite what you wrote.'
@@ -231,7 +232,7 @@ function Correct({ item, page, correct, onDone }: { item: ItemData; page: PageDa
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
         <Button size="lg" disabled={busy || !text.trim() || text.trim() === item.text} onClick={save}>
-          {forEveryone ? `Correct it for ${page.space.name}` : shared ? 'Save your version' : 'Save correction'}
+          {forEveryone ? `Correct it for ${page.space.name}` : shared ? 'Save your version' : 'Save for you'}
         </Button>
       </div>
     </div>
@@ -282,7 +283,7 @@ function AddToPage({ page, add, initiallyOpen, beside }: { page: PageData; add: 
         autoFocus={!initiallyOpen}
         disabled={busy}
       />
-      {choice && <AudienceChoice space={page.space.name} people={page.space.people} value={audience} onChange={setAudience} disabled={busy} />}
+      {choice && <AudienceChoice space={page.space.name} people={page.space.people} above={page.space.above} value={audience} onChange={setAudience} disabled={busy} />}
       {problem && <FieldError>{problem}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
         {/* A new page can start as a collection instead. */}

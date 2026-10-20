@@ -42,8 +42,8 @@ export function JoinPage() {
 
   const problem = (error: unknown): JoinProblem => {
     if (error instanceof ApiError && error.code === 'INVITE_EXPIRED') ticket.current = undefined;
-    if (cancelled(error)) return { message: "No passkey was made, so there's no account yet. Try again when you're ready." };
-    if (error instanceof WebAuthnError) return { message: "This device couldn't make a passkey. Try another browser or device." };
+    if (cancelled(error)) return { message: "No passkey was made, so there’s no account yet. Try again when you’re ready." };
+    if (error instanceof WebAuthnError) return { message: "This device couldn’t make a passkey. Try another browser or device." };
     if (error instanceof ApiError && error.status === 410) setState({ step: 'expired', kind });
     if (error instanceof ApiError) return { field: error.field as JoinProblem['field'], message: error.message };
     return { message: 'Something went wrong. Try again.' };
