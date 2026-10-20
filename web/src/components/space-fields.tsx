@@ -61,6 +61,8 @@ export function placesIn(spaces: SpaceSummary[]): Place[] {
     }
     return above.length ? `${space.name}, in ${above.join(' › ')}` : space.name;
   };
+  // An archived space takes no new ones until it's reopened.
+  spaces = spaces.filter((space) => !space.archived);
   return [
     ...inOrder(spaces.filter((space) => space.private)).map((space) => ({ id: space.id, label: label(space), name: space.name, mine: true, personal: space.personal })),
     ...spaces.filter((space) => !space.private && space.admin).map((space) => ({ id: space.id, label: label(space), name: space.name, mine: false, personal: false })),

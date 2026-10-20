@@ -75,7 +75,7 @@ test('a space with others is one of its own, or goes in a shared space you’re 
   const northwind = await created(ana, { name: 'Northwind', who: 'with others', in: acme, closed: true });
 
   const forAna = await spacesOf(ana);
-  assert.deepEqual(forAna.find((space) => space.id === acme), { id: acme, name: 'Acme', parentId: null, closed: false, personal: false, private: false, admin: true });
+  assert.deepEqual(forAna.find((space) => space.id === acme), { id: acme, name: 'Acme', parentId: null, closed: false, personal: false, private: false, admin: true, archived: false });
   assert.equal(forAna.find((space) => space.id === northwind)?.closed, true);
   // Everyone in Acme has the open one; only the people added to the closed one have it.
   assert.equal((await cara.browser.json(`/api/spaces/${website}`)).status, 200);

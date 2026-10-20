@@ -409,8 +409,9 @@ async function placesFor(s: Session, spaces: Space[]): Promise<Place[]> {
     }
     return { people: people.size, above };
   };
-  const mine = spaces.filter((space) => space.privateTo).sort((a, b) => Number(personal(b)) - Number(personal(a)));
-  const shared = spaces.filter((space) => !space.privateTo && space.admin);
+  // An archived space takes no new ones.
+  const mine = spaces.filter((space) => space.privateTo && !space.archived).sort((a, b) => Number(personal(b)) - Number(personal(a)));
+  const shared = spaces.filter((space) => !space.privateTo && space.admin && !space.archived);
   return [
     ...mine.map((space) => ({ id: space.id, label: label(space), name: space.name, mine: true, personal: personal(space) })),
     ...shared.map((space) => ({ id: space.id, label: label(space), name: space.name, mine: false, personal: false, ...audience(space) })),

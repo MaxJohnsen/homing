@@ -16,6 +16,12 @@ export interface Space {
   privateTo: string | null;
   /** Whether the person can manage the space. */
   admin: boolean;
+  /** Archived itself or with a space above it, so out of everyday context. */
+  archived: boolean;
+  /** When it was archived itself, if it was. */
+  archivedAt: Date | null;
+  /** The space that was archived, itself or the nearest one above it, if it's archived. */
+  archivedIn: string | null;
 }
 
 /** Creates a person with their personal space. Homing does it only for an invite, and tests as the admin role. */
@@ -77,7 +83,7 @@ export async function newSpace(s: Session, input: { name: string; who: Who; in?:
   await s.tx`select pg_advisory_xact_lock(hashtext('homing.space_access'))`;
   const { name, parent, closed } = await placeSpace(s, input);
   const id = await createSpace(s, { name, parentId: parent?.id, closed });
-  return { id, name, parentId: parent?.id ?? null, closed, privateTo: parent?.privateTo ?? null, admin: true };
+  return { id, name, parentId: parent?.id ?? null, closed, privateTo: parent?.privateTo ?? null, admin: true, archived: false, archivedAt: null, archivedIn: null };
 }
 
 /** Where a new space would go, checked the way newSpace checks it, without creating it. */
@@ -102,6 +108,7 @@ export async function placeSpace(
   } else if (parent && !parent.admin) {
     throw new SpaceRefused('admin', `Only ${parent.name}’s admins create spaces in it.`);
   }
+  if (parent?.archived) throw new SpaceRefused('where', `${parent.name} is archived. Reopen it to make spaces in it.`);
 
   const there = spaces.find((space) => space !== personal && space.parentId === (parent?.id ?? null) && sameName(space.name, name));
   if (there) throw new SpaceRefused('name', `There’s already a space called ${there.name} ${placeName(parent, personal)}.`, there);
@@ -122,6 +129,24 @@ export async function renameSpace(s: Session, spaceId: string, name: string): Pr
   if (there) throw new SpaceRefused('name', `There’s already a space called ${there.name} ${placeName(spaces.find((above) => above.id === space.parentId), personal)}.`, there);
   await s.tx`select rename_space(${spaceId}::uuid, ${clean})`;
   return { ...space, name: clean };
+}
+
+/**
+ * Archives a space the person looks after, or reopens it (spec §1). It and the spaces in it leave
+ * everyday context, and stay searchable. A space archived with one above it reopens with that one.
+ */
+export async function archiveSpace(s: Session, spaceId: string, archived: boolean): Promise<Space> {
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === spaceId);
+  if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+  if (space.privateTo !== null && space.parentId === null) throw new SpaceRefused('admin', 'Your personal space stays open.');
+  if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins ${archived ? 'archive' : 'reopen'} it.`);
+  if (!archived && space.archived && !space.archivedAt) {
+    const above = spaces.find((candidate) => candidate.id === space.archivedIn);
+    throw new SpaceRefused('where', `It’s archived with ${above ? above.name : 'the space above it'}, so it reopens with that one.`);
+  }
+  await s.tx`select archive_space(${spaceId}::uuid, ${archived})`;
+  return (await listSpaces(s)).find((candidate) => candidate.id === spaceId)!;
 }
 
 /** "in Acme", "in your personal space" or "on its own": where a space sits. */
@@ -197,13 +222,26 @@ export async function removeMember(s: Session, spaceId: string, personId: string
 
 export async function listSpaces(s: Session): Promise<Space[]> {
   const person = personOf(s.principal) ?? null;
-  return s.tx<Space[]>`
-    select s.id, s.name, s.parent_id, s.closed, s.private_to, coalesce(a.admin, false) as admin
+  const rows = await s.tx<Omit<Space, 'archived' | 'archivedIn'>[]>`
+    select s.id, s.name, s.parent_id, s.closed, s.private_to, coalesce(a.admin, false) as admin, s.archived_at
     from spaces s
     left join space_access a on a.space_id = s.id and a.person_id = ${person}::uuid
     where s.id in (${accessibleSpaces(s)})
     order by s.created_at
   `;
+  // Archived with the nearest archived space at or above it, among those the person can open, so
+  // a space above they can't open never shows through.
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return rows.map((row) => {
+    let archivedIn: string | null = null;
+    for (let at: typeof row | undefined = row, depth = 0; at && depth < 100; at = at.parentId ? byId.get(at.parentId) : undefined, depth++) {
+      if (at.archivedAt) {
+        archivedIn = at.id;
+        break;
+      }
+    }
+    return { ...row, archived: archivedIn !== null, archivedIn };
+  });
 }
 
 /**

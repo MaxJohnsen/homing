@@ -58,7 +58,8 @@ export async function conversionOf(s: Session, spaceId: string): Promise<Convers
     return names.length ? `${place.name}, in ${names.join(' › ')}` : place.name;
   };
   const places = spaces
-    .filter((candidate) => !candidate.privateTo && candidate.admin)
+    // An archived space takes no new ones.
+    .filter((candidate) => !candidate.privateTo && candidate.admin && !candidate.archived)
     .map((place) => ({ id: place.id, name: place.name, label: label(place), ...audience(place) }));
   return { space, rulesLeaving, skillsLeaving, places };
 }
@@ -80,6 +81,7 @@ export async function makeCollaborative(
   await s.tx`select pg_advisory_xact_lock(hashtext('homing.space_access'))`;
   const conversion = await conversionOf(s, spaceId);
   if (!conversion) throw new SpaceRefused('missing', 'There’s no space in your personal space to share there.');
+  if (conversion.space.archived) throw new SpaceRefused('where', `${conversion.space.name} is archived. Reopen it before sharing it.`);
   const parent = input.in ? conversion.places.find((place) => place.id === input.in) : undefined;
   if (input.in && !parent) throw new SpaceRefused('where', 'It can go only in a shared space you’re an admin of.');
   const spaces = await listSpaces(s);

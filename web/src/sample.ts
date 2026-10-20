@@ -95,6 +95,7 @@ export const sampleSpaces: SpaceSummary[] = [
   { id: 'personal', name: 'Personal', parentId: null, closed: false, personal: true, private: true, admin: true },
   { id: 'northwind', name: 'Northwind', parentId: 'acme', closed: true, personal: false, private: false, admin: true },
   { id: 'website', name: 'Website', parentId: 'acme', closed: false, personal: false, private: false, admin: false },
+  { id: 'rebrand', name: 'Rebrand 2025', parentId: 'acme', closed: false, personal: false, private: false, admin: true, archived: true },
   { id: 'kitchen', name: 'Kitchen renovation', parentId: 'personal', closed: false, personal: false, private: true, admin: true },
   { id: 'family', name: 'Berg family', parentId: null, closed: false, personal: false, private: false, admin: false },
 ];
