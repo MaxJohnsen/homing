@@ -61,6 +61,9 @@ You can see a space's shared side if you have access to the space, and you alway
 
 **Archiving a space** takes finished work out of everyday attention. An archived space and its children leave daily context and their routines and upkeep pause, but they stay searchable and can be reopened. A person archives a space, and agents can suggest it. Archiving never deletes anything.
 
+- A space's admins archive and reopen it. A space only you have is archived as soon as you ask your assistant, the way renaming it is; one others have waits for an admin's approval.
+- A space in an archived one is archived with it, as far as each person can see. Archiving passes down only through spaces you can open, so the members of a closed space never learn of an archived space above it. Only the admins of the space that was archived reopen it.
+
 ## 2. Guidance
 
 Guidance is rules and skills. It applies down the tree, the more specific rule wins, requirements always apply, and only people change it.
@@ -149,6 +152,8 @@ Upkeep runs when new evidence arrives, and in a periodic tidy pass per space tha
 
 **Conflicts are marked uncertain,** never silently resolved.
 
+**Archiving a page** takes it out of everyday context and the space's list of pages, and it stays searchable and can be reopened. Anyone who can write in the space archives a page directly, and an assistant proposes it for a person to approve. It is one state for everyone who can see the page, recorded in its history, and it never deletes anything.
+
 **History.** What used to be true stays available. Superseded items and archived pages leave everyday context but remain searchable, so `read` can answer "Gunnar, project manager 2027–2029". Stable knowledge isn't obsolete: a page about Gunnar can stay current for years without changing. Not being relevant right now isn't a state, because ranking handles it.
 
 - Every revision keeps the visibility of its item.
@@ -232,7 +237,15 @@ One concept covers guidance changes, sharing suggestions, suggested spaces, publ
 
 - **A member asks the admins.** A change that only a space's admins may make, such as to its shared rules, becomes a request when a member wants it. The member confirms the exact request first, every admin sees it, and one admin's decision settles it. Admins are emailed when Homing sends email, the email only links to the request, and the member learns the outcome there or from their assistant.
 
-**Approvals are the exception, not the routine.** They appear where you work: in chat when possible, and otherwise on Home in Homing. Each one shows what, to whom and where it came from. They are grouped by destination, and single items can be excluded. If nobody answers, knowledge stays private, important items surface in context, and actions never run. Approval fatigue is tracked as a metric.
+**Ask as little as possible, but always when it matters.** The goal is fewer approvals, not faster ones.
+
+- **Routine work doesn't ask.** Within the rights a person already has, their private work happens directly: saving and correcting knowledge, keeping what agents wrote current, organizing collections, keeping private tasks, and creating, renaming or archiving spaces only they have.
+- **What matters always asks:** sharing private information, changing guidance, adding people or changing access, archiving what others see, and external actions nobody authorized in advance. Approving is one clear action where you work: in chat when possible, and otherwise on Home in Homing. Each approval shows what, to whom and where it came from.
+- **Related changes are one decision.** When one request needs several of these, such as a new space, what goes in it and a person to add, they come as one proposal that lists every change with its consequences, such as what the new person will see. It is approved once, single changes can be left out, and nothing can be added to it afterwards. Admins can review several requests together, each still showing its own consequences.
+- **Recurring actions can be allowed in advance** with a standing authorization (§5). It is specific, understandable and revocable, and suggested only for actions people actually repeat, such as sharing the tasks you create in one space. Changing rules and adding people are never pre-approved.
+- **A request in chat isn't an approval.** The assistant may be acting on something it read elsewhere, so a sensitive change waits for the person even when the assistant says they asked for it.
+
+If nobody answers, knowledge stays private, important items surface in context, and actions never run. Approval fatigue is tracked as a metric.
 
 ## 7. Connections and records
 
