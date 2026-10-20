@@ -40,7 +40,7 @@ Later, a client moves a launch date. Homing learns about it on your private side
 
 Homing is being designed and built in the open, in three increments:
 
-1. [**The core**](https://github.com/MaxJohnsen/homing/milestone/1), being built now: spaces, guidance, knowledge and simple tasks, used from your assistant over MCP and explored in the web app. No AI model needed. It ends with version 0.1.0, once a space comes back intact from export, ChatGPT works as well as Claude, and two people have used it together.
+1. [**The core**](https://github.com/MaxJohnsen/homing/milestone/1), being built now: spaces, guidance, knowledge and simple tasks, used from your assistant over MCP and explored in the web app. No AI model needed. It ends with version 0.1.0, once a space comes back intact from export and two people have used it together. ChatGPT is tried after that.
 2. [**Learning**](https://github.com/MaxJohnsen/homing/milestone/2): Homing learns from your email on its own, routes what it learns to the right space and keeps knowledge up to date, with a model of your choice.
 3. [**Records**](https://github.com/MaxJohnsen/homing/milestone/3): tasks and events in the systems where they live, such as Asana, and planning across them.
 
