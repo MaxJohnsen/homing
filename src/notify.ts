@@ -61,6 +61,13 @@ export async function afterDecision(n: Notifier, person: string, proposal: Propo
 /** "add a rule", "to Website in Acme", and the rule, as the reader sees the request. */
 function wording(proposal: ProposalView) {
   const place = proposal.space.within ? `${proposal.space.name} in ${proposal.space.within}` : proposal.space.name;
+  if (proposal.include) {
+    // Someone who can't open what it includes learns nothing of it, not even its name.
+    const { skill, space } = proposal.include;
+    const thing = proposal.change.what === 'skill' ? 'a skill' : 'another space’s rules';
+    const text = skill ? `The skill ${skill.name}` : space ? `The rules from ${space.name}` : proposal.change.what === 'skill' ? 'A skill from a space you can’t open' : 'Rules from a space you can’t open';
+    return { place, what: `${proposal.action === 'add include' ? 'include' : 'stop including'} ${thing}`, where: `in ${place}`, text };
+  }
   const kind = proposal.change.kind ?? proposal.rule?.kind ?? 'rule';
   const what = proposal.action === 'add rule' ? 'add a rule' : proposal.action === 'change rule' ? `change a ${kind}` : `remove a ${kind}`;
   const where = `${proposal.action === 'add rule' ? 'to' : proposal.action === 'change rule' ? 'in' : 'from'} ${place}`;

@@ -13,8 +13,12 @@ export interface ProposalData {
   personal: boolean;
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
-  /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, sharing an item or a task, or archiving or reopening a page. */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page';
+  /**
+   * A rule to add, change or remove, a space an assistant suggests, a change of who is in a space,
+   * sharing an item or a task, archiving or reopening a page, or including another space's rules or
+   * a skill, or no longer.
+   */
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page' | 'include' | 'exclude';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -67,6 +71,10 @@ export interface ProposalData {
    * against, why, and whether you asked.
    */
   page?: { id: string; title: string | null; archived: boolean; shared: boolean; stands: boolean; shown: string; asked: boolean; why: string | null } | null;
+  /** Including another space's rules or a skill, or no longer: what it brings in for you, as it is now. */
+  include?: IncludeData | null;
+  /** For an include: whether it's another space's rules or a skill. */
+  included?: Included;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -81,6 +89,25 @@ export interface ProposalData {
 }
 
 export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
+
+/** What an include points to: another space's rules, or one skill. */
+export type Included = 'rules' | 'skill' | null;
+
+/**
+ * What an include brings in, as the decision page and the card show it: the rules set in the space
+ * it points to that would reach you, or the skill. Someone who can't open what it points to sees
+ * none of it, not even its name, and can only decline.
+ */
+export interface IncludeData {
+  open: boolean;
+  space: { id: string; name: string } | null;
+  rules: { kind: RuleKind; text: string; yours: boolean }[];
+  skill: { pageId: string; name: string; description: string; from: string | null } | null;
+  /** For no longer including it: whether it's still included. */
+  current: boolean;
+  /** What approving sends back, so it runs only what was shown. */
+  shown: string;
+}
 
 /** Sharing one of your private items with everyone in its space, as the decision page and the card show it. */
 export interface PublicationData {
@@ -121,7 +148,7 @@ export interface TaskShareData {
 }
 
 /** A request you sent to a space's admins, as Home shows it under your requests. */
-export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within' | 'action' | 'kind'> {
+export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within' | 'action' | 'kind' | 'included'> {
   text: string | null;
   state: 'requested' | 'approved' | 'rejected' | 'withdrawn' | 'expired';
   requestedAt: string;
@@ -134,7 +161,7 @@ export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within
 }
 
 /** A change waiting for you, as Home and the list of everything waiting show it. */
-export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind'> {
+export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind' | 'included'> {
   spaceId: string;
   /** For a space: whether you asked for it. */
   asked?: boolean;
@@ -142,7 +169,7 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
   member?: MemberChange | null;
   /** For a request: whether it's yours, who asked when it's someone you know, and whether it's sent. */
   request?: { by: string | null; yours: boolean; sent: boolean } | null;
-  /** The new rule or the rule's new wording, or for a removal the rule as it is now. */
+  /** The new rule or the rule's new wording, or for a removal the rule as it is now. For an include, its name, if you can open it. */
   text: string | null;
   createdAt: string;
 }
@@ -152,7 +179,7 @@ export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'sp
  * to add a rule", or "Cara Lund asks to add a rule to Acme". Under a heading that names the place, without it.
  */
 export function wantsTo(
-  proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within'> & {
+  proposal: Pick<ProposalData, 'assistant' | 'action' | 'kind' | 'space' | 'personal' | 'within' | 'included'> & {
     request?: { by: string | null; yours: boolean } | null;
     asked?: boolean;
     suggestion?: { asked: boolean } | null;
@@ -193,11 +220,23 @@ export function wantsTo(
   }
   // Whether the user asked is only the assistant's word, so an asked-for space says where it goes instead.
   if (action === 'space') return proposal.asked || proposal.suggestion?.asked ? `${assistant} wants to create a space in ${placeOf(proposal)}` : `${assistant} suggests a new space`;
-  const what = action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
-  const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'change' ? 'in' : 'from'} ${placeOf(proposal)}` : '';
+  const thing = proposal.included === 'skill' ? 'a skill' : 'rules from another space';
+  const what =
+    action === 'include' ? `include ${thing}`
+    : action === 'exclude' ? `stop including ${thing}`
+    : action === 'add' ? 'add a rule' : action === 'change' ? `change a ${kind}` : `remove a ${kind}`;
+  const place = withPlace ? ` ${action === 'add' ? 'to' : action === 'remove' ? 'from' : 'in'} ${placeOf(proposal)}` : '';
   if (request && !request.yours) return `${request.by ?? 'A member'} asks to ${what}${place}`;
   if (request) return withPlace ? `${assistant} wants to ask the admins of ${placeOf(proposal)} to ${what}` : `${assistant} wants to ask the admins to ${what}`;
   return `${assistant} wants to ${what}${place}`;
+}
+
+/** What a request asks for, after "to": "add a rule", "change a preference", or "include rules from another space". */
+export function requestedChange(request: Pick<RequestData, 'action' | 'kind' | 'included'>): string {
+  const thing = request.included === 'skill' ? 'a skill' : 'rules from another space';
+  if (request.action === 'include') return `include ${thing}`;
+  if (request.action === 'exclude') return `stop including ${thing}`;
+  return request.action === 'add' ? 'add a rule' : `${request.action} a ${request.kind}`;
 }
 
 /** "Acme", "Website in Northwind", or "your personal space". */
@@ -213,7 +252,9 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 }
 
 /** Whether a change or removal lost its rule before anyone decided. */
-export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'conversion' | 'page' | 'state'>): boolean {
+export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'conversion' | 'page' | 'state' | 'include'>): boolean {
+  if (proposal.action === 'include') return false;
+  if (proposal.action === 'exclude') return proposal.state === 'open' && Boolean(proposal.include?.open) && !proposal.include?.current;
   if (proposal.action === 'convert') return proposal.state === 'open' && !proposal.conversion;
   // A page you can't see anymore, or one archived or reopened another way, has nothing left to decide.
   if (proposal.action === 'archive page' || proposal.action === 'reopen page') {
@@ -223,6 +264,12 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publica
   if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
   if (proposal.action === 'task') return proposal.state === 'open' && (!proposal.task || proposal.task.shared || proposal.task.done);
   return (proposal.action === 'change' || proposal.action === 'remove') && !proposal.rule?.current;
+}
+
+/** Whether the reader can only decline it: an email nobody uses Homing with, or including what they can't open. */
+export function declineOnly(proposal: Pick<ProposalData, 'action' | 'member' | 'include'>): boolean {
+  if (proposal.member?.found === false) return true;
+  return proposal.include?.open === false && !(proposal.action === 'exclude' && proposal.include.current);
 }
 
 /** The buttons for deciding it, or for a request you haven't sent, for sending it. */
@@ -243,6 +290,8 @@ export function buttonsOf(action: ProposalData['action'], sending = false, membe
   if (action === 'archive' || action === 'archive page') return { approve: 'Archive', reject: 'Keep it open' };
   if (action === 'reopen page') return { approve: 'Reopen', reject: 'Keep it archived' };
   if (action === 'convert') return { approve: 'Share', reject: 'Keep it only mine' };
+  if (action === 'include') return { approve: 'Include', reject: 'Don’t include' };
+  if (action === 'exclude') return { approve: 'Stop including', reject: 'Keep it' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
     : action === 'change'
@@ -367,6 +416,23 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
         : { kind: 'expired', heading: 'This suggestion expired', detail: `Nothing was created, and it won’t be suggested again. Ask ${assistant} for it if you want it after all.` };
     }
     return undefined;
+  }
+  if ((action === 'include' || action === 'exclude') && !(request && yours && !request.sent)) {
+    const skill = proposal.included === 'skill';
+    const approved = decidedBy ? `${decidedBy} approved ${yours ? 'your request' : 'it'}. ` : '';
+    if (state === 'approved') {
+      return action === 'include'
+        ? { kind: 'approved', heading: `Included in ${place}`, detail: `${approved}${skill ? 'The skill applies here from now on, as it’s set where it comes from.' : 'Its rules apply here from now on, as they’re set where they come from.'}` }
+        : { kind: 'approved', heading: `No longer included in ${place}`, detail: `${approved}${skill ? 'The skill no longer applies here.' : 'Its rules no longer apply here.'}` };
+    }
+    if (state === 'rejected') {
+      return {
+        kind: 'rejected',
+        heading: action === 'include' ? 'Not included' : 'Still included',
+        detail: [decidedBy && `${decidedBy} didn’t approve ${yours ? 'your request' : 'it'}.`, 'Nothing changed.'].filter(Boolean).join(' '),
+      };
+    }
+    if (isGone(proposal)) return { kind: 'gone', heading: 'No longer included', detail: 'It was removed since, so there’s nothing to decide.' };
   }
   if (state === 'requested') {
     if (!yours) return undefined;

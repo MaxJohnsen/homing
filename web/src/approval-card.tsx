@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, isSending, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, declineOnly, isSending, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
@@ -123,6 +123,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
               ? `Reopen this page in ${placeOf(proposal)}?`
               : proposal.action === 'convert'
               ? `Share ${proposal.space} with others?`
+              : (proposal.action === 'include' || proposal.action === 'exclude') && !sending
+              ? `${proposal.action === 'include' ? 'Include' : 'Stop including'} ${proposal.include?.skill ? `the skill ${proposal.include.skill.name}` : proposal.include?.space ? `the rules from ${proposal.include.space.name}` : proposal.included === 'skill' ? 'a skill' : 'rules from another space'} in ${placeOf(proposal)}?`
               : sending
               ? `Ask the admins of ${placeOf(proposal)} for this change?`
               : proposal.action === 'add'
@@ -151,7 +153,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           />
           {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
-            {proposal.member?.found !== false && (
+            {!declineOnly(proposal) && (
               <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttons!.approve}</Button>
             )}
             <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttons!.reject}</Button>

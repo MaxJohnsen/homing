@@ -1,26 +1,30 @@
 // Making a space in your personal tree collaborative (spec §1): a deliberate conversion. It leaves
 // the personal tree as a space of its own, or goes in a shared space you're an admin of, and
 // exposes nothing by itself: everything in it stays yours until you share it. The guidance it had
-// from the spaces above it in your personal tree stops applying, and you choose what becomes of
-// its rules; its skills are named, to add again where you need them.
+// from the spaces above it in your personal tree stops applying, including what those spaces
+// include from elsewhere, and you choose what becomes of its rules: included there only for you,
+// added for everyone, or let go. Its skills are named, to add again where you need them.
 
 import { personOf, type Session } from './db.ts';
-import { addRule, rulesFor, type Rule } from './guidance.ts';
+import { addInclude, addRule, rulesFor, type Rule } from './guidance.ts';
 import { skillsFor } from './skills.ts';
 import { accessibleSpaces, listSpaces, SpaceRefused, type Space } from './spaces.ts';
+
+/** A rule that stops applying, and whether it's set outside your personal tree, in a space it includes. */
+export type LeavingRule = Rule & { elsewhere: boolean };
 
 /** What sharing the space would do, for its owner to decide. */
 export interface Conversion {
   space: Space;
-  /** The rules from the spaces above it in your personal tree, which stop applying once it leaves. */
-  rulesLeaving: Rule[];
+  /** The rules from the spaces above it in your personal tree, set there or included there, which stop applying once it leaves. */
+  rulesLeaving: LeavingRule[];
   /** The skills from those spaces, which stop applying too. */
   skillsLeaving: { name: string; from: string | null }[];
   /** The shared spaces it can go in: those you're an admin of, with who has them now. */
   places: { id: string; name: string; label: string; people: number; above: boolean }[];
 }
 
-/** What becomes of the rules that stop applying: kept for you there, added there for everyone, or let go. */
+/** What becomes of the rules that stop applying: included there for you, added there for everyone, or let go. */
 export type RulesLeaving = 'keep' | 'share' | 'drop';
 
 /** What sharing a space in your personal tree would do, or undefined when it isn't one. */
@@ -32,8 +36,13 @@ export async function conversionOf(s: Session, spaceId: string): Promise<Convers
   // The spaces above it in the personal tree, below the personal space, whose guidance stays there.
   const above = new Set<string>();
   for (let at = byId.get(space.parentId); at?.parentId; at = byId.get(at.parentId)) above.add(at.id);
-  const rulesLeaving = (await rulesFor(s, spaceId)).filter((rule) => above.has(rule.spaceId));
-  const skillsLeaving = (await skillsFor(s, spaceId)).filter((skill) => above.has(skill.spaceId)).map((skill) => ({ name: skill.name, from: skill.spaceName }));
+  // Set there, or included there, from your personal tree or from elsewhere.
+  const rulesLeaving = (await rulesFor(s, spaceId))
+    .filter((rule) => above.has(rule.includedIn?.spaceId ?? rule.spaceId))
+    .map((rule) => ({ ...rule, elsewhere: !byId.get(rule.spaceId)?.privateTo }));
+  const skillsLeaving = (await skillsFor(s, spaceId))
+    .filter((skill) => above.has(skill.includedIn?.spaceId ?? skill.spaceId))
+    .map((skill) => ({ name: skill.name, from: skill.spaceName }));
 
   // Who has each shared space, as its Members shows them: its members and those of the spaces
   // above it until one is closed, and whether people above that you can't open have it too.
@@ -69,8 +78,12 @@ const sameName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivit
 /**
  * Shares a space from your personal tree: it becomes a space of its own, or goes in a shared space
  * you're an admin of, open to everyone there or closed. Everything in it, and in the spaces under
- * it, stays only yours. The rules that stop applying are kept for you there, added there for
- * everyone, or let go. A space with the same name where it would go is refused, as when creating.
+ * it, stays only yours. The rules that stop applying are kept for you there, by including the
+ * spaces they're set in only for you, so they stay live; or added there for everyone; or let go.
+ * Added for everyone, the rules set in your personal tree are copied there, and a space elsewhere
+ * that it included is included there for everyone, so each person gets its rules only if they can
+ * open it, and never your own. A space with the same name where it would go is refused, as when
+ * creating.
  */
 export async function makeCollaborative(
   s: Session,
@@ -90,10 +103,18 @@ export async function makeCollaborative(
     throw new SpaceRefused('name', `There’s already a space called ${there.name} ${parent ? `in ${parent.name}` : 'on its own'}. Rename this one first, or put it somewhere else.`, there);
   }
   await s.tx`select make_collaborative(${spaceId}::uuid, ${parent?.id ?? null}::uuid, ${input.closed === true})`;
-  if (input.rules !== 'drop') {
-    for (const rule of conversion.rulesLeaving) {
-      await addRule(s, { spaceId, kind: rule.kind, body: rule.body, shared: input.rules === 'share', onlyHere: rule.onlyHere });
+  // Included where they're set, except a space it's in now, whose rules apply in it anyway.
+  const above = new Set((await s.tx<{ id: string }[]>`select id from spaces_above(${spaceId}::uuid)`).map((row) => row.id));
+  const include = async (from: string, shared: boolean) => {
+    if (!above.has(from)) await addInclude(s, { spaceId, included: { space: from }, shared });
+  };
+  if (input.rules === 'keep') {
+    for (const from of new Set(conversion.rulesLeaving.map((rule) => rule.spaceId))) await include(from, false);
+  } else if (input.rules === 'share') {
+    for (const rule of conversion.rulesLeaving.filter((leaving) => !leaving.elsewhere)) {
+      await addRule(s, { spaceId, kind: rule.kind, body: rule.body, shared: true, onlyHere: rule.onlyHere });
     }
+    for (const from of new Set(conversion.rulesLeaving.filter((leaving) => leaving.elsewhere).map((rule) => rule.spaceId))) await include(from, true);
   }
   const [space] = (await listSpaces(s)).filter((candidate) => candidate.id === spaceId);
   return space;

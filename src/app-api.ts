@@ -2,10 +2,10 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
-import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
+import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
-import { readSkill, skillsHere } from './skills.ts';
+import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { addTask, changeTask, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
@@ -105,7 +105,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const conversion = await read((s) => conversionOf(s, route.id));
         if (!conversion) return answer(res, 404, noSpace);
         json(res, 200, {
-          rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName })),
+          rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName, elsewhere: rule.elsewhere })),
           skillsLeaving: conversion.skillsLeaving,
           places: conversion.places,
         });
@@ -263,6 +263,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             text: item.text,
             asked: item.asked,
             member: item.member,
+            included: item.included,
             // For a request: who asked, unless it's the person, and whether it's sent.
             request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null,
             createdAt: item.createdAt,
@@ -281,6 +282,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             action: shortAction[request.action],
             kind: request.kind,
             text: request.text,
+            included: request.included,
             state: request.state,
             requestedAt: request.requestedAt,
             emailed: request.adminsEmailed,
@@ -548,7 +550,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           pages: active.all,
           collections: collections.pages,
           decisions: decisions.pages,
-          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, member: item.member, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
+          waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, member: item.member, included: item.included, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
           // Archived ones last, folded away as in the sidebar.
           spaces: [...spaces].sort((a, b) => Number(a.archived) - Number(b.archived)).map(({ id, name, closed, archived }) => ({ id, name, closed, archived })),
         });
@@ -644,11 +646,15 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'rules': {
-        const rules = await read(async (s) => ((await spaceView(s, route.id)) ? rulesFor(s, route.id) : undefined));
-        if (!rules) return answer(res, 404, noSpace);
+        const found = await read(async (s) => {
+          if (!(await spaceView(s, route.id))) return undefined;
+          const hidden = await notOpen(s, route.id, 'rules');
+          return { rules: await rulesFor(s, route.id), includes: await includesIn(s, route.id), hidden };
+        });
+        if (!found) return answer(res, 404, noSpace);
         json(res, 200, {
           // In the order the assistant gets them, from least to most specific.
-          rules: rules.map((rule) => ({
+          rules: found.rules.map((rule) => ({
             id: rule.id,
             // A space above that the person can't open stays unnamed, and so does its id.
             spaceId: rule.spaceName === null && !rule.personal ? null : rule.spaceId,
@@ -658,8 +664,44 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             text: rule.body,
             shared: rule.privateTo === null,
             onlyHere: rule.onlyHere,
+            includedIn: inclusionData(rule.includedIn),
           })),
+          // Other spaces' rules this space's guidance includes, even those with none yet.
+          includes: [
+            ...found.includes
+              .filter((include) => !include.skill)
+              .map((include) => ({ id: include.id, spaceId: include.from.id, spaceName: include.from.name, shared: include.privateTo === null, waiting: include.waiting })),
+            // For an admin, what the space includes for everyone that they can't open: only that it's there.
+            ...found.hidden,
+          ],
         });
+        break;
+      }
+
+      case 'includable': {
+        // What the person could include here: other spaces they can open, and the skills in them.
+        const found = await read(async (s) => ((await spaceView(s, route.id)) ? includable(s, route.id) : undefined));
+        if (!found) return answer(res, 404, noSpace);
+        json(res, 200, found);
+        break;
+      }
+
+      case 'add include': {
+        const body = await readJson(req);
+        const id = (value: unknown) => (typeof value === 'string' && new RegExp(`^${uuid}$`, 'i').test(value) ? value.toLowerCase() : undefined);
+        const [space, skill] = [id(body.space), id(body.skill)];
+        if (!space === !skill) return answer(res, 400, { message: 'Choose a space or a skill to include.' });
+        const include = await write((s) => addInclude(s, { spaceId: route.id, included: space ? { space } : { skill: skill! }, shared: body.shared === true }));
+        json(res, 200, { id: include.id });
+        break;
+      }
+
+      case 'remove include': {
+        const body = await readJson(req);
+        const space = typeof body.space === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.space) ? body.space.toLowerCase() : undefined;
+        const nothing = { message: 'There’s nothing included here that you can change.' };
+        if (!space || !(await write((s) => removeInclude(s, route.id, space)))) return answer(res, 404, nothing);
+        json(res, 200, {});
         break;
       }
 
@@ -694,10 +736,19 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'skills': {
-        const skills = await read(async (s) => ((await spaceView(s, route.id)) ? skillsHere(s, route.id) : undefined));
-        if (!skills) return answer(res, 404, noSpace);
+        const found = await read(async (s) => ((await spaceView(s, route.id))
+          ? { skills: await skillsHere(s, route.id), hidden: await notOpen(s, route.id, 'skill'), includes: await includesIn(s, route.id) }
+          : undefined));
+        if (!found) return answer(res, 404, noSpace);
+        const { skills, hidden, includes } = found;
         json(res, 200, {
-          skills: skills.map(({ pageId, name, description, spaceId, spaceName, privateTo, used, others }) => ({
+          // For an admin, the skills the space includes for everyone that they can't open: only that they're there.
+          hidden,
+          // The person's own includes of a skill, waiting while the space includes it for everyone.
+          waiting: includes
+            .filter((include) => include.waiting && include.skill)
+            .map((include) => ({ id: include.id, name: include.skill!.name, spaceName: include.from.name })),
+          skills: skills.map(({ pageId, name, description, spaceId, spaceName, privateTo, used, others, includedIn }) => ({
             id: pageId,
             name,
             description,
@@ -706,6 +757,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             shared: privateTo === null,
             used,
             others: others.map((other) => ({ id: other.pageId, spaceName: other.spaceName })),
+            includedIn: inclusionData(includedIn),
           })),
         });
         break;
@@ -747,6 +799,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     }
   } catch (error) {
     if (error instanceof SpaceRefused) return answer(res, error.status, { field: error.field, message: error.message });
+    if (error instanceof IncludeRefused) return answer(res, error.status, { message: error.message });
     if (error instanceof TaskRefused) return answer(res, 400, { field: error.field, message: error.message });
     if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
       return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });
@@ -780,6 +833,24 @@ function placeIn(spaces: Awaited<ReturnType<typeof listSpaces>>) {
   };
 }
 
+/** Where an included rule or skill is included, for the app: a space above the person can't open stays unnamed, and so does its id. */
+function inclusionData(includedIn: Inclusion | null) {
+  if (!includedIn) return null;
+  return {
+    id: includedIn.id,
+    spaceId: includedIn.spaceName === null ? null : includedIn.spaceId,
+    spaceName: includedIn.personal ? 'your personal space' : includedIn.spaceName,
+    shared: includedIn.shared,
+  };
+}
+
+/** For a space's admin, what it includes for everyone that they can't open, of one kind: who added it, and when. */
+async function notOpen(s: Session, spaceId: string, kind: 'rules' | 'skill') {
+  const hidden = (await includesNotOpen(s, spaceId)).filter((include) => include.kind === kind);
+  const names = await peopleNames(s, hidden.map((include) => include.addedBy));
+  return hidden.map((include) => ({ id: include.id, spaceId: null, spaceName: null, shared: true, addedBy: names.get(include.addedBy) ?? null, addedAt: include.addedAt }));
+}
+
 /** Where in a long list to start: from the top, and never past what any list could hold. */
 function clamp(offset: number): number {
   return Number.isFinite(offset) ? Math.min(Math.max(0, Math.floor(offset)), 1_000_000) : 0;
@@ -793,7 +864,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -816,6 +887,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['tasks', `/api/spaces/${uuid}/tasks`],
       ['source', `/api/sources/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],
+      ['includable', `/api/spaces/${uuid}/includable`],
       ['skills', `/api/spaces/${uuid}/skills`],
       ['skill', `/api/skills/${uuid}`],
     ] as const) {
@@ -846,6 +918,8 @@ function routeOf(method: string, path: string): Route | undefined {
       ['add rule', `/api/spaces/${uuid}/rules`],
       ['edit rule', `/api/rules/${uuid}`],
       ['remove rule', `/api/rules/${uuid}/remove`],
+      ['add include', `/api/spaces/${uuid}/includes`],
+      ['remove include', `/api/includes/${uuid}/remove`],
     ] as const) {
       const id = match(pattern);
       if (id) return { name, id };

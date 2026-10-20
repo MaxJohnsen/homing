@@ -3,9 +3,9 @@ import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { parse } from 'yaml';
 import type { Session } from './db.ts';
-import { applying } from './guidance.ts';
+import { applying, applyingAlready, inclusionColumns, inclusionJoin, withInclusion, type Inclusion } from './guidance.ts';
 import { checkSpace, current, insertItem, itemColumns, sideOf, visible, visibleContent, type Item } from './knowledge.ts';
-import { accessibleSpaces } from './spaces.ts';
+import { accessibleSpaces, listSpaces } from './spaces.ts';
 
 /** A file in a skill's folder, such as SKILL.md or references/tone.md. */
 export interface SkillFile {
@@ -21,6 +21,8 @@ export interface Skill {
   /** The name of the skill's space, or null when the viewer can't open it. */
   spaceName: string | null;
   privateTo: string | null;
+  /** For a skill another space's guidance includes, the include that brings it. Null for one set where it applies. */
+  includedIn: Inclusion | null;
 }
 
 /** The largest file Homing keeps in a skill for now, so it can still be searched. */
@@ -129,28 +131,13 @@ export async function removeSkill(s: Session, pageId: string): Promise<boolean> 
  * The skills that apply in a space, by name. A skill in a more specific
  * space replaces an inherited one with the same name, personal skills are
  * the least specific, and between equally specific ones the private one
- * wins. The agent picks the ones a task needs by their descriptions.
+ * wins. One a space's guidance includes counts as set in that space, after
+ * the skills set there. The agent picks the ones a task needs by their
+ * descriptions.
  */
 export async function skillsFor(s: Session, spaceId: string): Promise<Skill[]> {
-  const skills = await s.tx<(Omit<Skill, 'description'> & { skillMd: string | null })[]>`
-    ${applying(s, spaceId)}
-    select distinct on (t.body) t.page_id, t.body as name, t.space_id, sp.name as space_name, t.private_to, f.body as skill_md
-    from applies a
-    join content t on t.space_id = a.space_id and t.kind = 'title'
-    join pages p on p.id = t.page_id and p.type = 'skill'
-    join lateral (
-      select f.body from content f
-      where f.page_id = t.page_id and f.kind = 'file' and f.path = 'SKILL.md'
-        and f.private_to is not distinct from t.private_to
-        and ${visibleContent(s, 'f')} and ${current(s, 'f')}
-      order by f.created_at
-      limit 1
-    ) f on true
-    left join spaces sp on sp.id = t.space_id and sp.id in (${accessibleSpaces(s)})
-    where ${visibleContent(s, 't')}
-    order by t.body, a.distance, t.private_to is null
-  `;
-  return skills.map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd ?? '').description ?? '' }));
+  const used = new Set<string>();
+  return (await applyingSkills(s, spaceId)).filter((skill) => !used.has(skill.name) && used.add(skill.name));
 }
 
 /** A skill that applies in a space, and whether another with its name is used there instead. */
@@ -164,34 +151,104 @@ export interface SkillHere extends Skill {
 /**
  * Every skill that applies in a space, including the ones a closer skill with the same name
  * replaces, in the order skillsFor picks them: by name, the closest first, and between equally
- * close ones the private one.
+ * close ones the one set there before an included one, and the private one.
  */
 export async function skillsHere(s: Session, spaceId: string): Promise<SkillHere[]> {
-  const rows = await s.tx<(Omit<Skill, 'description'> & { skillMd: string | null })[]>`
-    ${applying(s, spaceId)}
-    select t.page_id, t.body as name, t.space_id, sp.name as space_name, t.private_to, f.body as skill_md
-    from applies a
-    join content t on t.space_id = a.space_id and t.kind = 'title'
-    join pages p on p.id = t.page_id and p.type = 'skill'
-    join lateral (
-      select f.body from content f
-      where f.page_id = t.page_id and f.kind = 'file' and f.path = 'SKILL.md'
-        and f.private_to is not distinct from t.private_to
-        and ${visibleContent(s, 'f')} and ${current(s, 'f')}
-      order by f.created_at
-      limit 1
-    ) f on true
-    left join spaces sp on sp.id = t.space_id and sp.id in (${accessibleSpaces(s)})
-    where ${visibleContent(s, 't')} and ${current(s, 't')}
-    order by t.body, a.distance, t.private_to is null
-  `;
-  const skills = rows.map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd ?? '').description ?? '' }));
+  const skills = await applyingSkills(s, spaceId);
   return skills.map((skill) => {
     const named = skills.filter((other) => other.name === skill.name);
     const used = named[0] === skill;
     const others = used ? named.slice(1) : [named[0]];
     return { ...skill, used, others: others.map(({ pageId, spaceName }) => ({ pageId, spaceName })) };
   });
+}
+
+/** Every skill that applies in a space, each once, where it is closest, in the order skillsFor picks them. */
+async function applyingSkills(s: Session, spaceId: string): Promise<Skill[]> {
+  const rows = await s.tx<(Omit<Skill, 'description' | 'includedIn'> & { skillMd: string | null; includeId: string | null; includeSpace: string | null; includeSpaceName: string | null; includePersonal: boolean; includeShared: boolean })[]>`
+    ${applying(s, spaceId)}
+    select r.page_id, r.name, r.space_id, sp.name as space_name, r.private_to, f.body as skill_md, ${inclusionColumns(s)}
+    from (
+      select t.page_id, t.body as name, t.space_id, t.private_to, a.distance,
+             null::uuid as include_id, null::uuid as include_space, null::uuid as include_private
+      from applies a
+      join content t on t.space_id = a.space_id and t.kind = 'title'
+      join pages p on p.id = t.page_id and p.type = 'skill'
+      where ${visibleContent(s, 't')} and ${current(s, 't')}
+      union all
+      -- What an include brings is read as the viewer, from a space they can open.
+      select t.page_id, t.body, t.space_id, t.private_to, i.distance, i.include_id, i.include_space, i.include_private
+      from included i
+      join content t on t.page_id = i.skill_id and t.kind = 'title'
+      join pages p on p.id = t.page_id and p.type = 'skill'
+      where ${visible(s, 't')} and ${current(s, 't')}
+    ) r
+    join lateral (
+      select f.body from content f
+      where f.page_id = r.page_id and f.kind = 'file' and f.path = 'SKILL.md'
+        and f.private_to is not distinct from r.private_to
+        and ${visibleContent(s, 'f')} and ${current(s, 'f')}
+      order by f.created_at
+      limit 1
+    ) f on true
+    left join spaces sp on sp.id = r.space_id and sp.id in (${accessibleSpaces(s)})
+    ${inclusionJoin(s, 'r')}
+    order by r.name, r.distance, r.include_id is not null, r.include_private is null, r.private_to is null
+  `;
+  const seen = new Set<string>();
+  return rows
+    .filter((row) => !seen.has(row.pageId) && seen.add(row.pageId))
+    .map(({ skillMd, ...skill }) => ({ ...withInclusion(skill), description: frontmatter(skillMd ?? '').description ?? '' }));
+}
+
+/**
+ * What the person could include in a space: the other spaces they can open whose rules don't
+ * apply there already, and the skills set in those spaces. Each says where it is, and whether
+ * it's only theirs, which can be included only for them.
+ */
+export async function includable(s: Session, spaceId: string) {
+  const spaces = await listSpaces(s);
+  const space = spaces.find((candidate) => candidate.id === spaceId);
+  if (!space) return undefined;
+  const byId = new Map(spaces.map((candidate) => [candidate.id, candidate]));
+  const personal = (candidate: (typeof spaces)[number]) => candidate.privateTo !== null && candidate.parentId === null;
+  // "Website, in Acme", or "Writing, in your personal space", as New space says where a space is.
+  const label = (candidate: (typeof spaces)[number]) => {
+    const above: string[] = [];
+    for (let at = candidate.parentId ? byId.get(candidate.parentId) : undefined; at; at = at.parentId ? byId.get(at.parentId) : undefined) {
+      above.unshift(personal(at) ? 'your personal space' : at.name);
+    }
+    return above.length ? `${candidate.name}, in ${above.join(' › ')}` : candidate.name;
+  };
+  const applies = await applyingAlready(s, spaces, space);
+  const others = spaces.filter((candidate) => !applies.has(candidate.id));
+  const skills = others.length
+    ? await s.tx<{ id: string; name: string; spaceId: string; privateTo: string | null; skillMd: string | null }[]>`
+        select t.page_id as id, t.body as name, t.space_id, t.private_to, f.body as skill_md
+        from content t
+        join pages p on p.id = t.page_id and p.type = 'skill'
+        left join lateral (
+          select f.body from content f
+          where f.page_id = t.page_id and f.kind = 'file' and f.path = 'SKILL.md' and f.private_to is not distinct from t.private_to
+            and ${visible(s, 'f')} and ${current(s, 'f')}
+          limit 1
+        ) f on true
+        where t.kind = 'title' and t.space_id in ${s.tx(others.map((candidate) => candidate.id))} and ${visible(s, 't')} and ${current(s, 't')}
+        order by t.body, t.created_at
+      `
+    : [];
+  return {
+    spaces: others
+      .map((candidate) => ({ id: candidate.id, name: candidate.name, label: label(candidate), onlyYours: candidate.privateTo !== null }))
+      .sort((a, b) => a.label.localeCompare(b.label)),
+    skills: skills.map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      description: frontmatter(skill.skillMd ?? '').description ?? '',
+      from: label(byId.get(skill.spaceId)!),
+      onlyYours: skill.privateTo !== null,
+    })),
+  };
 }
 
 /** A skill as its own page shows it: what it does, its instructions and its other files. */
@@ -233,6 +290,7 @@ export async function readSkill(s: Session, pageId: string): Promise<SkillView |
     spaceId: title.spaceId,
     spaceName: space?.name ?? null,
     privateTo: title.privateTo,
+    includedIn: null,
     instructions: skillMd.replace(/^\uFEFF?---\r?\n[\s\S]*?\r?\n---(\r?\n|$)/, '').trim(),
     files: files.filter((file) => file.path !== 'SKILL.md'),
     replaces: above.map(({ pageId: other, spaceName }) => ({ pageId: other, spaceName })),

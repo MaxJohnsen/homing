@@ -4,7 +4,7 @@ import { McpServer, type CallToolResult } from '@modelcontextprotocol/server';
 import postgres from 'postgres';
 import * as z from 'zod';
 import { AccessDenied, personOf, withPrincipal, type Session, type Sql } from './db.ts';
-import { rulesFor, type Rule, type RuleKind } from './guidance.ts';
+import { includesIn, IncludeRefused, rulesFor, type Rule, type RuleKind } from './guidance.ts';
 import {
   archivedPages,
   archivePage,
@@ -30,7 +30,7 @@ import {
   type Item,
 } from './knowledge.ts';
 import { afterDecision, type Notifier } from './notify.ts';
-import { decide, NotSuggested, openProposals, proposalData, proposeMemberChange, proposePageArchive, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
+import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, suggestArchive, requestsIn, suggestSpace, Undecidable, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, TaskRefused, tasksIn } from './tasks.ts';
@@ -57,9 +57,15 @@ const text = () => z.string().trim().min(1).max(20_000);
 const approvalCard = 'ui://homing/approval.html';
 
 const guidanceInput = z.strictObject({
-  space: text().describe('The space the rule is in, such as space:…'),
-  change: z.enum(['add', 'change', 'remove']),
+  space: text().describe('The space the rule is in, or whose guidance includes another space’s rules or a skill, such as space:…'),
+  change: z.enum(['add', 'change', 'remove', 'include', 'stop including']),
   rule: text().optional().describe('The rule to change or remove, such as item:…'),
+  include: text()
+    .optional()
+    .describe(
+      'For include or stop including: another space whose rules to include, such as space:…, or a skill, such as page:…. Included, they stay where they’re set and apply here, before the rules set here. ' +
+        "Keep the space's name out of why: admins who can't open it see the reason too",
+    ),
   kind: z
     .enum(['requirement', 'preference'])
     .optional()
@@ -68,7 +74,7 @@ const guidanceInput = z.strictObject({
   shared: z
     .boolean()
     .optional()
-    .describe("For a new rule: true for everyone in the space, which its admins decide. Otherwise only for the user"),
+    .describe("For a new rule or an include: true for everyone in the space, which its admins decide. Otherwise only for the user"),
   onlyHere: z.boolean().optional().describe('For a new rule: true to keep it out of the spaces below this one'),
   why: text().optional().describe('Why the user wants it, in their words, for whoever decides'),
 }).describe('For guidance.propose');
@@ -206,8 +212,9 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
     },
     ({ query, space }) =>
       answer(async (s) => {
-        const hits = await search(s, query, { spaceId: space && parseRef(space, 'space') });
-        return hits.length ? (await describeHits(s, hits)).join('\n') : 'No matches.';
+        const spaceId = space && parseRef(space, 'space');
+        const hits = await search(s, query, { spaceId });
+        return hits.length ? (await describeHits(s, hits, spaceId)).join('\n') : 'No matches.';
       }),
   );
 
@@ -281,7 +288,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
     {
       title: 'Act',
       description:
-        'Makes a change for the user. guidance.propose proposes adding, changing or removing a rule: ' +
+        'Makes a change for the user. guidance.propose proposes adding, changing or removing a rule, or including another space’s rules or a skill in a space’s guidance by link, or no longer: ' +
         'nothing changes until the user approves the exact change in Homing, and nobody can approve it for them. ' +
         "A member's change to a space's shared rules becomes a request to its admins, which the user sends first. " +
         "Don't offer a rule only for the user instead, since that isn't the same thing. Give the user the link it returns. " +
@@ -469,7 +476,7 @@ async function respond(sql: Sql, principal: AgentPrincipal, fn: (s: Session) => 
 
 /** What to tell the agent when Homing refuses a request on purpose. */
 function refusal(error: unknown): string | undefined {
-  if (error instanceof AccessDenied || error instanceof Refused) return error.message;
+  if (error instanceof AccessDenied || error instanceof Refused || error instanceof IncludeRefused) return error.message;
   if (error instanceof postgres.PostgresError) {
     if (error.constraint_name === 'pages_type_check') return 'Guidance and skill pages are reserved for guidance.';
     if (error.message === 'only people change guidance') return onlyPeople;
@@ -573,6 +580,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
           '\n## Rules',
           'These apply here, from least to most specific. A more specific preference wins over a less specific one, ' +
             'and between equally specific preferences the private one wins. No preference wins over a requirement. ' +
+            'A rule another space’s guidance includes counts as set where it’s included, before the rules set there. ' +
             'If two requirements conflict, stop before doing what they conflict on, and tell the user which rules conflict.',
           ...rules.map((rule) => `- ${describeRule(rule)} (${ref('item', rule.id)})`),
         ]
@@ -608,7 +616,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
       ? [
           '\n## Skills',
           'How to do particular tasks here. Read a skill with `read` before a task it describes.',
-          ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)})`),
+          ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)}${skill.includedIn ? `, from ${skill.spaceName}, included in ${skill.includedIn.personal ? 'your personal space' : (skill.includedIn.spaceName ?? 'a space above')}${skill.includedIn.shared ? '' : ' for you'}` : ''})`),
         ]
       : []),
     ...(tasks.length
@@ -677,6 +685,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
       ].join('\n');
     }
     if (page.type === 'guidance') {
+      const includes = await includesIn(s, page.spaceId);
       return [
         `# Guidance for ${space?.name ?? 'a space above'}`,
         `The rules you can see here (${ref('page', page.id)}). Only people change them: propose a change with \`act\`.`,
@@ -685,6 +694,17 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
           (item) =>
             `- ${capitalize(item.kind)}: ${oneLine(item.body)} (${ref('item', item.id)}, ${side(item.privateTo)}${item.reachesDown ? '' : ', only here'})`,
         ),
+        ...(includes.length
+          ? [
+              '\n## Included',
+              'Guidance set elsewhere that applies here too, by link: `context` gives the rules and skills it brings, as they are now.',
+              ...includes.map(
+                (include) =>
+                  `- ${include.skill ? `The skill ${include.skill.name} (${ref('page', include.skill.pageId)}), from ${include.from.name}` : `Rules from ${include.from.name} (${ref('space', include.from.id)})`}, ${include.privateTo ? 'private' : 'shared'}` +
+                  (include.waiting ? ', waiting: the space includes it for everyone, so the user’s own applies again only if that one stops' : ''),
+              ),
+            ]
+          : []),
       ].join('\n');
     }
     const { collections, mentionedOn } = await linksOf(s, page.id);
@@ -890,8 +910,9 @@ async function proposeGuidance(
   links: Links,
   input: {
     space: string;
-    change: 'add' | 'change' | 'remove';
+    change: 'add' | 'change' | 'remove' | 'include' | 'stop including';
     rule?: string;
+    include?: string;
     kind?: RuleKind;
     text?: string;
     shared?: boolean;
@@ -902,7 +923,21 @@ async function proposeGuidance(
 ): Promise<string | Answer> {
   const spaceId = parseRef(input.space, 'space');
   let proposal: Proposal;
-  if (input.change === 'add') {
+  if (input.change === 'include' || input.change === 'stop including') {
+    if (!input.include) throw new Refused('Name the space whose rules to include, such as space:…, or the skill, such as page:….');
+    const target = parseAnyRef(input.include);
+    if (target.kind !== 'space' && target.kind !== 'page') throw new Refused(`Expected a space or a skill, such as space:… or page:…, but got "${input.include}".`);
+    const included = target.kind === 'space' ? { space: target.id } : { skill: target.id };
+    if (input.change === 'include') {
+      proposal = await proposeInclude(s, { action: 'add include', spaceId, included, shared: input.shared, why: input.why });
+    } else {
+      // The user's own include of it there, unless they mean the one for everyone.
+      const includes = (await includesIn(s, spaceId)).filter((include) => (include.skill?.pageId ?? include.from.id) === target.id && (include.skill ? target.kind === 'page' : target.kind === 'space'));
+      const include = includes.find((candidate) => (input.shared === undefined ? candidate.privateTo !== null : (candidate.privateTo === null) === input.shared)) ?? (input.shared === undefined ? includes[0] : undefined);
+      if (!include) throw new Refused(`This space doesn't include ${input.include}${input.shared === true ? ' for everyone' : input.shared === false ? ' for the user' : ''}.`);
+      proposal = await proposeInclude(s, { action: 'remove include', spaceId, includeId: include.id, why: input.why });
+    }
+  } else if (input.change === 'add') {
     if (!input.kind || !input.text) throw new Refused('A new rule needs its kind and its text.');
     proposal = await proposeRule(s, { action: 'add rule', spaceId, kind: input.kind, text: input.text, shared: input.shared, onlyHere: input.onlyHere, why: input.why });
   } else {
@@ -1314,6 +1349,17 @@ function describeProposal(proposal: Proposal): string {
     return { add: `Add ${who} to the space`, 'make admin': `Make ${who} an admin of the space`, 'make member': `Make ${who} a member of the space, not an admin`, remove: `Remove ${who} from the space` }[change.member!];
   }
   const ask = proposal.request ? 'Ask the admins to ' : '';
+  if (proposal.action === 'add include' || proposal.action === 'remove include') {
+    // Named only for someone who can open it.
+    const { target } = proposal;
+    const what = target?.skill
+      ? `the skill ${ref('page', target.skill)}`
+      : target?.space
+        ? `the rules of ${ref('space', target.space)}`
+        : change.what === 'skill' ? 'a skill from a space you can’t open' : 'rules from a space you can’t open';
+    const verb = proposal.action === 'add include' ? 'include' : 'stop including';
+    return `${ask}${ask ? verb : capitalize(verb)} ${what} (${change.shared ? 'shared' : 'private'})`;
+  }
   if (proposal.action === 'add rule') {
     const where = [change.shared ? 'shared' : 'private', change.onlyHere && 'only here'].filter(Boolean).join(', ');
     return `${ask}${ask ? 'add' : 'Add'} a ${change.kind} (${where}): ${quote(change.text!)}`;
@@ -1397,8 +1443,13 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
   }
 }
 
-async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
+/** The hits as an agent reads them. Searching within a space, a rule or skill from elsewhere is one its guidance includes. */
+async function describeHits(s: Session, hits: Hit[], within?: string): Promise<string[]> {
   const spaces = new Map((await listSpaces(s)).map((space) => [space.id, space]));
+  const inside = (spaceId: string) => {
+    for (let at = spaces.get(spaceId); at; at = at.parentId ? spaces.get(at.parentId) : undefined) if (at.id === within) return true;
+    return false;
+  };
   return hits.map((hit) => {
     const label =
       hit.kind === 'page'
@@ -1409,7 +1460,8 @@ async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
             ? `Rule: ${oneLine(hit.text)}`
             : `${hit.title ? `${oneLine(hit.title)}: ` : ''}${oneLine(hit.text)}`;
     const space = spaces.get(hit.spaceId);
-    const where = `in ${space?.name ?? 'a space above'}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}`;
+    const included = within && !inside(hit.spaceId) ? ', included here' : '';
+    const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
       hit.replacedForYou && "What others still see. The user's private update replaces it for them.",
@@ -1420,10 +1472,14 @@ async function describeHits(s: Session, hits: Hit[]): Promise<string[]> {
   });
 }
 
-/** "Preference, from Acme, private: Write reports in Norwegian." */
+/** "Preference, from Acme, private: Write reports in Norwegian.", or one an include brings: "…, from Standards (space:…), included in Acme: …" */
 function describeRule(rule: Rule): string {
   const from = rule.personal ? 'your personal space' : (rule.spaceName ?? 'a space above');
-  return `${capitalize(rule.kind)}, from ${from}${rule.privateTo ? ', private' : ''}: ${oneLine(rule.body)}`;
+  const { includedIn } = rule;
+  const included = includedIn
+    ? ` (${ref('space', rule.spaceId)}), included in ${includedIn.personal ? 'your personal space' : (includedIn.spaceName ?? 'a space above')}${includedIn.shared ? '' : ' for you'}`
+    : '';
+  return `${capitalize(rule.kind)}, from ${from}${included}${rule.privateTo ? ', private' : ''}: ${oneLine(rule.body)}`;
 }
 
 /** Text from outside Homing, quoted so it can't pass for Homing's own words. */

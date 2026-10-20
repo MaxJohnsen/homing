@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { AccessDenied, authDatabaseUrl } from '../src/db.ts';
-import { addRule, editRule, removeRule, rulesFor } from '../src/guidance.ts';
+import { addInclude, addRule, editRule, IncludeRefused, includesIn, removeRule, rulesFor } from '../src/guidance.ts';
 import {
   addSource,
   createPage,
@@ -34,12 +34,13 @@ import {
   type Item,
   type Source,
 } from '../src/knowledge.ts';
-import { decide, openProposals, proposeRule, readProposal, type Proposal } from '../src/proposals.ts';
+import { decide, openProposals, proposeInclude, proposeRule, readProposal, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor } from '../src/skills.ts';
 import { addTask } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.ts';
-import { admin, as, authDb, db, member, person, refused, type Person } from './helpers.ts';
+import { Assistant, assistants, testAssistants } from './assistant.ts';
+import { admin, as, authDb, db, member, person, refused, type Member, type Person } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 interface Client {
@@ -221,6 +222,16 @@ for (const [layer, sql] of [
         assert.equal(await as(me, (s) => decide(s, target.proposal.id, { approve: true }), sql), undefined);
         const skill = [{ path: 'SKILL.md', body: '---\nname: hello\ndescription: Hello\n---\n' }];
         await assert.rejects(as(me, (s) => saveSkill(s, { spaceId: target.space, files: skill, shared: true }), sql), AccessDenied);
+        // Nor include the other client's rules or skill in their own space, directly or through their assistant.
+        for (const included of [{ space: target.space }, { skill: target.skill.pageId }]) {
+          for (const shared of [true, false]) {
+            await assert.rejects(as(me, (s) => addInclude(s, { spaceId: intruder.space, included, shared }), sql), IncludeRefused);
+            await assert.rejects(
+              as({ ...intruder.person, agent: 'Claude' }, (s) => proposeInclude(s, { action: 'add include', spaceId: intruder.space, included, shared }), sql),
+              IncludeRefused,
+            );
+          }
+        }
       }
       await assertUntouched();
     });
@@ -317,6 +328,24 @@ describe('straight against the database', () => {
           insert into proposals (space_id, private_to, action, page_id, change)
           values (${space}, ${me.id}, 'archive page', ${page}, '{}')
         `), refused);
+      }
+
+      // Nor include the other client's rules or skill in their own space, for anyone, nor propose it.
+      for (const [column, id] of [['space_included', target.space], ['skill_included', target.skill.pageId]] as const) {
+        for (const privateTo of [null, me.id]) {
+          await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`
+            insert into includes (space_id, private_to, ${s.tx(column)}) values (${intruder.space}, ${privateTo}, ${id})
+          `), refused);
+        }
+        // A proposal of their own to include it never gets to say what it would include.
+        await assert.rejects(as({ ...me, agent: 'Claude' }, async (s) => {
+          const [proposal] = await s.tx`
+            insert into proposals (space_id, private_to, action, change)
+            values (${intruder.space}, ${me.id}, 'add include', ${s.tx.json({ shared: false })})
+            returning id
+          `;
+          await s.tx`insert into proposal_includes (proposal_id, ${s.tx(column)}) values (${proposal.id}, ${id})`;
+        }), refused);
       }
 
       // Nor a rule on the other client's guidance page, editing directly.
@@ -692,6 +721,97 @@ describe('through the app’s endpoints', () => {
       assert.equal(answer.status, 404, path);
       assert.doesNotMatch(JSON.stringify(answer.body), /salary|raise|worries|fears|diary/);
     }
+  });
+});
+
+describe('through an include', () => {
+  let homing: Homing;
+  let ana: Member, ben: Member;
+  let acme: string, lounge: string, rule: string;
+  // What Ben must never learn: Acme's rules and skill, and that the lounge includes them.
+  const secret = /Acme|acme-invoice|prices|Norwegian/;
+
+  before(async () => {
+    homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
+    [ana, ben] = [await member(homing.url, 'Ana'), await member(homing.url, 'Ben')];
+    // Ana's client Acme, which Ben can't open, and a lounge they share, whose guidance includes
+    // Acme's rules, first for Ana and then for everyone, and Acme's skill.
+    ({ acme, lounge, rule } = await as({ person: ana.id, direct: true }, async (s) => {
+      const acme = await createSpace(s, { name: 'Acme' });
+      const rule = await addRule(s, { spaceId: acme, kind: 'requirement', body: 'Never send Acme prices by email', shared: true });
+      await addRule(s, { spaceId: acme, kind: 'preference', body: 'Ana writes Acme reports in Norwegian' });
+      const skill = await saveSkill(s, { spaceId: acme, files: [{ path: 'SKILL.md', body: '---\nname: acme-invoice\ndescription: How Acme wants invoices\n---\n' }], shared: true });
+      const lounge = await createSpace(s, { name: 'Lounge' });
+      await addMember(s, lounge, ben.id);
+      await addRule(s, { spaceId: lounge, kind: 'preference', body: 'Keep lounge notes short', shared: true });
+      await addInclude(s, { spaceId: lounge, included: { space: acme } });
+      await addInclude(s, { spaceId: lounge, included: { space: acme }, shared: true });
+      await addInclude(s, { spaceId: lounge, included: { skill: skill.pageId }, shared: true });
+      return { acme, lounge, rule: rule.id };
+    }));
+  });
+
+  after(() => homing.close());
+
+  test('someone who can’t open the included space gets nothing through it, through Homing', async () => {
+    for (const sql of [db, admin]) {
+      await as(ben, async (s) => {
+        assert.deepEqual(bodies(await rulesFor(s, lounge)), ['Keep lounge notes short']);
+        assert.deepEqual(await skillsFor(s, lounge), []);
+        assert.deepEqual(await includesIn(s, lounge), []);
+        for (const text of ['prices', 'Norwegian', 'invoice', 'acme']) {
+          assert.equal((await search(s, text)).length, 0, text);
+          assert.equal((await search(s, text, { spaceId: lounge })).length, 0, text);
+        }
+        assert.equal(await readItem(s, rule), undefined);
+      }, sql);
+      // Ana, who can open Acme, gets it there.
+      assert.deepEqual(bodies(await as(ana, (s) => rulesFor(s, lounge), sql)), ['Never send Acme prices by email', 'Ana writes Acme reports in Norwegian', 'Keep lounge notes short']);
+    }
+  });
+
+  test('nor through his assistant or the app', async () => {
+    const claude = new Assistant(homing.url, assistants.claude);
+    await claude.connect(ben.browser);
+    const chat = await claude.open();
+    const [{ guidance }] = await admin`select id as guidance from pages where space_id = ${lounge} and type = 'guidance'`;
+    const answers = [
+      await chat.call('context', { request: 'Send the invoice', space: `space:${lounge}` }),
+      await chat.call('search', { query: 'prices invoice Norwegian' }),
+      await chat.call('search', { query: 'prices invoice Norwegian', space: `space:${lounge}` }),
+      await chat.call('read', { ref: `page:${guidance}` }),
+      await chat.call('read', { ref: `item:${rule}` }),
+      await chat.call('act', { action: 'guidance.propose', input: { space: `space:${lounge}`, change: 'include', include: `space:${acme}` } }),
+      await chat.call('act', { action: 'guidance.propose', input: { space: `space:${lounge}`, change: 'stop including', include: `space:${acme}` } }),
+    ];
+    assert.match(answers[0].text, /Keep lounge notes short/);
+    assert.deepEqual(answers.slice(4).map((answer) => answer.failed), [true, true, true]);
+    for (const answer of answers) assert.doesNotMatch(answer.text, secret);
+
+    const seen = [];
+    for (const path of [`/api/spaces/${lounge}/rules`, `/api/spaces/${lounge}/skills`, `/api/spaces/${lounge}/includable`, '/api/waiting', '/api/search?q=prices', '/api/search?q=invoice']) {
+      const { status, body } = await ben.browser.json(path);
+      assert.equal(status, 200, path);
+      seen.push(body);
+    }
+    assert.deepEqual(seen[0].includes, []);
+    assert.doesNotMatch(JSON.stringify(seen), secret);
+    const [include] = await admin`select id from includes where space_id = ${lounge} and private_to is null and space_included = ${acme}`;
+    assert.equal((await ben.browser.json(`/api/includes/${include.id}/remove`, { space: lounge })).status, 404);
+    assert.equal((await ben.browser.json(`/api/spaces/${lounge}/includes`, { space: acme })).status, 404);
+  });
+
+  test('nor straight against the database', async () => {
+    await as(ben, async (s) => {
+      assert.equal((await s.tx`select * from includes`).length, 0);
+      assert.deepEqual((await s.tx`select body from content where kind <> 'removed'`).map((row) => row.body), ['Keep lounge notes short']);
+      // Asking whether he could open Acme says only no.
+      assert.deepEqual([...(await s.tx`select include_open(${acme}::uuid, null) as open`)], [{ open: false }]);
+    });
+    // He can't remove or delete what he can't see, even editing directly.
+    assert.equal((await as({ person: ben.id, direct: true }, (s) => s.tx`update includes set removed_at = now() where space_id = ${lounge} returning id`)).length, 0);
+    await assert.rejects(as(ben, (s) => s.tx`delete from includes where space_id = ${lounge}`), refused);
+    assert.equal((await admin`select count(*)::int as count from includes where space_id = ${lounge} and removed_at is null`)[0].count, 2);
   });
 });
 

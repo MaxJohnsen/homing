@@ -3,7 +3,7 @@ import { cn } from 'cn';
 import welcome from '@/assets/illustrations/welcome.png';
 import { ago, capitalize, count, focusRing, ScreenHeader } from '@/components/screen';
 import type { ChangeData } from '@/lib/knowledge';
-import { eitherOf, placeOf, wantsTo, type RequestData, type WaitingData } from '@/lib/proposals';
+import { eitherOf, placeOf, requestedChange, wantsTo, type RequestData, type WaitingData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import type { SpaceSummary } from '@/lib/spaces';
 import { CopyAddress } from '@/screens/account';
@@ -177,7 +177,7 @@ function YourRequests({ requests, now }: { requests: RequestData[]; now?: Date }
             <Link href={`/proposals/${request.id}`} className={cn('group flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-muted', focusRing)}>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <span className="text-base font-semibold">
-                  You asked the admins of {placeOf({ ...request, personal: false })} to {request.action === 'add' ? 'add a rule' : `${request.action} a ${request.kind}`}
+                  You asked the admins of {placeOf({ ...request, personal: false })} to {requestedChange(request)}
                 </span>
                 {request.text && <span className="line-clamp-2 text-base">{request.text}</span>}
                 <span className="text-sm text-muted-foreground">{statusOf(request, now)}</span>
