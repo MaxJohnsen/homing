@@ -145,7 +145,7 @@ test('by email, the assistant gets the same answer whether or not anyone uses Ho
 
 test('only an admin proposes a change of members, and never in a personal space', async () => {
   const mine = await act({ space: `space:${ana.personalSpaceId}`, person: 'Ben', change: 'add' });
-  assert.match(mine.text, /only ever yours/);
+  assert.match(mine.text, /personal space, so only they have it/);
   // Ben's assistant, as a member of Acme, can't propose changing who's in it.
   const assistant = new Assistant(homing.url, assistants.claude);
   await assistant.connect(ben.browser);
