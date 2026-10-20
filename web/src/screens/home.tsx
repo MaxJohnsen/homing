@@ -129,7 +129,8 @@ export function WaitingRow({ item, now, compact }: { item: WaitingData; now?: Da
       <Link href={`/proposals/${item.id}`} className={cn('group flex items-center gap-4 rounded-xl bg-card px-5 py-4 transition-colors hover:bg-background', focusRing)}>
         <div className="flex min-w-0 flex-1 flex-col gap-1.5">
           <span className="text-base font-semibold">{wantsTo(item, !compact)}</span>
-          {item.text && <span className={cn('line-clamp-2 whitespace-pre-line', compact ? 'text-base' : 'text-lg leading-snug')}>{item.text}</span>}
+          {/* A change of members names who in the line above. */}
+          {item.text && item.action !== 'members' && <span className={cn('line-clamp-2 whitespace-pre-line', compact ? 'text-base' : 'text-lg leading-snug')}>{item.text}</span>}
           <span className="text-sm text-muted-foreground">{capitalize(ago(item.createdAt, now))}</span>
         </div>
         <span className="hidden shrink-0 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors group-hover:bg-primary/90 sm:block">

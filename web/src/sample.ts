@@ -397,3 +397,12 @@ export const suggestedSpace: ProposalData = {
   },
 };
 
+/** Claude proposes adding someone to Acme, by name. */
+export const memberProposal: ProposalData = {
+  ...proposal,
+  id: 'member',
+  action: 'members',
+  text: null,
+  alreadyApplies: [],
+  member: { change: 'add', name: 'Cara Lund', email: 'cara@acme.example', found: true },
+};

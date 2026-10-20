@@ -520,6 +520,8 @@ describe('through the app’s endpoints', () => {
         [`/api/spaces`, { name: 'Hello', who: 'with others', in: target.space }],
         [`/api/spaces`, { name: 'Hello', who: 'just me', in: target.personalSpaceId }],
         [`/api/spaces/${target.space}`, { name: 'Hello' }],
+        [`/api/spaces/${target.space}/members`, { email: 'nobody@example.test' }],
+        [`/api/spaces/${target.space}/members/${target.who.id}`, { change: 'remove' }],
         [`/api/spaces/${target.personalSpaceId}`, { name: 'Hello' }],
       ] as const) {
         const changed = await browser.json(path, body);

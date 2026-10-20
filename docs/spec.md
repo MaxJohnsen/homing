@@ -41,6 +41,7 @@ You can see a space's shared side if you have access to the space, and you alway
 **Knowledge is shared with a space, not with individual members.** Published knowledge is seen by current and future members.
 
 - Adding a member, or making someone an admin of a child space, is a sharing decision, and the interface makes that explicit.
+- Only people change who has access. Admins add people who already use Homing, directly in the app or by approving what their assistant proposes. An assistant names someone the person shares a space with by name, asking which when a name fits several, and anyone else by email. It never learns whether an email has an account: that shows only where the person decides. A space always keeps an admin.
 - A new member sees the knowledge, not the original sources.
 - A group that needs a restricted history uses a separate space.
 

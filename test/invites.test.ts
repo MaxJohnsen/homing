@@ -131,7 +131,7 @@ describe('getting back in', () => {
     await ida.browser.json('/api/invites', { email: address });
     await new Browser(homing.url).join(tokenOf(linkIn(mailTo(address))!), { name: 'Cara', email: address });
 
-    const dan = await member(homing.url, 'Dan');
+    const dan = await member(homing.url, 'Dan', { verified: false });
     const ask = (email: string) => new Browser(homing.url).json('/api/auth/sign-in/magic-link', { email, callbackURL: '/account?recovered' });
     const answers = [await ask(address), await ask(dan.email), await ask(`nobody-${tag()}@acme.test`)];
     // The same answer whatever the address, so the page never says whether an account exists.
@@ -196,8 +196,8 @@ describe('getting back in', () => {
   });
 
   test('you verify your own email, and nobody else’s', async () => {
-    const dan = await member(homing.url, 'Dan');
-    const cara = await member(homing.url, 'Cara');
+    const dan = await member(homing.url, 'Dan', { verified: false });
+    const cara = await member(homing.url, 'Cara', { verified: false });
     assert.equal((await new Browser(homing.url).json('/api/auth/send-verification-email', { email: cara.email })).status, 401);
     assert.equal((await dan.browser.json('/api/auth/send-verification-email', { email: cara.email })).status, 401);
     assert.equal(mailTo(cara.email), undefined);
@@ -212,7 +212,7 @@ describe('getting back in', () => {
 test('with passwords off, nobody joins with one', async () => {
   const strict = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), mailer: undefined, passwords: false });
   try {
-    const ida = await member(strict.url, 'Ida');
+    const ida = await member(strict.url, 'Ida', { verified: false });
     await admin`update people set instance_admin = true where id = ${ida.id}`;
     const browser = new Browser(strict.url);
     const { body } = await browser.json('/api/join', { token: tokenOf((await ida.browser.json('/api/invites', {})).body.link), name: 'Ben', email: `ben-${tag()}@beta.test` });

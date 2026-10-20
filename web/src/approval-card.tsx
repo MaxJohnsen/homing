@@ -4,11 +4,24 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, isSending, outcomeOf, placeOf, wantsTo, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, isSending, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
 const spaceStatus = { ...status, approved: 'Created', rejected: 'Not created' };
+
+/** "Add Cara Lund to Acme?": a change of members as the card asks it. */
+function memberQuestion(proposal: ProposalData, member: NonNullable<ProposalData['member']>): string {
+  const who = member.name ?? member.email ?? 'them';
+  const place = placeOf(proposal);
+  return member.change === 'remove'
+    ? `Remove ${who} from ${place}?`
+    : member.change === 'make admin'
+      ? `Make ${who} an admin of ${place}?`
+      : member.change === 'make member'
+        ? `Make ${who} a member of ${place}, not an admin?`
+        : `Add ${who} to ${place}?`;
+}
 
 /** A change made without a decision, such as a new space: what was done, and where. */
 export interface Done {
@@ -88,6 +101,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
               ? proposal.suggestion?.asked
                 ? `Create this space in ${placeOf(proposal)}?`
                 : `Create the space ${proposal.assistant} suggests?`
+              : proposal.action === 'members' && proposal.member
+              ? memberQuestion(proposal, proposal.member)
               : sending
               ? `Ask the admins of ${placeOf(proposal)} for this change?`
               : proposal.action === 'add'
@@ -96,7 +111,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {proposal.suggestion?.why && <p className="text-sm text-muted-foreground">“{proposal.suggestion.why}”</p>}
+          {(proposal.suggestion?.why ?? proposal.member?.why) && <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why}”</p>}
           <ProposalDetails
             proposal={proposal}
             onlyHere={onlyHere}
@@ -112,8 +127,10 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           />
           {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
-            <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending).approve}</Button>
-            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending).reject}</Button>
+            {proposal.member?.found !== false && (
+              <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending, proposal.member?.change).approve}</Button>
+            )}
+            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending, proposal.member?.change).reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (

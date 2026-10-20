@@ -1,10 +1,14 @@
-import { Fragment, useEffect, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { Avatar, focusRing, ScreenHeader, Section, Tag } from '@/components/screen';
+import { MoreHorizontal } from 'lucide-react';
+import { RadioCards } from '@/components/radio-cards';
 import { Button } from '@/components/ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { Link, type SpaceView } from '@/lib/router';
+import { Label } from '@/components/ui/label';
+import { Link, navigate, type SpaceView } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
 /**
@@ -165,31 +169,226 @@ export function SpaceSettings({ space, rename }: { space: SpaceData; rename: (na
   );
 }
 
-/** Who can open the space, and who looks after it. */
-export function Members({ space }: { space: SpaceData }) {
+/** Changing who is in a space, directly. Resolves to what went wrong, if anything. */
+export interface MemberActions {
+  add: (email: string, admin: boolean) => Promise<{ problem: string; field?: string } | { name: string }>;
+  change: (personId: string, change: 'make admin' | 'make member' | 'remove') => Promise<string | undefined>;
+}
+
+type Member = SpaceData['members'][number];
+
+/**
+ * Who can open the space, and who looks after it. Its admins add someone by email, saying what
+ * they'll see, make someone an admin or a member, and remove them; anyone can leave. Each change
+ * that gives or takes away something asks first, in place. People with access through a space
+ * above are changed there.
+ */
+export function Members({ space, actions }: { space: SpaceData; actions?: MemberActions }) {
   const parent = space.path.at(-1);
+  const managing = Boolean(actions && space.admin && !space.private);
+  const [adding, setAdding] = useState(false);
+  const [status, setStatus] = useState<string>();
   return (
-    <Section
-      title="Members"
-      description={
-        space.closed && parent
-          ? `${space.name} is closed. People in ${parent.name} have access only if they’re added here. Admins change its shared rules, and who has access.`
-          : `They see ${space.name}’s shared knowledge and rules, and the spaces in it that aren’t closed. Admins change its shared rules, and who has access.`
-      }
-    >
-      <ul className="-mx-3 grid gap-1 sm:grid-cols-2">
-        {space.members.map((member) => (
-          <li key={member.id} className="flex items-center gap-3 rounded-xl px-3 py-3">
-            <Avatar name={member.name} className="size-10 text-sm" />
-            <div className="flex min-w-0 flex-1 flex-col">
-              <span className="truncate text-base font-semibold">{member.name}{member.you && ' (you)'}</span>
-              {!member.member && member.through && <span className="truncate text-sm text-muted-foreground">Through {member.through}</span>}
-            </div>
-            {member.admin && <Tag>Admin</Tag>}
-          </li>
-        ))}
-      </ul>
-      {space.reachedFromAbove && <p className="text-sm text-muted-foreground">People who can open the space above it have access too.</p>}
+    <div className="flex flex-col gap-10">
+      {adding && actions && (
+        <AddMember
+          space={space}
+          add={actions.add}
+          onAdded={(name) => setStatus(`Added ${name}. They see ${space.name} from now on.`)}
+          onDone={() => setAdding(false)}
+        />
+      )}
+      <Section
+        title="Members"
+        description={
+          space.closed && parent
+            ? `${space.name} is closed. People in ${parent.name} have access only if they’re added here. Admins change its shared rules, and who has access.`
+            : `They see ${space.name}’s shared knowledge and rules, and the spaces in it that aren’t closed. Admins change its shared rules, and who has access.`
+        }
+      >
+        {managing && !adding && (
+          <div>
+            <Button variant="outline" onClick={() => setAdding(true)}>Add someone</Button>
+          </div>
+        )}
+        {status && <p role="status" className="text-sm text-muted-foreground">{status}</p>}
+        <ul className="-mx-3 grid gap-1 sm:grid-cols-2">
+          {space.members.map((member) => (
+            <MemberRow
+              key={member.id}
+              space={space}
+              member={member}
+              // Admins change anyone in the space itself; anyone else can only leave.
+              change={actions && member.member && (managing || member.you) ? actions.change : undefined}
+              admin={managing}
+              onChanged={setStatus}
+            />
+          ))}
+        </ul>
+        {space.reachedFromAbove && <p className="text-sm text-muted-foreground">People who can open the space above it have access too.</p>}
+      </Section>
+    </div>
+  );
+}
+
+type Confirming = 'make admin' | 'make member' | 'remove';
+
+function MemberRow({ space, member, change, admin, onChanged }: {
+  space: SpaceData;
+  member: Member;
+  change?: MemberActions['change'];
+  /** Whether the reader is an admin, who can change anyone's role. */
+  admin: boolean;
+  onChanged: (status: string) => void;
+}) {
+  const [confirming, setConfirming] = useState<Confirming>();
+  const [problem, setProblem] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const who = member.you ? 'You' : member.name;
+
+  const close = () => {
+    setConfirming(undefined);
+    trigger.current?.focus();
+  };
+  const run = async (what: Confirming) => {
+    setBusy(true);
+    const answer = await change!(member.id, what);
+    setBusy(false);
+    setProblem(answer);
+    if (answer) return;
+    setConfirming(undefined);
+    if (what === 'remove' && member.you) {
+      navigate('/');
+      return;
+    }
+    onChanged(
+      what === 'remove'
+        ? `Removed ${member.name} from ${space.name}.`
+        : what === 'make admin'
+          ? `${who} ${member.you ? 'are' : 'is'} now an admin of ${space.name}.`
+          : `${who} ${member.you ? 'are' : 'is'} now a member of ${space.name}, not an admin.`,
+    );
+  };
+
+  // What each change means, said before it's made, and its two buttons: keep things as they are, or go ahead.
+  const ask: Record<Confirming, { text: string; keep: string; go: string }> = {
+    'make admin': { text: `${member.name} will also change ${space.name}’s shared rules and who’s in it.`, keep: 'Keep as member', go: 'Make admin' },
+    'make member': member.you
+      ? { text: `You’ll no longer change ${space.name}’s shared rules or who’s in it, and can’t make yourself an admin again.`, keep: 'Stay an admin', go: 'Stop being an admin' }
+      : { text: `${member.name} keeps access, but no longer changes ${space.name}’s shared rules or who’s in it.`, keep: 'Keep as admin', go: 'Make member' },
+    remove: member.you
+      ? {
+          text: member.through ? `You’ll no longer be a member of ${space.name}, but still have access through ${member.through}.` : `You lose access to ${space.name} and the spaces in it at once.`,
+          keep: 'Stay',
+          go: `Leave ${space.name}`,
+        }
+      : {
+          text: member.through ? `${member.name} will no longer be a member of ${space.name}, but still has access through ${member.through}.` : `${member.name} loses access to ${space.name} and the spaces in it at once.`,
+          keep: 'Keep them',
+          go: `Remove ${member.name}`,
+        },
+  };
+
+  return (
+    <li className="flex flex-col gap-2 rounded-xl px-3 py-3">
+      <div className="flex items-center gap-3">
+        <Avatar name={member.name} className="size-10 text-sm" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-base font-semibold">{member.name}{member.you && ' (you)'}</span>
+          {!member.member && member.through && <span className="truncate text-sm text-muted-foreground">Through {member.through}</span>}
+        </div>
+        {member.admin && <Tag>Admin</Tag>}
+        {change && (
+          <DropdownMenu>
+            <DropdownMenuTrigger ref={trigger} aria-label={`Change ${member.you ? 'your' : `${member.name}’s`} access`} disabled={busy} className={cn('rounded-full p-2 text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}>
+              <MoreHorizontal aria-hidden="true" className="size-5" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-56">
+              {admin && (member.admin
+                ? <DropdownMenuItem onClick={() => setConfirming('make member')}>{member.you ? 'Stop being an admin' : 'Make a member, not an admin'}</DropdownMenuItem>
+                : <DropdownMenuItem onClick={() => setConfirming('make admin')}>Make an admin</DropdownMenuItem>)}
+              <DropdownMenuItem onClick={() => setConfirming('remove')}>{member.you ? `Leave ${space.name}` : `Remove from ${space.name}`}</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
+      </div>
+      {confirming && (
+        <div role="group" aria-label={ask[confirming].go} className="flex flex-col gap-3 rounded-xl bg-muted p-3">
+          <p className="text-sm">{ask[confirming].text}</p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" disabled={busy} onClick={close} autoFocus>{ask[confirming].keep}</Button>
+            <Button variant={confirming === 'remove' ? 'destructive' : 'default'} disabled={busy} onClick={() => run(confirming)}>{ask[confirming].go}</Button>
+          </div>
+        </div>
+      )}
+      {problem && <FieldError>{problem}</FieldError>}
+    </li>
+  );
+}
+
+/** Adding someone who uses Homing, by email, saying first what they'll see. */
+function AddMember({ space, add, onAdded, onDone }: { space: SpaceData; add: MemberActions['add']; onAdded: (name: string) => void; onDone: () => void }) {
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState<'member' | 'admin'>('member');
+  const [problem, setProblem] = useState<{ field?: string; message: string }>();
+  const [busy, setBusy] = useState(false);
+  const save = async () => {
+    setBusy(true);
+    const answer = await add(email.trim(), role === 'admin');
+    setBusy(false);
+    if ('problem' in answer) {
+      setProblem({ field: answer.field, message: answer.problem });
+      return;
+    }
+    onAdded(answer.name);
+    onDone();
+  };
+
+  return (
+    <Section title="Add someone" tone="raised" className="max-w-2xl" description={`They’ll see ${space.name}’s shared knowledge and rules, including what was shared before they joined, and the spaces in it that aren’t closed.`}>
+      <form
+        className="flex flex-col gap-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (email.trim()) void save();
+        }}
+      >
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="add-member-email" className="text-base">Their email</Label>
+          <Input
+            id="add-member-email"
+            type="email"
+            className="h-11 text-base md:text-base"
+            value={email}
+            onChange={(event) => {
+              setEmail(event.target.value);
+              setProblem(undefined);
+            }}
+            placeholder="The address they sign in to Homing with"
+            aria-invalid={problem?.field === 'email' || undefined}
+            aria-describedby={problem ? 'add-member-problem' : undefined}
+            readOnly={busy}
+            autoFocus
+          />
+        </div>
+        <RadioCards
+          label="Their role"
+          surface="muted"
+          value={role}
+          onChange={setRole}
+          disabled={busy}
+          options={[
+            { value: 'member', label: 'Member', detail: 'Reads and adds to what’s known.' },
+            { value: 'admin', label: 'Admin', detail: 'Also changes its shared rules and who’s in it.' },
+          ]}
+        />
+        {problem && <FieldError id="add-member-problem">{problem.message}</FieldError>}
+        <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+          <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onDone}>Cancel</Button>
+          <Button type="submit" size="lg" className="h-11 text-base sm:px-5" disabled={busy || !email.trim()}>Add to {space.name}</Button>
+        </div>
+      </form>
     </Section>
   );
 }

@@ -24,7 +24,7 @@ import { Search } from '@/screens/search';
 import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { NewSpace } from '@/screens/new-space';
-import { Members, Space, SpaceSettings } from '@/screens/space';
+import { Members, Space, SpaceSettings, type MemberActions } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
 
 /** The signed-in app: the shelf with your spaces, and the screen you're on beside it. */
@@ -143,6 +143,32 @@ function NewSpacePage({ spaces }: { spaces: SpaceSummary[] }) {
   );
 }
 
+/** Changing who is in a space directly, then showing its members as they are now. */
+function memberActions(spaceId: string): MemberActions {
+  const fresh = () => Promise.all([reload(`/api/spaces/${spaceId}`), reload('/api/spaces')]);
+  return {
+    add: async (email, admin) => {
+      try {
+        const added = await api<{ name: string }>(`/api/spaces/${spaceId}/members`, { email, admin });
+        await fresh();
+        return { name: added.name };
+      } catch (error) {
+        return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.', field: error instanceof ApiError ? error.field : undefined };
+      }
+    },
+    change: async (personId, change) => {
+      try {
+        await api(`/api/spaces/${spaceId}/members/${personId}`, { change });
+        // Leaving a space can take it, and the spaces in it, out of your sidebar.
+        await fresh();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) await fresh();
+        return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+      }
+    },
+  };
+}
+
 /** Renaming a space, then showing it, and the sidebar, with its new name. */
 function renameSpace(spaceId: string) {
   return async (name: string) => {
@@ -182,7 +208,7 @@ function SpacePage({ id, view: asked }: { id: string; view: SpaceView }) {
           {view === 'sources' && <Sources space={space} data={sources.data} filters={sources.filters} onFilters={sources.change} />}
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
-          {view === 'members' && !space.private && <Members space={space} />}
+          {view === 'members' && !space.private && <Members space={space} actions={memberActions(id)} />}
           {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} />}
         </Space>
       )}
