@@ -300,6 +300,14 @@ describe('straight against the database', () => {
         `), refused);
       }
 
+      // Nor a proposal to archive the other client's page, in either space.
+      for (const space of [target.space, intruder.space]) {
+        await assert.rejects(as({ ...me, agent: 'Claude' }, (s) => s.tx`
+          insert into proposals (space_id, private_to, action, page_id, change)
+          values (${space}, ${me.id}, 'archive page', ${page}, '{}')
+        `), refused);
+      }
+
       // Nor a rule on the other client's guidance page, editing directly.
       await assert.rejects(as(me, (s) => s.tx`select guidance_page(${target.space})`), refused);
       const [rule] = target.rules;

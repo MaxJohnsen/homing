@@ -140,6 +140,7 @@ Inside an assistant the approval card takes the host's colors, font and corners,
 
 - A change that needs no approval, such as a space only the person will have, which they asked their assistant for, shows what was done, with the space's name set apart, and opens it in Homing. A refused change says nothing changed.
 - A space the assistant suggests on its own, or one the person asked for that others would see, shows the same fields as New space, already filled in, with the assistant's reason for a suggestion. The person can rename it, move it or change who has it before choosing Create space or Don't create, and a suggestion says first that the assistant won't suggest that name again if they don't. Once decided, it says what happened.
+- Archiving a page others see, or reopening one, names the page set apart and says that it leaves, or comes back into, everyday context and the space's list of pages for everyone who sees it, with the assistant's reason for a suggestion of its own. The buttons are Archive and Keep it open, or Reopen and Keep it archived. The decision page shows the same.
 - The assistant can draw the card again later, so it always shows how things stand now, and a decided change stays greyed with its outcome.
 - Only assistants checked to keep the model from pressing its buttons show it, Claude first. The others give the person a link to the decision page.
 

@@ -1,7 +1,7 @@
 // Issue #6, archiving a page (spec §3). Anyone who can see a page archives it directly, for
 // everyone who sees it: it leaves everyday context and the space's list of pages, stays
 // searchable, and is recorded. An assistant archives at once only a page nobody else has anything
-// on; one others see is a person's to archive. Nothing is deleted.
+// on; one others see waits for a person to approve it. Nothing is deleted.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -86,8 +86,11 @@ test('an assistant archives at once only a page nobody else has anything on', as
   assert.equal((await titles(ana)).archived, 1);
   assert.match((await act({ page: `page:${notes}`, reopen: true })).text, /^Reopened "My call notes"/);
 
-  // Cara sees the vendor page, so Ana archives it in Homing; Cara's own draft Ana can't see at all.
-  assert.match((await act({ page: `page:${vendor}` })).text, /Others see that page, so the user archives it in Homing/);
+  // Cara sees the vendor page, so archiving it waits for Ana, and as Claude's own idea only with a
+  // reason; Cara's own draft Ana can't see at all.
+  const vendorAnswer = await act({ page: `page:${vendor}` });
+  assert.ok(vendorAnswer.failed);
+  assert.match(vendorAnswer.text, /Say why the page is no longer active/);
   assert.match((await act({ page: `page:${carasDraft}` })).text, /no page with that reference/);
 
   // Straight against the database too, and never without acting directly or through an assistant.

@@ -45,6 +45,7 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
   if (action === 'publish') return proposal.publication ? <PublishDetails proposal={proposal} publication={proposal.publication} /> : null;
   if (action === 'task') return proposal.task ? <TaskShareDetails place={placeOf(proposal)} task={proposal.task} /> : null;
   if (action === 'archive') return proposal.archive ? <ArchiveDetails proposal={proposal} archive={proposal.archive} /> : null;
+  if (action === 'archive page' || action === 'reopen page') return proposal.page?.title ? <PageArchiveDetails proposal={proposal} title={proposal.page.title} /> : null;
   if (action === 'space') {
     if (!draft || !onDraftChange || !proposal.suggestion) return null;
     // Who has the shared space it would go in, from Homing, since the card can't ask for it.
@@ -91,6 +92,7 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
   if (action === 'publish') return proposal.publication && <ProposedChange kind="preference" label={`On ${proposal.publication.page}`} text={proposal.publication.text} settled />;
   if (action === 'task') return proposal.task && <ProposedChange kind="preference" label="Task" text={proposal.task.title} settled />;
   if (action === 'archive' || action === 'convert') return <ProposedChange kind="preference" label="Space" text={proposal.space} settled />;
+  if (action === 'archive page' || action === 'reopen page') return proposal.page?.title && <ProposedChange kind="preference" label="Page" text={proposal.page.title} settled />;
   if (action === 'space') {
     return suggestion && <p className="rounded-xl bg-muted px-4 py-3 text-base text-muted-foreground">{suggestion.created?.name ?? suggestion.name}</p>;
   }
@@ -197,6 +199,21 @@ function ArchiveDetails({ proposal, archive }: { proposal: ProposalData; archive
     <>
       <ProposedChange kind="preference" label="Space" text={proposal.space} />
       <p className="text-base">{what} Nothing is deleted, and you can reopen it in its Settings.</p>
+    </>
+  );
+}
+
+/** Archiving or reopening a page others see: which, and what it does for everyone who sees it. */
+function PageArchiveDetails({ proposal, title }: { proposal: ProposalData; title: string }) {
+  const where = placeOf(proposal);
+  return (
+    <>
+      <ProposedChange kind="preference" label="Page" text={title} />
+      <p className="text-base">
+        {proposal.action === 'archive page'
+          ? `It leaves everyday context and the list of pages in ${where} for everyone who sees it, and stays searchable. Nothing is deleted, and it can be reopened on the page.`
+          : `It comes back into everyday context and the list of pages in ${where} for everyone who sees it.`}
+      </p>
     </>
   );
 }

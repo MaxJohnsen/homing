@@ -13,8 +13,8 @@ export interface ProposalData {
   personal: boolean;
   /** The space above it, if the person can open that, so two spaces with one name are told apart. */
   within?: string | null;
-  /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, or sharing an item or a task. */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert';
+  /** A rule to add, change or remove, a space an assistant suggests, a change of who is in a space, sharing an item or a task, or archiving or reopening a page. */
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -60,6 +60,11 @@ export interface ProposalData {
   conversion?: (ConversionData & { why: string | null }) | null;
   /** Archiving the space: how many spaces in it go with it, whether only you have it, whether it's archived now, and why. */
   archive?: { spaces: number; private: boolean; archived: boolean; asked?: boolean; why: string | null } | null;
+  /**
+   * Archiving or reopening a page others see: the page as you see it now, untitled when you can't see
+   * it anymore, whether it's archived now, what approving checks it against, why, and whether you asked.
+   */
+  page?: { id: string; title: string | null; archived: boolean; shown: string; asked: boolean; why: string | null } | null;
   member?: {
     change: MemberChange;
     name: string | null;
@@ -150,6 +155,7 @@ export function wantsTo(
     asked?: boolean;
     suggestion?: { asked: boolean } | null;
     archive?: { asked?: boolean } | null;
+    page?: { asked: boolean } | null;
     member?: MemberChange | { change: MemberChange; name: string | null; email: string | null } | null;
     text?: string | null;
   },
@@ -163,6 +169,11 @@ export function wantsTo(
   if (action === 'archive') {
     const asked = proposal.asked || proposal.archive?.asked;
     return asked ? `${assistant} wants to archive ${withPlace ? placeOf(proposal) : 'it'}` : `${assistant} suggests archiving ${withPlace ? placeOf(proposal) : 'it'}`;
+  }
+  if (action === 'archive page' || action === 'reopen page') {
+    const where = withPlace ? ` in ${placeOf(proposal)}` : '';
+    if (action === 'reopen page') return `${assistant} wants to reopen a page${where}`;
+    return proposal.asked || proposal.page?.asked ? `${assistant} wants to archive a page${where}` : `${assistant} suggests archiving a page${where}`;
   }
   if (action === 'members') {
     const change = typeof proposal.member === 'string' ? proposal.member : proposal.member?.change;
@@ -200,8 +211,12 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 }
 
 /** Whether a change or removal lost its rule before anyone decided. */
-export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'conversion' | 'state'>): boolean {
+export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'conversion' | 'page' | 'state'>): boolean {
   if (proposal.action === 'convert') return proposal.state === 'open' && !proposal.conversion;
+  // A page you can't see anymore, or one archived or reopened another way, has nothing left to decide.
+  if (proposal.action === 'archive page' || proposal.action === 'reopen page') {
+    return proposal.state === 'open' && (!proposal.page?.title || proposal.page.archived === (proposal.action === 'archive page'));
+  }
   if (proposal.action === 'archive') return proposal.state === 'open' && Boolean(proposal.archive?.archived);
   if (proposal.action === 'publish') return proposal.state === 'open' && !proposal.publication?.current;
   if (proposal.action === 'task') return proposal.state === 'open' && (!proposal.task || proposal.task.shared || proposal.task.done);
@@ -223,7 +238,8 @@ export function buttonsOf(action: ProposalData['action'], sending = false, membe
           : { approve: 'Add', reject: 'Don’t add' };
   }
   if (action === 'space') return { approve: 'Create space', reject: 'Don’t create' };
-  if (action === 'archive') return { approve: 'Archive', reject: 'Keep it open' };
+  if (action === 'archive' || action === 'archive page') return { approve: 'Archive', reject: 'Keep it open' };
+  if (action === 'reopen page') return { approve: 'Reopen', reject: 'Keep it archived' };
   if (action === 'convert') return { approve: 'Share', reject: 'Keep it only mine' };
   return action === 'add'
     ? { approve: 'Add rule', reject: 'Don’t add' }
@@ -277,6 +293,28 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: proposal.archive?.asked ? 'Nothing was archived.' : `${assistant} won’t suggest archiving it again.` };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: 'Nothing was archived.' };
     if (isGone(proposal)) return { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' };
+    return undefined;
+  }
+  if (action === 'archive page' || action === 'reopen page') {
+    const archive = action === 'archive page';
+    const page = proposal.page;
+    if (state === 'approved') {
+      return archive
+        ? { kind: 'approved', heading: 'Page archived', detail: page?.title && !page.archived ? 'It was reopened since.' : `It’s out of everyday context and the list of pages in ${place}, and still searchable. You can reopen it on the page.` }
+        : { kind: 'approved', heading: 'Page reopened', detail: page?.archived ? 'It was archived again since.' : `It’s back in everyday context and the list of pages in ${place}.` };
+    }
+    if (state === 'rejected') {
+      return archive
+        ? { kind: 'rejected', heading: 'Kept open', detail: page?.asked ? 'Nothing was archived.' : `${assistant} won’t suggest archiving it again.` }
+        : { kind: 'rejected', heading: 'Kept archived', detail: 'Nothing changed.' };
+    }
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: archive ? 'Nothing was archived.' : 'Nothing was reopened.' };
+    if (isGone(proposal)) {
+      if (!page?.title) return { kind: 'gone', heading: 'Nothing to decide', detail: 'You can’t see this page anymore.' };
+      return archive
+        ? { kind: 'gone', heading: 'Already archived', detail: 'It was archived since, so there’s nothing to decide.' }
+        : { kind: 'gone', heading: 'Already open', detail: 'It was reopened since, so there’s nothing to decide.' };
+    }
     return undefined;
   }
   if (action === 'task') {

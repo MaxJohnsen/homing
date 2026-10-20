@@ -468,6 +468,25 @@ export const archiveProposal: ProposalData = {
   archive: { spaces: 2, private: false, archived: false, why: 'The new brand launched on 1 October, and nothing has happened there since.' },
 };
 
+/** Claude suggests archiving a page others in Acme see, which waits for Ana. */
+export const pageArchiveProposal: ProposalData = {
+  ...proposal,
+  id: 'page-archive',
+  action: 'archive page',
+  space: 'Acme',
+  within: null,
+  text: null,
+  alreadyApplies: [],
+  page: {
+    id: '7d1c2a40-0000-4000-8000-000000000006',
+    title: 'Old print vendor',
+    archived: false,
+    shown: 'Old print vendor\n',
+    asked: false,
+    why: 'Trykkeriet AS closed in 2026, and the brochures moved to Grafisk Hus.',
+  },
+};
+
 /** Claude proposes sharing one of Ana's tasks with everyone in Acme. */
 export const taskProposal: ProposalData = {
   ...proposal,
