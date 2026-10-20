@@ -33,7 +33,7 @@ export function Confirm({ proposal, decide, message: initialMessage }: {
   const space = draft && suggestion ? spaceOf(draft, suggestion.places) : undefined;
   const sending = isSending(proposal);
   const outcome = outcomeOf(proposal);
-  const buttons = buttonsOf(action, sending, proposal.member?.change);
+  const buttons = buttonsOf(action, sending, proposal.member?.change, placeOf(proposal));
   // An email nobody uses Homing with can't be added until they're invited.
   const blocked = (action === 'space' && !space?.name) || proposal.member?.found === false;
   const place = placeOf(proposal);

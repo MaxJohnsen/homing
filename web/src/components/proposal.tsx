@@ -122,25 +122,34 @@ function MemberChangeDetails({ proposal, member }: { proposal: ProposalData; mem
 function PublishDetails({ proposal, publication }: { proposal: ProposalData; publication: NonNullable<ProposalData['publication']> }) {
   const place = placeOf(proposal);
   const others = publication.audience ? publication.audience.people - 1 : 0;
+  const count = (n: number) => (n === 1 ? '1 other person' : `${n.toLocaleString('en-US')} other people`);
   const who = publication.audience?.above
-    ? `Everyone in ${place}${others > 0 ? `: ${others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`}` : ''}, everyone who can open the space above it, and anyone who joins later.`
-    : others > 0
-      ? `Everyone in ${place}: ${others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`} now, and anyone who joins later.`
-      : `Everyone in ${place}: only you now, and anyone who joins later.`;
-  const hidden = [
-    ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your own source “${source.reference}”`)),
-    ...(publication.hiddenUnseen > 0 ? ['a source you can no longer open'] : []),
+    ? `Everyone in ${place} will see it: ${others > 0 ? `${count(others)} now, ` : ''}everyone who can open the space above it, and anyone who joins later.`
+    : `Everyone in ${place} will see it: ${others > 0 ? count(others) : 'only you'} now, and anyone who joins later.`;
+  const sources = [
+    ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your source “${source.reference}”`)),
+    ...(publication.hiddenUnseen > 0 ? [publication.hiddenUnseen === 1 ? 'a source you can no longer open' : `${publication.hiddenUnseen} sources you can no longer open`] : []),
   ];
+  const listed = sources.length > 1 ? `${sources.slice(0, -1).join(', ')} and ${sources.at(-1)}` : sources[0];
   return (
     <>
-      <ProposedChange kind="preference" label={`On ${publication.page}`} text={publication.text} />
+      {publication.sharedText !== null && publication.sharedText !== publication.text ? (
+        <div className="flex flex-col gap-3">
+          <ProposedChange kind="preference" label="Everyone sees now" text={publication.sharedText} settled />
+          <ProposedChange kind="preference" label={`Changed to, on ${publication.page}`} text={publication.text} />
+        </div>
+      ) : (
+        <ProposedChange kind="preference" label={`On ${publication.page}`} text={publication.text} />
+      )}
       <p className="text-base">{who}</p>
-      {hidden.length > 0 && (
+      {sources.length > 0 && (
         <p className="rounded-xl bg-muted px-4 py-3 text-base">
-          It includes {hidden.join(', ')}, which others in {place} can’t see. They’ll see the text and that you shared it, not where it came from.
+          It’s based on {listed}. Everyone in {place} will see what it says and that you shared it, but not {sources.length === 1 ? 'that source' : 'those sources'}.
         </p>
       )}
-      {publication.updates && <p className="text-sm text-muted-foreground">You shared this before, so this updates what everyone sees.</p>}
+      {publication.sharesTitle && (
+        <p className="text-base">Only you have the page “{publication.page}”, so its title is shared too. The rest of it stays yours.</p>
+      )}
     </>
   );
 }

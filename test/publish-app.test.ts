@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { addSource, createPage, updateItem, writeItem } from '../src/knowledge.ts';
+import { addSource, createPage, search, supersedeItem, updateItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -19,8 +19,8 @@ let ana: Member, cara: Member;
 let acme: string, beta: string;
 let claude: Awaited<ReturnType<Assistant['open']>>;
 
-type Shown = { action: string; state: string; publication: { text: string; page: string; hidden: { space: string | null; reference: string | null }[]; copy: boolean; updates: boolean; current: boolean; audience: { people: number } } };
-type PageItem = { id: string; text: string; shared: boolean; sharedBy: { name: string; you: boolean } | null; sources: unknown[]; earlier: unknown[] };
+type Shown = { action: string; state: string; publication: { text: string; page: string; hidden: { space: string | null; reference: string | null }[]; copy: boolean; sharesTitle: boolean; sharedText: string | null; current: boolean; audience: { people: number } } };
+type PageItem = { id: string; text: string; shared: boolean; agent: string | null; sharedBy: { name: string; you: boolean } | null; sources: { reference: string; shared: boolean }[]; earlier: unknown[] };
 
 const publish = async (item: string, why?: string) => {
   const result = await claude.client.callTool({ name: 'act', arguments: { action: 'knowledge.publish', input: { item: `item:${item}`, ...(why && { why }) } } });
@@ -28,7 +28,11 @@ const publish = async (item: string, why?: string) => {
   return { failed: Boolean(result.isError), text, proposal: /proposal:([0-9a-f-]{36})/.exec(text)?.[1] };
 };
 const shown = async (id: string) => (await ana.browser.json(`/api/proposals/${id}`)).body.proposal as Shown;
-const decide = (id: string, approve = true, shownText?: string) => ana.browser.json(`/api/proposals/${id}/decide`, { approve, ...(shownText !== undefined && { shown: shownText }) });
+/** Deciding as the page does: approving sends the text Ana was shown. */
+const decide = async (id: string, approve = true, shownText?: string | null) => {
+  const text = shownText === null ? undefined : (shownText ?? (await shown(id)).publication.text);
+  return ana.browser.json(`/api/proposals/${id}/decide`, { approve, ...(text !== undefined && { shown: text }) });
+};
 const pageAs = async (who: Member, page: string) => (await who.browser.json(`/api/pages/${page}`)).body as { items: PageItem[]; title: string };
 
 before(async () => {
@@ -66,23 +70,32 @@ test('what rests on a private email is shared as a copy: the others see it as An
   assert.match(proposed.text, /Nothing is shared yet/);
   const { publication } = await shown(proposed.proposal!);
   assert.deepEqual(
-    [publication.text, publication.page, publication.hidden, publication.copy, publication.audience.people],
-    ['The launch is on 14 November, in Oslo.', 'Launch', [{ space: null, reference: 'Email from Gunnar, Re: launch' }], true, 2],
+    [publication.text, publication.page, publication.hidden, publication.copy, publication.sharesTitle, publication.audience.people],
+    ['The launch is on 14 November, in Oslo.', 'Launch', [{ space: null, reference: 'Email from Gunnar, Re: launch' }], true, true, 2],
   );
+  // Asking twice doesn't make two.
+  assert.match((await publish(item)).text, /already waits for the user/);
   assert.equal((await cara.browser.json(`/api/pages/${page}`)).status, 404, 'nothing is shared before Ana decides');
 
-  // What Ana saw is what's shared; if it changed meanwhile, she's shown it again.
+  // What Ana saw is what's shared: without it, or if it changed meanwhile, she's shown it again.
+  assert.equal((await decide(proposed.proposal!, true, null)).status, 409);
   assert.equal((await decide(proposed.proposal!, true, 'Something else')).status, 409);
   assert.equal((await decide(proposed.proposal!, true, publication.text)).status, 200);
 
   const forCara = await pageAs(cara, page);
   assert.equal(forCara.title, 'Launch');
-  assert.deepEqual(forCara.items.map((entry) => [entry.text, entry.shared, entry.sharedBy?.name, entry.sources.length, entry.earlier.length]), [
-    ['The launch is on 14 November, in Oslo.', true, 'Ana', 0, 0],
+  // Claude still wrote it, for Ana, and Ana shared it.
+  assert.deepEqual(forCara.items.map((entry) => [entry.text, entry.shared, entry.agent, entry.sharedBy?.name, entry.sources.length, entry.earlier.length]), [
+    ['The launch is on 14 November, in Oslo.', true, 'Claude', 'Ana', 0, 0],
   ]);
   assert.equal((await cara.browser.json(`/api/items/${item}`)).status, 404);
-  // Ana sees it once while her own and the shared one agree.
-  assert.deepEqual((await pageAs(ana, page)).items.map((entry) => [entry.shared, entry.sharedBy?.you]), [[true, true]]);
+  // Ana sees it once while her own and the shared one agree, with her own source, only hers.
+  assert.deepEqual((await pageAs(ana, page)).items.map((entry) => [entry.shared, entry.sharedBy?.you, entry.sources.map((source) => [source.reference, source.shared])]), [
+    [true, true, [['Email from Gunnar, Re: launch', false]]],
+  ]);
+  assert.equal((await as(ana, (s) => search(s, 'Oslo', { spaceId: acme }))).length, 1, 'search shows it once too');
+  const latest = (await cara.browser.json('/api/changes?limit=1')).body.changes as { text: string }[];
+  assert.equal(latest[0].text, 'The launch is on 14 November, in Oslo.');
   assert.match((await claude.call('read', { ref: `proposal:${proposed.proposal}` })).text, /The user shared it on .+\. Everyone in the space sees it now\./);
 });
 
@@ -116,7 +129,7 @@ test('what rests on another space names it, and sharing again updates what every
   await as({ person: ana.id, agent: 'Claude' }, (s) => updateItem(s, item, { body: 'Our rate is 1,250 a day.' }));
   assert.equal((await pageAs(ana, page)).items.length, 2);
   const again = await publish(item);
-  assert.equal((await shown(again.proposal!)).publication.updates, true);
+  assert.equal((await shown(again.proposal!)).publication.sharedText, 'Our rate is about 1,200 a day.');
   await decide(again.proposal!);
   assert.deepEqual((await pageAs(cara, page)).items.map((entry) => [entry.text, entry.earlier.length]), [['Our rate is 1,250 a day.', 1]]);
   assert.equal((await pageAs(ana, page)).items.length, 1);
@@ -130,11 +143,28 @@ test('only people share, only their own, and never from a personal space', async
   });
   assert.match((await publish(personal)).text, /Your personal space has no shared side/);
   // The assistant itself can't share, straight against the database either.
-  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select publish_item(${mine}::uuid)`), refused);
+  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select publish_item(${mine}::uuid, 'A draft.')`), refused);
   // Nor can Cara share Ana's private item, which she can't see.
-  await assert.rejects(as({ person: cara.id, direct: true }, (s) => s.tx`select publish_item(${mine}::uuid)`), refused);
+  await assert.rejects(as({ person: cara.id, direct: true }, (s) => s.tx`select publish_item(${mine}::uuid, 'A draft.')`), refused);
   const caraAssistant = new Assistant(homing.url, assistants.claude);
   await caraAssistant.connect(cara.browser);
   const caras = await caraAssistant.open();
   assert.match((await caras.call('act', { action: 'knowledge.publish', input: { item: `item:${mine}` } })).text, /no item of yours/);
+});
+
+test('a chain of private updates is shared as one, replacing for everyone what it updates', async () => {
+  const { page, shared, second } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const page = await createPage(s, { spaceId: acme, title: 'Venue', shared: true });
+    const shared = (await writeItem(s, { pageId: page, body: 'The venue is Hotel Oslo.', shared: true })).id;
+    const first = (await supersedeItem(s, shared, { body: 'The venue is Hotel Bergen.' }))!.id;
+    const second = (await supersedeItem(s, first, { body: 'The venue is Hotel Bergen, room 2.' }))!.id;
+    return { page, shared, second };
+  });
+  const proposed = await publish(second);
+  assert.equal((await shown(proposed.proposal!)).publication.copy, true);
+  await decide(proposed.proposal!);
+  // Cara sees the update in place of what it updated, and only that.
+  assert.deepEqual((await pageAs(cara, page)).items.map((entry) => entry.text), ['The venue is Hotel Bergen, room 2.']);
+  assert.equal((await pageAs(ana, page)).items.length, 1);
+  assert.ok(shared);
 });

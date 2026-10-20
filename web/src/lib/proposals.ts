@@ -78,8 +78,10 @@ export interface PublicationData {
   hiddenUnseen: number;
   /** Shared as a copy, citing only what everyone there sees, rather than moving. */
   copy: boolean;
-  /** Shared before, so this updates what everyone sees. */
-  updates: boolean;
+  /** The page has no shared title yet, so yours is shared with it. */
+  sharesTitle: boolean;
+  /** What everyone sees now from your earlier share, which this updates, if you shared it before. */
+  sharedText: string | null;
   /** Still your current item, so it can be shared. */
   current: boolean;
   why: string | null;
@@ -170,9 +172,10 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publica
 }
 
 /** The buttons for deciding it, or for a request you haven't sent, for sending it. */
-export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange): { approve: string; reject: string } {
+export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange, place?: string): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
-  if (action === 'publish') return { approve: 'Share', reject: 'Keep it to myself' };
+  // The button names who will see it.
+  if (action === 'publish') return { approve: place ? `Share with ${place}` : 'Share', reject: 'Don’t share' };
   if (action === 'members') {
     return member === 'remove'
       ? { approve: 'Remove', reject: 'Keep them' }
@@ -209,10 +212,12 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
   if (action === 'publish') {
-    if (state === 'approved') return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees it now, as shared by you.` };
+    if (state === 'approved') {
+      return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees it now, and that you shared it.${proposal.publication?.copy ? ' Where it came from stays only yours.' : ''}` };
+    }
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
-    if (isGone(proposal)) return { kind: 'gone', heading: 'This changed since', detail: `It was changed or replaced after ${assistant} asked, so there’s nothing to share. Ask again to share it as it is now.` };
+    if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
     return undefined;
   }
   if (action === 'members' && member) {

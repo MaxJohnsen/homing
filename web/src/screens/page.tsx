@@ -176,6 +176,7 @@ function Details({ item, yourUpdate, onCorrect }: { item: ItemData; yourUpdate: 
             <Link href={`/sources/${source.id}`} className={cn('rounded-sm font-semibold text-foreground underline decoration-foreground/25 underline-offset-[3px] hover:decoration-foreground', focusRing)}>
               {source.reference ?? 'a source'}
             </Link>
+            {item.shared && source.shared === false && <OnlyYou className="ml-2" />}
           </figcaption>
           <blockquote className="max-w-[60ch] text-base leading-relaxed whitespace-pre-line">“{source.excerpt}”</blockquote>
         </figure>

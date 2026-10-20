@@ -9,6 +9,7 @@ import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
 const spaceStatus = { ...status, approved: 'Created', rejected: 'Not created' };
+const shareStatus = { ...status, approved: 'Shared', rejected: 'Not shared' };
 
 /** "Add Cara Lund to Acme?": a change of members as the card asks it. */
 function memberQuestion(proposal: ProposalData, member: NonNullable<ProposalData['member']>): string {
@@ -88,7 +89,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
     <section aria-label={proposal || !initialMessage ? 'Approve a change' : 'Homing'} className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
       <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
         <Wordmark className="text-sm text-foreground" />
-        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
+        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' ? shareStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
       </div>
 
       {!proposal ? (
@@ -132,9 +133,9 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           {sending && <p className="text-sm text-muted-foreground">Only its admins change its shared rules. Nothing changes until one of them approves it.</p>}
           <div className="flex flex-wrap gap-2">
             {proposal.member?.found !== false && (
-              <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending, proposal.member?.change).approve}</Button>
+              <Button className="h-10 px-4" disabled={busy || (proposal.action === 'space' && !space?.name)} onClick={() => choose(true)}>{buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal)).approve}</Button>
             )}
-            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending, proposal.member?.change).reject}</Button>
+            <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal)).reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (

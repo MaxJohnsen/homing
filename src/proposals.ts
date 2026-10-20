@@ -265,6 +265,10 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (space.privateTo) throw new SpaceRefused('where', 'Your personal space has no shared side: what’s in it stays yours.');
   if (!publication.current) throw new SpaceRefused('person', 'That item was replaced since. Share the one that replaced it.');
+  const [waiting] = await s.tx<{ id: string }[]>`
+    select id from proposals where ${yours(s)} and action = 'publish' and item_id = ${input.itemId}::uuid and state = 'open' and expires_at > now()
+  `;
+  if (waiting) throw new SpaceRefused('person', `Sharing it already waits for the user (proposal:${waiting.id}). Give them that link again if they need it.`);
   const [{ type }] = await s.tx<{ type: string | null }[]>`select type from pages where id = ${publication.item.pageId}::uuid`;
   if (['guidance', 'skill', 'overview'].includes(type ?? '')) throw new SpaceRefused('where', 'Rules, skills and the overview are shared another way.');
   return insertProposal(s, { spaceId: space.id, action: 'publish', itemId: input.itemId, change: {}, request: false, reason: input.why?.trim() || null });
@@ -286,7 +290,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     // Once shared, the item may have moved to the shared side: it still shows what was shared.
     const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
     const [title] = item ? await s.tx<{ body: string }[]>`select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and ${visible(s, 'content')} order by private_to is null limit 1` : [];
-    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', hidden: [], hiddenUnseen: 0, copy: false, updates: false, current: false };
+    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, copy: false, sharedText: null, current: false };
   }
   const audienceOf = proposal.action === 'publish' ? await spaceView(s, proposal.spaceId) : undefined;
   const names = await peopleNames(s, [proposal.privateTo, proposal.decidedBy, proposal.change.person ?? null]);
@@ -533,12 +537,12 @@ export async function decide(
     const { change } = proposal;
     if (proposal.action === 'publish') {
       // Approving shares exactly what was shown: if the item changed since, it's shown again.
+      // Approving shares exactly the text that was shown, checked again as it's shared.
       const publication = await publicationOf(s, proposal.itemId!);
       if (!publication?.current) throw new Undecidable('changed', 'This was changed or replaced after you opened this page, so there’s nothing to share.');
-      if (decision.shown !== undefined && publication.item.body !== decision.shown) {
+      if (decision.shown === undefined || !(await publishItem(s, proposal.itemId!, decision.shown))) {
         throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
       }
-      await publishItem(s, proposal.itemId!);
     } else if (proposal.action === 'change members') {
       const space = await spaceView(s, proposal.spaceId);
       if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
@@ -654,7 +658,8 @@ export function proposalData(proposal: ProposalView) {
           hidden: proposal.publication.hidden.map((source) => (source.space ? { space: source.space, reference: null } : { space: null, reference: source.reference ?? source.excerpt.slice(0, 80) })),
           hiddenUnseen: proposal.publication.hiddenUnseen,
           copy: proposal.publication.copy,
-          updates: proposal.publication.updates,
+          sharesTitle: proposal.publication.sharesTitle,
+          sharedText: proposal.publication.sharedText,
           current: proposal.publication.current,
           why: proposal.reason,
           audience: proposal.audience,
