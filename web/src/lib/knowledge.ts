@@ -47,11 +47,9 @@ export interface ItemData {
   /** Who shared it with the space from their own private side, and when, if someone did. */
   sharedBy?: Author;
   sharedAt?: string | null;
-  /** Your own version of something you shared before, while what everyone sees differs: what they see. */
-  sharedAs?: string | null;
   /** Its sources as you see them. Your own aren't shared, such as those behind something you shared. */
   sources: { id: string; reference: string | null; excerpt: string; shared?: boolean }[];
-  /** What it replaced. When it's your private update to something shared, the others still see that. */
+  /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
   /** What it said before it was last changed, oldest first. */
   earlier: { text: string; by: Author; agent: string | null; writtenAt: string; until: string }[];

@@ -136,6 +136,16 @@ for (const [layer, sql] of [
           as(me, (s) => writeItem(s, { pageId: intruder.pages[0], body: 'Hello', sources: [target.source.id] }), sql),
           AccessDenied,
         );
+        // Nor by carrying the other client's sources over to their own notes, or theirs to the other client's.
+        const notes = intruder.items.find((item) => item.privateTo === me.id)!.id;
+        for (const item of target.items) {
+          await as(me, (s) => s.tx`select carry_citations(${item.id}::uuid, ${notes}::uuid), carry_citations(${notes}::uuid, ${item.id}::uuid)`, sql);
+        }
+        const carried = await admin`
+          select from citations ci join content c on c.id = ci.content_id join sources src on src.id = ci.source_id
+          where ci.content_id in ${admin([notes, ...target.items.map((item) => item.id)])} and src.space_id <> c.space_id
+        `;
+        assert.equal(carried.length, 0);
       }
     });
 

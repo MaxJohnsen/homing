@@ -104,6 +104,7 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   const [correcting, setCorrecting] = useState(false);
   const [sharing, setSharing] = useState(false);
   const [shared, setShared] = useState<string>();
+  const [othersSee, setOthersSee] = useState(false);
   // Where focus goes back to once sharing closes: the button that opened it.
   const opener = useRef<HTMLButtonElement | null>(null);
   const share = (event: MouseEvent<HTMLButtonElement>) => {
@@ -114,7 +115,8 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   const onlyYou = marked && !item.shared && !page.space.private;
   // Your own item in a space with a shared side can be shared with everyone there.
   const shareable = Boolean(actions) && !item.shared && !page.space.private;
-  // Your private update to something shared: you see yours, everyone else still sees what it replaced.
+  // Your private update of something shared: it stands in its place for you, and everyone else
+  // still sees what it replaced, which you can look at and share your update over.
   const yourUpdate = !item.shared && item.replaced?.shared === true;
 
   const toggle = (event: MouseEvent) => {
@@ -170,17 +172,26 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
           <ChevronDown className={cn('transition-transform', open && 'rotate-180')} />
         </Button>
       </div>
-      {(yourUpdate || item.sharedAs) && (
-        <div className="flex flex-col items-start gap-3 rounded-lg bg-card px-4 py-3">
+      {yourUpdate && (
+        <div className="flex cursor-auto flex-col items-start gap-3 rounded-lg bg-card px-4 py-3">
           <p className="text-base">
-            {/* What you shared may since have been corrected by someone else, so only an update of yours is called newer. */}
-            <span className="font-semibold">{item.sharedAs ? 'Only you see this version.' : 'Your version is newer.'}</span> Others in {page.space.name} {item.sharedAs ? 'see' : 'still see'} “{plain(item.sharedAs ?? item.replaced!.text)}”
+            <span className="font-semibold">Your update.</span> Others in {page.space.name} still see the earlier version.
           </p>
-          {shareable && <Button variant="outline" size="sm" onClick={share}>Share yours with {page.space.name}</Button>}
+          <div className="flex flex-wrap gap-2">
+            {shareable && <Button variant="outline" size="sm" onClick={share}>Share this update</Button>}
+            <Button variant="outline" size="sm" aria-expanded={othersSee} aria-controls={othersSee ? `others-${item.id}` : undefined} onClick={() => setOthersSee(!othersSee)}>
+              {othersSee ? 'Hide what others see' : 'Show what others see'}
+            </Button>
+          </div>
+          {othersSee && (
+            <div id={`others-${item.id}`} className="w-full rounded-lg bg-muted px-4 py-3">
+              <Markdown text={item.replaced!.text} />
+            </div>
+          )}
         </div>
       )}
       {shared && <p role="status" className="text-sm text-muted-foreground">{shared}</p>}
-      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} onShare={shareable && !yourUpdate && !item.sharedAs ? share : undefined} space={page.space.name} />}
+      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} onShare={shareable && !yourUpdate ? share : undefined} space={page.space.name} />}
     </div>
   );
 }
