@@ -26,10 +26,12 @@ if (size !== 'big' && size !== 'empty') {
   process.exit(1);
 }
 
-const database = 'homing_sample';
+// Samples side by side, such as in two worktrees, each set their own database and port.
+const database = process.env.HOMING_SAMPLE_DB ?? 'homing_sample';
+if (!/^[a-z_][a-z0-9_]*$/.test(database)) throw new Error(`HOMING_SAMPLE_DB isn't a plain database name: ${database}`);
 const at = (url: string) => Object.assign(new URL(url), { pathname: `/${database}` }).toString();
 const urls = { admin: at(adminUrl), app: at(databaseUrl), auth: at(authDatabaseUrl) };
-const port = 4200;
+const port = Number(process.env.HOMING_SAMPLE_PORT ?? 4200);
 const url = new URL(`http://localhost:${port}`);
 
 // A fresh database of its own, so the sample never touches anyone's Homing.
