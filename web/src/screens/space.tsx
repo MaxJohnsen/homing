@@ -289,7 +289,7 @@ function AddMember({ space, add }: { space: SpaceData; add: MemberActions['add']
           <Input
             id="add-member-email"
             type="email"
-            className="h-11 text-base"
+            className="h-11 text-base md:text-base"
             value={email}
             onChange={(event) => {
               setEmail(event.target.value);
