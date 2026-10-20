@@ -16,7 +16,7 @@ npm run dev:web           # the screens, with sample data, at http://localhost:5
 
 To try the app against a whole Homing, `npm run sample -- big` builds one with about 100 spaces, 10,000 pages, 100,000 sources and 30 changes waiting, in a database of its own, and serves it at http://localhost:4200. `npm run sample -- empty` is one where someone has just joined. Both need `npm run build:web` first, and print how to sign in.
 
-Test runs side by side, such as in two worktrees, each need a database of their own: `HOMING_TEST_DB=homing_test_b npm test`.
+Test runs side by side, such as in two worktrees, each need a database of their own: `HOMING_TEST_DB=homing_test_b npm test`. Samples take `HOMING_SAMPLE_DB` and `HOMING_SAMPLE_PORT` the same way.
 
 ### Running it
 
