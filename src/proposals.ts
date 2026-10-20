@@ -335,17 +335,18 @@ export async function suggestArchive(s: Session, input: { spaceId: string; why?:
   if (!asked) {
     const own = waiting.find((proposal) => !proposal.asked);
     if (own) throw new NotSuggested(`Archiving a space already waits for the user (proposal:${own.id}). Don't suggest another until they decide it.`, own.id);
-    // Kept open: a suggestion of the assistant's own that was turned down, or an archive the person
-    // approved and that was reopened since, as it's open now.
+    // Kept open: the person kept it open when it was proposed, asked for or not, the assistant
+    // withdrew a suggestion of its own, or the person archived it and it was reopened since, as it's
+    // open now.
     const [kept] = await s.tx<{ id: string; at: Date; approved: boolean }[]>`
       select id, decided_at as at, state = 'approved' as approved from proposals
       where ${yours(s)} and action = 'archive space' and space_id = ${space.id}::uuid
-        and (state = 'approved' or (state in ('rejected', 'withdrawn') and not coalesce((change->>'asked')::boolean, false)))
+        and (state in ('approved', 'rejected') or (state = 'withdrawn' and not coalesce((change->>'asked')::boolean, false)))
       order by decided_at desc limit 1
     `;
     const on = kept?.at.toISOString().slice(0, 10);
     if (kept?.approved) throw new NotSuggested(`${space.name} was reopened after the user archived it on ${on}. Don't suggest archiving it again unless they ask.`, kept.id);
-    if (kept) throw new NotSuggested(`The user turned down archiving ${space.name} when it was suggested on ${on}. Don't suggest it again unless they ask.`, kept.id);
+    if (kept) throw new NotSuggested(`The user kept ${space.name} open when archiving it was proposed on ${on}. Don't suggest it again unless they ask.`, kept.id);
   }
   return insertProposal(s, { spaceId: space.id, action: 'archive space', itemId: null, change: asked ? { asked } : {}, request: false, reason: input.why?.trim() || null });
 }
@@ -382,17 +383,18 @@ export async function proposePageArchive(s: Session, input: { pageId: string; re
     if (!why) throw new SpaceRefused('where', 'Say why the page is no longer active, such as a finished project or someone who has left. Age is not evidence.');
     const own = waiting.find((proposal) => !proposal.asked);
     if (own) throw new NotSuggested(`Archiving a page already waits for the user (proposal:${own.id}). Don't suggest another until they decide it.`, own.id);
-    // Kept open: a suggestion of the assistant's own that was turned down, or an archive the person
-    // approved and that was reopened since, as it's open now.
+    // Kept open: the person kept it open when it was proposed, asked for or not, the assistant
+    // withdrew a suggestion of its own, or the person archived it and it was reopened since, as it's
+    // open now.
     const [kept] = await s.tx<{ id: string; at: Date; approved: boolean }[]>`
       select id, decided_at as at, state = 'approved' as approved from proposals
       where ${yours(s)} and action = 'archive page' and page_id = ${page.id}::uuid
-        and (state = 'approved' or (state in ('rejected', 'withdrawn') and not coalesce((change->>'asked')::boolean, false)))
+        and (state in ('approved', 'rejected') or (state = 'withdrawn' and not coalesce((change->>'asked')::boolean, false)))
       order by decided_at desc limit 1
     `;
     const on = kept?.at.toISOString().slice(0, 10);
     if (kept?.approved) throw new NotSuggested(`“${page.title}” was reopened after the user archived it on ${on}. Don't suggest archiving it again unless they ask.`, kept.id);
-    if (kept) throw new NotSuggested(`The user turned down archiving “${page.title}” when it was suggested on ${on}. Don't suggest it again unless they ask.`, kept.id);
+    if (kept) throw new NotSuggested(`The user kept “${page.title}” open when archiving it was proposed on ${on}. Don't suggest it again unless they ask.`, kept.id);
   }
   return insertProposal(s, {
     spaceId: page.spaceId,

@@ -59,7 +59,7 @@ You can see a space's shared side if you have access to the space, and you alway
 - keeps a link to the former parent, visible only to you;
 - offers to prepare suggested shared knowledge for review.
 
-**Archiving a space** takes finished work out of everyday attention. An archived space and its children leave daily context and their routines and upkeep pause, but they stay searchable and can be reopened. A person archives a space, and agents can suggest it. Archiving never deletes anything.
+**Archiving a space** takes finished work out of everyday attention. An archived space and its children leave daily context and their routines and upkeep pause, but they stay searchable and can be reopened. A person archives a space, and agents can suggest it, though not again once the person has kept it open. Archiving never deletes anything.
 
 - A space's admins archive and reopen it. A space only you have is archived as soon as you ask your assistant, the way renaming it is; one others have waits for an admin's approval.
 - A space in an archived one is archived with it, as far as each person can see. Archiving passes down only through spaces you can open, so the members of a closed space never learn of an archived space above it. Only the admins of the space that was archived reopen it.

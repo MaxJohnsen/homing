@@ -292,7 +292,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
         ? { kind: 'approved', heading: `Archived ${place}`, detail: 'It was reopened since.' }
         : { kind: 'approved', heading: `Archived ${place}`, detail: 'It’s out of everyday context, and still searchable. You can reopen it in its Settings.' };
     }
-    if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: proposal.archive?.asked ? 'Nothing was archived.' : `${assistant} won’t suggest archiving it again.` };
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Kept open', detail: `Nothing was archived, and ${assistant} won’t suggest archiving it again.` };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: 'Nothing was archived.' };
     if (isGone(proposal)) {
       return proposal.archive?.archived
@@ -311,7 +311,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     }
     if (state === 'rejected') {
       return archive
-        ? { kind: 'rejected', heading: 'Kept open', detail: page?.asked ? 'Nothing was archived.' : `${assistant} won’t suggest archiving it again.` }
+        ? { kind: 'rejected', heading: 'Kept open', detail: `Nothing was archived, and ${assistant} won’t suggest archiving it again.` }
         : { kind: 'rejected', heading: 'Kept archived', detail: 'Nothing changed.' };
     }
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: archive ? 'Nothing was archived.' : 'Nothing was reopened.' };

@@ -1326,9 +1326,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     case 'rejected':
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user decided not to share it, on ${day(proposal.decidedAt!)}. Don't propose sharing it again unless they ask.`;
       if (proposal.action === 'archive space' || proposal.action === 'archive page') {
-        return proposal.change.asked
-          ? `The user kept it open, on ${day(proposal.decidedAt!)}. Nothing was archived.`
-          : `The user turned down archiving it, on ${day(proposal.decidedAt!)}. Don't suggest archiving it again unless they ask.`;
+        return `The user kept it open, on ${day(proposal.decidedAt!)}. Nothing was archived. Don't suggest archiving it again unless they ask.`;
       }
       if (proposal.action === 'reopen page') return `The user kept it archived, on ${day(proposal.decidedAt!)}. Nothing changed.`;
       if (proposal.action === 'share space') return `The user kept it in their personal space, on ${day(proposal.decidedAt!)}. Nothing changed. Don't propose sharing it again unless they ask.`;

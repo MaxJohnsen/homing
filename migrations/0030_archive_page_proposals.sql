@@ -206,5 +206,7 @@ as $$
   select max(l.at) from space_archives l where l.space_id in (select id from up)
 $$;
 
+create index space_archives_space on space_archives (space_id, at);
+
 revoke execute on function archive_changed from public;
 grant execute on function archive_changed to homing_app;

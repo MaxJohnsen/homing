@@ -261,13 +261,17 @@ test('an assistant’s own suggestion to archive a page is rare, and rests on ev
 
   // Turned down, it isn't suggested again unless the user asks.
   assert.equal((await decide(ana, own, suggested.page.shown, false)).status, 200);
-  assert.match((await act({ page: `page:${turnedDown}`, why: 'It really is done.' })).text, /The user turned down archiving “.+” when it was suggested on .+ Don't suggest it again unless they ask/);
-  assert.match((await claude.call('read', { ref: `proposal:${own}` })).text, /The user turned down archiving it, on .+ Don't suggest archiving it again unless they ask/);
+  assert.match((await act({ page: `page:${turnedDown}`, why: 'It really is done.' })).text, /The user kept “.+” open when archiving it was proposed on .+ Don't suggest it again unless they ask/);
+  assert.match((await claude.call('read', { ref: `proposal:${own}` })).text, /The user kept it open, on .+ Nothing was archived\. Don't suggest archiving it again unless they ask/);
 
   // Withdrawn by the assistant, the same.
   const next = proposalOf((await act({ page: `page:${other}`, why: 'The work there is finished.' })).text);
   assert.match((await claude.call('act', { action: 'proposal.withdraw', input: { proposal: `proposal:${next}` } })).text, /Don't suggest it again unless the user asks/);
-  assert.match((await act({ page: `page:${other}`, why: 'Finished, really.' })).text, /The user turned down archiving/);
+  assert.match((await act({ page: `page:${other}`, why: 'Finished, really.' })).text, /The user kept .+ open when archiving it was proposed/);
+
+  // Kept open when the user had asked for it, it isn't suggested later either.
+  assert.equal((await decide(ana, asked[2], (await shownOf(ana, asked[2])).page.shown, false)).status, 200);
+  assert.match((await act({ page: `page:${fair}`, why: 'The fair is over.' })).text, /The user kept “Fair” open when archiving it was proposed on/);
 
   // Archived as the user asked and reopened since, it isn't suggested again either.
   assert.equal((await decide(ana, asked[1], (await shownOf(ana, asked[1])).page.shown)).status, 200);
