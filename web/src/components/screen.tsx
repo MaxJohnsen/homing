@@ -1,15 +1,18 @@
 import type { ReactNode } from 'react';
 import { cn } from 'cn';
+import { Button } from '@/components/ui/button';
+import type { ApiError } from '@/lib/api';
+import { reload } from '@/lib/load';
 
 /** The focus ring on links and rows that aren't buttons. */
-export const focusRing = 'focus-visible:ring-[3px] focus-visible:ring-ring/60 focus-visible:outline-none';
+export const focusRing = 'focus-visible:ring-[3px] focus-visible:ring-ring focus-visible:outline-none';
 
 /** A screen's title, at the top of the scale, with a line under it saying where it is. */
 export function ScreenHeader({ title, meta, aside, below }: { title: ReactNode; meta?: ReactNode; aside?: ReactNode; below?: ReactNode }) {
   return (
     <header className="flex flex-col gap-2">
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-        <h1 className="min-w-0 text-[34px] leading-[1.1] font-semibold tracking-[-0.02em] text-balance">{title}</h1>
+        <h1 className="min-w-0 text-[34px] leading-[1.1] font-semibold tracking-[-0.02em] text-balance [overflow-wrap:anywhere]">{title}</h1>
         {aside}
       </div>
       {meta && <p className="max-w-[65ch] text-base text-muted-foreground">{meta}</p>}
@@ -60,7 +63,6 @@ export function Avatar({ name, className }: { name: string; className?: string }
 }
 
 const relative = new Intl.RelativeTimeFormat('en-US', { numeric: 'auto' });
-const day = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' });
 
 /** "5 minutes ago", "yesterday", or a date once it's more than a week ago. */
 export function ago(at: string, now = new Date()): string {
@@ -68,7 +70,7 @@ export function ago(at: string, now = new Date()): string {
   if (minutes > -60) return relative.format(Math.min(minutes, -1), 'minute');
   if (minutes > -60 * 24) return relative.format(Math.round(minutes / 60), 'hour');
   if (minutes > -60 * 24 * 7) return relative.format(Math.round(minutes / (60 * 24)), 'day');
-  return day.format(new Date(at));
+  return dateOf(at);
 }
 
 /** "1 change", "3 changes". */
@@ -87,4 +89,20 @@ const dayYear = new Intl.DateTimeFormat('en-US', { dateStyle: 'long' });
 export function dateOf(at: string): string {
   const date = new Date(at);
   return (date.getFullYear() === new Date().getFullYear() ? dayOnly : dayYear).format(date);
+}
+
+/** Whether a load failed for a reason other than there being nothing there to open. */
+export function failed(...errors: (ApiError | undefined)[]): boolean {
+  return errors.some((error) => error !== undefined && error.status !== 404);
+}
+
+/** Said in place of something that didn't load, with a way to try again. */
+export function LoadFailed({ paths }: { paths: string[] }) {
+  return (
+    <div role="alert" className="flex max-w-[65ch] flex-col items-start gap-3 rounded-2xl bg-muted p-5">
+      <p className="text-base font-semibold">This didn’t load.</p>
+      <p className="text-sm text-muted-foreground">Homing may be restarting, or the connection dropped. Try again in a moment.</p>
+      <Button variant="outline" onClick={() => Promise.all(paths.map((path) => reload(path)))}>Try again</Button>
+    </div>
+  );
 }

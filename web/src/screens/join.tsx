@@ -71,8 +71,8 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
   if (state.step === 'signed-in') {
     return (
       <>
-        <Heading title="You're already signed in">
-          You're signed in as {state.email}. Sign out to create a new account with this link.
+        <Heading title="You’re already signed in">
+          You’re signed in as {state.email}. Sign out to create a new account with this link.
         </Heading>
         <div className="flex flex-col gap-2.5">
           <Button size="lg" className="h-11 w-full text-base" onClick={() => actions?.signOut()}>Sign out</Button>
@@ -132,7 +132,7 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
               <KeyRound data-icon="inline-start" />Create account with a passkey
             </Button>
             <p className="text-sm text-muted-foreground">
-              Your device keeps the passkey, and you sign in with your face, fingerprint or screen lock. There's no password to remember.
+              Your device keeps the passkey, and you sign in with your face, fingerprint or screen lock. There’s no password to remember.
             </p>
           </>
         )}
@@ -149,7 +149,7 @@ function Content({ state, actions, initialProblem }: { state: Exclude<JoinState,
 function Heading({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <h1 className="text-[28px] leading-tight font-semibold tracking-tight text-balance">{title}</h1>
+      <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance">{title}</h1>
       <p className="text-base text-muted-foreground">{children}</p>
     </div>
   );

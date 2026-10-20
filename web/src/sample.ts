@@ -263,7 +263,7 @@ export const samplePage: PageData = {
   gathers: 3,
   collections: [{ id: '7d1c2a40-0000-4000-8000-000000000010', title: '2026 renewal', shared: true }, { id: '7d1c2a40-0000-4000-8000-000000000011', title: 'Things to raise with Gunnar', shared: false }],
   mentionedOn: [{ id: '7d1c2a40-0000-4000-8000-000000000005', title: 'Steering group, October 9' }],
-  space: { id: 'northwind', name: 'Northwind', personal: false, private: false, people: 4 },
+  space: { id: 'northwind', name: 'Northwind', personal: false, private: false, people: 4, above: false },
   items: [
     {
       id: 'item-1', text: 'Northwind’s public website is being rebuilt with a new design system and a **booking flow**, so customers can book service appointments online. Acme designs and builds it; Northwind’s own team writes the content.',

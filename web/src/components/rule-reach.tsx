@@ -34,10 +34,10 @@ export function RuleReach({ id, space, shared = true, personal = false, onlyHere
 function reachOf({ space, shared, personal, onlyHere, removing }: { space: string; shared: boolean; personal: boolean; onlyHere: boolean; removing?: boolean }) {
   if (removing) {
     if (personal) return onlyHere ? 'It stops applying in your personal space.' : 'It stops following you into the spaces you work in.';
-    if (shared) return onlyHere ? `It stops applying in ${space}.` : `It stops applying in ${space} and every space under it, including spaces you can't open.`;
+    if (shared) return onlyHere ? `It stops applying in ${space}.` : `It stops applying in ${space} and every space under it, including spaces you can’t open.`;
     return onlyHere ? `It stops applying to you in ${space}.` : `It stops applying to you in ${space} and the spaces under it.`;
   }
   if (personal) return onlyHere ? 'It applies only in your personal space, not in the spaces under it.' : 'It follows you into every space you work in.';
-  if (shared) return onlyHere ? `It applies only in ${space}, not in the spaces under it.` : `It applies to ${space} and every space under it, including spaces you can't open.`;
+  if (shared) return onlyHere ? `It applies only in ${space}, not in the spaces under it.` : `It applies to ${space} and every space under it, including spaces you can’t open.`;
   return onlyHere ? `It applies to you only in ${space}, not in the spaces under it.` : `It applies to you in ${space} and every space under it.`;
 }

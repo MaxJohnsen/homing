@@ -62,7 +62,7 @@ export function AccountPage() {
             await load();
           } catch (error) {
             if (error instanceof ApiError && ['SIGN_IN_AGAIN', 'SESSION_NOT_FRESH'].includes(error.code ?? '')) return signInAgainMessage;
-            if (error instanceof ApiError && error.code === 'INVALID_PASSWORD') return "That's not your current password.";
+            if (error instanceof ApiError && error.code === 'INVALID_PASSWORD') return "That’s not your current password.";
             return error instanceof Error ? error.message : 'Something went wrong. Try again.';
           }
         },

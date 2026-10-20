@@ -169,8 +169,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             name: space.name,
             personal: space.privateTo !== null && space.parentId === null,
             private: space.privateTo !== null,
-            // How many people see what's shared there now.
+            // How many people see what's shared there now, and whether people in a space above that the reader can't open do too.
             people: space.members.length,
+            above: space.reachedFromAbove,
           },
           items: page.items.map((item) => ({
             id: item.id,
@@ -284,6 +285,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (!text || text.length > 20_000) return answer(res, 400, { field: 'text', message: text ? 'Keep it under 20,000 characters.' : 'Write what it should say.' });
         const item = await read((s) => readItem(s, route.id));
         if (!item || item.kind !== 'text' || item.reachesDown) return answer(res, 404, noItem);
+        if (item.replacedBy) return answer(res, 409, { message: 'This changed while you were reading. The page now shows it as it is.' });
         // A shared item is corrected for everyone, or replaced by your own version that only you see.
         const changed = item.privateTo === null && body.shared === false
           ? await write((s) => supersedeItem(s, route.id, { body: text }))

@@ -15,9 +15,15 @@ export class ApiError extends Error {
 
 /** Calls the server: a GET without a body, a POST with one. */
 export async function api<T = Record<string, unknown>>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, body === undefined
-    ? { headers: { accept: 'application/json' } }
-    : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  let response: Response;
+  try {
+    response = await fetch(path, body === undefined
+      ? { headers: { accept: 'application/json' } }
+      : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  } catch {
+    // No answer at all, such as when the connection drops or Homing is restarting.
+    throw new ApiError(0, { message: 'Homing can’t be reached right now. Check your connection and try again.' });
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new ApiError(response.status, data);
   return data as T;

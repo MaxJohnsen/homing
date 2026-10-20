@@ -1,6 +1,8 @@
+import { cn } from 'cn';
 import { useState, type FormEvent } from 'react';
 import { KeyRound } from 'lucide-react';
 import { GoogleLogo, MicrosoftLogo } from '@/components/provider-logos';
+import { focusRing } from '@/components/screen';
 import { FormCard, SplitLayout } from '@/components/split-layout';
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
@@ -76,7 +78,7 @@ export function SignIn({
         {/* The bird brings a note, knowledge, to the person signing in. */}
         <img src={bird} alt="" width={579} height={464} className="pointer-events-none absolute -top-[84px] -right-2 w-32 sm:-top-[112px] sm:-right-10 sm:w-44" />
         <div className="flex flex-col gap-1.5">
-          <h1 className="text-[28px] leading-tight font-semibold tracking-tight">
+          <h1 className="text-2xl leading-tight font-semibold tracking-tight">
             {connecting ? `Sign in to connect ${connecting}` : 'Sign in to Homing'}
           </h1>
           {connecting && step === 'email' && (
@@ -109,7 +111,7 @@ export function SignIn({
           <>
             <p className="flex items-center justify-between gap-3 rounded-full bg-muted px-4 py-3 text-base">
               <span className="min-w-0 truncate">{email}</span>
-              <button type="button" className="shrink-0 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline" onClick={() => { setMessage(undefined); setStep('email'); }}>
+              <button type="button" className={cn('shrink-0 rounded-sm px-1 py-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline', focusRing)} onClick={() => { setMessage(undefined); setStep('email'); }}>
                 Change
               </button>
             </p>
@@ -136,7 +138,7 @@ export function SignIn({
                 <Button type="submit" size="lg" className="h-11 w-full text-base" disabled={busy}>Sign in</Button>
               </form>
             )}
-            <a href="/recover" className="w-fit text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">Can't sign in?</a>
+            <a href="/recover" className={cn('w-fit rounded-sm py-1 text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline', focusRing)}>Can’t sign in?</a>
           </>
         )}
       </FormCard>
@@ -144,4 +146,4 @@ export function SignIn({
   );
 }
 
-export const wrongPassword = "That password doesn't match. Try again, or use your passkey.";
+export const wrongPassword = "That password doesn’t match. Try again, or use your passkey.";

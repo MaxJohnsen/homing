@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, ExternalLink } from 'lucide-react';
 import { cn } from 'cn';
 import { Markdown } from '@/components/markdown';
@@ -22,9 +22,17 @@ export function Sources({ space, data, filters, onFilters, now }: {
   now?: Date;
 }) {
   const [query, setQuery] = useState(filters.q);
+  const sent = useRef(filters.q);
   useEffect(() => {
-    if (query === filters.q) return;
-    const timer = setTimeout(() => onFilters({ ...filters, q: query, from: 0 }), 250);
+    if (filters.q !== sent.current) setQuery(filters.q);
+    sent.current = filters.q;
+  }, [filters.q]);
+  useEffect(() => {
+    if (query === sent.current) return;
+    const timer = setTimeout(() => {
+      sent.current = query;
+      onFilters({ ...filters, q: query, from: 0 });
+    }, 250);
     return () => clearTimeout(timer);
   }, [query, filters, onFilters]);
 

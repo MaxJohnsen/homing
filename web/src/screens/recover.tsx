@@ -42,12 +42,12 @@ export function Recover({
             If {email || 'that address'} belongs to an account with a verified email, a sign-in link is on its way. It works once, for 15 minutes.
           </Heading>
         ) : recovery === 'operator' ? (
-          <Heading title="Can't sign in?">
+          <Heading title="Can’t sign in?">
             Ask whoever runs this Homing for a sign-in link. It signs you in once, so you can add a new passkey.
           </Heading>
         ) : (
           <>
-            <Heading title="Can't sign in?">
+            <Heading title="Can’t sign in?">
               Homing can email you a link that signs you in once, so you can add a new passkey or password.
             </Heading>
             <form className="flex flex-col gap-4" onSubmit={submit} noValidate>
@@ -70,7 +70,7 @@ export function Recover({
 function Heading({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1.5">
-      <h1 className="text-[28px] leading-tight font-semibold tracking-tight text-balance">{title}</h1>
+      <h1 className="text-2xl leading-tight font-semibold tracking-tight text-balance">{title}</h1>
       <p className="text-base text-muted-foreground">{children}</p>
     </div>
   );

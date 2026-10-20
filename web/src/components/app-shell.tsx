@@ -230,7 +230,7 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
           {children.length > 0 && (
             <button
               type="button"
-              aria-label={expanded ? `Hide the spaces in ${space.name}` : `Show the ${children.length} spaces in ${space.name}`}
+              aria-label={expanded ? `Hide the spaces in ${space.name}` : `Show the ${children.length === 1 ? 'space' : `${children.length} spaces`} in ${space.name}`}
               aria-expanded={expanded}
               onClick={() => toggle(space.id)}
               className={cn('absolute right-1.5 flex h-7 min-w-7 items-center justify-center gap-0.5 rounded-md px-1 text-xs text-muted-foreground hover:bg-background/70 hover:text-foreground', focusRing)}
