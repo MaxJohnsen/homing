@@ -79,3 +79,12 @@ export function count(n: number, one: string, many: string): string {
 export function capitalize(text: string): string {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
+
+const dayOnly = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' });
+const dayYear = new Intl.DateTimeFormat('en-US', { dateStyle: 'long' });
+
+/** "October 14", with the year when it isn't this year. */
+export function dateOf(at: string): string {
+  const date = new Date(at);
+  return (date.getFullYear() === new Date().getFullYear() ? dayOnly : dayYear).format(date);
+}

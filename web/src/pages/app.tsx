@@ -3,7 +3,7 @@ import { Shell } from '@/components/app-shell';
 import { ScreenHeader } from '@/components/screen';
 import { api, ApiError } from '@/lib/api';
 import type { RuleActions, RuleData, SkillData, SkillSummary } from '@/lib/guidance';
-import type { NewPage, PageActions, PageData, PageOrder, PagesData } from '@/lib/knowledge';
+import type { NewPage, PageActions, PageData, PageOrder, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import { reload, useLoad } from '@/lib/load';
 import type { RequestData, WaitingData } from '@/lib/proposals';
 import { useRecent } from '@/lib/recent';
@@ -17,6 +17,7 @@ import { Home } from '@/screens/home';
 import { Rules, Skills } from '@/screens/guidance';
 import { Page } from '@/screens/page';
 import { Pages, type PageFilters } from '@/screens/pages';
+import { Source, Sources } from '@/screens/sources';
 import { Skill } from '@/screens/skill';
 import { Members, Space } from '@/screens/space';
 import { Waiting } from '@/screens/waiting';
@@ -31,7 +32,12 @@ export function AppPage() {
 
   const skill = useLoad<SkillData>(route.name === 'skill' ? `/api/skills/${route.id}` : '').data;
   const page = useLoad<PageData>(route.name === 'page' ? `/api/pages/${route.id}` : '').data;
-  const spaceId = route.name === 'space' ? route.id : route.name === 'skill' ? (skill?.spaceId ?? undefined) : route.name === 'page' ? page?.space.id : undefined;
+  const source = useLoad<SourceData>(route.name === 'source' ? `/api/sources/${route.id}` : '').data;
+  // The space the screen is in, so the shelf shows where you are.
+  const spaceId = route.name === 'space' ? route.id
+    : route.name === 'skill' ? (skill?.spaceId ?? undefined)
+      : route.name === 'page' ? page?.space.id
+        : route.name === 'source' ? source?.space.id : undefined;
   const { recent, opened } = useRecent(me?.email ?? '');
   // Only a space that opened counts as visited.
   const visited = route.name === 'space' && spaces?.some((space) => space.id === route.id) ? route.id : undefined;
@@ -75,6 +81,8 @@ function Screen({ route, me, waiting, recent }: { route: Route; me: AccountData;
       return <SpacePage id={route.id} view={route.view ?? 'pages'} />;
     case 'page':
       return <PagePage id={route.id} />;
+    case 'source':
+      return <SourcePage id={route.id} />;
     case 'skill':
       return <SkillPage id={route.id} />;
   }
@@ -90,13 +98,15 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const { data: space, error } = useLoad<SpaceData>(`/api/spaces/${id}`);
   const rules = useLoad<{ rules: RuleData[] }>(view === 'rules' ? `/api/spaces/${id}/rules` : '').data?.rules;
   const skills = useLoad<{ skills: SkillSummary[] }>(view === 'skills' ? `/api/spaces/${id}/skills` : '').data?.skills;
-  const pages = usePages(view === 'pages' ? id : undefined);
+  const pages = useList<PagesData>(view === 'pages' ? `/api/spaces/${id}/pages` : undefined);
+  const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
   return (
     <Titled title={space?.name ?? 'Space'}>
       {error?.status === 404 && <ScreenHeader title="There’s no space here" meta="It may have been removed, or you can’t open it." />}
       {space && (
         <Space space={space} view={space.private && view === 'members' ? 'rules' : view}>
           {view === 'pages' && <Pages space={space} data={pages.data} filters={pages.filters} onFilters={pages.change} create={newPage(id)} />}
+          {view === 'sources' && <Sources space={space} data={sources.data} filters={sources.filters} onFilters={sources.change} />}
           {(view === 'rules' || (space.private && view === 'members')) && rules && <Rules space={space} rules={rules} actions={ruleActions(id)} />}
           {view === 'skills' && skills && <Skills space={space} skills={skills} />}
           {view === 'members' && !space.private && <Members space={space} />}
@@ -107,10 +117,10 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
 }
 
 /**
- * A space's pages, as the list's search, type, order and place in the address ask, so the back
- * button returns to the same list. While a new answer is on its way, the last one stays.
+ * A long list, such as a space's pages, as the search, type, order and place in the address ask,
+ * so the back button returns to the same list. While a new answer is on its way, the last one stays.
  */
-function usePages(spaceId: string | undefined) {
+function useList<T>(path: string | undefined) {
   const search = new URLSearchParams(location.search);
   const filters: PageFilters = {
     q: search.get('q') ?? '',
@@ -126,8 +136,8 @@ function usePages(spaceId: string | undefined) {
   const api = new URLSearchParams(query);
   api.delete('from');
   if (filters.from) api.set('offset', String(filters.from));
-  const { data } = useLoad<PagesData>(spaceId ? `/api/spaces/${spaceId}/pages${api.size ? `?${api}` : ''}` : '');
-  const last = useRef<PagesData>(undefined);
+  const { data } = useLoad<T>(path ? `${path}${api.size ? `?${api}` : ''}` : '');
+  const last = useRef<T>(undefined);
   if (data) last.current = data;
   const change = useCallback((next: PageFilters) => {
     const address = new URLSearchParams();
@@ -139,6 +149,16 @@ function usePages(spaceId: string | undefined) {
     navigate(`${location.pathname}${address.size ? `?${address}` : ''}`, { replace: next.q !== new URLSearchParams(location.search).get('q') && next.q !== '' });
   }, []);
   return { data: data ?? last.current, filters, change };
+}
+
+function SourcePage({ id }: { id: string }) {
+  const { data, error } = useLoad<SourceData>(`/api/sources/${id}`);
+  return (
+    <Titled title={data?.reference ?? 'Source'}>
+      {error?.status === 404 && <ScreenHeader title="There’s no source here" meta="It may have been removed, or you can’t open it." />}
+      {data && <Source source={data} />}
+    </Titled>
+  );
 }
 
 function PagePage({ id }: { id: string }) {

@@ -11,7 +11,7 @@ import type { SpaceData } from '@/lib/spaces';
  */
 export function Space({ space, view, children }: { space: SpaceData; view: SpaceView; children: ReactNode }) {
   const tabs = [
-    { label: 'Knowledge', href: `/spaces/${space.id}`, current: view === 'pages' },
+    { label: 'Knowledge', href: `/spaces/${space.id}`, current: view === 'pages' || view === 'sources' },
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
   ];
@@ -39,22 +39,32 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
           </nav>
         }
       />
+      {(view === 'pages' || view === 'sources') && (
+        <Parts label="Knowledge" parts={[{ label: 'Pages', href: `/spaces/${space.id}`, current: view === 'pages' }, { label: 'Sources', href: `/spaces/${space.id}/sources`, current: view === 'sources' }]} />
+      )}
       {(view === 'rules' || view === 'skills') && (
-        <nav aria-label="Guidance" className="-mt-4 flex w-fit gap-1 rounded-full bg-muted p-1">
-          {(['rules', 'skills'] as const).map((part) => (
-            <Link
-              key={part}
-              href={`/spaces/${space.id}/${part}`}
-              aria-current={view === part ? 'page' : undefined}
-              className={cn('shrink-0 rounded-full px-4 py-1.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground', focusRing, view === part && 'bg-card text-foreground')}
-            >
-              {part === 'rules' ? 'Rules' : 'Skills'}
-            </Link>
-          ))}
-        </nav>
+        <Parts label="Guidance" parts={[{ label: 'Rules', href: `/spaces/${space.id}/rules`, current: view === 'rules' }, { label: 'Skills', href: `/spaces/${space.id}/skills`, current: view === 'skills' }]} />
       )}
       {children}
     </>
+  );
+}
+
+/** Views of one part of a space, such as its pages and its sources. */
+function Parts({ label, parts }: { label: string; parts: { label: string; href: string; current: boolean }[] }) {
+  return (
+    <nav aria-label={label} className="-mt-4 flex w-fit gap-1 rounded-full bg-muted p-1">
+      {parts.map((part) => (
+        <Link
+          key={part.label}
+          href={part.href}
+          aria-current={part.current ? 'page' : undefined}
+          className={cn('shrink-0 rounded-full px-4 py-1.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground', focusRing, part.current && 'bg-card text-foreground')}
+        >
+          {part.label}
+        </Link>
+      ))}
+    </nav>
   );
 }
 

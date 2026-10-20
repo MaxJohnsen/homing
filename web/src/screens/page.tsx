@@ -4,7 +4,7 @@ import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
 import { Markdown } from '@/components/markdown';
 import { OnlyYou } from '@/components/only-you';
-import { ago, capitalize, focusRing, ScreenHeader } from '@/components/screen';
+import { ago, capitalize, dateOf, focusRing, ScreenHeader } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -127,15 +127,6 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   );
 }
 
-const day = new Intl.DateTimeFormat('en-US', { month: 'long', day: 'numeric' });
-const dayYear = new Intl.DateTimeFormat('en-US', { dateStyle: 'long' });
-
-/** "October 14", with the year when it isn't this year. */
-function dateOf(at: string): string {
-  const date = new Date(at);
-  return (date.getFullYear() === new Date().getFullYear() ? day : dayYear).format(date);
-}
-
 /** "You wrote this", "Claude saved this for Cara Lund". */
 function wrote(by: Author, agent: string | null): string {
   if (agent) return by?.name || by?.you ? `${agent} saved this for ${by.you ? 'you' : by.name}` : `${agent} saved this`;
@@ -157,7 +148,12 @@ function Details({ item, yourUpdate, onCorrect }: { item: ItemData; yourUpdate: 
       </p>
       {item.sources.map((source) => (
         <figure key={source.id} className="flex flex-col gap-0.5">
-          <figcaption className="text-muted-foreground">From {source.reference ?? 'a source'}</figcaption>
+          <figcaption className="text-muted-foreground">
+            From{' '}
+            <Link href={`/sources/${source.id}`} className={cn('rounded-sm font-semibold text-foreground underline decoration-foreground/25 underline-offset-[3px] hover:decoration-foreground', focusRing)}>
+              {source.reference ?? 'a source'}
+            </Link>
+          </figcaption>
           <blockquote className="max-w-[60ch] text-base leading-relaxed whitespace-pre-line">“{source.excerpt}”</blockquote>
         </figure>
       ))}
