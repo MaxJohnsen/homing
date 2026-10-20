@@ -264,6 +264,7 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
             <button
               type="button"
               aria-expanded={shown}
+              aria-label={`${folded.length === 1 ? 'Archived space' : 'Archived spaces'}${within ? ` in ${within.name}` : ''} (${folded.length})`}
               onClick={() => toggleFold(key, folded)}
               className={cn(
                 'flex h-9 w-full items-center gap-1.5 rounded-lg pr-3 text-left text-sm text-muted-foreground hover:bg-background/70 hover:text-foreground',

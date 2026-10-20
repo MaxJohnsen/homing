@@ -82,3 +82,33 @@ test('only people archive, and a personal space stays open', async () => {
   const changed = await as({ ...ana, direct: true }, (s) => s.tx`update spaces set archived_at = now() where id = ${globex}::uuid returning id`).catch((error) => error);
   assert.ok(changed instanceof Error || changed.length === 0);
 });
+
+test('archiving shows only through spaces you can open, and nothing new goes in an archived space', async () => {
+  const dave = await member(homing.url, 'Dave');
+  const [northwind, kitchen, old] = await as({ ...ana, direct: true }, async (s) => {
+    const northwind = await createSpace(s, { name: 'Northwind', parentId: globex, closed: true });
+    await addMember(s, northwind, dave.id);
+    const kitchen = await createSpace(s, { name: 'Kitchen', parentId: ana.personalSpaceId });
+    const old = await createSpace(s, { name: 'Old notes', parentId: ana.personalSpaceId });
+    return [northwind, kitchen, old];
+  });
+  assert.equal((await archive(ana, globex)).status, 200);
+
+  // Ana sees Northwind archived with Globex. Dave can't open Globex, so for him nothing changed,
+  // and nothing says there's a space above it.
+  assert.equal((await ana.browser.json(`/api/spaces/${northwind}`)).body.archive.with.name, 'Globex');
+  const forDave = (await dave.browser.json(`/api/spaces/${northwind}`)).body;
+  assert.equal(forDave.archive, null);
+  assert.equal((await spacesAs(dave)).find((space) => space.id === northwind)?.archived, false);
+  assert.doesNotMatch(JSON.stringify(forDave), /Globex|archived/i);
+
+  // Nothing is shared into an archived space, and an archived space isn't shared until it's reopened.
+  const conversion = (await ana.browser.json(`/api/spaces/${kitchen}/conversion`)).body;
+  assert.ok(!conversion.places.some((place: { id: string }) => place.id === globex));
+  assert.equal((await ana.browser.json(`/api/spaces/${kitchen}/conversion`, { in: globex, closed: false, rules: 'drop' })).status, 400);
+  assert.equal((await archive(ana, old)).status, 200);
+  const sharing = await ana.browser.json(`/api/spaces/${old}/conversion`, { in: null, closed: false, rules: 'drop' });
+  assert.equal(sharing.status, 400);
+  assert.match(sharing.body.message, /archived/);
+  assert.equal((await archive(ana, globex, false)).status, 200);
+});

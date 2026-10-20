@@ -512,7 +512,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           collections: collections.pages,
           decisions: decisions.pages,
           waiting: waiting.map((item) => ({ id: item.id, action: item.action, kind: item.kind, text: item.text, asked: item.asked, member: item.member, assistant: item.agent ?? 'Your assistant', request: item.request ? { by: item.askedBy, yours: item.yours, sent: item.sent } : null })),
-          spaces: spaces.map(({ id, name, closed }) => ({ id, name, closed })),
+          // Archived ones last, folded away as in the sidebar.
+          spaces: [...spaces].sort((a, b) => Number(a.archived) - Number(b.archived)).map(({ id, name, closed, archived }) => ({ id, name, closed, archived })),
         });
         break;
       }

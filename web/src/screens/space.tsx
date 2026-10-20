@@ -225,21 +225,29 @@ function Archive({ space, archive }: { space: SpaceData; archive: (archived: boo
   const [asking, setAsking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
+  // After archiving or reopening, the way back gets the focus, so it isn't lost with the button pressed.
+  const [acted, setActed] = useState(false);
   const run = async (archived: boolean) => {
     setBusy(true);
     const answer = await archive(archived);
     setBusy(false);
     setProblem(answer);
-    if (!answer) setAsking(false);
+    if (!answer) {
+      setAsking(false);
+      setActed(true);
+    }
   };
   const state = space.archive;
 
-  if (state?.with) {
+  // Archived with a space above it: that one's admins reopen it.
+  if (state && !state.at) {
     return (
-      <Section title="Archived" className="max-w-2xl" description={`It’s archived with ${state.with.name}, and reopens with it.`}>
-        <Link href={`/spaces/${state.with.id}/settings`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
-          Open {state.with.name}’s settings
-        </Link>
+      <Section title="Archived" className="max-w-2xl" description={`It’s archived with ${state.with?.name ?? 'the space above it'}, and reopens with it.`}>
+        {state.with && (
+          <Link href={`/spaces/${state.with.id}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
+            Open {state.with.name}
+          </Link>
+        )}
       </Section>
     );
   }
@@ -252,7 +260,7 @@ function Archive({ space, archive }: { space: SpaceData; archive: (archived: boo
         description={`${state.at ? `Archived on ${dateOf(state.at)}${by}` : 'Archived'}. It’s out of everyday context${space.private ? '' : ' for everyone in it'}, and still searchable.`}
       >
         <div>
-          <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => run(false)}>Reopen {space.name}</Button>
+          <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => run(false)} autoFocus={acted}>Reopen {space.name}</Button>
         </div>
         {problem && <FieldError>{problem}</FieldError>}
       </Section>
@@ -274,7 +282,7 @@ function Archive({ space, archive }: { space: SpaceData; archive: (archived: boo
         </div>
       ) : (
         <div>
-          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => setAsking(true)}>Archive {space.name}</Button>
+          <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" onClick={() => setAsking(true)} autoFocus={acted}>Archive {space.name}</Button>
         </div>
       )}
       {problem && <FieldError>{problem}</FieldError>}

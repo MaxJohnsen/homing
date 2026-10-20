@@ -222,15 +222,26 @@ export async function removeMember(s: Session, spaceId: string, personId: string
 
 export async function listSpaces(s: Session): Promise<Space[]> {
   const person = personOf(s.principal) ?? null;
-  return s.tx<Space[]>`
-    select s.id, s.name, s.parent_id, s.closed, s.private_to, coalesce(a.admin, false) as admin,
-           arch.archived_in is not null as archived, s.archived_at, arch.archived_in
+  const rows = await s.tx<Omit<Space, 'archived' | 'archivedIn'>[]>`
+    select s.id, s.name, s.parent_id, s.closed, s.private_to, coalesce(a.admin, false) as admin, s.archived_at
     from spaces s
     left join space_access a on a.space_id = s.id and a.person_id = ${person}::uuid
-    left join lateral archived_since(s.id) arch on true
     where s.id in (${accessibleSpaces(s)})
     order by s.created_at
   `;
+  // Archived with the nearest archived space at or above it, among those the person can open, so
+  // a space above they can't open never shows through.
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  return rows.map((row) => {
+    let archivedIn: string | null = null;
+    for (let at: typeof row | undefined = row, depth = 0; at && depth < 100; at = at.parentId ? byId.get(at.parentId) : undefined, depth++) {
+      if (at.archivedAt) {
+        archivedIn = at.id;
+        break;
+      }
+    }
+    return { ...row, archived: archivedIn !== null, archivedIn };
+  });
 }
 
 /**

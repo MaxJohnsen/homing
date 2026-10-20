@@ -9,15 +9,15 @@ alter table spaces
   add column archived_at timestamptz,
   add column archived_by uuid references people (id) on delete set null;
 
--- When the space was archived, or the nearest space above it, if one was:
--- a space in an archived one is archived with it. Only for a space the
--- person can open, though the space above may be one they can't.
+-- When the space was archived, or the nearest space above it that the
+-- person can open, if one was: a space in an archived one is archived with
+-- it, as far as the person can see. It runs with the person's own rights, so
+-- a space above that they can't open never shows through.
 create function archived_since(space uuid) returns table (archived_at timestamptz, archived_in uuid)
-language sql stable security definer set search_path = public, pg_temp
+language sql stable set search_path = public, pg_temp
 as $$
   with recursive up (id, parent_id, archived_at, depth) as (
-    select s.id, s.parent_id, s.archived_at, 0 from spaces s
-    where s.id = space and s.id in (select accessible_spaces())
+    select s.id, s.parent_id, s.archived_at, 0 from spaces s where s.id = space
     union all
     select s.id, s.parent_id, s.archived_at, up.depth + 1 from spaces s join up on s.id = up.parent_id
     where up.archived_at is null and up.depth < 100
