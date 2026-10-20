@@ -18,6 +18,8 @@ To try the app against a whole Homing, `npm run sample -- big` builds one with a
 
 Test runs side by side, such as in two worktrees, each need a database of their own: `HOMING_TEST_DB=homing_test_b npm test`. Samples take `HOMING_SAMPLE_DB` and `HOMING_SAMPLE_PORT` the same way.
 
+The benchmarks in [bench](bench/README.md) run paid models against a local Homing, so they need an OpenRouter key and never run in CI.
+
 ### Running it
 
 [Running Homing](docs/deployment.md) explains settings, HTTPS and updates. For a local try:

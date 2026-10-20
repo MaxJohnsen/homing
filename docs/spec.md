@@ -411,6 +411,8 @@ To run before building more than is needed.
 5. **Planning latency.** Weekly planning across 5 to 10 external systems. At 15 to 30 seconds, add caching or indexing.
 6. **Prompt-cache reuse** across clients.
 
+The results of 1 to 3 are in [bench/results.md](../bench/results.md).
+
 ## Workflows checked against the design
 
 Morning email triage, shared project knowledge and cross-client weekly planning all fit the design without new concepts, and each has been walked through the data model. None has run end to end yet.
