@@ -141,6 +141,8 @@ export async function archiveSpace(s: Session, spaceId: string, archived: boolea
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (space.privateTo !== null && space.parentId === null) throw new SpaceRefused('admin', 'Your personal space stays open.');
   if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins ${archived ? 'archive' : 'reopen'} it.`);
+  if (archived && space.archived) throw new SpaceRefused('where', space.archivedAt ? `${space.name} is archived already.` : `${space.name} is archived already, with the space above it.`);
+  if (!archived && !space.archived) throw new SpaceRefused('where', `${space.name} is open already.`);
   if (!archived && space.archived && !space.archivedAt) {
     const above = spaces.find((candidate) => candidate.id === space.archivedIn);
     throw new SpaceRefused('where', `It’s archived with ${above ? above.name : 'the space above it'}, so it reopens with that one.`);

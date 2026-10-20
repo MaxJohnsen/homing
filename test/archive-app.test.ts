@@ -236,3 +236,39 @@ test('each person sees archiving only through the spaces they can open', async (
   assert.equal((await archive(cara, client, false)).status, 403);
   assert.equal((await archive(ana, client, false)).status, 200);
 });
+
+test('an assistant archives only what nobody else can open, at most 20 an hour, even all at once', async () => {
+  const solo = await member(homing.url, 'Solo');
+  const asAssistant = (space: string, archived = true) => as({ person: solo.id, agent: 'Claude' }, (s) => s.tx`select archive_space(${space}::uuid, ${archived})`);
+  const [shelf, mine, closedChild, openChild, shared] = await as({ ...solo, direct: true }, async (s) => {
+    const shelf = await createSpace(s, { name: 'Shelf', parentId: solo.personalSpaceId });
+    // A shared space only Solo is in yet, and in one shared with Cara, a closed child only Solo is
+    // in, and an open one that Cara has through it.
+    const mine = await createSpace(s, { name: 'Mine' });
+    const shared = await createSpace(s, { name: 'Shared' });
+    await addMember(s, shared, cara.id);
+    const closedChild = await createSpace(s, { name: 'Closed child', parentId: shared, closed: true });
+    const openChild = await createSpace(s, { name: 'Open child', parentId: shared });
+    return [shelf, mine, closedChild, openChild, shared];
+  });
+  await asAssistant(mine);
+  await asAssistant(closedChild);
+  await assert.rejects(asAssistant(openChild), refused);
+  await assert.rejects(asAssistant(shared), refused);
+
+  // Already archived or already open, it says so instead of changing anything.
+  const notebook = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Notebook', parentId: ana.personalSpaceId }));
+  const open = await claude.call('act', { action: 'space.archive', input: { space: `space:${notebook}`, reopen: true } });
+  assert.ok(open.failed && /Notebook is open already/.test(open.text), open.text);
+  await claude.call('act', { action: 'space.archive', input: { space: `space:${notebook}`, asked: true } });
+  assert.match((await claude.call('act', { action: 'space.archive', input: { space: `space:${notebook}`, asked: true } })).text, /archived already/);
+
+  // Eighteen more make twenty this hour; of three more at once, none get through.
+  const more = await as({ ...solo, direct: true }, (s) => Promise.all(Array.from({ length: 22 }, (_, i) => createSpace(s, { name: `Shelf ${i}`, parentId: shelf }))));
+  for (const space of more.slice(0, 18)) await asAssistant(space);
+  await assert.rejects(asAssistant(more[18]), refused, 'a twenty-first is refused');
+  const burst = await Promise.allSettled(more.slice(19).map((space) => asAssistant(space)));
+  assert.equal(burst.filter((result) => result.status === 'fulfilled').length, 0);
+  // Still, the person archives directly as much as they like.
+  assert.equal((await archive(solo, more[18])).status, 200);
+});

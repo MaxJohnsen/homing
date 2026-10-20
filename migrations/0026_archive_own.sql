@@ -15,7 +15,7 @@ create index space_archives_person on space_archives (person_id, at);
 
 alter table space_archives enable row level security;
 
-create policy own on space_archives for select using (person_id = current_person_id());
+create policy own on space_archives for select using (person_id = current_person_id() and space_id in (select accessible_spaces()));
 
 grant select on space_archives to homing_app;
 
@@ -28,6 +28,8 @@ begin
   if current_person_id() is null or not (direct_edit() or current_agent() is not null) then
     raise exception 'only people archive spaces' using errcode = 'insufficient_privilege';
   end if;
+  -- Held to the end, as renaming does, so the count and who can open it hold while it changes.
+  perform pg_advisory_xact_lock(hashtext('homing.space_access'));
   select * into target from spaces s where s.id = archive_space.space and s.id in (select accessible_spaces()) for update;
   if not found then
     raise exception 'there''s no space there that you can open' using errcode = 'insufficient_privilege';
