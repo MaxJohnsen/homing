@@ -35,17 +35,19 @@ export function connect(url = databaseUrl): Sql {
 /**
  * Runs fn in a transaction as the principal. Row-level security in
  * PostgreSQL reads the same principal, so it applies even where Homing's
- * own checks are missing.
+ * own checks are missing. A snapshot reads everything as it was at one
+ * moment, and writes nothing.
  */
 export async function withPrincipal<T>(
   sql: Sql,
   principal: Principal,
   fn: (session: Session) => Promise<T>,
+  { snapshot = false }: { snapshot?: boolean } = {},
 ): Promise<T> {
   const person = 'person' in principal ? principal.person : '';
   const space = 'space' in principal ? principal.space : '';
   const direct = 'person' in principal && principal.direct ? 'true' : '';
-  return (await sql.begin(async (tx) => {
+  return (await sql.begin(snapshot ? 'isolation level repeatable read read only' : '', async (tx) => {
     await tx`
       select set_config('homing.person_id', ${person}, true),
              set_config('homing.space_id', ${space}, true),

@@ -6,7 +6,7 @@ Homing builds on ideas that already work. This page credits them and says where 
 
 **[Karpathy's LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f).** An agent compiles raw sources into a Markdown wiki and keeps it current, instead of re-deriving answers every time. Homing's knowledge pages follow this idea. Its known weakness, pages that drift after many rewrites, is why Homing ties every item to its sources and never rewrites text from its own previous version.
 
-**[Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format).** Google's portable Markdown format for that kind of wiki, with provenance and free-text page types. Homing's export aims to be compatible.
+**[Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format).** Google's portable Markdown format for that kind of wiki, with provenance and free-text page types. Homing exports knowledge in it, version 0.2.
 
 **[CLAUDE.md](https://code.claude.com/docs/en/memory) and [AGENTS.md](https://agents.md).** Instruction files that cascade down a folder tree. Homing's guidance inherits the same way, but resolves conflicts by rule instead of leaving them to the model.
 

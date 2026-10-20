@@ -1,0 +1,301 @@
+// Issue #6, exporting a space (spec §3, guarantee 10). Any member downloads a space from its
+// Settings: everything they can see in it and in the spaces below it they can open, with their own
+// private side marked, and never anyone else's. The zip holds homing.json for importing it again,
+// the knowledge as readable Markdown in the Open Knowledge Format, and the rules and skills beside it.
+
+import assert from 'node:assert/strict';
+import { after, before, test } from 'node:test';
+import { strFromU8, unzipSync } from 'fflate';
+import { parse } from 'yaml';
+import { authDatabaseUrl } from '../src/db.ts';
+import type { Manifest } from '../src/export.ts';
+import { addRule } from '../src/guidance.ts';
+import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
+import { startServer, type Homing } from '../src/server.ts';
+import { saveSkill } from '../src/skills.ts';
+import { addMember, createSpace } from '../src/spaces.ts';
+import { addTask, changeTask } from '../src/tasks.ts';
+import { admin, as, db, member, type Member } from './helpers.ts';
+import { inTestDatabase } from './reset.ts';
+
+let homing: Homing;
+let ana: Member, cara: Member, ben: Member;
+let acme: string, boardId: string;
+/** Everything of Cara's own in Acme, and everything in a closed space Ana isn't in: text, titles and ids. */
+const carasOwn: string[] = [];
+const board: string[] = [];
+/** Ana's own, which Cara never gets. */
+const anasOwn: string[] = [];
+
+const skillMd = '---\nname: status-report\ndescription: Writes the weekly status report for the steering group.\n---\n\n# Status report\n\nStart with what changed. Follow [the tone guide](references/tone.md).\n';
+
+before(async () => {
+  homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl) });
+  [ana, cara, ben] = [await member(homing.url, 'Ana'), await member(homing.url, 'Cara'), await member(homing.url, 'Ben')];
+
+  // Ana's side of Acme: knowledge with a source and its history, a collection, links, an archived
+  // page, the overview, rules, a skill with a file, tasks, and Website, a space in Acme.
+  let gunnar = '', plan = '', launch = '';
+  acme = await as({ ...ana, direct: true }, async (s) => {
+    const acme = await createSpace(s, { name: 'Acme' });
+    await addMember(s, acme, cara.id, 'admin');
+    const email = await addSource(s, { spaceId: acme, excerpt: 'Gunnar: Jon takes over the steering group in November.', reference: 'Email from Gunnar, 3 October', shared: true });
+    gunnar = await createPage(s, { spaceId: acme, title: 'Gunnar Holm', type: 'person', shared: true });
+    const leads = await writeItem(s, { pageId: gunnar, body: 'Gunnar leads the steering group.', shared: true });
+    await supersedeItem(s, leads.id, { body: 'Jon takes over the steering group from Gunnar in November.', sources: [email.id], shared: true });
+    const role = await writeItem(s, { pageId: gunnar, body: 'Project manager at Northwind.', shared: true });
+    await updateItem(s, role.id, { body: 'Project manager at Northwind since 2024.' });
+    const move = await supersedeItem(s, role.id, { body: 'Project manager at Northwind, moving to Oslo in 2027.' });
+    const diary = await addSource(s, { spaceId: acme, excerpt: 'Gunnar prefers calls before nine.', reference: 'Ana’s call diary' });
+    const calls = await writeItem(s, { pageId: gunnar, body: 'Prefers calls before nine.', sources: [diary.id] });
+    const contracts = await writeItem(s, { pageId: gunnar, body: 'Gunnar signs contracts over 1 MNOK.', sources: [diary.id] });
+    await publishItem(s, contracts.id, contracts.body);
+    plan = await createPage(s, { spaceId: acme, title: 'Launch plan', type: 'project', shared: true });
+    await writeItem(s, { pageId: plan, body: `[Gunnar](page:${gunnar}) signs off the launch.`, shared: true });
+    launch = await createPage(s, { spaceId: acme, title: 'Launch 2027', shared: true });
+    await gather(s, { collectionId: launch, pageId: plan, shared: true });
+    await gather(s, { collectionId: launch, pageId: gunnar, shared: true });
+    const vendor = await createPage(s, { spaceId: acme, title: 'Old print vendor', shared: true });
+    await writeItem(s, { pageId: vendor, body: 'Trykkeriet AS printed the brochures until 2025.', shared: true });
+    await archivePage(s, vendor, true);
+    const worries = await createPage(s, { spaceId: acme, title: 'My launch worries' });
+    const venue = await writeItem(s, { pageId: worries, body: 'The venue may be too small.' });
+    await writeOverview(s, { spaceId: acme, text: 'The launch is in November.', shared: true });
+    await addRule(s, { spaceId: acme, kind: 'requirement', body: 'Write dates as YYYY-MM-DD.', shared: true });
+    await addRule(s, { spaceId: acme, kind: 'preference', body: 'Keep status notes under 200 words.', shared: true, onlyHere: true });
+    const norwegian = await addRule(s, { spaceId: acme, kind: 'preference', body: 'Draft in Norwegian first.' });
+    await saveSkill(s, { spaceId: acme, files: [{ path: 'SKILL.md', body: skillMd }, { path: 'references/tone.md', body: 'Plain, short sentences.\n' }], shared: true });
+    await addTask(s, { spaceId: acme, title: 'Send the brief to Gunnar', due: '2026-11-02', assignee: cara.id, shared: true });
+    const venueTask = await addTask(s, { spaceId: acme, title: 'Book a bigger venue' });
+    const banners = await addTask(s, { spaceId: acme, title: 'Order the banners', shared: true });
+    await changeTask(s, banners.id, { done: true });
+    const website = await createSpace(s, { name: 'Website', parentId: acme });
+    const booking = await createPage(s, { spaceId: website, title: 'Booking flow', shared: true });
+    await writeItem(s, { pageId: booking, body: 'Jon builds the booking flow.', shared: true });
+    anasOwn.push('Prefers calls before nine.', 'Ana’s call diary', 'My launch worries', 'The venue may be too small.', 'Draft in Norwegian first.', 'Book a bigger venue', 'moving to Oslo',
+      calls.id, contracts.id, diary.id, worries, venue.id, norwegian.id, venueTask.id, move!.id);
+    return acme;
+  });
+  await as({ person: ana.id, agent: 'Claude' }, (s) => writeItem(s, { pageId: gunnar, body: 'Gunnar asked for the budget by Friday.' }));
+  anasOwn.push('Gunnar asked for the budget by Friday.');
+
+  // Cara's own side of Acme, and Board, a closed space in it that Ana isn't in. Two of Cara's shared
+  // items point at her own page and at Board's, which are hers and Board's to keep.
+  await as({ ...cara, direct: true }, async (s) => {
+    const salary = await createPage(s, { spaceId: acme, title: 'Cara’s salary talk' });
+    const raise = await writeItem(s, { pageId: salary, body: 'Ask for a raise in December.' });
+    const notebook = await addSource(s, { spaceId: acme, excerpt: 'Gunnar may leave Northwind next spring.', reference: 'Cara’s notebook' });
+    const tired = await writeItem(s, { pageId: gunnar, body: 'Gunnar seemed tired on the call.', sources: [notebook.id] });
+    const practice = await addTask(s, { spaceId: acme, title: 'Practice the salary talk' });
+    const spelling = await addRule(s, { spaceId: acme, kind: 'preference', body: 'Use British spelling in Cara’s drafts.' });
+    const skill = await saveSkill(s, { spaceId: acme, files: [{ path: 'SKILL.md', body: '---\nname: salary-prep\ndescription: Gets Cara ready for the salary talk.\n---\n\nList three wins.\n' }] });
+    await gather(s, { collectionId: launch, pageId: salary });
+    const slips = await writeOverview(s, { spaceId: acme, text: 'Cara thinks the launch slips to spring.' });
+    await writeItem(s, { pageId: plan, body: `Read [my notes](page:${salary}) before the launch.`, shared: true });
+    carasOwn.push('Cara’s salary talk', 'Ask for a raise in December.', 'Gunnar may leave Northwind', 'Cara’s notebook', 'Gunnar seemed tired on the call.', 'Practice the salary talk',
+      'Use British spelling', 'salary-prep', 'Gets Cara ready', 'launch slips to spring',
+      salary, raise.id, notebook.id, tired.id, practice.id, spelling.id, skill.pageId, slips.id);
+
+    const closed = await createSpace(s, { name: 'Board', parentId: acme, closed: true });
+    boardId = closed;
+    const merger = await createPage(s, { spaceId: closed, title: 'Merger talks', shared: true });
+    const offer = await writeItem(s, { pageId: merger, body: 'Northwind wants to buy Acme.', shared: true });
+    const minutes = await addSource(s, { spaceId: closed, excerpt: 'Minutes: the offer values Acme at 40 MNOK.', reference: 'Board minutes, 1 October', shared: true });
+    const valuation = await addTask(s, { spaceId: closed, title: 'Value the company', shared: true });
+    const quiet = await addRule(s, { spaceId: closed, kind: 'requirement', body: 'Keep the offer within the board.', shared: true });
+    await writeItem(s, { pageId: plan, body: `The [board’s view](page:${merger}) decides the date.`, shared: true });
+    board.push('Board', 'Merger talks', 'Northwind wants to buy Acme', '40 MNOK', 'Board minutes', 'Value the company', 'Keep the offer within the board',
+      closed, merger, offer.id, minutes.id, valuation.id, quiet.id);
+  });
+});
+
+after(() => homing.close());
+
+/** Downloads a space's export as the person, and unpacks it. */
+async function download(who: Member, spaceId: string) {
+  const response = await who.browser.fetch(`/api/spaces/${spaceId}/export`);
+  const zip = new Uint8Array(await response.arrayBuffer());
+  const files = response.status === 200 ? new Map(Object.entries(unzipSync(zip)).map(([path, bytes]) => [path, strFromU8(bytes)])) : new Map<string, string>();
+  return { response, zip, files, manifest: (files.has('homing.json') ? JSON.parse(files.get('homing.json')!) : undefined) as Manifest };
+}
+
+test('a member downloads everything they see in a space, readable and ready to import', async () => {
+  const { response, files, manifest } = await download(ana, acme);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'application/zip');
+  assert.match(response.headers.get('content-disposition')!, /^attachment; filename="acme-\d{4}-\d{2}-\d{2}\.zip"$/);
+
+  // The manifest says what it is, where it came from, and who exported it, by name.
+  assert.equal(manifest.format, 'homing-export');
+  assert.equal(manifest.version, 1);
+  assert.equal(manifest.instance, homing.url.origin);
+  assert.deepEqual(manifest.exportedBy, { name: 'Ana' });
+  assert.deepEqual(manifest.spaces.map((space) => [space.name, space.parent && 'in Acme', space.folder]), [['Acme', null, ''], ['Website', 'in Acme', 'website']]);
+
+  // Exactly what Ana can see in Acme and Website: everything shared there, and her own.
+  const visibleToAna = async (table: string) =>
+    (await admin.unsafe(`select id from ${table} where space_id in (select space_subtree($1)) and space_id <> $2 and (private_to is null or private_to = $3) order by id`, [acme, boardId, ana.id])).map((row) => row.id);
+  const ids = (things: { id: string }[]) => things.map((thing) => thing.id).sort();
+  assert.deepEqual(ids(manifest.items), await visibleToAna('content'));
+  assert.deepEqual(ids(manifest.sources), await visibleToAna('sources'));
+  assert.deepEqual(ids(manifest.tasks), await visibleToAna('tasks'));
+
+  // Each item keeps its kind, side, author, sources and history.
+  const item = (body: string) => manifest.items.find((candidate) => candidate.body === body)!;
+  assert.equal(item('Prefers calls before nine.').visibility, 'private');
+  assert.deepEqual(item('Gunnar asked for the budget by Friday.').author, { name: 'Ana', agent: 'Claude' });
+  assert.deepEqual(item('Gunnar leads the steering group.').author, { name: 'Ana', agent: null });
+  assert.equal(item('Jon takes over the steering group from Gunnar in November.').supersedes, item('Gunnar leads the steering group.').id);
+  assert.deepEqual(item('Jon takes over the steering group from Gunnar in November.').sources, [manifest.sources.find((source) => source.reference === 'Email from Gunnar, 3 October')!.id]);
+  assert.deepEqual(manifest.revisions.map((revision) => [revision.item, revision.body]), [[item('Project manager at Northwind since 2024.').id, 'Project manager at Northwind.']]);
+  const copy = manifest.items.find((candidate) => candidate.body === 'Gunnar signs contracts over 1 MNOK.' && candidate.visibility === 'shared')!;
+  assert.equal(copy.publishedFrom, manifest.items.find((candidate) => candidate.body === copy.body && candidate.visibility === 'private')!.id);
+  assert.equal(copy.published?.by, 'Ana');
+
+  // Rules, a skill's files, links, a collection, an archived page and tasks.
+  assert.deepEqual(manifest.items.filter((rule) => rule.kind === 'requirement' || rule.kind === 'preference').map((rule) => [rule.body, rule.kind, rule.onlyHere, rule.visibility]), [
+    ['Write dates as YYYY-MM-DD.', 'requirement', false, 'shared'],
+    ['Keep status notes under 200 words.', 'preference', true, 'shared'],
+    ['Draft in Norwegian first.', 'preference', false, 'private'],
+  ]);
+  assert.deepEqual(manifest.items.filter((file) => file.kind === 'file').map((file) => file.path), ['SKILL.md', 'references/tone.md']);
+  const page = (title: string) => manifest.items.find((candidate) => candidate.kind === 'title' && candidate.body === title)!.page;
+  assert.deepEqual(manifest.links.map((link) => [link.from, link.to]), [[page('Launch plan'), page('Gunnar Holm')]]);
+  assert.deepEqual(manifest.gathered.map((gathering) => [gathering.collection, gathering.page, gathering.visibility]), [
+    [page('Launch 2027'), page('Launch plan'), 'shared'],
+    [page('Launch 2027'), page('Gunnar Holm'), 'shared'],
+  ]);
+  assert.equal(manifest.pages.find((candidate) => candidate.id === page('Old print vendor'))!.archived?.by, 'Ana');
+  assert.deepEqual(manifest.pageArchives.map((archive) => [archive.page, archive.archived]), [[page('Old print vendor'), true]]);
+  assert.deepEqual(manifest.pages.find((candidate) => candidate.id === page('Gunnar Holm'))!.type, 'person');
+  assert.deepEqual(manifest.tasks.map((task) => [task.title, task.visibility, task.due, task.assignee?.name ?? null, Boolean(task.done)]), [
+    ['Send the brief to Gunnar', 'shared', '2026-11-02', 'Cara', false],
+    ['Book a bigger venue', 'private', null, null, false],
+    ['Order the banners', 'shared', null, null, true],
+  ]);
+
+  // The knowledge reads as Markdown, one file per page, with sources as footnotes and Ana's own marked.
+  const gunnar = files.get('knowledge/gunnar-holm.md')!;
+  const email = manifest.sources.find((source) => source.reference === 'Email from Gunnar, 3 October')!.id;
+  const front = parse(gunnar.split('---\n')[1]);
+  assert.equal(front.type, 'person');
+  assert.equal(front.homing.id, page('Gunnar Holm'));
+  assert.deepEqual(front.sources.find((source: { id: string }) => source.id === email), { id: email, resource: `/sources/${email}.md`, title: 'Email from Gunnar, 3 October' });
+  assert.match(gunnar, new RegExp(`Jon takes over the steering group from Gunnar in November\\.\\[\\^${email}\\]`));
+  assert.match(gunnar, /_Private to Ana\._\n\nPrefers calls before nine\./);
+  assert.match(gunnar, /## Earlier[\s\S]*_Replaced on \d{4}-\d{2}-\d{2}\._\n\nGunnar leads the steering group\./);
+  assert.match(gunnar, /_Private to Ana\. Everyone else still sees the earlier version\._\n\nProject manager at Northwind, moving to Oslo in 2027\./);
+  assert.match(gunnar, /_Replaced on \d{4}-\d{2}-\d{2}, for Ana only\. Everyone else still sees it\._\n\nProject manager at Northwind since 2024\./);
+  assert.match(files.get(`knowledge/sources/${email}.md`)!, /^---\ntype: Source\n[\s\S]*> Gunnar: Jon takes over the steering group in November\.[\s\S]*Used on \[Gunnar Holm\]\(\/gunnar-holm\.md\)/);
+  assert.match(files.get('knowledge/launch-plan.md')!, /\[Gunnar\]\(\/gunnar-holm\.md\) signs off the launch\./);
+  assert.match(files.get('knowledge/launch-2027.md')!, /## In this collection\n\n- \[Launch plan\]\(\/launch-plan\.md\)\n- \[Gunnar Holm\]\(\/gunnar-holm\.md\)/);
+  assert.match(files.get('knowledge/old-print-vendor.md')!, /status: deprecated[\s\S]*_Archived on \d{4}-\d{2}-\d{2} by Ana: no longer active\._/);
+  assert.match(files.get('knowledge/my-launch-worries.md')!, /_Private to Ana: nobody else sees this page\._/);
+  assert.match(files.get('knowledge/overview.md')!, /The launch is in November\./);
+  assert.match(files.get('knowledge/tasks.md')!, /- \[ \] Send the brief to Gunnar \(due 2026-11-02, for Cara\)[\s\S]*- \[ \] Book a bigger venue \(private to Ana\)[\s\S]*## Done\n\n- \[x\] Order the banners \(done on/);
+  assert.match(files.get('knowledge/website/booking-flow.md')!, /Jon builds the booking flow\./);
+  assert.match(files.get('knowledge/index.md')!, /^---\nokf_version: "0\.2"\n---\n[\s\S]*\* \[Gunnar Holm\]\(gunnar-holm\.md\) - person[\s\S]*\* \[Website\]\(website\/\) - 1 page/);
+
+  // Rules and skills sit beside the knowledge, as AGENTS.md and SKILL.md folders, the way they went in.
+  const agents = files.get('guidance/AGENTS.md')!;
+  assert.match(agents, /## Requirements\n\n- Write dates as YYYY-MM-DD\.\n/);
+  assert.match(agents, /## Preferences\n\n- Keep status notes under 200 words\. \(Only here\.\)\n- Draft in Norwegian first\. \(Private to Ana\.\)\n/);
+  assert.match(agents, /- \[status-report\]\(skills\/status-report\/SKILL\.md\): Writes the weekly status report for the steering group\./);
+  assert.equal(files.get('guidance/skills/status-report/SKILL.md'), skillMd);
+  assert.equal(files.get('guidance/skills/status-report/references/tone.md'), 'Plain, short sentences.\n');
+});
+
+test('the knowledge part of an export conforms to the Open Knowledge Format', async () => {
+  for (const who of [ana, cara]) {
+    const { files } = await download(who, acme);
+    assert.deepEqual(okfProblems(files), [], `${who.name}’s export`);
+    assert.ok([...files.keys()].some((path) => path.startsWith('knowledge/sources/')));
+  }
+});
+
+test('an export never holds anyone else’s private side, or a closed space the exporter isn’t in', async () => {
+  const { zip, files, manifest } = await download(ana, acme);
+  // Every file, byte for byte, and every name in the zip.
+  for (const secret of [...carasOwn, ...board]) {
+    for (const [path, text] of files) {
+      assert.ok(!path.includes(secret) && !text.includes(secret), `${path} holds “${secret}”`);
+    }
+  }
+  assert.ok(!manifest.spaces.some((space) => space.name === 'Board'));
+  // Cara's shared items keep their words, without pointing at what's hers or Board's.
+  assert.ok(manifest.items.some((item) => item.body === 'Read my notes before the launch.'));
+  assert.ok(manifest.items.some((item) => item.body === 'The board’s view decides the date.'));
+  assert.ok(zip.length > 0);
+});
+
+test('each member’s export is their own view of the space', async () => {
+  const { files, manifest } = await download(cara, acme);
+  assert.deepEqual(manifest.exportedBy, { name: 'Cara' });
+  assert.deepEqual(manifest.spaces.map((space) => space.name), ['Acme', 'Website', 'Board']);
+  assert.match(files.get('knowledge/gunnar-holm.md')!, /_Private to Cara\._\n\nGunnar seemed tired on the call\./);
+  assert.match(files.get('knowledge/board/merger-talks.md')!, /Northwind wants to buy Acme\./);
+  // Ana's shared copy comes without the private item it was shared from.
+  const copy = manifest.items.find((item) => item.body === 'Gunnar signs contracts over 1 MNOK.')!;
+  assert.equal(copy.visibility, 'shared');
+  assert.equal(copy.publishedFrom, null);
+  for (const secret of anasOwn) {
+    for (const [path, text] of files) assert.ok(!text.includes(secret), `${path} holds “${secret}”`);
+  }
+});
+
+test('only someone who can open a space exports it', async () => {
+  assert.equal((await download(ben, acme)).response.status, 404);
+  assert.equal((await download(ana, boardId)).response.status, 404, 'a closed space Ana isn’t in');
+  await ben.browser.signOut();
+  assert.equal((await download(ben, acme)).response.status, 401);
+});
+
+/**
+ * What keeps the knowledge part of a bundle from conforming to OKF v0.2 (§11): every concept has
+ * frontmatter with a type, an index has none except okf_version at the top, and a log lists days
+ * newest first. Also what Homing promises on top: actors as OKF names them, footnotes keyed by the
+ * sources a concept lists, and links and sources that lead somewhere in the bundle.
+ */
+function okfProblems(files: Map<string, string>): string[] {
+  const problems: string[] = [];
+  const bundle = new Map([...files].filter(([path]) => path.startsWith('knowledge/')).map(([path, text]) => [path.slice('knowledge/'.length), text]));
+  const exists = (target: string) => bundle.has(target.replace(/^\//, '')) || [...bundle.keys()].some((path) => path.startsWith(target.replace(/^\//, '')) && target.endsWith('/'));
+  for (const [path, text] of bundle) {
+    if (!path.endsWith('.md')) continue;
+    const name = path.split('/').at(-1);
+    const head = /^---\n([\s\S]*?)\n---\n/.exec(text);
+    const body = head ? text.slice(head[0].length) : text;
+    if (name === 'index.md') {
+      if (head && (path !== 'index.md' || JSON.stringify(parse(head[1])) !== JSON.stringify({ okf_version: '0.2' }))) problems.push(`${path}: frontmatter in an index`);
+      if (path === 'index.md' && !head) problems.push('index.md: no okf_version');
+      for (const line of body.split('\n')) {
+        if (line && !/^#{1,6} \S/.test(line) && !/^\* \[[^\]]+\]\([^)\s]+\)( - .+)?$/.test(line)) problems.push(`${path}: not an index entry: ${line}`);
+      }
+    } else if (name === 'log.md') {
+      if (head) problems.push(`${path}: frontmatter in a log`);
+      const days = [...body.matchAll(/^## (.*)$/gm)].map((match) => match[1]);
+      if (!days.length || days.some((date) => !/^\d{4}-\d{2}-\d{2}$/.test(date))) problems.push(`${path}: days aren't YYYY-MM-DD`);
+      if (days.some((date, at) => at > 0 && date >= days[at - 1])) problems.push(`${path}: days aren't newest first`);
+      for (const line of body.split('\n')) {
+        if (line && !/^# \S/.test(line) && !/^## /.test(line) && !/^\* \S/.test(line)) problems.push(`${path}: not a log entry: ${line}`);
+      }
+    } else {
+      let front: Record<string, any> | undefined;
+      try {
+        front = head ? parse(head[1]) : undefined;
+      } catch {
+        problems.push(`${path}: frontmatter isn't YAML`);
+      }
+      if (!front || typeof front !== 'object') problems.push(`${path}: no frontmatter`);
+      else {
+        if (typeof front.type !== 'string' || !front.type.trim()) problems.push(`${path}: no type`);
+        if (front.generated && !/^(human:.+|[a-z0-9-]+\/homing)$/.test(front.generated.by)) problems.push(`${path}: generated.by isn't an actor`);
+        const listed = new Set((front.sources ?? []).map((source: { id: string }) => source.id));
+        for (const source of front.sources ?? []) if (!exists(source.resource)) problems.push(`${path}: source ${source.resource} isn't in the bundle`);
+        for (const [, label] of body.matchAll(/\[\^([^\]]+)\](?!:)/g)) if (!listed.has(label)) problems.push(`${path}: footnote ${label} isn't one of its sources`);
+      }
+    }
+    for (const [, target] of body.matchAll(/\]\((\/[^)\s]*)\)/g)) if (!exists(target)) problems.push(`${path}: ${target} isn't in the bundle`);
+  }
+  return problems;
+}

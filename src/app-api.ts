@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import postgres from 'postgres';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
+import { exportSpace } from './export.ts';
 import { addRule, editRule, removeRule, rulesFor, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
@@ -16,7 +17,7 @@ const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
 /**
- * The endpoints of the app's own screens: spaces, what's waiting, knowledge, search, guidance, and looking after Homing. Each answers only
+ * The endpoints of the app's own screens: spaces and their exports, what's waiting, knowledge, search, guidance, and looking after Homing. Each answers only
  * with what the signed-in person can open, and the database checks the same underneath. Returns
  * whether it answered.
  */
@@ -192,6 +193,19 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const body = await readJson(req);
         const space = await write((s) => renameSpace(s, route.id, typeof body.name === 'string' ? body.name : ''));
         json(res, 200, { id: space.id, name: space.name });
+        break;
+      }
+
+      case 'export': {
+        // Everything the person sees in the space, read in one snapshot as them.
+        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url), { snapshot: true });
+        if (!exported) return answer(res, 404, noSpace);
+        res.writeHead(200, {
+          'content-type': 'application/zip',
+          'content-disposition': `attachment; filename="${exported.filename}"`,
+          'cache-control': 'no-store',
+        });
+        res.end(exported.zip);
         break;
       }
 
@@ -765,7 +779,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -784,6 +798,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['sources', `/api/spaces/${uuid}/sources`],
       ['overview', `/api/spaces/${uuid}/overview`],
       ['conversion', `/api/spaces/${uuid}/conversion`],
+      ['export', `/api/spaces/${uuid}/export`],
       ['tasks', `/api/spaces/${uuid}/tasks`],
       ['source', `/api/sources/${uuid}`],
       ['rules', `/api/spaces/${uuid}/rules`],

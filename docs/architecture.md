@@ -71,6 +71,32 @@ Each routine run is a job, recording who it acted for, which connection it used,
 - Sign-in has its own database role and schema. It can't read space data, and Homing's role can't read passwords, passkeys or sessions. An account has the same id as its person, and only accepting an invite creates both.
 - The application still filters explicitly. Row-level security catches missing filters. It is not protection against a fully compromised application.
 
+## Export
+
+A space's export is a zip, read in one snapshot as the person who asks for it, so row-level security keeps everyone else's private side out underneath Homing's own filters. It goes down only through spaces the person can open, and only sources kept in those spaces come along. Text that refers to anything left out, such as a link to a page in a closed space, keeps its words and loses the reference.
+
+```
+homing.json                    the manifest, the only file import reads
+knowledge/                     an OKF v0.2 bundle
+  index.md                     okf_version, then the space's overview, tasks, sources, pages and spaces
+  log.md                       what changed, by day, newest first
+  <page>.md                    one concept per page
+  overview.md, tasks.md
+  sources/<id>.md              one concept per source
+  <space>/                     each space below, the same way
+guidance/
+  AGENTS.md                    the space's rules
+  skills/<name>/               SKILL.md folders as they were saved
+  private-skills/<name>/       the person's own skills
+  <space>/                     each space below, the same way
+```
+
+The manifest has `format: "homing-export"`, `version: 1`, the instance's address, when it was exported and the exporter's name, and then flat lists by current ID: `spaces`, `pages`, `items`, `revisions`, `sources`, `links`, `gathered`, `pageArchives` and `tasks`. An item has its kind, body, visibility (`shared`, or `private` to the exporter), author (a name, and the agent if one wrote it), when it was created and last written, what it supersedes, `onlyHere` for a rule, the sources it cites, and the private item it was published from when that is the exporter's own. People appear only by name, and a name the exporter can't see is null. Members, proposals and credentials aren't exported, and Homing keeps no live external records yet.
+
+Each page is a concept with its type (`Page` when it has none), `title`, its id under `homing`, `generated` with the last writer as an OKF actor (`human:<name>`, or `<assistant>/homing` for an agent), and `sources` pointing to their concepts, cited as footnotes keyed by source id. Items keep their ids in comments, private ones say whose they are, replaced ones follow under Earlier, and an archived page has `status: deprecated`. A test holds every change to OKF's conformance rules.
+
+The zip is written with Node's own zlib. A big space is tens of thousands of files, so past 65,535 the zip ends with ZIP64's records, which common unzip tools read.
+
 ## Self-hosting
 
 Self-hosting is part of the product, not something users piece together: HTTPS, MCP authentication, OAuth callbacks, migrations, upgrades, backup and restore. A full backup includes the encryption key. A Markdown export is not an operational backup.

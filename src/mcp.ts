@@ -297,7 +297,8 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'in a space others can open, it waits for their approval, and when archiving it is your own idea, give the evidence as why. ' +
         'proposal.withdraw withdraws a proposal or request of the user\'s that still waits, when they no longer want it; it never decides it. ' +
         'Whether a proposal still waits, and how it ended, comes from Homing: `read` it rather than going by what you said before. ' +
-        "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once.",
+        "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once. " +
+        "There's no action for exporting a space: the user downloads it from the space's Settings in Homing.",
       inputSchema: z.object({
         action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'proposal.withdraw']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.

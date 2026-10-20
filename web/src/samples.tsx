@@ -101,6 +101,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/new/in': { label: 'Starting a space in Acme', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} start="acme" create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/settings/personal': { label: 'Sharing a space from your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="settings"><SpaceSettings space={sampleSpace.kitchen} rename={async () => 'Samples don’t save anything.'} share={sampleShareSpace} /></Space></InApp> },
   '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} archive={async () => 'Samples don’t save anything.'} /></Space></InApp> },
+  '/spaces/settings/member': { label: 'A space’s settings, for a member', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="settings"><SpaceSettings space={sampleSpace.open} /></Space></InApp> },
+  '/spaces/settings/own': { label: 'Your personal space’s settings', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="settings"><SpaceSettings space={sampleSpace.personal} /></Space></InApp> },
   '/spaces/settings/archived': {
     label: 'An archived space’s settings',
     render: () => {

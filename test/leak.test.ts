@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
+import { strFromU8, unzipSync } from 'fflate';
 import { AccessDenied, authDatabaseUrl } from '../src/db.ts';
 import { addRule, editRule, removeRule, rulesFor } from '../src/guidance.ts';
 import {
@@ -533,6 +534,7 @@ describe('through the app’s endpoints', () => {
         assert.equal((await get(`/api/spaces/${space}/pages`)).status, 404);
         assert.equal((await get(`/api/spaces/${space}/pages?q=launch`)).status, 404);
         assert.equal((await get(`/api/spaces/${space}/sources?q=launch`)).status, 404);
+        assert.equal((await get(`/api/spaces/${space}/export`)).status, 404);
       }
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
@@ -674,6 +676,13 @@ describe('through the app’s endpoints', () => {
     const [{ latest }] = await admin`select max(updated_at) as latest from content where page_id = ${ana.pages.shared} and private_to is null`;
     assert.equal(new Date(shared.updatedAt).getTime(), latest.getTime());
     assert.doesNotMatch(JSON.stringify(seen), /salary|raise|worries|fears|diary|secret/);
+    // Her export of the space holds what she sees, and nothing Ana keeps to herself.
+    const exported = await cara.browser.fetch(`/api/spaces/${ana.space}/export`);
+    assert.equal(exported.status, 200);
+    const files = Object.entries(unzipSync(new Uint8Array(await exported.arrayBuffer()))).map(([path, bytes]) => `${path}\n${strFromU8(bytes)}`).join('\n');
+    assert.match(files, /Ana launches in March/);
+    assert.doesNotMatch(files, /salary|raise|worries|fears|diary|secret/);
+    for (const id of [ana.pages.own, ana.pages.privateItem, ana.pages.privateSource]) assert.ok(!files.includes(id), id);
     // Nor can she write on what's only Ana's.
     for (const [path, body] of [
       [`/api/pages/${ana.pages.own}/items`, { text: 'Hello' }],

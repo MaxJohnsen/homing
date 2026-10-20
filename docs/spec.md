@@ -161,7 +161,10 @@ Upkeep runs when new evidence arrives, and in a periodic tidy pass per space tha
 
 **What is stored.** Knowledge, not conversation history. By default a source is a reference plus an excerpt, and a full copy is kept only when it is necessary and permitted. Content is Markdown, backed by one transactional store that nobody edits directly. Relationships come from explicit links between pages, not from things appearing together.
 
-**Export** is an open bundle, compatible with the Open Knowledge Format where possible: pages, content, sources, links, stable IDs and history.
+**Export.** Anyone who can open a space can export it. The export holds everything they see there and in the spaces below it they can open: the shared side, and their own private side, marked as theirs, never anyone else's. That is its pages with their types, the items on them with their sources' permitted excerpts and history, including superseded items and archived pages, the links between pages, collections, the overview, rules, skills with their files, and tasks. Sources kept in other spaces, such as another client's, stay there. A space below that the person can't open leaves no trace, not even its name. Credentials and live external records are never exported.
+
+- The bundle is readable as it is: the knowledge as Markdown in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format), and the rules and skills beside it as AGENTS.md and SKILL.md folders.
+- Everything keeps its stable ID, its author by name, and whether a person or an agent wrote it. A manifest holds what importing it again needs, and importing it into a new space brings the space back intact (guarantee 10).
 
 ## 4. People and identity
 
