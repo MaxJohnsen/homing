@@ -93,7 +93,7 @@ function About({ page, now }: { page: PageData; now?: Date }) {
       {page.space.private || !page.shared
         ? 'Only you see it.'
         : `Everyone in ${page.space.name} sees it${mine ? `, except ${mine === 1 ? 'one item' : `${mine} items`} only you see` : ''}.`}
-      {page.archived && ` Archived on ${dateOf(page.archived.at)}.`}
+      {page.archived && ` Archived ${page.archived.since ? 'since' : 'on'} ${dateOf(page.archived.at)}.`}
     </>
   );
 }

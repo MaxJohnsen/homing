@@ -87,8 +87,11 @@ export interface Page {
   shared: boolean;
   /** When anything the viewer sees on it last changed. */
   updatedAt: Date;
-  /** When it was archived and by whom, if it is. */
-  archived: { at: Date; by: string | null } | null;
+  /**
+   * When it was archived and by whom, if it is. Archived by someone else before the viewer could
+   * first see the page, it's archived since then, by nobody named (spec §3).
+   */
+  archived: { at: Date; by: string | null; since: boolean } | null;
   /** The current items, each with its sources and the earlier item it replaced, if any. */
   items: (Item & { sources: Citation[]; replaced: Replaced | null })[];
 }
@@ -301,8 +304,10 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     order by coalesce(first.created_at, content.created_at), content.created_at
   `;
   if (items.length === 0) return undefined;
-  const [{ type, archivedAt, archivedBy }] = await s.tx<{ type: string | null; archivedAt: Date | null; archivedBy: string | null }[]>`
-    select type, archived_at, archived_by from pages where id = ${pageId}::uuid
+  const [{ type, archivedAt, archivedBy, archivedSince }] = await s.tx<{ type: string | null; archivedAt: Date | null; archivedBy: string | null; archivedSince: boolean | null }[]>`
+    select p.type, a.at as archived_at, a.archived_by, a.since as archived_since
+    from pages p left join page_archived(p.id) a on true
+    where p.id = ${pageId}::uuid
   `;
   // Your own title for a page comes before the shared one.
   const titles = items.filter((item) => item.kind === 'title').sort((a, b) => Number(!a.privateTo) - Number(!b.privateTo));
@@ -313,7 +318,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     title: titles[0]?.body ?? 'Untitled',
     shared: titles.some((title) => title.privateTo === null),
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
-    archived: archivedAt ? { at: archivedAt, by: archivedBy } : null,
+    archived: archivedAt ? { at: archivedAt, by: archivedBy, since: archivedSince ?? false } : null,
     items: items.filter((item) => item.kind !== 'title'),
   };
 }
@@ -443,13 +448,13 @@ export async function readItem(s: Session, itemId: string) {
 /** The knowledge pages in a space that the viewer can see, most recently changed first. */
 export async function listPages(s: Session, spaceId: string, options: { withArchived?: boolean } = {}) {
   return s.tx<{ id: string; type: string | null; title: string | null; updatedAt: Date; archived: boolean }[]>`
-    select c.page_id as id, p.type, ${titleOf(s, s.tx`c.page_id`)} as title, max(c.updated_at) as updated_at, p.archived_at is not null as archived
+    select c.page_id as id, p.type, ${titleOf(s, s.tx`c.page_id`)} as title, max(c.updated_at) as updated_at, p.archived
     from content c
     join pages p on p.id = c.page_id
-    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and ${options.withArchived ? s.tx`true` : s.tx`p.archived_at is null`}
+    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and ${options.withArchived ? s.tx`true` : s.tx`not p.archived`}
       and ${visible(s, 'c')} and ${current(s, 'c')}
-    group by c.page_id, p.type, p.archived_at
-    order by p.archived_at is not null, updated_at desc
+    group by c.page_id, p.type, p.archived
+    order by p.archived, updated_at desc
   `;
 }
 
@@ -458,7 +463,7 @@ export async function archivedPages(s: Session, spaceId: string): Promise<number
   const [{ count }] = await s.tx<{ count: number }[]>`
     select count(distinct c.page_id)::int as count
     from content c join pages p on p.id = c.page_id
-    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and p.archived_at is not null and ${visible(s, 'c')} and ${current(s, 'c')}
+    where c.space_id = ${spaceId}::uuid and ${knowledge(s, 'p')} and p.archived and ${visible(s, 'c')} and ${current(s, 'c')}
   `;
   return count;
 }
@@ -525,7 +530,7 @@ export async function pagesIn(
   const limit = options.limit ?? 50;
   const order = options.order === 'match' && !terms ? 'recent' : (options.order ?? (terms ? 'match' : 'recent'));
   // Archived pages show only on request, except in a collection, which lists what it gathers.
-  const shelved = options.in ? s.tx`true` : options.archived ? s.tx`p.archived_at is not null` : s.tx`p.archived_at is null`;
+  const shelved = options.in ? s.tx`true` : options.archived ? s.tx`p.archived` : s.tx`not p.archived`;
   // Each page's title, first item, last change and best match, from the items the viewer sees now.
   const here = s.tx`
     select c.page_id as id,
@@ -560,7 +565,7 @@ export async function pagesIn(
       : s.tx`true`;
   const sorted = { recent: s.tx`h.updated_at desc`, name: s.tx`lower(h.title), h.updated_at desc`, match: s.tx`h.rank desc, h.updated_at desc` }[order];
   const list = (offset: number) => s.tx<(Omit<PageSummary, 'gathers'> & { total: number })[]>`
-    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, p.archived_at is not null as archived, count(*) over ()::int as total
+    select h.id, p.type, h.title, h.excerpt, h.updated_at, h.only_you, p.archived, count(*) over ()::int as total
     from (${here}) h
     join pages p on p.id = h.id
     where h.hit and ${typed} and ${kept}
@@ -761,7 +766,7 @@ export async function recentChanges(
   // Archived as the viewer sees it: a space archived with one above it only when they can open that
   // one. A page's archiving is one state for everyone who sees it.
   const shelved = options.archived ? [] : (options.spaces ?? (await listSpaces(s))).filter((space) => space.archived).map((space) => space.id);
-  const archivedPages = s.tx`(select p.id from pages p where p.archived_at is not null)`;
+  const archivedPages = s.tx`(select p.id from pages p where p.archived)`;
   const active = options.archived
     ? s.tx``
     : s.tx`and c.page_id not in ${archivedPages} ${shelved.length ? s.tx`and c.space_id not in ${s.tx(shelved)}` : s.tx``}`;
@@ -769,7 +774,7 @@ export async function recentChanges(
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
     select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, imported, published_by, published_at, at, only_you, overview,
-           exists (select from pages p where p.id = recent.page_id and p.archived_at is not null) as page_archived
+           exists (select from pages p where p.id = recent.page_id and p.archived) as page_archived
     from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
              -- Corrected means it has an earlier version; its timestamps alone can differ by a moment when it's written.
@@ -950,7 +955,7 @@ export async function search(
              c.space_id, c.page_id, (select p.type from pages p where p.id = c.page_id) as page_type, ${titleOf(s, s.tx`c.page_id`)} as title,
              case c.kind when 'file' then ${titleOf(s, s.tx`c.page_id`)} else c.body end as text,
              c.private_to is not null as private, not ${current(s, 'c')} as superseded,
-             coalesce((select p.archived_at is not null from pages p where p.id = c.page_id), false) as archived,
+             coalesce((select p.archived from pages p where p.id = c.page_id), false) as archived,
              -- Your update of a shared item that the others still see, or such an item, which only your update replaced.
              case when c.private_to is not null and c.supersedes is not null then shared_base(c.id) is not null else false end as updates_shared,
              c.private_to is null and c.kind = 'text'
@@ -1148,6 +1153,18 @@ export function sharedAsCopy(s: Session, table: string) {
     select from content shared
     where shared.published_from is not null and shared.published_from = ${t}.id and shared.private_to is null and ${visible(s, 'shared')}
   ))`;
+}
+
+/**
+ * Archives and reopenings of a page the viewer sees: from when they could first see the page, and
+ * their own (spec §3). Row-level security applies the same rule.
+ */
+export function archivesSeen(s: Session, table: string) {
+  const t = s.tx(table);
+  return s.tx`(
+    ${t}.at >= (select f.seen from page_first_seen(${t}.page_id) f)
+    or (${t}.person_id = ${personOf(s.principal) ?? null}::uuid and (select f.seen from page_first_seen(${t}.page_id) f) is not null)
+  )`;
 }
 
 /** Items that nothing the viewer can see has replaced or removed. */

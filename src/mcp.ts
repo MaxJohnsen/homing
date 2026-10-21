@@ -860,7 +860,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     return [
       `# ${page.title}`,
       `${page.type ? `A ${page.type} page` : 'A page'} in ${space?.name} (${ref('page', page.id)})`,
-      ...(page.archived ? [`Archived on ${day(page.archived.at)}: no longer active, out of everyday context.`] : []),
+      ...(page.archived ? [`Archived ${page.archived.since ? 'since' : 'on'} ${day(page.archived.at)}: no longer active, out of everyday context.`] : []),
       ...(page.items.some(byPerson)
         ? ['What a person wrote themselves stays theirs: save new evidence beside it, and point out the difference to the user.']
         : []),

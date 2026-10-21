@@ -232,7 +232,7 @@ function ArchivePage({ page, archive }: { page: PageData; archive: NonNullable<P
     const by = page.archived.by?.you ? ' by you' : page.archived.by?.name ? ` by ${page.archived.by.name}` : '';
     return (
       <Part title="Archived">
-        <p className="text-sm text-muted-foreground">On {dateOf(page.archived.at)}{by}. It’s out of everyday context, and still searchable.</p>
+        <p className="text-sm text-muted-foreground">{page.archived.since ? 'Since' : 'On'} {dateOf(page.archived.at)}{by}. It’s out of everyday context, and still searchable.</p>
         <Button variant="outline" size="sm" className="self-start" disabled={busy} onClick={() => run(false)}>Reopen</Button>
         {problem && <FieldError>{problem}</FieldError>}
       </Part>

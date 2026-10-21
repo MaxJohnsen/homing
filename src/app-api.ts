@@ -405,7 +405,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           collections: links.collections,
           mentionedOn: links.mentionedOn,
           // When it was archived and by whom, unless that's someone the reader doesn't share a space with.
-          archived: page.archived && { at: page.archived.at, by: by(page.archived.by) },
+          // Archived by someone else before the reader could see the page, since then, by nobody named.
+          archived: page.archived && { at: page.archived.at, by: by(page.archived.by), since: page.archived.since },
           space: {
             id: space.id,
             name: space.name,

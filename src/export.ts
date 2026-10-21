@@ -202,16 +202,20 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
   // A page starts with the first of its items the person sees, which carry their own dates. What
   // happened to the page itself before the person could see anything on it, such as when someone
   // had it to themselves and archived it, stays theirs: something shared from someone's own side
-  // counts from when it was shared.
+  // counts from when it was shared. The app shows a page's archiving by the same rule, from the
+  // same functions.
   const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; seen: Date; archivedAt: Date | null; archivedBy: string | null; imported: (Imported & { archivedBy?: ImportedPerson }) | null }[]>`
-    select p.id, p.space_id, p.type, p.archived_at, p.archived_by, p.imported, first.created_at, first.seen
+    select p.id, p.space_id, p.type, a.at as archived_at, a.archived_by, first.created_at, f.seen,
+           -- Who archived it before it was imported, with the rest of where it came from, only when the person sees who did.
+           case when a.imported_by is null then p.imported else p.imported || jsonb_build_object('archivedBy', a.imported_by) end as imported
     from pages p
     join lateral (
-      select min(c.created_at) as created_at,
-             min(case when c.private_to is null and c.published_at is not null then greatest(c.created_at, c.published_at) else c.created_at end) as seen
-      from content c
+      select min(c.created_at) as created_at from content c
       where c.page_id = p.id and ${visible(s, 'c')}
     ) first on first.created_at is not null
+    cross join lateral page_first_seen(p.id) f
+    -- Asked only for archived pages: kept apart, so it isn't asked for every page first.
+    left join lateral (select * from page_archived(p.id) where p.archived offset 0) a on true
     where p.space_id in ${s.tx(ids)}
     order by first.created_at, p.id
   `;
@@ -381,7 +385,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       space: page.spaceId,
       type: page.type,
       createdAt: time(page.createdAt),
-      // Archived before the person could see it: archived since then, by nobody they know of.
+      // Archived before the person could see it, even by them: archived since then, by nobody they know of.
       archived: !page.archivedAt ? null : page.archivedAt < page.seen ? { at: time(page.seen), by: null } : { at: time(page.archivedAt), by: key(page.archivedBy) ?? key(elsewhere(page.imported, page.imported?.archivedBy)) },
       file: null,
       ...from(page.imported),
