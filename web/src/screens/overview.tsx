@@ -27,6 +27,8 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
   return (
     <div className="grid gap-10 lg:grid-cols-[minmax(0,44rem)_15rem] lg:justify-between">
       <div className="flex min-w-0 flex-col gap-10">
+        {/* On a phone the column beside comes last, so what waits for you comes first here instead. */}
+        {data.waiting.length > 0 && <div className="lg:hidden"><WaitingHere waiting={data.waiting} /></div>}
         <section aria-label={`Where ${where} stands`} className="flex flex-col gap-3">
           {editing && write ? (
             <OverviewEditor space={space} current={mine ?? shared} hasShared={Boolean(shared)} write={write} onDone={() => setEditing(false)} />
@@ -85,20 +87,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
       </div>
 
       <aside aria-label={`Beside ${where}`} className="flex flex-col gap-7 lg:sticky lg:top-10 lg:self-start">
-        {data.waiting.length > 0 && (
-          <Part title="Waiting for you here">
-            <ul className="-mx-2 flex flex-col">
-              {data.waiting.map((item) => (
-                <li key={item.id}>
-                  <Link href={`/proposals/${item.id}`} className={cn('flex flex-col rounded-lg px-2 py-1.5 hover:bg-muted', focusRing)}>
-                    <span className="line-clamp-2 text-base leading-snug font-semibold">{item.action === 'plan' && !item.text ? `${item.changes} changes` : (item.text ?? (item.included ? 'From a space you can’t open' : 'A rule change'))}</span>
-                    <span className="text-sm text-muted-foreground">{item.action === 'plan' ? (item.text ? `${item.assistant} proposes this space, with ${item.changes === 1 ? 'a change' : `${item.changes} changes`} in it` : `${item.assistant} proposes them together`) : item.request && !item.request.yours ? `${item.request.by ?? 'A member'} asks` : item.action === 'publish' ? `${item.assistant} proposes sharing this` : item.action === 'share task' ? `${item.assistant} proposes sharing this task` : item.action === 'archive space' ? `${item.assistant} suggests archiving it` : item.action === 'archive page' ? `${item.assistant} ${item.asked ? 'proposes' : 'suggests'} archiving this page` : item.action === 'reopen page' ? `${item.assistant} proposes reopening this page` : item.action === 'change rule' ? `${item.assistant} proposes this wording` : item.action === 'remove rule' ? `${item.assistant} proposes removing it` : item.action === 'share space' ? `${item.assistant} proposes sharing it with others` : item.action === 'add space' ? (item.asked ? 'A new space, waiting for your approval' : `${item.assistant} suggests a space`) : item.action === 'change members' ? `${item.assistant} proposes ${{ add: 'adding them', 'make admin': 'making them an admin', 'make member': 'making them a member, not an admin', remove: 'removing them' }[item.member ?? 'add']}` : item.action === 'add include' || item.action === 'remove include' ? `${item.assistant} proposes ${item.action === 'add include' ? 'including' : 'no longer including'} ${item.included === 'skill' ? 'this skill' : 'its rules'}` : `${item.assistant} proposes`}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          </Part>
-        )}
+        {data.waiting.length > 0 && <div className="hidden lg:block"><WaitingHere waiting={data.waiting} /></div>}
         {(data.spaces.length > 0 || (space.admin && !space.archive)) && (
           <Part title="Spaces inside">
             <ul className="-mx-2 flex flex-col empty:hidden">
@@ -190,6 +179,46 @@ function More({ href, children }: { href: string; children: ReactNode }) {
       {children}
     </Link>
   );
+}
+
+/** What waits for you in the space, each saying who proposes what. */
+function WaitingHere({ waiting }: { waiting: OverviewData['waiting'] }) {
+  return (
+    <Part title="Waiting for you here">
+      <ul className="-mx-2 flex flex-col">
+        {waiting.map((item) => (
+          <li key={item.id}>
+            <Link href={`/proposals/${item.id}`} className={cn('flex flex-col rounded-lg px-2 py-1.5 hover:bg-muted', focusRing)}>
+              <span className="line-clamp-2 text-base leading-snug font-semibold">{item.action === 'plan' && !item.text ? `${item.changes} changes` : (item.text ?? (item.included ? 'From a space you can’t open' : 'A rule change'))}</span>
+              <span className="text-sm text-muted-foreground">{whoProposes(item)}</span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Part>
+  );
+}
+
+/** "Claude proposes sharing this", "Cara Lund asks", and so on for each kind of change. */
+function whoProposes(item: OverviewData['waiting'][number]): string {
+  const { assistant } = item;
+  if (item.action === 'plan') return item.text ? `${assistant} proposes this space, with ${item.changes === 1 ? 'a change' : `${item.changes} changes`} in it` : `${assistant} proposes them together`;
+  if (item.request && !item.request.yours) return `${item.request.by ?? 'A member'} asks`;
+  switch (item.action) {
+    case 'publish': return `${assistant} proposes sharing this`;
+    case 'share task': return `${assistant} proposes sharing this task`;
+    case 'archive space': return `${assistant} suggests archiving it`;
+    case 'archive page': return `${assistant} ${item.asked ? 'proposes' : 'suggests'} archiving this page`;
+    case 'reopen page': return `${assistant} proposes reopening this page`;
+    case 'change rule': return `${assistant} proposes this wording`;
+    case 'remove rule': return `${assistant} proposes removing it`;
+    case 'share space': return `${assistant} proposes sharing it with others`;
+    case 'add space': return item.asked ? 'A new space, waiting for your approval' : `${assistant} suggests a space`;
+    case 'change members': return `${assistant} proposes ${{ add: 'adding them', 'make admin': 'making them an admin', 'make member': 'making them a member, not an admin', remove: 'removing them' }[item.member ?? 'add']}`;
+    case 'add include': return `${assistant} proposes including ${item.included === 'skill' ? 'this skill' : 'its rules'}`;
+    case 'remove include': return `${assistant} proposes no longer including ${item.included === 'skill' ? 'this skill' : 'its rules'}`;
+    default: return `${assistant} proposes`;
+  }
 }
 
 function Part({ title, children }: { title: string; children: ReactNode }) {
