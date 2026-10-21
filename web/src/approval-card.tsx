@@ -140,8 +140,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why) && (
-            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why}”</p>
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why}”</p>
           )}
           <ProposalDetails
             proposal={proposal}

@@ -118,7 +118,7 @@ test('an assistant proposes an include, and it applies once the person approves 
 
   // The card shows what it would bring in, as it is now, and never the rule only for Standards.
   const shown = (await throughTheCard(claude, 'approval', { proposal: id })).proposal!;
-  assert.equal(shown.action, 'include');
+  assert.deepEqual([shown.action, shown.why], ['include', 'Acme follows our standards']);
   assert.deepEqual([shown.include.space.name, shown.include.rules], ['Standards', [{ kind: 'requirement', text: 'Never send prices by email', yours: false }]]);
 
   // Standards changes before Ana decides: approving what she saw shows it again instead.
