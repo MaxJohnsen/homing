@@ -385,7 +385,7 @@ function ShareSpace({ space, share, open, onOpen }: { space: SpaceData; share: S
     >
       {!open ? (
         <div>
-          <Button ref={opener} variant="outline" className={cn(wrapsLabel, 'min-h-9 py-1.5')} onClick={() => onOpen(true)}>Share {space.name}</Button>
+          <Button ref={opener} variant="outline" size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} onClick={() => onOpen(true)}>Share {space.name}</Button>
         </div>
       ) : conversion === undefined ? (
         <p role="status" className="text-sm text-muted-foreground">Getting what would change…</p>
