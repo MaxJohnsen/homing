@@ -35,16 +35,45 @@ using (
 -- page itself was made, before anything on it was shared, not at all.
 alter table pages add column archived boolean generated always as (archived_at is not null) stored;
 
+-- Who archived a page before it was imported, too, so it's kept apart from
+-- the rest of where the page came from. It holds until the page is archived
+-- or reopened here.
+alter table pages add column imported_archived_by jsonb;
+
+update pages set imported_archived_by = case when archived_at is not null and archived_by is null then imported -> 'archivedBy' end,
+                 imported = imported - 'archivedBy'
+where imported ? 'archivedBy';
+
+create function keep_imported_archiver() returns trigger
+language plpgsql
+as $$
+begin
+  if tg_op = 'INSERT' then
+    new.imported_archived_by := new.imported -> 'archivedBy';
+    new.imported := new.imported - 'archivedBy';
+  elsif new.archived_at is distinct from old.archived_at then
+    new.imported_archived_by := null;
+  end if;
+  return new;
+end
+$$;
+
+create trigger keep_imported_archiver
+before insert or update on pages
+for each row execute function keep_imported_archiver();
+
 revoke select on pages from homing_app;
 grant select (id, space_id, type, archived, imported) on pages to homing_app;
 
--- A page's archiving as the person sees it: when and by whom, or, archived
--- before they could first see the page by someone else, since then, by nobody
--- named. Nothing for a page that isn't archived or that they can't see.
-create function page_archived(page uuid) returns table (at timestamptz, archived_by uuid, since boolean)
+-- A page's archiving as the person sees it: when and by whom, here or before
+-- it was imported, or, archived before they could first see the page by
+-- someone else, since then, by nobody named. Nothing for a page that isn't
+-- archived or that they can't see.
+create function page_archived(page uuid) returns table (at timestamptz, archived_by uuid, imported_by jsonb, since boolean)
 language sql stable security definer set search_path = public, pg_temp
 as $$
-  select case when early then f.seen else p.archived_at end, case when not early then p.archived_by end, early
+  select case when early then f.seen else p.archived_at end, case when not early then p.archived_by end,
+         case when not early then p.imported_archived_by end, early
   from pages p
   cross join lateral page_first_seen(p.id) f
   cross join lateral (select p.archived_at < f.seen and not coalesce(p.archived_by = current_person_id(), false) as early) e

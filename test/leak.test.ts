@@ -963,20 +963,30 @@ describe('through an include', () => {
 
 describe('through a page archived while it was someone’s own', () => {
   let homing: Homing;
-  let ana: Member, cara: Member;
+  let ana: Member, cara: Member, ben: Member;
+  let beta: string, diary: string;
   // Cara's notes in Acme, which she archived while only she had them, and Ana's old supplier in her
-  // kitchen, which her assistant archived while only she could open it. Each shared it later.
+  // kitchen, which her assistant archived while only she could open it. Each shared it later. And
+  // Ana's logo ideas, which she archived on her own, exported, imported, and then shared with Cara.
   type Archived = { space: string; page: string; archived: Date; shared: Date };
-  let notes: Archived, supplier: Archived;
+  let notes: Archived, supplier: Archived, logo: Archived;
   const times = async (space: string, page: string): Promise<Archived> => {
     const [{ archivedAt }] = await admin`select archived_at from pages where id = ${page}`;
     const [{ shared }] = await admin`select min(published_at) as shared from content where page_id = ${page} and private_to is null`;
     return { space, page, archived: archivedAt, shared };
   };
+  // Exports a space and imports it again, as the app does, as a new space.
+  const restore = async (who: Member, space: string, name: string): Promise<string> => {
+    const bytes = new Uint8Array(await (await who.browser.fetch(`/api/spaces/${space}/export`)).arrayBuffer());
+    const upload = async (path: string) => (await who.browser.fetch(path, { method: 'POST', body: bytes, headers: { 'content-type': 'application/zip' } })).json();
+    const { hash } = await upload('/api/import/preview');
+    return (await upload(`/api/import?${new URLSearchParams({ name, hash })}`)).id;
+  };
 
   before(async () => {
     homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
-    [ana, cara] = [await member(homing.url, 'Ana'), await member(homing.url, 'Cara')];
+    [ana, cara, ben] = [await member(homing.url, 'Ana'), await member(homing.url, 'Cara'), await member(homing.url, 'Ben')];
+    beta = await as({ ...ben, direct: true }, (s) => createSpace(s, { name: 'Beta' }));
     const acme = await as({ ...ana, direct: true }, async (s) => {
       const acme = await createSpace(s, { name: 'Acme' });
       await addMember(s, acme, cara.id);
@@ -985,9 +995,15 @@ describe('through a page archived while it was someone’s own', () => {
     const mine = await as({ ...cara, direct: true }, async (s) => {
       const page = await createPage(s, { spaceId: acme, title: 'Reorg notes' });
       const item = await writeItem(s, { pageId: page, body: 'The reorg moves Ops to Bergen' });
+      await writeItem(s, { pageId: page, body: 'Cara would rather stay in Oslo' });
       await archivePage(s, page, true);
-      return { page, item };
+      // And a diary she keeps to herself.
+      const diary = await createPage(s, { spaceId: acme, title: 'Diary' });
+      await writeItem(s, { pageId: diary, body: 'Tired of the reorg' });
+      await archivePage(s, diary, true);
+      return { page, item, diary };
     });
+    diary = mine.diary;
     const kitchen = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Kitchen', parentId: ana.personalSpaceId }));
     const old = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
       const page = await createPage(s, { spaceId: kitchen, title: 'Old supplier' });
@@ -995,15 +1011,27 @@ describe('through a page archived while it was someone’s own', () => {
       await archivePage(s, page, true);
       return { page, item };
     });
-    // Later, Cara shares her notes, and Ana shares her kitchen with Cara, and then what's on the page.
+    const studio = await as({ ...ana, direct: true }, async (s) => {
+      const studio = await createSpace(s, { name: 'Studio' });
+      const page = await createPage(s, { spaceId: studio, title: 'Logo ideas' });
+      await writeItem(s, { pageId: page, body: 'A heron, in green' });
+      await archivePage(s, page, true);
+      return studio;
+    });
+    const restored = await restore(ana, studio, 'Restored');
+    const [{ logoPage, logoItem }] = await admin`select page_id as logo_page, id as logo_item from content where space_id = ${restored} and kind = 'text'`;
+    // Later, Cara shares one of her notes, Ana shares her kitchen and what she restored with Cara,
+    // and then what's on those pages.
     await new Promise((resolve) => setTimeout(resolve, 20));
     await as({ ...cara, direct: true }, (s) => publishItem(s, mine.item.id, 'The reorg moves Ops to Bergen'));
     await as({ ...ana, direct: true }, async (s) => {
       await makeCollaborative(s, kitchen, { rules: 'keep' });
       await addMember(s, kitchen, cara.id);
       await publishItem(s, old.item.id, 'We stopped buying from Fjordfisk');
+      await addMember(s, restored, cara.id);
+      await publishItem(s, logoItem, 'A heron, in green');
     });
-    [notes, supplier] = [await times(acme, mine.page), await times(kitchen, old.page)];
+    [notes, supplier, logo] = [await times(acme, mine.page), await times(kitchen, old.page), await times(restored, logoPage)];
   });
 
   after(() => homing.close());
@@ -1011,7 +1039,7 @@ describe('through a page archived while it was someone’s own', () => {
   test('the other sees it archived since she could see it, by nobody, and the one who archived it sees her own, through Homing', async () => {
     const reopening = await as({ person: ana.id, agent: 'Claude' }, (s) => proposePageArchive(s, { pageId: notes.page, reopen: true, asked: true }));
     for (const sql of [db, admin]) {
-      for (const [reader, page] of [[ana, notes], [cara, supplier]] as const) {
+      for (const [reader, page] of [[ana, notes], [cara, supplier], [cara, logo]] as const) {
         assert.deepEqual((await as(reader, (s) => readPage(s, page.page), sql))!.archived, { at: page.shared, by: null, since: true });
         // Her export says the same.
         const exported = (await as(reader, (s) => manifestOf(s, page.space, homing.url), sql))!;
@@ -1044,15 +1072,36 @@ describe('through a page archived while it was someone’s own', () => {
     assert.match(await read(anas, supplier.page), /^Archived on .+: no longer active/m);
   });
 
+  test('nobody who can’t see the page learns anything of its archiving, nor of a page that isn’t there', async () => {
+    const nowhere = crypto.randomUUID();
+    // Another client, another space's routine, a colleague with Cara's diary, and anyone with no page at all.
+    for (const [principal, pages] of [
+      [{ person: ben.id }, [notes.page, supplier.page, logo.page, diary]],
+      [{ person: ben.id, agent: 'Claude' }, [notes.page, diary]],
+      [{ space: beta }, [notes.page, supplier.page, logo.page, diary]],
+      [{ person: ana.id }, [diary, nowhere]],
+      [{ person: ana.id, agent: 'Claude' }, [diary]],
+    ] as const) {
+      for (const page of pages) {
+        await as(principal, async (s) => {
+          assert.deepEqual([...(await s.tx`select * from page_archived(${page}::uuid)`)], [], page);
+          assert.deepEqual([...(await s.tx`select * from page_first_seen(${page}::uuid)`)], [{ seen: null }], page);
+          assert.deepEqual([...(await s.tx`select at from page_archives where page_id = ${page}::uuid`)], [], page);
+          assert.deepEqual([...(await s.tx`select archived from pages where id = ${page}::uuid`)], [], page);
+        });
+      }
+    }
+  });
+
   test('nor straight against the database, with or without an assistant', async () => {
     for (const [reader, page, other] of [[ana, notes, cara], [cara, supplier, ana]] as const) {
       for (const principal of [{ person: reader.id }, { person: reader.id, agent: 'Claude' }]) {
         await as(principal, async (s) => {
           assert.deepEqual([...(await s.tx`select person_id, agent, at from page_archives where page_id = ${page.page}::uuid`)], []);
           assert.deepEqual([...(await s.tx`select archived from pages where id = ${page.page}::uuid`)], [{ archived: true }]);
-          assert.deepEqual([...(await s.tx`select * from page_archived(${page.page}::uuid)`)], [{ at: page.shared, archivedBy: null, since: true }]);
+          assert.deepEqual([...(await s.tx`select * from page_archived(${page.page}::uuid)`)], [{ at: page.shared, archivedBy: null, importedBy: null, since: true }]);
         });
-        for (const column of ['archived_at', 'archived_by', 'created_at', '*']) {
+        for (const column of ['archived_at', 'archived_by', 'imported_archived_by', 'created_at', '*']) {
           await assert.rejects(as(principal, (s) => s.tx`select ${s.tx.unsafe(column)} from pages where id = ${page.page}::uuid`), refused, column);
         }
       }
@@ -1062,6 +1111,15 @@ describe('through a page archived while it was someone’s own', () => {
         assert.deepEqual(own.map((row) => [row.archived, row.personId, row.agent]), [[true, other.id, page === supplier ? 'Claude' : null]]);
       }
     }
+
+    // Nor who archived the logo ideas before they were imported, which the export said was Ana.
+    for (const principal of [{ person: cara.id }, { person: cara.id, agent: 'Claude' }]) {
+      await as(principal, async (s) => {
+        assert.deepEqual([...(await s.tx`select imported -> 'archivedBy' as by from pages where id = ${logo.page}::uuid`)], [{ by: null }]);
+        assert.deepEqual([...(await s.tx`select * from page_archived(${logo.page}::uuid)`)], [{ at: logo.shared, archivedBy: null, importedBy: null, since: true }]);
+      });
+    }
+    assert.equal((await admin`select imported_archived_by ->> 'name' as name from pages where id = ${logo.page}`)[0].name, 'Ana');
 
     // From when Ana could see Cara's notes, what happens to them is hers to see too.
     await as({ ...ana, direct: true }, (s) => archivePage(s, notes.page, false));

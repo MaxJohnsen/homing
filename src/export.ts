@@ -204,8 +204,10 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
   // had it to themselves and archived it, stays theirs: something shared from someone's own side
   // counts from when it was shared. The app shows a page's archiving by the same rule, from the
   // same functions.
-  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; seen: Date; archivedAt: Date | null; archivedBy: string | null; archivedSince: boolean | null; imported: (Imported & { archivedBy?: ImportedPerson }) | null }[]>`
-    select p.id, p.space_id, p.type, a.at as archived_at, a.archived_by, a.since as archived_since, p.imported, first.created_at, f.seen
+  const pages = await s.tx<{ id: string; spaceId: string; type: string | null; createdAt: Date; seen: Date; archivedAt: Date | null; archivedBy: string | null; imported: (Imported & { archivedBy?: ImportedPerson }) | null }[]>`
+    select p.id, p.space_id, p.type, a.at as archived_at, a.archived_by, first.created_at, f.seen,
+           -- Who archived it before it was imported, with the rest of where it came from, only when the person sees who did.
+           case when a.imported_by is null then p.imported else p.imported || jsonb_build_object('archivedBy', a.imported_by) end as imported
     from pages p
     join lateral (
       select min(c.created_at) as created_at from content c
@@ -383,8 +385,8 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       space: page.spaceId,
       type: page.type,
       createdAt: time(page.createdAt),
-      // Archived before the person could see it, by anyone: archived since then, by nobody they know of.
-      archived: !page.archivedAt ? null : page.archivedSince || page.archivedAt < page.seen ? { at: time(page.seen), by: null } : { at: time(page.archivedAt), by: key(page.archivedBy) ?? key(elsewhere(page.imported, page.imported?.archivedBy)) },
+      // Archived before the person could see it, even by them: archived since then, by nobody they know of.
+      archived: !page.archivedAt ? null : page.archivedAt < page.seen ? { at: time(page.seen), by: null } : { at: time(page.archivedAt), by: key(page.archivedBy) ?? key(elsewhere(page.imported, page.imported?.archivedBy)) },
       file: null,
       ...from(page.imported),
     })),
