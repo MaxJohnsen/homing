@@ -18,7 +18,7 @@ export interface ProposalData {
    * sharing an item or a task, archiving or reopening a page, or including another space's rules or
    * a skill, or no longer.
    */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page' | 'include' | 'exclude';
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page' | 'include' | 'exclude' | 'plan';
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -86,6 +86,52 @@ export interface ProposalData {
     /** Why, in the user's words, as the assistant gave it. */
     why?: string | null;
   } | null;
+  /** Several related changes decided at once: each as it is now, and what they add up to. */
+  plan?: PlanData | null;
+}
+
+/**
+ * A plan, as the decision page and the card show it: the space it creates, if it does, each change
+ * in order, who will see what it shares, and what someone it adds will see there.
+ */
+export interface PlanData {
+  /** The space it creates: its name, the space it goes in, and how many people have that one. While it waits, why it can't be created, if it can't. */
+  create: { name: string; in: string | null; people: number; above: boolean; problem: string | null } | null;
+  /** The space its changes are in, by name, and its id once it exists. */
+  space: string;
+  spaceId: string | null;
+  steps: PlanStepData[];
+  /** Who has the space now, whether people above it too, and who the plan adds. */
+  audience: { people: number; above: boolean; adding: string[] };
+  /** While it waits and adds someone: what they'll see there once it's approved. */
+  sees: { pages: number; archived: number; tasks: number; rules: number; spaces: number } | null;
+  why: string | null;
+  /** What approving sends back, so it makes only what was shown. */
+  shown: string;
+}
+
+/** One change in a plan. While it waits, why it can't be made now, if it can't. */
+export interface PlanStepData {
+  action: 'publish' | 'task' | 'members' | 'add' | 'change' | 'remove';
+  /** Sharing an item, while it can be shared: what sharing it alone would show. */
+  publication: PublicationData | null;
+  /** Sharing an item: what it says and its page, shared or not. */
+  item: { text: string; page: string; pageId: string } | null;
+  task: { title: string; description: string | null; due: string | null } | null;
+  member: { change: MemberChange; name: string | null; email: string | null; found: boolean | null; inSpace: boolean; through: string | null } | null;
+  /** A rule: the new one or its new wording, and for a change or removal the rule as it is now. */
+  rule: { kind: RuleKind; text: string | null; now: string | null; shared: boolean; onlyHere: boolean } | null;
+  problem: string | null;
+}
+
+/** How many changes a plan makes, creating its space among them. */
+export function changesIn(plan: Pick<PlanData, 'create' | 'steps'>): number {
+  return plan.steps.length + (plan.create ? 1 : 0);
+}
+
+/** Whether a change in a plan can't be made now, so it can only be declined. */
+export function planBlocked(plan: Pick<PlanData, 'create' | 'steps'>): boolean {
+  return Boolean(plan.create?.problem) || plan.steps.some((step) => step.problem);
 }
 
 export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
@@ -165,6 +211,8 @@ export interface RequestData extends Pick<ProposalData, 'id' | 'space' | 'within
 /** A change waiting for you, as Home and the list of everything waiting show it. */
 export interface WaitingData extends Pick<ProposalData, 'id' | 'assistant' | 'space' | 'personal' | 'within' | 'action' | 'kind' | 'included'> {
   spaceId: string;
+  /** For a plan: how many changes it makes in its space. The text is the space it creates, if it creates one. */
+  changes?: number | null;
   /** For a space: whether you asked for it. */
   asked?: boolean;
   /** For a change of members: what changes. The text is who, by name or email. */
@@ -189,10 +237,19 @@ export function wantsTo(
     page?: { asked: boolean } | null;
     member?: MemberChange | { change: MemberChange; name: string | null; email: string | null } | null;
     text?: string | null;
+    plan?: Pick<PlanData, 'create' | 'steps'> | null;
+    changes?: number | null;
   },
   withPlace = true,
 ): string {
   const { assistant, action, kind, request } = proposal;
+  if (action === 'plan') {
+    // The changes in the space it creates, which isn't one of them, or all of them.
+    const changes = proposal.plan?.steps.length ?? proposal.changes ?? 0;
+    const create = proposal.plan ? proposal.plan.create?.name : proposal.text;
+    if (create) return `${assistant} wants to create ${create}${withPlace ? ` in ${placeOf(proposal)}` : ''} and make ${count(changes, 'change')} in it`;
+    return `${assistant} wants to make ${count(changes, 'change')}${withPlace ? ` in ${placeOf(proposal)}` : ''}`;
+  }
   if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
   if (action === 'convert') return `${assistant} wants to share ${proposal.space} with others`;
   if (action === 'task') return withPlace ? `${assistant} wants to share a task with ${placeOf(proposal)}` : `${assistant} wants to share a task`;
@@ -241,6 +298,11 @@ export function requestedChange(request: Pick<RequestData, 'action' | 'kind' | '
   return request.action === 'add' ? 'add a rule' : `${request.action} a ${request.kind}`;
 }
 
+/** "1 change", "3 changes". */
+function count(n: number, thing: string): string {
+  return `${n} ${thing}${n === 1 ? '' : 's'}`;
+}
+
 /** "Acme", "Website in Northwind", or "your personal space". */
 export function placeOf(proposal: Pick<ProposalData, 'space' | 'personal' | 'within'>): string {
   return proposal.personal ? 'your personal space' : proposal.within ? `${proposal.space} in ${proposal.within}` : proposal.space;
@@ -269,14 +331,16 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publica
 }
 
 /** Whether the reader can only decline it: an email nobody uses Homing with, or including what they can't open. */
-export function declineOnly(proposal: Pick<ProposalData, 'action' | 'member' | 'include'>): boolean {
+export function declineOnly(proposal: Pick<ProposalData, 'action' | 'member' | 'include' | 'plan'>): boolean {
   if (proposal.member?.found === false) return true;
+  if (proposal.plan) return planBlocked(proposal.plan);
   return proposal.include?.open === false && !(proposal.action === 'exclude' && proposal.include.current);
 }
 
-/** The buttons for deciding it, or for a request you haven't sent, for sending it. */
-export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange, place?: string): { approve: string; reject: string } {
+/** The buttons for deciding it, or for a request you haven't sent, for sending it. A plan's names how many it makes. */
+export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange, place?: string, changes = 0): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
+  if (action === 'plan') return { approve: changes === 2 ? 'Approve both' : `Approve all ${changes}`, reject: 'Decline' };
   // The button names who will see it.
   if (action === 'publish' || action === 'task') return { approve: place ? `Share with ${place}` : 'Share', reject: 'Don’t share' };
   if (action === 'members') {
@@ -321,6 +385,17 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const yours = Boolean(request?.yours);
   // Withdrawn by you or your assistant: it ended without being decided.
   if (state === 'withdrawn') return { kind: 'gone', heading: 'Withdrawn', detail: `${proposal.withdrawnBy ? `${proposal.withdrawnBy} withdrew it` : 'You withdrew it'} before anyone decided it, so nothing changed.` };
+  if (action === 'plan' && proposal.plan) {
+    const { plan } = proposal;
+    if (state === 'approved') {
+      return plan.create
+        ? { kind: 'approved', heading: `${plan.space} created`, detail: `It’s in ${place}, and ${count(plan.steps.length, 'change')} ${plan.steps.length === 1 ? 'was' : 'were'} made in it at the same time.` }
+        : { kind: 'approved', heading: `Changes made in ${place}`, detail: `All ${changesIn(plan)} were made at the same time.` };
+    }
+    if (state === 'rejected') return { kind: 'rejected', heading: 'Declined', detail: `Nothing changed. Ask ${assistant} for what you still want of it.` };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing changed. Ask ${assistant} again if you still want it.` };
+    return undefined;
+  }
   if (action === 'publish') {
     if (state === 'approved') {
       return { kind: 'approved', heading: `Shared with ${place}`, detail: `Everyone in ${place} sees it now, and that you shared it.${proposal.publication?.copy ? ' Where it came from stays only yours.' : ''}` };

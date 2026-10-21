@@ -33,9 +33,9 @@ export function ProposalPage({ id }: { id: string }) {
       }}
       decide={async (approve, onlyHere, space, share) => {
         try {
-          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? proposal.include?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : proposal.conversion?.shown) ?? proposal.page?.shown, space, share });
+          await api<Loaded>(`${path}/decide`, { approve, onlyHere, shown: proposal.rule?.text ?? proposal.publication?.text ?? proposal.task?.shown ?? proposal.include?.shown ?? (proposal.archive ? String(proposal.archive.spaces) : proposal.conversion?.shown) ?? proposal.page?.shown ?? proposal.plan?.shown, space, share });
           // A created space joins the sidebar.
-          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests'), (space || share) && reload('/api/spaces')]);
+          await Promise.all([reload(path), reload('/api/waiting'), reload('/api/requests'), (space || share || proposal.plan?.create) && reload('/api/spaces')]);
         } catch (error) {
           if (!(error instanceof ApiError) || error.status === 403) return error instanceof Error ? error.message : undefined;
           // A space that can't be created as set, such as a name that's taken there: say so by the field.

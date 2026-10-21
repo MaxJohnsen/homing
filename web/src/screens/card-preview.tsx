@@ -2,7 +2,7 @@ import { Wordmark } from '@/components/wordmark';
 import { demoHosts, hostBackground } from '@/demo-hosts';
 
 /** The real card build, shown in frames styled like the assistants it runs in. */
-export function CardPreview({ sample }: { sample?: 'long' | 'request' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'page-archive' | 'include' | 'done' | 'refused' }) {
+export function CardPreview({ sample }: { sample?: 'long' | 'request' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'page-archive' | 'include' | 'plan' | 'plan-blocked' | 'done' | 'refused' }) {
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-10">
       <div className="flex flex-col gap-1">
@@ -17,7 +17,7 @@ export function CardPreview({ sample }: { sample?: 'long' | 'request' | 'space' 
           <figure key={key} className="flex min-w-0 flex-col gap-2">
             <figcaption className="text-sm text-muted-foreground">{host.label}</figcaption>
             <div className="overflow-hidden rounded-xl border" style={{ background: hostBackground[key] }}>
-              <iframe title={`Approval card in ${host.label}`} src={`/card.html?host=${key}${sample ? `&sample=${sample}` : ''}`} className={`block w-full border-0 ${sample === 'done' || sample === 'refused' ? 'h-[20rem]' : sample === 'space' || sample === 'convert' ? 'h-[60rem]' : sample ? 'h-[46rem]' : 'h-[34rem]'}`} />
+              <iframe title={`Approval card in ${host.label}`} src={`/card.html?host=${key}${sample ? `&sample=${sample}` : ''}`} className={`block w-full border-0 ${sample === 'done' || sample === 'refused' ? 'h-[20rem]' : sample === 'space' || sample === 'convert' || sample === 'plan' || sample === 'plan-blocked' ? 'h-[60rem]' : sample ? 'h-[46rem]' : 'h-[34rem]'}`} />
             </div>
           </figure>
         ))}

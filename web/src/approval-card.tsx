@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, declineOnly, isSending, outcomeOf, placeOf, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, declineOnly, isSending, outcomeOf, placeOf, planBlocked, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
@@ -15,6 +15,7 @@ const spaceStatus = { ...status, approved: 'Created', rejected: 'Not created' };
 const shareStatus = { ...status, approved: 'Shared', rejected: 'Not shared' };
 const archiveStatus = { ...status, approved: 'Archived', rejected: 'Kept open' };
 const reopenStatus = { ...status, approved: 'Reopened', rejected: 'Kept archived' };
+const planStatus = { ...status, rejected: 'Declined' };
 
 /** "Add Cara Lund to Acme?": a change of members as the card asks it. */
 function memberQuestion(proposal: ProposalData, member: NonNullable<ProposalData['member']>): string {
@@ -61,7 +62,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
   const sending = proposal ? isSending(proposal) : false;
   const buttons = proposal?.conversion
     ? { approve: shareButton(proposal.space, choice, proposal.conversion), reject: 'Keep it only mine' }
-    : proposal && buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal));
+    : proposal && buttonsOf(proposal.action, sending, proposal.member?.change, placeOf(proposal), proposal.plan ? changesIn(proposal.plan) : 0);
 
   const choose = async (approve: boolean) => {
     if (!decide) return;
@@ -98,7 +99,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
     <section aria-label={proposal || !initialMessage ? 'Approve a change' : 'Homing'} className="flex flex-col gap-4 rounded-xl border bg-card p-4 text-card-foreground sm:p-5">
       <div className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
         <Wordmark className="text-sm text-foreground" />
-        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' || proposal.action === 'task' || proposal.action === 'convert' ? shareStatus[outcome.kind] : proposal.action === 'archive' || proposal.action === 'archive page' ? archiveStatus[outcome.kind] : proposal.action === 'reopen page' ? reopenStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
+        {proposal && <span>{outcome ? (proposal.action === 'space' ? spaceStatus[outcome.kind] : proposal.action === 'publish' || proposal.action === 'task' || proposal.action === 'convert' ? shareStatus[outcome.kind] : proposal.action === 'archive' || proposal.action === 'archive page' ? archiveStatus[outcome.kind] : proposal.action === 'reopen page' ? reopenStatus[outcome.kind] : proposal.action === 'plan' ? planStatus[outcome.kind] : status[outcome.kind]) : 'Waiting for you'}</span>}
       </div>
 
       {!proposal ? (
@@ -107,7 +108,11 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
       ) : !outcome ? (
         <>
           <p className="text-base font-medium">
-            {proposal.action === 'space'
+            {proposal.action === 'plan' && proposal.plan
+              ? proposal.plan.create
+                ? `Create ${proposal.plan.create.name} in ${placeOf(proposal)} and make ${proposal.plan.steps.length === 1 ? 'this change' : `these ${proposal.plan.steps.length} changes`} in it?`
+                : `Make these ${proposal.plan.steps.length} changes in ${placeOf(proposal)}?`
+              : proposal.action === 'space'
               ? proposal.suggestion?.asked
                 ? `Create this space in ${placeOf(proposal)}?`
                 : `Create the space ${proposal.assistant} suggests?`
@@ -135,8 +140,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why) && (
-            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why}”</p>
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why}”</p>
           )}
           <ProposalDetails
             proposal={proposal}
@@ -161,6 +166,13 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
             <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttons!.reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
+          {proposal.plan && (
+            <p className="text-sm text-muted-foreground">
+              {planBlocked(proposal.plan)
+                ? `A change can’t be made now, so this can’t be approved as it is. Ask ${proposal.assistant} to revise it, or decline it.`
+                : `Approving makes them all at once, and none if one can’t be made then. To change something, ask ${proposal.assistant} to revise it.`}
+            </p>
+          )}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (
             <p className="text-sm text-muted-foreground">If you don’t create it, {proposal.assistant} won’t suggest a space called {proposal.suggestion?.name} again.</p>
           )}

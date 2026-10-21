@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal } from '@/sample';
+import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -162,6 +162,10 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/members/admin': { label: 'Confirm making someone an admin', render: () => <SampleConfirm proposal={{ ...memberProposal, member: { ...memberProposal.member!, change: 'make admin' } }} /> },
   '/confirm/members/remove': { label: 'Confirm removing someone from a space', render: () => <SampleConfirm proposal={{ ...memberProposal, member: { ...memberProposal.member!, change: 'remove' } }} /> },
   '/confirm/members/added': { label: 'Someone added', render: () => <SampleConfirm proposal={{ ...memberProposal, state: 'approved' }} /> },
+  '/confirm/plan': { label: 'Confirm a plan: what goes in a space, someone to add and a rule', render: () => <SampleConfirm proposal={planProposal} /> },
+  '/confirm/plan/new-space': { label: 'Confirm a plan that creates a space others would see', render: () => <SampleConfirm proposal={newSpacePlanProposal} /> },
+  '/confirm/plan/blocked': { label: 'A plan with a change that can’t be made now', render: () => <SampleConfirm proposal={blockedPlanProposal} /> },
+  '/confirm/plan/approved': { label: 'A plan approved', render: () => <SampleConfirm proposal={{ ...planProposal, state: 'approved' }} /> },
   '/confirm/removed': { label: 'Rule removed', render: () => <SampleConfirm proposal={{ ...removeProposal, state: 'approved', rule: { ...removeProposal.rule!, current: false } }} /> },
   '/confirm/expired': { label: 'Request expired', render: () => <SampleConfirm proposal={{ ...proposal, state: 'expired' }} /> },
   '/confirm/gone': { label: 'Rule removed before deciding', render: () => <SampleConfirm proposal={{ ...changeProposal, rule: { ...changeProposal.rule!, current: false } }} /> },
@@ -182,6 +186,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview/page-archive': { label: 'The card for archiving a page others see', render: () => <CardPreview sample="page-archive" /> },
   '/card-preview/task': { label: 'The card for sharing a task', render: () => <CardPreview sample="task" /> },
   '/card-preview/members': { label: 'The card for adding someone to a space', render: () => <CardPreview sample="members" /> },
+  '/card-preview/plan': { label: 'The card for a plan of several changes', render: () => <CardPreview sample="plan" /> },
+  '/card-preview/plan-blocked': { label: 'The card for a plan with a change that can’t be made now', render: () => <CardPreview sample="plan-blocked" /> },
   '/card-preview/space': { label: 'The card for a space Claude suggests', render: () => <CardPreview sample="space" /> },
   '/card-preview/done': { label: 'The card after a change that needed no approval', render: () => <CardPreview sample="done" /> },
   '/card-preview/refused': { label: 'The card when Homing refused a change', render: () => <CardPreview sample="refused" /> },

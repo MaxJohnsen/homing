@@ -1,13 +1,14 @@
+import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
 import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
-import { readTask, shareTask, type Task } from './tasks.ts';
-import { accessibleSpaces, archiveSpace, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type Who } from './spaces.ts';
+import { readTask, shareTask, TaskRefused, type Task } from './tasks.ts';
+import { accessibleSpaces, archiveSpace, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type SpaceView, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page' | 'add include' | 'remove include';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page' | 'add include' | 'remove include' | 'plan';
 
 /**
  * A change of who is in a space: about someone the user shares a space with, by their id, or about
@@ -22,14 +23,14 @@ export interface MembersChange {
 }
 
 /** A space an assistant suggests: its name, who it's for, where it goes, and whether it's closed. */
-export interface SpaceChange {
+export type SpaceChange = {
   name: string;
   who: Who;
   in: string | null;
   closed: boolean;
   /** The person asked for it, and approves it because others would see it. Otherwise it's the assistant's own suggestion. */
   asked?: boolean;
-}
+};
 
 /**
  * A change waiting for a person to decide it (spec §6). Expired means nobody decided it in time.
@@ -56,7 +57,7 @@ export interface Proposal {
    * The exact change: a new rule's kind, text and reach, or for an include whether it's for
    * everyone and whether it's a space's rules or a skill, but never what it points to.
    */
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange>;
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange>;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -73,9 +74,29 @@ export interface Proposal {
   decidedAt: Date | null;
   /** The assistant whose card it was decided on, or that withdrew it. */
   decidedIn: string | null;
-  /** For a suggested space, the space approving it created. */
+  /** For a suggested space, or a plan that creates one, the space approving it created. */
   spaceCreated: string | null;
 }
+
+/**
+ * Several related changes decided at once (spec §6): in one space, which it may also create when
+ * everyone in the shared space it goes in would see it. Each change is held as a proposal of its own
+ * would hold it, and they're made in order.
+ */
+export interface PlanChange {
+  /** The space it creates, if it creates one. */
+  space?: SpaceChange;
+  steps: PlanStep[];
+}
+
+/** One change in a plan. */
+export type PlanStep =
+  | { action: 'publish'; item: string }
+  | { action: 'share task'; task: string }
+  | ({ action: 'change members'; member: MemberChange } & Pick<MembersChange, 'person' | 'personName' | 'email'>)
+  | { action: 'add rule'; kind: RuleKind; text: string; shared: boolean; onlyHere: boolean }
+  | { action: 'change rule'; rule: string; text: string }
+  | { action: 'remove rule'; rule: string };
 
 /** A proposal with what someone needs to decide it. */
 export interface ProposalView extends Proposal {
@@ -140,6 +161,44 @@ export interface ProposalView extends Proposal {
     through: string | null;
     why: string | null;
   } | null;
+  /** For a plan: each change as it is now, and what they add up to. */
+  plan: PlanView | null;
+}
+
+/** A plan as the person it's for sees it: each change, as it is now, and what they add up to. */
+export interface PlanView {
+  /**
+   * The space it creates: its name, where it goes, and who will have it, everyone in that space,
+   * as its Members shows them. While it waits, why it can't be created now, if it can't.
+   */
+  create: { name: string; in: string | null; people: number; above: boolean; problem: string | null; cant: string } | null;
+  /** The space its changes are in, by name: the one it names, or the one it creates. */
+  space: string;
+  /** That space's id, once it exists and while the reader can open it. */
+  spaceId: string | null;
+  steps: PlanStepView[];
+  /** Who will see what it shares: how many people have the space now, whether people above too, and who it adds. */
+  audience: { people: number; above: boolean; adding: string[] };
+  /** While it waits and adds someone: what they'll see there once it's approved. */
+  sees: { pages: number; archived: number; tasks: number; rules: number; spaces: number } | null;
+  /** What approving checks every change against, so it makes only what was shown. */
+  shown: string;
+}
+
+/** One change in a plan as the person sees it now. While it waits, why it can't be made now, if it can't. */
+export interface PlanStepView {
+  action: PlanStep['action'];
+  /** Sharing an item: what sharing it would do, while it can be shared. */
+  publication: Publication | null;
+  /** Sharing an item: what it says and the page it's on, shared or not. */
+  item: { text: string; page: string; pageId: string } | null;
+  task: { title: string; description: string | null; due: string | null; shown: string } | null;
+  member: { change: MemberChange; name: string | null; email: string | null; found: boolean | null; inSpace: boolean; through: string | null } | null;
+  /** A rule: its kind, the new rule or wording, and for a change or removal the rule as it is now. */
+  rule: { kind: RuleKind; text: string | null; now: string | null; shared: boolean; onlyHere: boolean } | null;
+  problem: string | null;
+  /** What can't be made if it can't, such as "Jonas Berg can’t be added", to say why nothing changed. */
+  cant: string;
 }
 
 /**
@@ -201,23 +260,35 @@ export async function proposeRule(
     | { action: 'remove rule'; spaceId: string; ruleId: string }
   ) & { why?: string },
 ): Promise<Proposal> {
+  return insertProposal(s, { ...(await ruleChange(s, input)), reason: input.why?.trim() || null });
+}
+
+/**
+ * A change to a rule as proposing it checks it, without proposing it: a new one's kind, text and
+ * reach, or the rule a change or removal is about, and whether it's a request to the space's admins.
+ */
+async function ruleChange(
+  s: Session,
+  input:
+    | { action: 'add rule'; spaceId: string; kind: RuleKind; text: string; shared?: boolean; onlyHere?: boolean }
+    | { action: 'change rule'; spaceId: string; ruleId: string; text: string }
+    | { action: 'remove rule'; spaceId: string; ruleId: string },
+): Promise<Pick<Proposal, 'spaceId' | 'action' | 'itemId' | 'change' | 'request'>> {
   const person = personOf(s.principal);
   if (!person) throw new AccessDenied('Only a person can approve changes to rules.');
   const space = (await listSpaces(s)).find((candidate) => candidate.id === input.spaceId);
   if (!space) throw new AccessDenied('There is no space with that reference that you can see.');
-  const reason = input.why?.trim() || null;
 
   if (input.action === 'add rule') {
     const shared = input.shared ?? false;
     if (shared && space.privateTo) throw new AccessDenied('Spaces in a personal tree have no shared side.');
-    return insertProposal(s, {
+    return {
       spaceId: space.id,
       action: input.action,
       itemId: null,
       change: { kind: input.kind, text: input.text, shared, onlyHere: input.onlyHere ?? false },
       request: shared && !space.admin,
-      reason,
-    });
+    };
   }
 
   // Only rules in the space itself, not ones reaching it from above, which are changed where they are.
@@ -225,14 +296,13 @@ export async function proposeRule(
   if (!rule?.current || rule.spaceId !== space.id) {
     throw new AccessDenied('There is no rule with that reference in this space that you can see.');
   }
-  return insertProposal(s, {
+  return {
     spaceId: space.id,
     action: input.action,
     itemId: input.ruleId,
     change: input.action === 'change rule' ? { text: input.text } : {},
     request: rule.shared && !space.admin,
-    reason,
-  });
+  };
 }
 
 /**
@@ -300,11 +370,15 @@ export async function suggestSpace(s: Session, input: { name: string; who: Who; 
   });
 }
 
-/** A few asked-for spaces wait at a time: the assistant's word that the user asked isn't a licence for more. */
+/**
+ * A few asked-for spaces wait at a time, plans that create one among them: the assistant's word
+ * that the user asked isn't a licence for more.
+ */
 async function notTooMany(s: Session) {
   const [{ waiting }] = await s.tx<{ waiting: number }[]>`
     select count(*)::int as waiting from proposals
-    where ${yours(s)} and action = 'add space' and state = 'open' and expires_at > now() and coalesce((change->>'asked')::boolean, false)
+    where ${yours(s)} and state = 'open' and expires_at > now()
+      and ((action = 'add space' and coalesce((change->>'asked')::boolean, false)) or (action = 'plan' and change ? 'space'))
   `;
   if (waiting >= 3) throw new SpaceRefused('where', 'Three spaces are already waiting for the user to approve them. Wait until they have decided.');
 }
@@ -335,9 +409,7 @@ async function rare(s: Session, name: string) {
 export async function proposeMemberChange(s: Session, input: { spaceId: string; person?: { id: string; name: string }; email?: string; change: MemberChange; why?: string }): Promise<Proposal> {
   const space = await spaceView(s, input.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
-  if (input.person) await memberChangeFits(s, space, input.person.id, input.change);
-  else if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only yours. To add people, share the space first, from its Settings.');
-  else if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
+  await memberProposalFits(s, space, input);
   return insertProposal(s, {
     spaceId: space.id,
     action: 'change members',
@@ -348,12 +420,25 @@ export async function proposeMemberChange(s: Session, input: { spaceId: string; 
   });
 }
 
+/** Whether a change of members can be proposed in a space, as proposing it on its own checks. */
+async function memberProposalFits(s: Session, space: SpaceView, input: { person?: { id: string }; change: MemberChange }): Promise<void> {
+  if (input.person) await memberChangeFits(s, space, input.person.id, input.change);
+  else if (space.privateTo) throw new SpaceRefused('where', 'Spaces in your personal space are only yours. To add people, share the space first, from its Settings.');
+  else if (!space.admin) throw new SpaceRefused('admin', `Only ${space.name}’s admins change who’s in it.`);
+}
+
 /**
  * Proposes sharing one of the person's private items with everyone in its space (spec §5), for
  * them to approve. Only their own items, never in their personal tree.
  */
 export async function proposePublish(s: Session, input: { itemId: string; why?: string }): Promise<Proposal> {
-  const publication = await publicationOf(s, input.itemId);
+  const { space } = await publishFits(s, input.itemId);
+  return insertProposal(s, { spaceId: space.id, action: 'publish', itemId: input.itemId, change: {}, request: false, reason: input.why?.trim() || null });
+}
+
+/** Whether one of the person's items can be proposed for sharing with its space, and that space. */
+async function publishFits(s: Session, itemId: string): Promise<{ publication: Publication; space: SpaceView }> {
+  const publication = await publicationOf(s, itemId);
   if (!publication) throw new SpaceRefused('missing', 'There’s no item of yours with that reference to share.');
   const space = await spaceView(s, publication.item.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
@@ -362,13 +447,23 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
     throw new SpaceRefused('person', `The user shared it already: everyone sees item:${publication.sharedAs} now. To share a change, save it with \`remember\` first and share what that returns.`);
   }
   if (!publication.current) throw new SpaceRefused('person', 'That item was replaced since. Share the one that replaced it.');
-  const [waiting] = await s.tx<{ id: string }[]>`
-    select id from proposals where ${yours(s)} and action = 'publish' and item_id = ${input.itemId}::uuid and state = 'open' and expires_at > now()
-  `;
-  if (waiting) throw new SpaceRefused('person', `Sharing it already waits for the user (proposal:${waiting.id}). Give them that link again if they need it.`);
+  const waiting = await waitingWith(s, { action: 'publish', item: itemId });
+  if (waiting) throw new SpaceRefused('person', `Sharing it already waits for the user (proposal:${waiting}). Give them that link again if they need it.`);
   const [{ type }] = await s.tx<{ type: string | null }[]>`select type from pages where id = ${publication.item.pageId}::uuid`;
   if (['guidance', 'skill', 'overview'].includes(type ?? '')) throw new SpaceRefused('where', 'Rules, skills and the overview are shared another way.');
-  return insertProposal(s, { spaceId: space.id, action: 'publish', itemId: input.itemId, change: {}, request: false, reason: input.why?.trim() || null });
+  return { publication, space };
+}
+
+/** A proposal of the person's waiting to share this item or task, on its own or in a plan. */
+async function waitingWith(s: Session, step: { action: 'publish'; item: string } | { action: 'share task'; task: string }): Promise<string | undefined> {
+  const [own, column] = step.action === 'publish' ? [step.item, s.tx`item_id`] : [step.task, s.tx`task_id`];
+  const [waiting] = await s.tx<{ id: string }[]>`
+    select id from proposals
+    where ${yours(s)} and state = 'open' and expires_at > now()
+      and ((action = ${step.action} and ${column} = ${own}::uuid) or (action = 'plan' and change->'steps' @> ${s.tx.json([step])}::jsonb))
+    limit 1
+  `;
+  return waiting?.id;
 }
 
 /**
@@ -523,25 +618,446 @@ function isInside(space: Space, ancestorId: string, spaces: Space[]): boolean {
  * them to approve. Only their own open tasks, never in their personal tree.
  */
 export async function proposeTaskShare(s: Session, input: { taskId: string; why?: string }): Promise<Proposal> {
+  const { space } = await taskShareFits(s, input.taskId);
+  return insertProposal(s, { spaceId: space.id, action: 'share task', itemId: null, taskId: input.taskId, change: {}, request: false, reason: input.why?.trim() || null });
+}
+
+/** Whether one of the person's tasks can be proposed for sharing with its space, and that space. */
+async function taskShareFits(s: Session, taskId: string): Promise<{ task: Task; space: SpaceView }> {
   // Held until the proposal is made, so two at once can't both pass the check for one already waiting.
-  await s.tx`select id from tasks where id = ${input.taskId}::uuid for update`;
-  const task = await readTask(s, input.taskId);
+  await s.tx`select id from tasks where id = ${taskId}::uuid for update`;
+  const task = await readTask(s, taskId);
   if (task && task.privateTo === null) throw new SpaceRefused('person', 'That task is shared with the space already.');
   if (!task || task.privateTo !== personOf(s.principal)) throw new SpaceRefused('missing', 'There’s no task of the user’s own with that reference to share.');
   const space = await spaceView(s, task.spaceId);
   if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
   if (space.privateTo) throw new SpaceRefused('where', 'Their personal space has no shared side: its tasks stay theirs.');
   if (task.doneAt) throw new SpaceRefused('person', 'That task is done, so there’s nothing to share.');
-  const [waiting] = await s.tx<{ id: string }[]>`
-    select id from proposals where ${yours(s)} and action = 'share task' and task_id = ${input.taskId}::uuid and state = 'open' and expires_at > now()
-  `;
-  if (waiting) throw new SpaceRefused('person', `Sharing it already waits for the user (proposal:${waiting.id}). Give them that link again if they need it.`);
-  return insertProposal(s, { spaceId: space.id, action: 'share task', itemId: null, taskId: input.taskId, change: {}, request: false, reason: input.why?.trim() || null });
+  const waiting = await waitingWith(s, { action: 'share task', task: taskId });
+  if (waiting) throw new SpaceRefused('person', `Sharing it already waits for the user (proposal:${waiting}). Give them that link again if they need it.`);
+  return { task, space };
 }
 
 /** A task as a decision shows it, so approving shares only what was shown. */
 function taskShown(task: Task): string {
   return [task.title, task.due ?? '', task.description ?? ''].join('\n');
+}
+
+/** Where a plan's changes go: a space the person can open, or one it creates. */
+type PlanDestination = { name: string; space: SpaceView; create?: undefined } | { name: string; space?: undefined; create: SpaceChange & { in: string } };
+
+/**
+ * Proposes several related changes as one decision (spec §6): a plan, for the person to approve as
+ * it is or decline. Its changes are in one space, which it may also create when everyone in the
+ * shared space it goes in would see it. Each change is checked as it would be on its own, and only
+ * what the person decides alone goes in: a change for a space's admins stays a request of its own,
+ * and routine work, such as a space only they will have, is done at once instead. One plan waits for
+ * a space at a time, so revising one means withdrawing it and proposing it again.
+ */
+export async function proposePlan(
+  s: Session,
+  input: { spaceId?: string; create?: { name: string; who: Who; in?: string; closed?: boolean }; steps: PlanStep[]; why?: string },
+): Promise<Proposal> {
+  const me = personOf(s.principal);
+  if (!me) throw new AccessDenied('Only a person approves a plan.');
+  // One person's proposals are made one at a time, so two at once can't both pass the check for one waiting.
+  await s.tx`select pg_advisory_xact_lock(hashtext('homing.suggest:' || ${me}))`;
+  if (input.steps.length + (input.create ? 1 : 0) < 2) {
+    throw new SpaceRefused('where', 'A plan is for several changes that belong together. Propose a single change with its own action.');
+  }
+  let destination: PlanDestination;
+  if (input.create) {
+    const place = await placeSpace(s, input.create);
+    if (!place.parent || place.parent.privateTo || place.closed) {
+      throw new SpaceRefused(
+        'where',
+        `Only the user would have ${place.name} once it's created, so it isn't part of a plan: create it at once with space.create, keep what belongs in it there with remember, then propose the plan for it.`,
+      );
+    }
+    await notTooMany(s);
+    destination = { name: place.name, create: { name: place.name, who: 'with others', in: place.parent.id, closed: false } };
+  } else {
+    const space = input.spaceId ? await spaceView(s, input.spaceId) : undefined;
+    if (!space) throw new SpaceRefused('missing', 'There’s no space there that you can open.');
+    destination = { name: space.name, space };
+  }
+  const spaceId = destination.space?.id ?? destination.create!.in;
+  const [waiting] = await s.tx<{ id: string }[]>`
+    select id from proposals
+    where ${yours(s)} and action = 'plan' and state = 'open' and expires_at > now() and space_id = ${spaceId}::uuid
+      and lower(coalesce(change->'space'->>'name', '')) = lower(${destination.create?.name ?? ''})
+    limit 1
+  `;
+  if (waiting) {
+    throw new SpaceRefused('person', `A plan for ${destination.name} already waits for the user (proposal:${waiting.id}). Nothing can be added to it: to revise it, withdraw it with proposal.withdraw and propose the whole plan again.`);
+  }
+  const seen = new Set<string>();
+  for (const [index, step] of input.steps.entries()) {
+    try {
+      const key = stepKey(step);
+      if (seen.has(key)) throw new SpaceRefused('person', 'It repeats an earlier change.');
+      seen.add(key);
+      await stepFits(s, destination, step);
+    } catch (error) {
+      if (error instanceof SpaceRefused) throw new SpaceRefused(error.reason, `Change ${index + 1}: ${error.message}`);
+      if (error instanceof AccessDenied) throw new AccessDenied(`Change ${index + 1}: ${error.message}`);
+      throw error;
+    }
+  }
+  return insertProposal(s, {
+    spaceId,
+    action: 'plan',
+    itemId: null,
+    change: { ...(destination.create && { space: destination.create }), steps: input.steps },
+    request: false,
+    reason: input.why?.trim() || null,
+  });
+}
+
+/** What a change is about, so a plan holds each one once. */
+function stepKey(step: PlanStep): string {
+  switch (step.action) {
+    case 'publish':
+      return `item:${step.item}`;
+    case 'share task':
+      return `task:${step.task}`;
+    case 'change members':
+      return `person:${step.person ?? step.email?.toLowerCase()}`;
+    case 'add rule':
+      return `new rule:${step.text.trim().toLowerCase()}`;
+    default:
+      return `rule:${step.rule}`;
+  }
+}
+
+const leaving = 'Leaving a space is a decision of its own, not part of a plan: propose it on its own with members.change.';
+
+/** Whether a change fits a plan's space, checked as proposing it on its own checks it. */
+async function stepFits(s: Session, destination: PlanDestination, step: PlanStep): Promise<void> {
+  const { space } = destination;
+  const elsewhere = new SpaceRefused('where', `It’s in another space. A plan’s changes are all in one space, ${destination.name}: propose changes elsewhere on their own.`);
+  switch (step.action) {
+    case 'publish':
+    case 'share task': {
+      // What a plan shares is in its space already, on the person's side, so a space it creates has nothing to share yet.
+      if (!space) throw new SpaceRefused('where', `Nothing is in ${destination.name} until it’s created, so there’s nothing in it to share yet. Propose the plan without it, and sharing once ${destination.name} exists.`);
+      const fits = step.action === 'publish' ? await publishFits(s, step.item) : await taskShareFits(s, step.task);
+      if (fits.space.id !== space.id) throw elsewhere;
+      return;
+    }
+    case 'change members':
+      // Leaving ends the person's access to the plan's space, so it's a decision of its own.
+      if (step.member === 'remove' && step.person === personOf(s.principal)) throw new SpaceRefused('person', leaving);
+      if (space) return memberProposalFits(s, space, { person: step.person ? { id: step.person } : undefined, change: step.member });
+      if (step.member === 'make member' || step.member === 'remove') throw new SpaceRefused('person', `Nobody is in ${destination.name} until it’s created.`);
+      if (step.person === personOf(s.principal)) throw new SpaceRefused('person', `The user is ${destination.name}’s admin once it’s created.`);
+      return;
+    default: {
+      if (!space) {
+        if (step.action !== 'add rule') throw new SpaceRefused('missing', `${destination.name} has no rules until it’s created.`);
+        return;
+      }
+      const change = await ruleChange(
+        s,
+        step.action === 'add rule'
+          ? { action: step.action, spaceId: space.id, kind: step.kind, text: step.text, shared: step.shared, onlyHere: step.onlyHere }
+          : step.action === 'change rule'
+            ? { action: step.action, spaceId: space.id, ruleId: step.rule, text: step.text }
+            : { action: step.action, spaceId: space.id, ruleId: step.rule },
+      );
+      if (change.request) {
+        throw new SpaceRefused(
+          'admin',
+          `Only ${space.name}’s admins change its shared rules, so that’s a request to them, which one of them decides on its own: propose it with guidance.propose, not in a plan.`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * A plan as the reader sees it now: each change, and what they add up to. While it waits for the
+ * person it's for, it also says why a change can't be made now, if one can't. Whether an email has
+ * an account is looked up only where they decide.
+ */
+async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding: boolean, findAccount?: FindAccount): Promise<PlanView | null> {
+  if (proposal.action !== 'plan') return null;
+  const me = personOf(s.principal);
+  const { space: create, steps = [] } = proposal.change;
+  const open = proposal.state === 'open' && proposal.privateTo === me;
+  // Its changes are in the space it names, or once approved, the one it created.
+  const view = create ? (proposal.spaceCreated ? await spaceView(s, proposal.spaceCreated) : undefined) : await spaceView(s, proposal.spaceId);
+  const name = view?.name ?? create?.name ?? '';
+  const where = view?.id ?? null;
+  const parent = create ? spaces.find((space) => space.id === create.in) : undefined;
+  // A space it creates is open to everyone in the one it goes in, so they're who has it.
+  const parentView = parent && (await spaceView(s, parent.id));
+  const reach = view ?? parentView;
+  const names = await peopleNames(s, steps.map((step) => (step.action === 'change members' ? (step.person ?? null) : null)));
+
+  let createView: PlanView['create'] = null;
+  if (create) {
+    let problem: string | null = null;
+    if (open) {
+      try {
+        await placeSpace(s, { ...create, in: create.in ?? undefined });
+      } catch (error) {
+        if (!(error instanceof SpaceRefused)) throw error;
+        problem = error.message;
+      }
+    }
+    createView = {
+      name: create.name,
+      in: parent?.name ?? null,
+      people: parentView?.members.length ?? 0,
+      above: parentView?.reachedFromAbove ?? false,
+      problem,
+      cant: `${create.name} can’t be created${parent ? ` in ${parent.name}` : ''}`,
+    };
+  }
+
+  const views: PlanStepView[] = [];
+  for (const step of steps) {
+    const base = { publication: null, item: null, task: null, member: null, rule: null, problem: null };
+    if (step.action === 'publish') {
+      const [item] = await s.tx<{ text: string; pageId: string; page: string | null; shared: boolean; spaceId: string }[]>`
+        select c.body as text, c.page_id, c.private_to is null as shared, c.space_id,
+               (select t.body from content t where t.page_id = c.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1) as page
+        from content c where c.id = ${step.item}::uuid and ${visible(s, 'c')}
+      `;
+      const publication = open ? ((await publicationOf(s, step.item)) ?? null) : null;
+      const page = publication?.pageTitle ?? item?.page ?? 'Untitled';
+      let problem: string | null = null;
+      if (open) {
+        if (!item) problem = 'It’s gone, or you can no longer see it.';
+        else if (item.shared) problem = 'It’s shared already.';
+        else if (!publication || item.spaceId !== where) problem = 'It isn’t yours to share there.';
+        else if (publication.sharedAs) problem = 'You shared it already.';
+        else if (!publication.current) problem = 'It was changed or replaced since.';
+      }
+      views.push({ ...base, action: step.action, publication, item: item ? { text: item.text, page, pageId: item.pageId } : null, problem, cant: `what’s on “${page}” can’t be shared` });
+    } else if (step.action === 'share task') {
+      const task = await readTask(s, step.task);
+      let problem: string | null = null;
+      if (open) {
+        if (!task) problem = 'It’s gone, or you can no longer see it.';
+        else if (task.privateTo === null) problem = 'It’s shared already.';
+        else if (task.doneAt) problem = 'It’s done.';
+        else if (task.privateTo !== me || task.spaceId !== where) problem = 'It isn’t yours to share there.';
+      }
+      views.push({
+        ...base,
+        action: step.action,
+        task: task ? { title: task.title, description: task.description, due: task.due, shown: taskShown(task) } : null,
+        problem,
+        cant: task ? `the task “${task.title}” can’t be shared` : 'the task can’t be shared',
+      });
+    } else if (step.action === 'change members') {
+      const account = step.email && deciding && findAccount ? await findAccount(step.email) : undefined;
+      const subject = step.person && names.has(step.person) ? step.person : account?.id;
+      // Who has the space now: in one it creates, everyone in the space it goes in.
+      const above = !view && subject ? parentView?.members.find((member) => member.id === subject) : undefined;
+      const standing = view && subject ? view.members.find((member) => member.id === subject) : above && { ...above, member: false, through: above.member ? (parent?.name ?? null) : above.through };
+      const who = (step.person ? (names.get(step.person) ?? step.personName) : account?.name) ?? step.email ?? 'They';
+      let problem: string | null = null;
+      if (open) {
+        if (step.member === 'remove' && subject === me) problem = 'Leaving a space is a decision of its own, not part of a plan.';
+        else if (step.person && !names.has(step.person)) problem = `You no longer share a space with ${step.personName ?? 'them'}, so they can’t be added this way. Ask for their email instead.`;
+        else if (step.email && deciding && !account) problem = `No one uses Homing with ${step.email} yet. Once they’re invited to Homing, they can be added.`;
+        else if (view) {
+          try {
+            await memberProposalFits(s, view, { person: subject ? { id: subject } : undefined, change: step.member });
+          } catch (error) {
+            if (!(error instanceof SpaceRefused)) throw error;
+            problem = error.message;
+          }
+        }
+      }
+      views.push({
+        ...base,
+        action: step.action,
+        member: {
+          change: step.member,
+          name: step.person ? (names.get(step.person) ?? step.personName ?? null) : (account?.name ?? null),
+          email: step.email ?? null,
+          found: step.person ? names.has(step.person) : deciding ? Boolean(account) : null,
+          inSpace: standing?.member ?? false,
+          through: standing?.through ?? null,
+        },
+        problem,
+        cant: { add: `${who} can’t be added`, 'make admin': `${who} can’t be made an admin`, 'make member': `${who} can’t be made a member`, remove: `${who} can’t be removed` }[step.member],
+      });
+    } else if (step.action === 'add rule') {
+      let problem: string | null = null;
+      if (open && view && step.shared && !view.admin) problem = `Only ${view.name}’s admins change its shared rules.`;
+      views.push({ ...base, action: step.action, rule: { kind: step.kind, text: step.text, now: null, shared: step.shared, onlyHere: step.onlyHere }, problem, cant: `the new ${step.kind} can’t be added` });
+    } else if (step.action === 'change rule' || step.action === 'remove rule') {
+      const rule = await ruleFor(s, step.rule);
+      let problem: string | null = null;
+      if (open) {
+        if (!rule?.current || rule.spaceId !== where) problem = 'It was changed or removed since.';
+        else if (rule.shared && !view?.admin) problem = `Only ${name}’s admins change its shared rules.`;
+      }
+      const kind = rule?.kind ?? 'preference';
+      views.push({
+        ...base,
+        action: step.action,
+        rule: { kind, text: step.action === 'change rule' ? step.text : null, now: rule?.text ?? null, shared: rule?.shared ?? false, onlyHere: rule?.onlyHere ?? false },
+        problem,
+        cant: `the ${kind} can’t be ${step.action === 'change rule' ? 'changed' : 'removed'}`,
+      });
+    } else {
+      // Nothing else is ever stored in a plan, but if it were, it could still only be declined.
+      views.push({ ...base, action: (step as { action: PlanStep['action'] }).action, problem: 'Homing can’t make this change.', cant: 'a change can’t be made' });
+    }
+  }
+
+  // Whoever it adds who has no access yet sees what's shared there from then on.
+  const adding = views.flatMap((step) => (step.member && (step.member.change === 'add' || step.member.change === 'make admin') && !step.member.inSpace && !step.member.through ? [step.member.name ?? step.member.email ?? 'someone'] : []));
+  return {
+    create: createView,
+    space: name,
+    spaceId: where,
+    steps: views,
+    audience: { people: reach?.members.length ?? 0, above: reach?.reachedFromAbove ?? false, adding },
+    sees: open && adding.length ? await seenThere(s, { where, parent: create?.in ?? null }, steps, views, spaces) : null,
+    shown: JSON.stringify([
+      create?.name ?? '',
+      ...views.map((step) => (step.item ? `${step.item.page}\n${step.item.text}` : step.task ? step.task.shown : step.rule?.now ?? '')),
+    ]),
+  };
+}
+
+/**
+ * What someone a plan adds will see in its space once it's approved, as the person deciding can
+ * tell: its shared pages, archived ones apart, its open shared tasks, the shared rules that apply
+ * there, set in it or above it, and the spaces in it that aren't closed. Rules a space includes from
+ * elsewhere depend on what each person can open, so they're left out.
+ */
+async function seenThere(s: Session, at: { where: string | null; parent: string | null }, steps: PlanStep[], views: PlanStepView[], spaces: Space[]): Promise<NonNullable<PlanView['sees']>> {
+  let now = { pages: 0, archived: 0, tasks: 0 };
+  let rules: Rule[] = [];
+  let inside = 0;
+  if (at.where) {
+    [now] = await s.tx<{ pages: number; archived: number; tasks: number }[]>`
+      with shared_pages as (
+        select p.archived_at from pages p
+        where p.space_id = ${at.where}::uuid and coalesce(p.type, '') not in ('guidance', 'skill', 'overview')
+          and exists (
+            select from content c
+            where c.page_id = p.id and c.private_to is null and c.kind in ('title', 'text')
+              and not exists (select from content r where r.supersedes = c.id and r.private_to is null)
+          )
+      )
+      select (select count(*) from shared_pages where archived_at is null)::int as pages,
+             (select count(*) from shared_pages where archived_at is not null)::int as archived,
+             (select count(*) from tasks t where t.space_id = ${at.where}::uuid and t.private_to is null and t.done_at is null)::int as tasks
+    `;
+    rules = await rulesFor(s, at.where);
+    // The spaces in it they'd have too: down through every one that isn't closed.
+    const below = (id: string): number => spaces.filter((space) => space.parentId === id && !space.closed).reduce((sum, space) => sum + 1 + below(space.id), 0);
+    inside = below(at.where);
+  } else if (at.parent) {
+    // A new space gets the rules that reach it from the space it goes in.
+    rules = (await rulesFor(s, at.parent)).filter((rule) => !(rule.spaceId === at.parent && rule.onlyHere));
+  }
+  const shared = rules.filter((rule) => rule.privateTo === null && !rule.personal && rule.includedIn === null);
+  const titles = new Set(views.flatMap((step) => (step.publication?.sharesTitle && step.item ? [step.item.pageId] : [])));
+  const removed = steps.filter((step, index) => step.action === 'remove rule' && views[index].rule?.shared).length;
+  return {
+    pages: now.pages + titles.size,
+    archived: now.archived,
+    tasks: now.tasks + steps.filter((step) => step.action === 'share task').length,
+    rules: shared.length + steps.filter((step) => step.action === 'add rule' && step.shared).length - removed,
+    spaces: inside,
+  };
+}
+
+/**
+ * Makes every change in a plan, as the person deciding it and in the transaction that decides it:
+ * exactly what was shown, each checked again as it's made. If one can't be made, nothing is, and
+ * the person is told which one and why. Returns the space it created, if it created one.
+ */
+async function approvePlan(s: Session, proposal: Proposal, decision: { shown?: string; findAccount?: FindAccount }): Promise<string | null> {
+  const plan = (await planNow(s, proposal, await listSpaces(s), true, decision.findAccount))!;
+  if (decision.shown !== plan.shown) throw new Undecidable('changed', 'Something in it changed after you opened this. Check it again before approving it.');
+  const blocked = [plan.create, ...plan.steps].find((step) => step?.problem);
+  if (blocked) throw new Undecidable('changed', `Nothing changed, because ${blocked.cant}. ${blocked.problem}`);
+  const failed = (cant: string, error: unknown) => {
+    const why = refusalOf(error);
+    if (why === undefined) return error;
+    return new Undecidable('changed', `Nothing changed, because ${cant}. ${why}`);
+  };
+  const { space: create, steps = [] } = proposal.change;
+  let created: string | null = null;
+  if (create) {
+    try {
+      created = (await newSpace(s, { name: create.name, who: create.who, in: create.in ?? undefined, closed: create.closed })).id;
+    } catch (error) {
+      throw failed(plan.create!.cant, error);
+    }
+  }
+  const spaceId = created ?? proposal.spaceId;
+  for (const [index, step] of steps.entries()) {
+    try {
+      await makeStep(s, spaceId, step, plan.steps[index], decision.findAccount);
+    } catch (error) {
+      throw failed(plan.steps[index].cant, error);
+    }
+  }
+  return created;
+}
+
+/** Makes one change of a plan as it was shown, checked again as it's made. */
+async function makeStep(s: Session, spaceId: string, step: PlanStep, shown: PlanStepView, findAccount?: FindAccount): Promise<void> {
+  switch (step.action) {
+    case 'publish': {
+      const publication = await publicationOf(s, step.item);
+      if (!publication?.current || publication.item.spaceId !== spaceId || !shown.item) throw new Undecidable('changed', 'It was changed, replaced or shared since.');
+      if (!(await publishItem(s, step.item, shown.item.text))) throw new Undecidable('changed', 'It changed after you opened this.');
+      return;
+    }
+    case 'share task': {
+      await s.tx`select id from tasks where id = ${step.task}::uuid for update`;
+      const task = await readTask(s, step.task);
+      if (!task || task.privateTo === null || task.doneAt || task.spaceId !== spaceId) throw new Undecidable('changed', 'It was shared, done or removed since.');
+      if (taskShown(task) !== shown.task?.shown) throw new Undecidable('changed', 'It changed after you opened this.');
+      if (!(await shareTask(s, step.task))) throw new Undecidable('changed', 'It can’t be shared from here anymore.');
+      return;
+    }
+    case 'change members': {
+      // Someone the person still shares a space with, or the email's owner, as when it's proposed alone.
+      if (step.person && !(await peopleNames(s, [step.person])).has(step.person)) {
+        throw new SpaceRefused('person', `You no longer share a space with ${step.personName ?? 'them'}, so they can’t be added this way. Ask for their email instead.`);
+      }
+      const person = step.person ?? (step.email && findAccount ? (await findAccount(step.email))?.id : undefined);
+      if (!person) throw new SpaceRefused('person', `No one uses Homing with ${step.email} yet. Once they’re invited to Homing, they can be added.`);
+      if (step.member === 'remove' && person === personOf(s.principal)) throw new SpaceRefused('person', 'Leaving a space is a decision of its own, not part of a plan.');
+      await changeMember(s, spaceId, person, step.member);
+      return;
+    }
+    case 'add rule':
+      await addRule(s, { spaceId, kind: step.kind, body: step.text, shared: step.shared, onlyHere: step.onlyHere });
+      return;
+    case 'change rule':
+    case 'remove rule': {
+      // Held until the plan is made, so nobody changes the rule between the check and the change.
+      await s.tx`select id from content where id = ${step.rule}::uuid and ${visible(s, 'content')} for update`;
+      const rule = await ruleFor(s, step.rule);
+      if (!rule?.current || rule.spaceId !== spaceId || rule.text !== shown.rule?.now) throw new Undecidable('changed', 'It was changed or removed since.');
+      if (step.action === 'change rule') await editRule(s, rule.id, step.text);
+      else await removeRule(s, rule.id);
+      return;
+    }
+    default:
+      throw new Undecidable('changed', 'Homing can’t make this change.');
+  }
+}
+
+/** Why a change was refused, in words for the person, or undefined when it wasn't a refusal. */
+function refusalOf(error: unknown): string | undefined {
+  if (error instanceof Undecidable || error instanceof SpaceRefused || error instanceof AccessDenied || error instanceof TaskRefused || error instanceof IncludeRefused) return error.message;
+  if (error instanceof postgres.PostgresError && ['42501', '23514', '40001'].includes(error.code)) return `${error.message[0].toUpperCase()}${error.message.slice(1)}.`;
 }
 
 /** A proposal the person can see, with what they need to decide it. */
@@ -582,7 +1098,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
       within: above ? (above.privateTo !== null && above.parentId === null ? 'your personal space' : above.name) : null,
     },
     rule: rule ? { kind: rule.kind, text: rule.text, shared: rule.shared, onlyHere: rule.onlyHere, current: rule.current } : null,
-    alreadyApplies: proposal.action === 'add rule' ? await rulesFor(s, proposal.spaceId) : [],
+    alreadyApplies: proposal.action === 'add rule' ? await rulesFor(s, proposal.spaceId) : await rulesBeforePlan(s, proposal),
     yours: proposal.privateTo === personOf(s.principal),
     names: {
       proposedTo: names.get(proposal.privateTo) ?? null,
@@ -611,7 +1127,18 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
             why: proposal.reason,
           }
         : null,
+    plan: await planNow(s, proposal, spaces, deciding, findAccount),
   };
+}
+
+/**
+ * For a plan with new rules, while it waits: the rules that already apply in its space, or in a
+ * space it creates, those that reach it from the space it goes in.
+ */
+async function rulesBeforePlan(s: Session, proposal: Proposal): Promise<Rule[]> {
+  if (proposal.action !== 'plan' || proposal.state !== 'open' || !proposal.change.steps?.some((step) => step.action === 'add rule')) return [];
+  const rules = await rulesFor(s, proposal.spaceId);
+  return proposal.change.space ? rules.filter((rule) => !(rule.spaceId === proposal.spaceId && rule.onlyHere)) : rules;
 }
 
 /** What sharing the space would do, for the person it's proposed to, while it's in their personal tree. */
@@ -750,7 +1277,14 @@ export async function searchProposals(s: Session, query: string, options: { spac
     (select c.body from content c where c.id = proposals.item_id and ${visible(s, 'c')}),
     (select t.title from tasks t where t.id = proposals.task_id and ${visible(s, 't')}),
     (select t.body from content t where t.page_id = proposals.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1),
-    case when action in ('archive space', 'share space') then (select x.name from spaces x where x.id = proposals.space_id) end
+    case when action in ('archive space', 'share space') then (select x.name from spaces x where x.id = proposals.space_id) end,
+    -- A plan: the space it creates, and what each change is about.
+    change->'space'->>'name',
+    (select string_agg(concat_ws(' ', step->>'text', step->>'personName', step->>'email',
+              (select c.body from content c where c.id = (step->>'item')::uuid and ${visible(s, 'c')}),
+              (select t.title from tasks t where t.id = (step->>'task')::uuid and ${visible(s, 't')}),
+              (select r.body from content r where r.id = (step->>'rule')::uuid and ${visible(s, 'r')})), ' ')
+     from jsonb_array_elements(case when action = 'plan' then change->'steps' else '[]' end) step)
   ))`;
   return s.tx<Proposal[]>`
     select ${columns(s)} from proposals
@@ -836,6 +1370,8 @@ export interface Waiting {
   member: MemberChange | null;
   /** For an include: whether it's a space's rules or a skill. The text is its name, if the person can open it. */
   included: 'rules' | 'skill' | null;
+  /** For a plan: how many changes it makes in its space. The text is the space it creates, if it creates one. */
+  changes: number | null;
   /** For a request: whether it's sent, whether the person asked themselves, and who asked when it's someone else they know. */
   request: boolean;
   sent: boolean;
@@ -854,10 +1390,10 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', p.change->>'name', who.name, p.change->>'email', rule.body, task.title,
+           coalesce(p.change->>'text', p.change->>'name', p.change->'space'->>'name', who.name, p.change->>'email', rule.body, task.title,
                     (select t.body from content t where t.page_id = p.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1),
                     case when p.action in ('archive space', 'share space') then s.name end, included.name) as text,
-           included.kind as included, p.agent,
+           included.kind as included, p.agent, case when p.action = 'plan' then jsonb_array_length(p.change->'steps') end as changes,
            coalesce((p.change->>'asked')::boolean, false) as asked, p.change->>'member' as member, p.request, p.state = 'requested' as sent, p.private_to,
            coalesce(p.requested_at, p.created_at) as created_at
     from proposals p
@@ -1000,7 +1536,19 @@ export async function decide(
     throw new Undecidable('decided', 'You sent this request, so one of the space’s admins decides it.');
   }
 
+  const state = decision.approve ? (sending ? 'requested' : 'approved') : 'rejected';
+  // The decision is recorded as the person, while they can see it, in the transaction that makes the
+  // change: nothing is made without it.
+  const settle = async (spaceCreated: string | null) => {
+    const [settled] = await s.tx<{ id: string }[]>`
+      update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}, space_created = ${spaceCreated}::uuid
+      where id = ${proposalId}::uuid and ${seen(s)}
+      returning id
+    `;
+    if (!settled) throw new Undecidable('changed', 'You can’t decide this anymore, so nothing changed.');
+  };
   let created: string | null = null;
+  let left: ProposalView | undefined;
   if (decision.approve && !sending) {
     const { change } = proposal;
     if (proposal.action === 'publish') {
@@ -1063,6 +1611,12 @@ export async function decide(
       }
       const person = change.person ?? (change.email && decision.findAccount ? (await decision.findAccount(change.email))?.id : undefined);
       if (!person) throw new SpaceRefused('person', `No one uses Homing with ${change.email} yet. Once they’re invited to Homing, they can be added.`);
+      // Leaving ends the person's access to the space, and to this proposal with it, so it's decided
+      // first, while they still can, and what they get back is the proposal as it was decided.
+      if (change.member === 'remove' && person === personOf(s.principal)) {
+        await settle(null);
+        left = await readProposal(s, proposalId, decision.findAccount);
+      }
       await changeMember(s, proposal.spaceId, person, change.member!);
     } else if (proposal.action === 'add space') {
       // As suggested, or as the person changed it before creating it, checked again now.
@@ -1075,6 +1629,9 @@ export async function decide(
           closed: set.closed ?? change.closed,
         })
       ).id;
+    } else if (proposal.action === 'plan') {
+      // Every change as it was shown, together: if one can't be made, none is.
+      created = await approvePlan(s, proposal, decision);
     } else if (proposal.action === 'add include' || proposal.action === 'remove include') {
       // Exactly what was shown: what it brings in, or the include itself. Including needs the person
       // to open it; stopping one an admin can't open is theirs to do too.
@@ -1111,11 +1668,8 @@ export async function decide(
       else await removeRule(s, rule.id);
     }
   }
-  const state = decision.approve ? (sending ? 'requested' : 'approved') : 'rejected';
-  await s.tx`
-    update proposals set state = ${state}, decided_in = ${decision.decidedIn ?? null}, space_created = ${created}::uuid
-    where id = ${proposalId}::uuid and ${seen(s)}
-  `;
+  if (left) return left;
+  await settle(created);
   return readProposal(s, proposalId, decision.findAccount);
 }
 
@@ -1176,7 +1730,7 @@ export function publicationData(publication: Publication, audience: { people: nu
 export const shortAction = {
   'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task',
   'archive space': 'archive', 'share space': 'convert', 'archive page': 'archive page', 'reopen page': 'reopen page',
-  'add include': 'include', 'remove include': 'exclude',
+  'add include': 'include', 'remove include': 'exclude', plan: 'plan',
 } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
@@ -1256,6 +1810,27 @@ export function proposalData(proposal: ProposalView) {
     // Including another space's rules or a skill, or no longer: what it brings in for the reader, as it is now.
     include: proposal.include,
     included: proposal.change.what ?? null,
+    // A plan: the space it creates, if it does, each change as it is now, and what they add up to.
+    plan: proposal.plan
+      ? {
+          create: proposal.plan.create && { name: proposal.plan.create.name, in: proposal.plan.create.in, people: proposal.plan.create.people, above: proposal.plan.create.above, problem: proposal.plan.create.problem },
+          space: proposal.plan.space,
+          spaceId: proposal.plan.spaceId,
+          steps: proposal.plan.steps.map((step) => ({
+            action: shortAction[step.action],
+            publication: step.publication ? publicationData(step.publication, null) : null,
+            item: step.item,
+            task: step.task,
+            member: step.member,
+            rule: step.rule,
+            problem: step.problem,
+          })),
+          audience: proposal.plan.audience,
+          sees: proposal.plan.sees,
+          why: proposal.reason,
+          shown: proposal.plan.shown,
+        }
+      : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,

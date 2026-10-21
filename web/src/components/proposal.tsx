@@ -8,7 +8,7 @@ import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar, dateOf } from '@/components/screen';
-import { placeOf, precedenceOf, type IncludeData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
+import { placeOf, precedenceOf, type IncludeData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -42,6 +42,7 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
       </>
     );
   }
+  if (action === 'plan') return proposal.plan ? <PlanDetails proposal={proposal} plan={proposal.plan} idPrefix={idPrefix} /> : null;
   if (action === 'members') return proposal.member ? <MemberChangeDetails proposal={proposal} member={proposal.member} /> : null;
   if (action === 'publish') return proposal.publication ? <PublishDetails proposal={proposal} publication={proposal.publication} /> : null;
   if (action === 'task') return proposal.task ? <TaskShareDetails place={placeOf(proposal)} task={proposal.task} /> : null;
@@ -90,6 +91,16 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
 /** What was decided, greyed: the new rule or wording, or the rule as it was when it went. */
 export function SettledChange({ proposal }: { proposal: ProposalData }) {
   const { action, kind, state, rule, suggestion, member } = proposal;
+  if (action === 'plan') {
+    return proposal.plan && (
+      <ol aria-label="The changes" className="flex flex-col gap-2">
+        {proposal.plan.create && (
+          <li><ProposedChange kind="preference" label="New space" text={proposal.plan.create.name} settled /></li>
+        )}
+        {proposal.plan.steps.map((step, index) => <li key={index}><SettledStep step={step} /></li>)}
+      </ol>
+    );
+  }
   if (action === 'members') return member && <Who member={member} settled />;
   if (action === 'publish') return proposal.publication && <ProposedChange kind="preference" label={`On ${proposal.publication.page}`} text={proposal.publication.text} settled />;
   if (action === 'task') return proposal.task && <ProposedChange kind="preference" label="Task" text={proposal.task.title} settled />;
@@ -107,6 +118,154 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
   if (!shown) return null;
   return <ProposedChange kind={kind} text={shown} label={action === 'change' && state === 'approved' ? 'Changed to' : undefined} settled />;
 }
+
+/** One change of a plan once it's decided, greyed. */
+function SettledStep({ step }: { step: PlanStepData }) {
+  if (step.member) return <Who member={step.member} settled />;
+  if (step.item) return <ProposedChange kind="preference" label={`On ${step.item.page}`} text={step.item.text} settled />;
+  if (step.task) return <ProposedChange kind="preference" label="Task" text={step.task.title} settled />;
+  const text = step.rule?.text ?? step.rule?.now;
+  if (step.rule && text) return <ProposedChange kind={step.rule.kind} label={step.action === 'change' ? 'Changed to' : undefined} text={text} settled />;
+  return null;
+}
+
+/**
+ * A plan: every change it makes, in order, each shown as its own decision would show it, more
+ * briefly, with what it does. Then who will see what it shares, and the rules already there when it
+ * adds one. A change that can't be made now says why, under it.
+ */
+function PlanDetails({ proposal, plan, idPrefix }: { proposal: ProposalData; plan: PlanData; idPrefix: string }) {
+  const place = plan.create ? plan.create.name : placeOf(proposal);
+  const shares = plan.steps.some((step) => step.action === 'publish' || step.action === 'task');
+  const rules = plan.steps.flatMap((step) => (step.action === 'add' && step.rule ? [step.rule.kind] : []));
+  return (
+    <>
+      <ol aria-label="The changes" className="flex flex-col gap-6">
+        {plan.create && (
+          <li className="flex flex-col gap-2">
+            <ProposedChange kind="preference" label={`New space in ${plan.create.in ?? 'a shared space'}`} text={plan.create.name} />
+            <p className="text-sm text-muted-foreground">
+              {plan.create.in ? `Everyone in ${plan.create.in} has it: ${people(plan.create.people)} now${plan.create.above ? ', everyone who can open the space above it' : ''}, and anyone who joins later. ${plan.create.in}’s shared rules apply in it.` : 'Everyone in the space it goes in has it.'}
+            </p>
+            {plan.create.problem && <FieldError>{plan.create.problem}</FieldError>}
+          </li>
+        )}
+        {plan.steps.map((step, index) => (
+          <li key={index} className="flex flex-col gap-2">
+            <PlanStep step={step} place={place} sees={plan.sees} personal={proposal.personal && !plan.create} id={`${idPrefix}-change-${index}`} />
+            {step.problem && <FieldError>{step.problem}</FieldError>}
+          </li>
+        ))}
+      </ol>
+      {shares && <p className="text-base">{whoWillSeeShared(place, plan.audience)}</p>}
+      {rules.length > 0 && (
+        <AlreadyApplies
+          rules={proposal.alreadyApplies}
+          precedence={rules.includes('requirement') ? 'If a new requirement disagrees with another, your assistant stops and tells you.' : 'If a new rule disagrees with a requirement, the requirement wins.'}
+        />
+      )}
+    </>
+  );
+}
+
+/** One change in a plan, as its own decision would show it, more briefly. */
+function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; place: string; sees: PlanData['sees']; personal: boolean; id: string }) {
+  const gone = (what: string) => <p className="rounded-xl bg-muted px-4 py-3 text-base">{what}</p>;
+  if (step.action === 'publish') {
+    const { publication } = step;
+    if (!publication) return step.item ? <ProposedChange kind="preference" label={`Share on ${step.item.page}`} text={step.item.text} /> : gone('Something to share that you can’t see anymore.');
+    const sources = sourcesOf(publication);
+    const notes = [
+      sources && `Everyone will see what it says and that you shared it, but not ${sources}.`,
+      publication.sharesTitle && `Only you have the page “${publication.page}”, so its title is shared too.`,
+    ].filter(Boolean);
+    return (
+      <>
+        {publication.sharedText !== null && publication.sharedText !== publication.text ? (
+          <div className="flex flex-col gap-3">
+            <ProposedChange kind="preference" label="Everyone sees now" text={publication.sharedText} settled />
+            <ProposedChange kind="preference" label={`Changed to, on ${publication.page}`} text={publication.text} />
+          </div>
+        ) : (
+          <ProposedChange kind="preference" label={`Share on ${publication.page}`} text={publication.text} />
+        )}
+        {notes.length > 0 && <p className="text-sm text-muted-foreground">{notes.join(' ')}</p>}
+      </>
+    );
+  }
+  if (step.action === 'task') {
+    if (!step.task) return gone('A task you can’t see anymore.');
+    const due = step.task.due ? `, due ${dateOf(new Date(`${step.task.due}T12:00:00`).toISOString())}` : '';
+    return <ProposedChange kind="preference" label={`Share the task${due}`} text={step.task.description ? `${step.task.title}\n\n${step.task.description}` : step.task.title} />;
+  }
+  if (step.member) {
+    const { member } = step;
+    const label = { add: `Add to ${place}`, 'make admin': `Make an admin of ${place}`, 'make member': `Make a member of ${place}, not an admin`, remove: `Remove from ${place}` }[member.change];
+    return (
+      <>
+        <p className="text-sm text-muted-foreground">{label}</p>
+        <Who member={member} />
+        {member.found !== false && <p className="text-base">{memberSees(member, place, sees)}</p>}
+      </>
+    );
+  }
+  const { rule } = step;
+  const text = rule?.text ?? rule?.now;
+  if (!rule || !text) return gone('A rule you can’t see anymore.');
+  if (step.action === 'change') {
+    return (
+      <div className="flex flex-col gap-3">
+        {rule.now && <ProposedChange kind={rule.kind} label={`${rule.kind === 'requirement' ? 'Requirement' : 'Preference'} now`} text={rule.now} settled />}
+        <ProposedChange kind={rule.kind} label="Changed to" text={text} onlyYou={!rule.shared} />
+      </div>
+    );
+  }
+  return (
+    <>
+      <ProposedChange kind={rule.kind} label={`${step.action === 'add' ? 'Add' : 'Remove'} a ${rule.kind}`} text={text} onlyYou={!rule.shared} />
+      <RuleReach id={id} space={place} shared={rule.shared} personal={personal} onlyHere={rule.onlyHere} removing={step.action === 'remove'} />
+    </>
+  );
+}
+
+/**
+ * What a plan's change of members means for them: what someone it adds will see there, in numbers,
+ * or what they keep or lose.
+ */
+function memberSees(member: NonNullable<PlanStepData['member']>, place: string, sees: PlanData['sees']): string {
+  const who = member.name ?? member.email ?? 'They';
+  const admin = member.change === 'make admin' ? ' As an admin, they also change its shared rules and who’s in it.' : '';
+  if (member.change === 'make member') return `${who} keeps access, but no longer changes its shared rules or who’s in it.`;
+  if (member.change === 'remove') return member.through ? `${who} will no longer be a member of ${place}, but still has access through ${member.through}.` : `${who} loses access to ${place} and the spaces in it.`;
+  if (member.inSpace) return `${who} already sees ${place}.${admin}`;
+  if (member.through) return `${who} already sees ${place} through ${member.through}.${admin}`;
+  const parts = sees
+    ? [
+        sees.pages ? `${plural(sees.pages, 'shared page')}${sees.archived ? ` (and ${sees.archived} archived)` : ''}` : '',
+        sees.tasks ? plural(sees.tasks, 'shared task') : '',
+        sees.rules ? plural(sees.rules, 'rule') : '',
+        sees.spaces ? `the ${sees.spaces === 1 ? 'space' : `${sees.spaces} spaces`} in it that ${sees.spaces === 1 ? 'isn’t' : 'aren’t'} closed` : '',
+      ].filter(Boolean)
+    : [];
+  if (!sees) return `${who} will see ${place}’s shared knowledge and rules, including what was shared before they joined.${admin}`;
+  const listed = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
+  return `${who} will see ${place}’s name${listed ? `, ${listed.startsWith('the ') ? '' : 'its '}${listed},` : ''} and what’s shared there later.${admin}`;
+}
+
+/** "Everyone in Kitchen will see what’s shared: only you now, Jonas Berg from when you approve, and anyone who joins later." */
+function whoWillSeeShared(place: string, audience: PlanData['audience']): string {
+  const now = audience.people > 1 ? `${people(audience.people)} now` : 'only you now';
+  const adding = audience.adding.length ? `, ${audience.adding.length > 1 ? `${audience.adding.slice(0, -1).join(', ')} and ${audience.adding.at(-1)}` : audience.adding[0]} from when you approve` : '';
+  return `Everyone in ${place} will see what’s shared: ${now}${audience.above ? ', everyone who can open the space above it' : ''}${adding}, and anyone who joins later.`;
+}
+
+/** "1 other person", "4 other people": everyone with access but you. */
+function people(withYou: number): string {
+  const others = withYou - 1;
+  return others <= 0 ? 'only you' : others === 1 ? '1 other person' : `${others.toLocaleString('en-US')} other people`;
+}
+
+const plural = (n: number, thing: string) => `${n} ${thing}${n === 1 ? '' : 's'}`;
 
 /**
  * A change of who is in a space: who it's about, and what it shares or stops sharing with them. For
@@ -158,12 +317,8 @@ function PublishDetails({ proposal, publication }: { proposal: ProposalData; pub
  */
 export function SharingDetails({ place, publication }: { place: string; publication: PublicationData }) {
   const who = whoWillSee(place, publication.audience);
-  const sources = [
-    ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your source “${source.reference}”`)),
-    ...(publication.hiddenUnseen > 0 ? [publication.hiddenUnseen === 1 ? 'a source you can no longer open' : `${publication.hiddenUnseen} sources you can no longer open`] : []),
-    ...(publication.hiddenElsewhere ? [publication.hiddenElsewhere === 1 ? 'a source that didn’t come with the import' : `${publication.hiddenElsewhere} sources that didn’t come with the import`] : []),
-  ];
-  const listed = sources.length > 1 ? `${sources.slice(0, -1).join(', ')} and ${sources.at(-1)}` : sources[0];
+  const sources = sourceList(publication);
+  const listed = sourcesOf(publication);
   return (
     <>
       {publication.sharedText !== null && publication.sharedText !== publication.text ? (
@@ -185,6 +340,21 @@ export function SharingDetails({ place, publication }: { place: string; publicat
       )}
     </>
   );
+}
+
+/** What sharing an item rests on that its space can't see: your own sources, or another space's. */
+function sourceList(publication: PublicationData): string[] {
+  return [
+    ...publication.hidden.map((source) => (source.space ? `information from ${source.space}` : `your source “${source.reference}”`)),
+    ...(publication.hiddenUnseen > 0 ? [publication.hiddenUnseen === 1 ? 'a source you can no longer open' : `${publication.hiddenUnseen} sources you can no longer open`] : []),
+    ...(publication.hiddenElsewhere ? [publication.hiddenElsewhere === 1 ? 'a source that didn’t come with the import' : `${publication.hiddenElsewhere} sources that didn’t come with the import`] : []),
+  ];
+}
+
+/** "your source “Email from Gunnar” and information from Beta", or undefined when it rests on nothing hidden. */
+function sourcesOf(publication: PublicationData): string | undefined {
+  const sources = sourceList(publication);
+  return sources.length > 1 ? `${sources.slice(0, -1).join(', ')} and ${sources.at(-1)}` : sources[0];
 }
 
 /** "Everyone in Acme will see it: 25 other people now, and anyone who joins later." */
