@@ -458,6 +458,7 @@ export function Members({ space, actions }: { space: SpaceData; actions?: Member
               // Admins change anyone in the space itself; anyone else can only leave.
               change={actions && member.member && (managing || member.you) ? actions.change : undefined}
               admin={managing}
+              menus={Boolean(actions)}
               onChanged={setStatus}
             />
           ))}
@@ -470,12 +471,14 @@ export function Members({ space, actions }: { space: SpaceData; actions?: Member
 
 type Confirming = 'make admin' | 'make member' | 'remove';
 
-function MemberRow({ space, member, change, admin, onChanged }: {
+function MemberRow({ space, member, change, admin, menus, onChanged }: {
   space: SpaceData;
   member: Member;
   change?: MemberActions['change'];
   /** Whether the reader is an admin, who can change anyone's role. */
   admin: boolean;
+  /** Whether rows have menus, so a row without one keeps its place and the labels line up. */
+  menus: boolean;
   onChanged: (status: string) => void;
 }) {
   const [confirming, setConfirming] = useState<Confirming>();
@@ -536,6 +539,7 @@ function MemberRow({ space, member, change, admin, onChanged }: {
           {!member.member && member.through && <span className="truncate text-sm text-muted-foreground">Through {member.through}</span>}
         </div>
         {member.admin && <Tag>Admin</Tag>}
+        {!change && menus && <span aria-hidden="true" className="size-9 shrink-0" />}
         {change && (
           <DropdownMenu>
             <DropdownMenuTrigger ref={trigger} aria-label={`Change ${member.you ? 'your' : `${member.name}’s`} access`} disabled={busy} className={cn('rounded-full p-2 text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}>
