@@ -429,7 +429,7 @@ function ChangesPage() {
 function SearchPage() {
   const search = new URLSearchParams(location.search);
   const query = search.get('q')?.trim() ?? '';
-  const kind = (['pages', 'sources', 'rules', 'skills', 'spaces'] as const).find((candidate) => candidate === search.get('kind')) ?? 'all';
+  const kind = (['pages', 'tasks', 'sources', 'rules', 'skills', 'spaces'] as const).find((candidate) => candidate === search.get('kind')) ?? 'all';
   const from = Math.max(0, Number.parseInt(search.get('from') ?? '0', 10) || 0);
   const { data, error } = useLoad<SearchData>(query ? `/api/search?q=${encodeURIComponent(query)}` : '');
   const go = (next: { kind?: SearchKind; from?: number }) => {

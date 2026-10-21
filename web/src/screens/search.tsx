@@ -2,7 +2,7 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { ChevronRight, Search as SearchIcon } from 'lucide-react';
 import { cn } from 'cn';
 import { OnlyYou } from '@/components/only-you';
-import { capitalize, count, focusRing, ScreenHeader } from '@/components/screen';
+import { capitalize, count, dateOf, focusRing, ScreenHeader } from '@/components/screen';
 import { plain } from '@/lib/knowledge';
 import { Link, navigate } from '@/lib/router';
 import { placeName, type SearchData, type SearchKind } from '@/lib/search';
@@ -21,8 +21,8 @@ function amount(n: number): string {
 
 /**
  * Everything you can see that matches, the same results your assistant gets: what Homing knows,
- * the rules and skills assistants follow, the sources it learned from, and spaces. Search first,
- * then narrow it to one kind, fifty at a time.
+ * what needs doing, the rules and skills assistants follow, the sources it learned from, and
+ * spaces. Search first, then narrow it to one kind, fifty at a time.
  */
 export function Search({ data, query, kind, from, onKind, onFrom }: {
   /** Undefined while the answer is on its way. */
@@ -134,6 +134,20 @@ function kinds(data: SearchData): { kind: Exclude<SearchKind, 'all'>; title: str
             page.archived && !page.superseded && 'Archived',
             page.updatesShared && 'Your update, which others don’t see yet',
           ].filter(Boolean).join('. ')}
+        />
+      )),
+    },
+    {
+      kind: 'tasks' as const,
+      title: 'Tasks',
+      count: data.tasks.length,
+      rows: data.tasks.map((task) => (
+        <Row
+          key={task.id}
+          href={task.space.id ? `/spaces/${task.space.id}/tasks` : undefined}
+          title={task.title}
+          onlyYou={task.onlyYou && !task.space.private}
+          detail={`${task.done ? 'Done, in' : 'In'} ${placeName(task.space)}${task.due && !task.done ? `, due ${dateOf(`${task.due}T12:00:00`)}` : ''}`}
         />
       )),
     },

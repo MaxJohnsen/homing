@@ -9,7 +9,7 @@ import { publicationData, requestsSent, shortAction, waitingFor } from './propos
 import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
-import { addTask, changeTask, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
+import { addTask, changeTask, searchTasks, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, SpaceRefused, spaceView, type Space } from './spaces.ts';
 import { json, readJson, readUpload, type App } from './web.ts';
 
@@ -496,10 +496,11 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
 
       case 'search': {
         const query = (new URL(req.url ?? '', 'http://homing').searchParams.get('q') ?? '').slice(0, 200).trim();
-        const { spaces, hits } = await read(async (s) => ({
+        const { spaces, hits, tasks } = await read(async (s) => ({
           spaces: await listSpaces(s),
           // The same search assistants get, as many results as a person would look through, of each kind.
           hits: query ? [...(await search(s, query, { limit: 200, only: 'content' })), ...(await search(s, query, { limit: 200, only: 'sources' }))] : [],
+          tasks: query ? await searchTasks(s, query, { limit: 200 }) : [],
         }));
         const where = placeIn(spaces);
         const words = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -536,6 +537,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           sources: hits
             .filter((hit) => hit.kind === 'source')
             .map((hit) => ({ id: hit.id, reference: hit.title, excerpt: hit.text, onlyYou: hit.private, space: where(hit.spaceId) })),
+          // Best match first, open before done, as assistants find them.
+          tasks: tasks.map((task) => ({ id: task.id, title: task.title, due: task.due, done: task.doneAt !== null, onlyYou: task.privateTo !== null, space: where(task.spaceId) })),
         });
         break;
       }

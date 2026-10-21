@@ -433,6 +433,10 @@ export const sampleSearch: SearchData = {
   rules: [{ id: 'rule-1', text: 'Never announce a launch date before the client does.', kind: 'requirement', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
   skills: [{ id: 'skill-1', name: 'launch-checklist', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
   sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'New launch date November 20, but he hasn’t told his team yet.', onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } }],
+  tasks: [
+    { id: 't5', title: 'Book the venue for the launch', due: '2026-11-03', done: false, onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+    { id: 't6', title: 'Draft the launch plan', due: null, done: true, onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+  ],
 };
 
 /** What changed lately in Ana's spaces. */

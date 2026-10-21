@@ -13,9 +13,11 @@ export interface SearchData {
   rules: { id: string; text: string; kind: 'requirement' | 'preference'; onlyYou: boolean; space: Where }[];
   skills: { id: string; name: string; onlyYou: boolean; space: Where }[];
   sources: { id: string; reference: string | null; excerpt: string; onlyYou: boolean; space: Where }[];
+  /** Due as YYYY-MM-DD. */
+  tasks: { id: string; title: string; due: string | null; done: boolean; onlyYou: boolean; space: Where }[];
 }
 
-export type SearchKind = 'all' | 'pages' | 'sources' | 'rules' | 'skills' | 'spaces';
+export type SearchKind = 'all' | 'pages' | 'tasks' | 'sources' | 'rules' | 'skills' | 'spaces';
 
 /** "Website in Acme", "your personal space", or "a space above". */
 export function placeName(where: Where): string {

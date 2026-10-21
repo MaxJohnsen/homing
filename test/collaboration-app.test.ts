@@ -264,7 +264,7 @@ test('4. Cara’s assistant proposes a shared rule, which she sends to the admin
 test('5. Each looks for the other’s private items by words only in them, in the app and through the assistant, and finds nothing, nor any sign of them', async () => {
   for (const [who, words, theirs] of [[ana, 'Tidewater interviewing', carasItem], [cara, 'Fjordkraft merger', anasItem]] as const) {
     // In the app: search, and the space's pages.
-    assert.deepEqual(await app(who, `/api/search?q=${encodeURIComponent(words)}`), { spaces: [], pages: [], rules: [], skills: [], sources: [] });
+    assert.deepEqual(await app(who, `/api/search?q=${encodeURIComponent(words)}`), { spaces: [], pages: [], rules: [], skills: [], sources: [], tasks: [] });
     const pages = await app(who, `/api/spaces/${launch}/pages?q=${encodeURIComponent(words)}`);
     assert.deepEqual([pages.pages, pages.total], [[], 0]);
 
