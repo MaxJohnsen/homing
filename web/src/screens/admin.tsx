@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { CircleCheck, Info } from 'lucide-react';
-import { Avatar, count, ScreenHeader, Section, Tag } from '@/components/screen';
+import { Avatar, count, dateOf, ScreenHeader, Section, Tag } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
@@ -19,8 +19,6 @@ export type InviteMade = { link: string; expiresAt: string; emailed: false } | {
 
 /** Makes an invite, by email if an address is given. */
 export type MakeInvite = (email?: string) => Promise<InviteMade | { problem: string }>;
-
-const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'long' });
 
 /** For whoever looks after Homing: inviting people first, then whether email works, and who uses it. */
 export function Admin({ data, invite }: { data: AdminData; invite?: MakeInvite }) {
@@ -54,7 +52,7 @@ export function Admin({ data, invite }: { data: AdminData; invite?: MakeInvite }
                   <span className="truncate">{person.name}{person.you && ' (you)'}</span>
                   {person.you && <Tag>Looks after Homing</Tag>}
                 </span>
-                <span className="truncate text-sm text-muted-foreground">{person.email}, joined {date.format(new Date(person.joinedAt))}</span>
+                <span className="truncate text-sm text-muted-foreground">{person.email}, joined {dateOf(person.joinedAt)}</span>
               </div>
             </li>
           ))}

@@ -3,7 +3,7 @@ import { Check, Copy, KeyRound } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
-import { ScreenHeader } from '@/components/screen';
+import { dateOf, ScreenHeader } from '@/components/screen';
 import empty from '@/assets/illustrations/empty.png';
 
 export interface Passkey {
@@ -82,8 +82,6 @@ export function Account({ account, notice, actions }: { account: AccountData; no
   );
 }
 
-const date = new Intl.DateTimeFormat('en-US', { dateStyle: 'long' });
-
 function Assistants({ account, actions }: { account: AccountData; actions?: AccountActions }) {
   const [disconnecting, setDisconnecting] = useState<string>();
   const [message, setMessage] = useState<string>();
@@ -118,7 +116,7 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
                 <div className="flex min-w-0 flex-1 flex-col">
                   <span className="truncate text-base font-medium">{assistant.name}</span>
                   <span className="truncate text-sm text-muted-foreground">
-                    From {siteOf(assistant.clientId)}, connected {date.format(new Date(assistant.connectedAt))}
+                    From {siteOf(assistant.clientId)}, connected {dateOf(assistant.connectedAt)}
                   </span>
                 </div>
                 {disconnecting !== assistant.clientId && (
@@ -210,7 +208,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
               <KeyRound aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
               <div className="flex min-w-0 flex-1 flex-col">
                 <span className="truncate text-base font-medium">{passkey.name ? `Passkey on ${passkey.name}` : 'Passkey'}</span>
-                <span className="text-sm text-muted-foreground">Added {date.format(new Date(passkey.createdAt))}</span>
+                <span className="text-sm text-muted-foreground">Added {dateOf(passkey.createdAt)}</span>
               </div>
               {(account.passkeys.length > 1 || account.password) && removing !== passkey.id && (
                 <Button variant="outline" size="sm" onClick={() => setRemoving(passkey.id)}>Remove</Button>
