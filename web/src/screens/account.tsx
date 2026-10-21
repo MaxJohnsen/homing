@@ -250,7 +250,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
 
       {account.canEmail && !account.emailVerified && <VerifyEmail actions={actions} />}
       {account.instanceAdmin ? (
-        <p className="pt-2 text-sm text-muted-foreground">This account manages Homing. A passkey is required.</p>
+        <p className="pt-2 text-sm text-muted-foreground">You look after Homing, so you sign in with a passkey, not a password.</p>
       ) : (
         account.passwords && <Password account={account} actions={actions} />
       )}
