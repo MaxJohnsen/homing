@@ -94,7 +94,8 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
               )}
             </div>
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
-            <p className="text-sm text-muted-foreground">
+            {/* Someone who can't be added is only declined, so there's no approving to explain. */}
+            {!(declineOnly && action === 'members') && <p className="text-sm text-muted-foreground">
               {proposal.plan
                 ? planBlocked(proposal.plan)
                   ? `A change can’t be made now, so this can’t be approved as it is. Ask ${assistant} to revise it, or decline it.`
@@ -114,7 +115,7 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
                 : request && !request.yours
                   ? `Any admin of ${place} can decide this. ${request.by ? request.by.split(' ')[0] : 'The member who asked'} can’t approve it.`
                   : `Only you can approve this. ${assistant} can’t do it for you.`}
-            </p>
+            </p>}
           </>
         ) : (
           <div className="flex flex-col gap-5" role="status">
