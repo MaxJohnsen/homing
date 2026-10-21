@@ -14,9 +14,12 @@ npm run bench -- smoke --max-spend 0.5  # one conversation per benchmark, to che
 npm run bench -- pilot --max-spend 3    # a few per benchmark, variant and model
 npm run bench -- run --max-spend 45     # everything, three runs, continuing where it stopped
 npm run bench -- report                 # the tables in results.md, from results/full.jsonl
+npm run bench -- run --phase rerun --only b1,b2 --max-spend 6   # a run of its own, after a change
+npm run bench -- report rerun           # its tables
+npm run bench -- compare full rerun     # the first run's failures beside the rerun's
 ```
 
-`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs and `--concurrency` how many conversations run at once. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
+`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs, `--concurrency` how many conversations run at once and `--phase` the name of a run whose results are kept apart, in `results/<phase>.jsonl`. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
 
 Each conversation is one line in `results/<phase>.jsonl`: the tools called with their arguments, Homing's answers (shortened), the model's answer, tokens, time and cost. A run skips what already has a result there, so a stopped run continues without paying for anything twice.
 
@@ -41,7 +44,7 @@ The key is read from its file when a call is made and only ever sent in the Auth
 | Benchmark | Variants |
 |---|---|
 | 1. MCP reliability | `mcp-only`: the tools and their descriptions. `instruction`: the same, with Homing's MCP instructions, which hold its one recommended instruction, in the system prompt. |
-| 2. Tool design | `act`: Homing's five tools. `dedicated`: each of `act`'s 11 actions is a function of its own, with `act`'s description of it and that action's own input, and the harness turns each call back into `act`. Homing's words that point to `act` point to the matching function instead. Both with the instructions. |
+| 2. Tool design | `act`: Homing's five tools. `dedicated`: each of `act`'s actions is a function of its own (11 on 20 October, 13 on 21 October), with `act`'s description of it and that action's own input, and the harness turns each call back into `act`. Homing's words that point to `act` point to the matching function instead. Both with the instructions. |
 | 3. Context size | `core`: `context` without what's relevant to the request. `relevant`: `context` as Homing gives it, the core plus up to 10 matching items, one line each. `full`: that, plus the pages those items are on, in full, up to five. All with the instructions. |
 
 **Checks** (`benchmarks.ts`) are deterministic, and no model judges another. A question counts as answered when the model asked Homing and its answer has the expected facts, matched by patterns such as "1 March" written any of the usual ways. A change counts as done when Homing's database shows it afterwards: the item saved in the right space, the task due on Friday, the proposal with the right rule, item or person. Benchmark 2 also records whether the first write was the expected tool and action, and whether Homing accepted it the first time. Benchmark 1 has two control questions Homing has nothing to do with, to see whether the instruction makes a model call it anyway.
@@ -50,7 +53,7 @@ The key is read from its file when a call is made and only ever sent in the Auth
 
 **Caching and strict mode.** The system prompt and the newest message are marked for Anthropic's prompt cache; OpenAI cached long prompts on its own, as the cached-token counts show. Functions are sent with `strict: false`. Sent through OpenRouter without a `strict` field, GPT-6.1 Sol called them as if they were strict: it filled every optional field, and always sent `context` a made-up `space`, such as `" "` or `"personal"`, which Homing refuses. With `strict: false` it left them out. That is what we saw, in 7 conversations and 10 single calls (see [results.md](results.md)); whether to send `strict` is each client's choice.
 
-**Changed along the way.** Smoke runs of 30 conversations in all came before the pilot, and three things changed after them. Functions got `strict: false`, as above. A reminder saved in the personal space now counts as done: Claude Haiku 5.5 saved one there in the first smoke run, and a reminder works from there. And the task share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team, and `search` can't find tasks: both GPT conversations asked which space and didn't share it, and Claude searched space after space, once only after the "go ahead". The first wording is kept as share-task-vague, which isn't in the results of 20 October and runs from the next run on. After the full run, the patterns for a few facts were made stricter for the next run; scoring the stored answers again with them changes 4 fact counts, where the old pattern took "follow up by email" for "Gunnar prefers email", and no result.
+**Changed along the way.** Smoke runs of 30 conversations in all came before the pilot, and three things changed after them. Functions got `strict: false`, as above. A reminder saved in the personal space now counts as done: Claude Haiku 5.5 saved one there in the first smoke run, and a reminder works from there. And the task share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team, and `search` can't find tasks: both GPT conversations asked which space and didn't share it, and Claude searched space after space, once only after the "go ahead". The first wording is kept as share-task-vague, which isn't in the results of 20 October and runs from the rerun of 21 October on. After the full run, the patterns for a few facts were made stricter for the next run; scoring the stored answers again with them changes 4 fact counts, where the old pattern took "follow up by email" for "Gunnar prefers email", and no result. For the rerun, archive-page also counts as done when archiving the page waits for Ana's approval: since #90, a page in a space others can open is archived once the user approves, even one only they see.
 
 ## Prompts
 
@@ -95,7 +98,7 @@ The key is read from its file when a call is made and only ever sent in the Auth
 | create-space | `act` space.create | Create a space for our new client Polar Freight under Acme, for the whole team. |
 | archive-space | `act` space.archive | The kitchen renovation is finished. Archive that space. |
 | share-task | `act` task.share | Share my task about sending Gunnar the revised timeline with everyone in the website relaunch. |
-| share-task-vague | `act` task.share | Share my task about the revised timeline with the rest of the team. Not in the results of 20 October. |
+| share-task-vague | `act` task.share | Share my task about the revised timeline with the rest of the team. From the rerun of 21 October on. |
 | withdraw | `act` proposal.withdraw | Withdraw the rule I proposed about sending status reports on Fridays. |
 | archive-page | `act` page.archive | Archive my old CMS notes page, that system is gone. |
 | rename | `act` space.rename | Rename my Running space to Marathon 2027. |

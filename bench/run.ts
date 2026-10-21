@@ -5,6 +5,7 @@
 //   npm run bench -- pilot --max-spend 3       a handful of conversations per benchmark and model
 //   npm run bench -- run --max-spend 45        the full set, resuming where it stopped
 //   npm run bench -- report                    tables from the results
+//   npm run bench -- compare full rerun        the first run's failures beside another run's
 //
 // Every call passes the spending guard in budget.ts. The total, across every run and checkout, is
 // in ~/.config/homing/bench-spend.json, and only one run at a time may use it. CI never runs this.
@@ -16,7 +17,7 @@ import { answerOf, benchmarks, factsIn, Look, readTools, writesOf, type Benchmar
 import { hardCap, Ledger, ledgerPath, OverBudget, usd } from './budget.ts';
 import { makeWorld, startHoming, type AssistantKind, type Bench } from './homing.ts';
 import { fileKey, keyUsage, listedModels, Model, redact } from './openrouter.ts';
-import { report } from './report.ts';
+import { compare, report } from './report.ts';
 
 const here = new URL('./', import.meta.url);
 export const resultsFile = (phase: string) => new URL(`results/${phase}.jsonl`, here).pathname;
@@ -32,6 +33,7 @@ const { positionals, values } = parseArgs({
     only: { type: 'string' },
     models: { type: 'string', default: defaultModels.join(',') },
     concurrency: { type: 'string', default: '4' },
+    phase: { type: 'string' },
   },
 });
 const command = positionals[0];
@@ -182,8 +184,12 @@ async function main() {
     process.stdout.write(report(readResults(positionals[1] ?? 'full')));
     return;
   }
+  if (command === 'compare') {
+    process.stdout.write(compare(readResults(positionals[1] ?? 'full'), readResults(positionals[2] ?? 'rerun')));
+    return;
+  }
   if (command !== 'show' && command !== 'smoke' && command !== 'pilot' && command !== 'run') {
-    console.error('Say what to do: npm run bench -- show, smoke, pilot, run or report');
+    console.error('Say what to do: npm run bench -- show, smoke, pilot, run, report or compare');
     process.exit(1);
   }
   if (!(Number.isInteger(runs) && runs >= 1 && Number.isInteger(concurrency) && concurrency >= 1)) {
@@ -203,7 +209,9 @@ async function benchmark(ledger: Ledger, command: string) {
   const bench = await startHoming();
   try {
     if (command === 'show') return await show(bench);
-    const phase = command === 'run' ? 'full' : command;
+    // A run of its own, such as a rerun after a change, keeps its results apart: --phase rerun.
+    const phase = values.phase ?? (command === 'run' ? 'full' : command);
+    if (!/^[a-z0-9-]+$/.test(phase)) throw new Error('--phase takes a name of lowercase letters, digits and dashes.');
     const listed = await listedModels();
     const models = values.models!.split(',').map((id) => {
       const model = listed.find((candidate) => candidate.id === id);
@@ -221,7 +229,7 @@ async function benchmark(ledger: Ledger, command: string) {
     );
     const failedBefore = new Map<string, number>();
     for (const result of readResults(phase).filter((result) => result.error)) failedBefore.set(result.key, (failedBefore.get(result.key) ?? 0) + 1);
-    const picked = pickedTasks[phase];
+    const picked = pickedTasks[command];
     const jobs: Job[] = [];
     // Run by run, so that stopping early still leaves every task, variant and model covered.
     for (let run = 1; run <= (picked ? 1 : runs); run++) {
