@@ -26,7 +26,7 @@ The guarantees hold for everything that goes through Homing. Whoever can reach t
 Two release tests make guarantees 2 and 10 concrete:
 
 - **Leak test.** Two people in different client spaces, each with shared and private knowledge, try to read and write across clients through every storage path. The test runs through Homing and directly against the database with Homing's filters bypassed, so the database is shown to refuse on its own.
-- **Round trip.** A space is exported, imported and exported again, and the two exports must say the same: its knowledge, who sees what, how things hang together, sources, history, rules, skills and tasks, and who did what. Only IDs and what records the import may differ.
+- **Round trip.** A space is exported, imported and exported again, and the two exports must say the same: its knowledge, who sees what, how things hang together, sources, history, rules, skills and tasks, and who did what. Only IDs, what records the import, and includes of guidance outside the export, which can't come back, may differ.
 
 ## 1. Spaces and access
 
@@ -174,7 +174,6 @@ Upkeep runs when new evidence arrives, and in a periodic tidy pass per space tha
 **Export.** Anyone who can open a space can export it. The export holds everything they see there and in the spaces below it they can open: the shared side, and their own private side, marked as theirs, never anyone else's. That is its pages with their types, the items on them with their sources' permitted excerpts and history, including superseded items and archived pages, the links between pages, collections, the overview, rules, skills with their files, what each space's guidance includes, and tasks. Sources kept in other spaces, such as another client's, stay there, and what rests on them says so. A space below that the person can't open leaves no trace, not even its name. Items, tasks and spaces keep their dates, but what someone did with a page while it was theirs alone, such as archiving it, stays theirs. Credentials and live external records are never exported. An assistant gives the person the link to download it.
 
 - Includes come as the person sees them: those for everyone, and their own, marked as waiting where the space includes the same for everyone, never anyone else's, and never one of something they can't open, which leaves no trace. One of something in the export points to it there. One of something outside it says what it brought in, by name, so it's clear that guidance came from elsewhere.
-
 - The bundle is readable as it is: the knowledge as Markdown in the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format), and the rules and skills beside it as AGENTS.md and SKILL.md folders.
 - Everything keeps its stable ID and who did it: a person by name, told apart from others with the same name, an agent acting for them, or a space's routine. A manifest holds what importing it again needs, and importing it into a new space brings the space back intact (guarantee 10).
 

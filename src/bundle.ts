@@ -321,11 +321,15 @@ function problemInIncludes(m: Manifest, spaces: Map<string, Manifest['spaces'][n
     stack.push([space, true], ...(below.get(space) ?? []).map((child): [string, boolean] => [child, false]));
   }
   const appliesIn = (from: string, space: string) => enter.get(from)! <= enter.get(space)! && leave.get(space)! <= leave.get(from)!;
+  // Someone's own include waits exactly while the space includes the same for everyone.
+  const target = (include: Manifest['includes'][number]) => include.rules ?? include.skill ?? `elsewhere ${JSON.stringify(include.elsewhere)}`;
+  const forEveryone = new Set(m.includes.filter((include) => include.visibility === 'shared').map((include) => `${include.space} ${target(include)}`));
   const there = new Set<string>();
   for (const include of m.includes) {
     if (!spaces.has(include.space)) return `include ${include.id} is in a space that isn’t in the export`;
     if ([include.rules, include.skill, include.elsewhere].filter((target) => target !== null).length !== 1) return `include ${include.id} doesn’t include one thing`;
     if (include.waiting && include.visibility !== 'private') return `include ${include.id} for everyone can’t wait`;
+    if (include.visibility === 'private' && include.waiting !== forEveryone.has(`${include.space} ${target(include)}`)) return `include ${include.id} says it waits when it doesn’t, or the other way round`;
     if (include.elsewhere !== null) continue;
     let from: string;
     if (include.rules !== null) {
@@ -572,6 +576,9 @@ export function payloadOf(m: Manifest, name: string): string {
     by: author.by, person: author.person, name: author.person === null ? null : (names.get(author.person) ?? null), agent: author.agent === null ? null : plainName(author.agent) || 'Assistant',
   });
   const place = new Map(m.items.map((item, at) => [item.id, at]));
+  // Only what's in the export comes back: an include of something outside it can't.
+  const inside = m.includes.filter((include) => include.elsewhere === null);
+  const includeTimes = inOrder(inside.map((include) => include.addedAt));
   // Each list is written out in turn, so besides the export itself only one is ever held whole.
   const lists: [string, () => unknown][] = [
     ['from', () => ({ instance: m.instance, exportedBy: plainName(m.exportedBy.name), exportedAt: m.exportedAt, space: m.space })],
@@ -618,9 +625,8 @@ export function payloadOf(m: Manifest, name: string): string {
         ...(task.assignee && { assignee: person(task.assignee) }), ...(task.done?.by && { doneBy: person(task.done.by) }),
       },
     }))],
-    // Only what's in the export comes back: an include of something outside it can't.
-    ['includes', () => m.includes.filter((include) => include.elsewhere === null).map((include) => ({
-      space: to(include.space), private: include.visibility === 'private', rules: maybe(include.rules), skill: maybe(include.skill), addedAt: include.addedAt,
+    ['includes', () => inside.map((include, at) => ({
+      space: to(include.space), private: include.visibility === 'private', rules: maybe(include.rules), skill: maybe(include.skill), addedAt: includeTimes[at],
       imported: { id: include.id, author: by(include.author) },
     }))],
   ];

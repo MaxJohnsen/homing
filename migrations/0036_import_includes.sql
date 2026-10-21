@@ -7,7 +7,8 @@
 alter table includes
   add column imported jsonb,
   -- Who added it here, or nobody, for one that came in an import, which says who did there.
-  alter column added_by drop not null;
+  alter column added_by drop not null,
+  add constraint includes_added check (added_by is not null or imported is not null);
 
 -- As before, and an include that comes in an import, which only import_bundle
 -- writes, keeps who added it and when as the import says, crediting nobody here.

@@ -431,6 +431,16 @@ test('an export is held to what Homing keeps, and to rules that hide nothing', a
     ['a skill name Homing doesn’t take', (m) => { item(m, 'status-report').body = 'Status Report'; }, /name Homing doesn’t take/],
     ['a skill named otherwise in its SKILL.md', (m) => { item(m, 'status-report').body = 'weekly-report'; }, /named differently in its SKILL\.md/],
     ['a skill’s file too large', (m) => { file(m, 'references/tone.md').body = 'x'.repeat(512 * 1024 + 1); }, /longer than Homing keeps/],
+    ['an include of the rules of the space above', (m) => { const include = m.includes.find((entry) => entry.rules && entry.visibility === 'shared')!; include.rules = m.spaces.find((space) => space.id === include.space)!.parent; }, /applies there already/],
+    ['an include for everyone of rules only the exporter has', (m) => {
+      const include = m.includes.find((entry) => entry.rules && entry.visibility === 'private' && !entry.waiting)!;
+      include.visibility = 'shared';
+      m.spaces.find((space) => space.id === include.rules)!.private = true;
+    }, /only the exporter has/],
+    ['an include for everyone of a skill only the exporter has', (m) => { for (const title of m.items.filter((entry) => entry.body === 'launch-checklist')) title.visibility = 'private'; }, /only the exporter has/],
+    ['an include for everyone that waits', (m) => { m.includes.find((entry) => entry.visibility === 'shared' && entry.rules)!.waiting = true; }, /can’t wait/],
+    ['an include of one’s own that waits when nothing is included for everyone', (m) => { m.includes.find((entry) => entry.visibility === 'private' && !entry.waiting)!.waiting = true; }, /waits when it doesn’t/],
+    ['an include of one’s own that doesn’t wait though the same is included for everyone', (m) => { m.includes.find((entry) => entry.waiting)!.waiting = false; }, /or the other way round/],
     ['an include of its own space’s rules', (m) => { const include = m.includes.find((entry) => entry.rules)!; include.rules = include.space; }, /applies there already/],
     ['an include of rules not in the export', (m) => { m.includes.find((entry) => entry.rules)!.rules = crypto.randomUUID(); }, /rules that aren’t in the export/],
     ['an include there twice', (m) => { m.includes.push({ ...m.includes.find((entry) => entry.rules)!, id: crypto.randomUUID() }); }, /is there twice/],
