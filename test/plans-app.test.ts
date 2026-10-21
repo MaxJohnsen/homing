@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { addRule } from '../src/guidance.ts';
+import { addInclude, addRule } from '../src/guidance.ts';
 import { proposePlan } from '../src/proposals.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, changeMember, createSpace } from '../src/spaces.ts';
@@ -112,7 +112,7 @@ test('the kitchen story: a new space, what goes in it, Jonas and a rule, approve
   assert.deepEqual(shown.plan.steps[0].publication.hidden, [{ space: null, reference: 'Email from Byggmester AS, 3 October' }], 'what it rests on stays Ana’s, and the card says so');
   assert.deepEqual([shown.plan.steps[3].member.name, shown.plan.steps[3].member.found], ['Jonas', true]);
   assert.deepEqual(shown.plan.audience, { people: 1, above: false, adding: ['Jonas'] });
-  assert.deepEqual(shown.plan.sees, { pages: 2, archived: 0, tasks: 1, rules: 1, spaces: 0 });
+  assert.deepEqual(shown.plan.sees, { pages: 2, archived: 0, tasks: 1, rules: 1, included: [], elsewhere: false, spaces: 0 });
   assert.equal(shown.plan.why, 'Jonas is helping with the kitchen.');
 
   // Ana approves it once, on the card, and every change is made.
@@ -150,7 +150,7 @@ test('a plan creates a space everyone in a shared space would see, with its rule
   // Cara is in Home, so she has Kitchen already, through it: only Jonas is new to it.
   assert.deepEqual(shown.plan.steps.slice(1).map((step: any) => [step.member.name, step.member.through]), [['Jonas', null], ['Cara', 'Home']]);
   assert.deepEqual(shown.plan.audience.adding, ['Jonas']);
-  assert.deepEqual(shown.plan.sees, { pages: 0, archived: 0, tasks: 0, rules: 1, spaces: 0 });
+  assert.deepEqual(shown.plan.sees, { pages: 0, archived: 0, tasks: 0, rules: 1, included: [], elsewhere: false, spaces: 0 });
 
   const decided = await decide(ana, id, shown.plan.shown);
   assert.equal(decided.status, 200, JSON.stringify(decided.body));
@@ -416,4 +416,43 @@ test('a plan’s changes take spaces, rules and limits as their own actions do, 
   assert.ok(!proposed.failed, proposed.text);
   const found = (await claude.call('search', { query: 'windows' })).text;
   assert.match(found, new RegExp(`- Waiting for the user: A plan of 2 changes, decided together: add Cara; add a preference \\(shared\\): "Close the windows when you leave\\." \\(proposal:${proposalOf(proposed.text)}, in Kitchen\\)`));
+});
+
+test('what someone added will see counts the rules included there, and never looks up what they can open elsewhere', async () => {
+  // The audit's case: Acme has 2 rules of its own and includes Club's rule, which Jonas can open, so
+  // he sees 3 rules where a count of Acme's own would say 2. Cara also has Acme include her Workshop's
+  // rules, which neither Ana nor Jonas can open.
+  const { ana, cara, jonas, club, plan } = await people();
+  const acme = await as({ ...ana, direct: true }, async (s) => {
+    const acme = await createSpace(s, { name: 'Acme' });
+    await addMember(s, acme, cara.id, 'admin');
+    await addRule(s, { spaceId: acme, kind: 'requirement', body: 'Never send prices by email.', shared: true });
+    await addRule(s, { spaceId: club, kind: 'preference', body: 'Read the chapter before the meeting.', shared: true });
+    await addInclude(s, { spaceId: acme, included: { space: club }, shared: true });
+    return acme;
+  });
+  await as({ ...cara, direct: true }, async (s) => {
+    const workshop = await createSpace(s, { name: 'Workshop' });
+    await addRule(s, { spaceId: workshop, kind: 'preference', body: 'Sweep up before you leave.', shared: true });
+    await addInclude(s, { spaceId: acme, included: { space: workshop }, shared: true });
+  });
+  const proposed = await plan({
+    space: `space:${acme}`,
+    changes: [
+      { action: 'members.change', input: { person: 'Jonas', change: 'add' } },
+      { action: 'guidance.propose', input: { change: 'add', kind: 'preference', text: 'Answer clients within a day.', shared: true } },
+    ],
+  });
+  const id = proposalOf(proposed.text);
+  const shown = await shownOf(ana, id);
+  // Club's rule, which Ana sees, is counted where it's set; Workshop's only says there's more Jonas may see.
+  assert.deepEqual(shown.plan.sees, { pages: 0, archived: 0, tasks: 0, rules: 2, included: [{ from: 'Book club', rules: 1 }], elsewhere: true, spaces: 0 });
+  assert.doesNotMatch(JSON.stringify(shown), /Workshop|Sweep up/, 'nothing of what Ana can’t open');
+
+  assert.equal((await decide(ana, id, shown.plan.shown)).status, 200);
+  const rules = (await jonas.browser.json(`/api/spaces/${acme}/rules`)).body.rules as { text: string; shared: boolean; includedIn: unknown }[];
+  const seen = rules.filter((rule) => rule.shared);
+  assert.deepEqual(seen.map((rule) => rule.text).sort(), ['Answer clients within a day.', 'Never send prices by email.', 'Read the chapter before the meeting.']);
+  assert.equal(seen.filter((rule) => !rule.includedIn).length, shown.plan.sees.rules, 'its own, as the card said');
+  assert.equal(seen.filter((rule) => rule.includedIn).length, shown.plan.sees.included[0].rules, 'and the included one, as the card said');
 });

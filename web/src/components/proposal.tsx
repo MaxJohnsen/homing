@@ -244,12 +244,15 @@ function memberSees(member: NonNullable<PlanStepData['member']>, place: string, 
         sees.pages ? `${plural(sees.pages, 'shared page')}${sees.archived ? ` (and ${sees.archived} archived)` : ''}` : '',
         sees.tasks ? plural(sees.tasks, 'shared task') : '',
         sees.rules ? plural(sees.rules, 'rule') : '',
+        ...(sees.included ?? []).map((included) => `${plural(included.rules, 'rule')} included from ${included.from}`),
         sees.spaces ? `the ${sees.spaces === 1 ? 'space' : `${sees.spaces} spaces`} in it that ${sees.spaces === 1 ? 'isn’t' : 'aren’t'} closed` : '',
       ].filter(Boolean)
     : [];
   if (!sees) return `${who} will see ${place}’s shared knowledge and rules, including what was shared before they joined.${admin}`;
   const listed = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0];
-  return `${who} will see ${place}’s name${listed ? `, ${listed.startsWith('the ') ? '' : 'its '}${listed},` : ''} and what’s shared there later.${admin}`;
+  // What's included from spaces you can't open reaches them only if they can open those, which you can't know.
+  const elsewhere = sees.elsewhere ? ' plus rules included from other spaces, if they can open them,' : '';
+  return `${who} will see ${place}’s name${listed ? `, ${listed.startsWith('the ') ? '' : 'its '}${listed},` : ''}${elsewhere} and what’s shared there later.${admin}`;
 }
 
 /** "Everyone in Kitchen will see what’s shared: only you now, Jonas Berg from when you approve, and anyone who joins later." */
