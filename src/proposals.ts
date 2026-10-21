@@ -1,7 +1,7 @@
 import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
-import { archivePage, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
+import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
 import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
@@ -577,8 +577,8 @@ async function pageNow(s: Session, proposal: Pick<Proposal, 'id' | 'pageId'>): P
   // When it was last archived or reopened, so approving runs on the page as it was shown, and a
   // proposal it changed under no longer stands.
   const [{ at, since }] = await s.tx<{ at: Date | null; since: boolean }[]>`
-    select max(at) as at, coalesce(max(at) > (select created_at from proposals where id = ${proposal.id}::uuid), false) as since
-    from page_archives where page_id = ${proposal.pageId}::uuid
+    select max(l.at) as at, coalesce(max(l.at) > (select created_at from proposals where id = ${proposal.id}::uuid), false) as since
+    from page_archives l where l.page_id = ${proposal.pageId}::uuid and ${archivesSeen(s, 'l')}
   `;
   return {
     title: page.title,
@@ -949,7 +949,7 @@ async function seenThere(s: Session, at: { where: string | null; parent: string 
   if (at.where) {
     [now] = await s.tx<{ pages: number; archived: number; tasks: number }[]>`
       with shared_pages as (
-        select p.archived_at from pages p
+        select p.archived from pages p
         where p.space_id = ${at.where}::uuid and coalesce(p.type, '') not in ('guidance', 'skill', 'overview')
           and exists (
             select from content c
@@ -957,8 +957,8 @@ async function seenThere(s: Session, at: { where: string | null; parent: string 
               and not exists (select from content r where r.supersedes = c.id and r.private_to is null)
           )
       )
-      select (select count(*) from shared_pages where archived_at is null)::int as pages,
-             (select count(*) from shared_pages where archived_at is not null)::int as archived,
+      select (select count(*) from shared_pages where not archived)::int as pages,
+             (select count(*) from shared_pages where archived)::int as archived,
              (select count(*) from tasks t where t.space_id = ${at.where}::uuid and t.private_to is null and t.done_at is null)::int as tasks
     `;
     rules = await rulesFor(s, at.where);
@@ -1501,9 +1501,9 @@ function spaceOpen(s: Session, table: string) {
 function pageStands(s: Session, table: string) {
   const p = s.tx(table);
   return s.tx`(${p}.page_id is null or exists (
-    select from pages pg where pg.id = ${p}.page_id and (pg.archived_at is null) = (${p}.action = 'archive page')
+    select from pages pg where pg.id = ${p}.page_id and (not pg.archived) = (${p}.action = 'archive page')
       and exists (select from content c where c.page_id = pg.id and ${visible(s, 'c')})
-      and not exists (select from page_archives l where l.page_id = pg.id and l.at > ${p}.created_at)
+      and not exists (select from page_archives l where l.page_id = pg.id and l.at > ${p}.created_at and ${archivesSeen(s, 'l')})
   ))`;
 }
 

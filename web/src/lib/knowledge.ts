@@ -73,8 +73,8 @@ export interface PageData {
   collections: { id: string; title: string; shared: boolean }[];
   /** The pages whose items link to it. */
   mentionedOn: { id: string; title: string }[];
-  /** When it was archived and by whom, if it is. */
-  archived?: { at: string; by: Author } | null;
+  /** When it was archived and by whom, if it is. Archived by someone else before you could see the page, since then, by nobody named. */
+  archived?: { at: string; by: Author; since: boolean } | null;
   /** Where it is, and how many people see what's shared there now. */
   space: { id: string; name: string; personal: boolean; private: boolean; people: number; above: boolean };
   items: ItemData[];

@@ -9,7 +9,8 @@
 // row-level security off, and straight against the database with Homing's
 // filters bypassed. So each layer is shown to refuse on its own. Then two
 // people signed in to the app try the same through its endpoints, and a
-// colleague in the same space looks for what's private to someone else.
+// colleague in the same space looks for what's private to someone else,
+// including what someone did with a page while it was theirs alone.
 
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
@@ -19,10 +20,12 @@ import { exportSpace, manifestOf } from '../src/export.ts';
 import { addInclude, addRule, editRule, IncludeRefused, includesIn, removeRule, rulesFor } from '../src/guidance.ts';
 import {
   addSource,
+  archivePage,
   createPage,
   gather,
   listPages,
   pagesIn,
+  publishItem,
   readItem,
   readPage,
   search,
@@ -36,10 +39,11 @@ import {
   type Item,
   type Source,
 } from '../src/knowledge.ts';
-import { decide, openProposals, proposalData, proposeInclude, proposeRule, readProposal, searchProposals, Undecidable, type PlanStep, type Proposal } from '../src/proposals.ts';
+import { decide, openProposals, proposalData, proposeInclude, proposePageArchive, proposeRule, readProposal, searchProposals, Undecidable, type PlanStep, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor } from '../src/skills.ts';
 import { addTask, readTask, searchTasks } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
+import { makeCollaborative } from '../src/share-space.ts';
 import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { admin, as, authDb, db, member, person, refused, type Member, type Person } from './helpers.ts';
@@ -545,7 +549,7 @@ describe('straight against the database', () => {
       select relname from pg_class
       where relkind = 'r'
         and relnamespace = 'public'::regnamespace
-        and has_table_privilege(current_user, oid, 'select')
+        and has_any_column_privilege(current_user, oid, 'select')
         and not relrowsecurity
     `;
     assert.deepEqual(unprotected.map((row) => row.relname), []);
@@ -954,6 +958,117 @@ describe('through an include', () => {
     assert.equal((await as({ person: ben.id, direct: true }, (s) => s.tx`update includes set removed_at = now() where space_id = ${lounge} returning id`)).length, 0);
     await assert.rejects(as(ben, (s) => s.tx`delete from includes where space_id = ${lounge}`), refused);
     assert.equal((await admin`select count(*)::int as count from includes where space_id = ${lounge} and removed_at is null`)[0].count, 2);
+  });
+});
+
+describe('through a page archived while it was someone’s own', () => {
+  let homing: Homing;
+  let ana: Member, cara: Member;
+  // Cara's notes in Acme, which she archived while only she had them, and Ana's old supplier in her
+  // kitchen, which her assistant archived while only she could open it. Each shared it later.
+  type Archived = { space: string; page: string; archived: Date; shared: Date };
+  let notes: Archived, supplier: Archived;
+  const times = async (space: string, page: string): Promise<Archived> => {
+    const [{ archivedAt }] = await admin`select archived_at from pages where id = ${page}`;
+    const [{ shared }] = await admin`select min(published_at) as shared from content where page_id = ${page} and private_to is null`;
+    return { space, page, archived: archivedAt, shared };
+  };
+
+  before(async () => {
+    homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
+    [ana, cara] = [await member(homing.url, 'Ana'), await member(homing.url, 'Cara')];
+    const acme = await as({ ...ana, direct: true }, async (s) => {
+      const acme = await createSpace(s, { name: 'Acme' });
+      await addMember(s, acme, cara.id);
+      return acme;
+    });
+    const mine = await as({ ...cara, direct: true }, async (s) => {
+      const page = await createPage(s, { spaceId: acme, title: 'Reorg notes' });
+      const item = await writeItem(s, { pageId: page, body: 'The reorg moves Ops to Bergen' });
+      await archivePage(s, page, true);
+      return { page, item };
+    });
+    const kitchen = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Kitchen', parentId: ana.personalSpaceId }));
+    const old = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+      const page = await createPage(s, { spaceId: kitchen, title: 'Old supplier' });
+      const item = await writeItem(s, { pageId: page, body: 'We stopped buying from Fjordfisk' });
+      await archivePage(s, page, true);
+      return { page, item };
+    });
+    // Later, Cara shares her notes, and Ana shares her kitchen with Cara, and then what's on the page.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await as({ ...cara, direct: true }, (s) => publishItem(s, mine.item.id, 'The reorg moves Ops to Bergen'));
+    await as({ ...ana, direct: true }, async (s) => {
+      await makeCollaborative(s, kitchen, { rules: 'keep' });
+      await addMember(s, kitchen, cara.id);
+      await publishItem(s, old.item.id, 'We stopped buying from Fjordfisk');
+    });
+    [notes, supplier] = [await times(acme, mine.page), await times(kitchen, old.page)];
+  });
+
+  after(() => homing.close());
+
+  test('the other sees it archived since she could see it, by nobody, and the one who archived it sees her own, through Homing', async () => {
+    const reopening = await as({ person: ana.id, agent: 'Claude' }, (s) => proposePageArchive(s, { pageId: notes.page, reopen: true, asked: true }));
+    for (const sql of [db, admin]) {
+      for (const [reader, page] of [[ana, notes], [cara, supplier]] as const) {
+        assert.deepEqual((await as(reader, (s) => readPage(s, page.page), sql))!.archived, { at: page.shared, by: null, since: true });
+        // Her export says the same.
+        const exported = (await as(reader, (s) => manifestOf(s, page.space, homing.url), sql))!;
+        assert.deepEqual(exported.pages.find((candidate) => candidate.id === page.page)!.archived, { at: page.shared.toISOString(), by: null });
+        assert.deepEqual(exported.pageArchives, []);
+      }
+      assert.deepEqual((await as(cara, (s) => readPage(s, notes.page), sql))!.archived, { at: notes.archived, by: cara.id, since: false });
+      assert.deepEqual((await as(ana, (s) => readPage(s, supplier.page), sql))!.archived, { at: supplier.archived, by: ana.id, since: false });
+      // Nor does a proposal to reopen it say when.
+      assert.equal((await as(ana, (s) => readProposal(s, reopening.id), sql))!.page!.shown, 'Reorg notes\n');
+    }
+  });
+
+  test('nor through the app or her assistant', async () => {
+    const page = async (who: Member, id: string) => (await who.browser.json(`/api/pages/${id}`)).body.archived;
+    assert.deepEqual(await page(ana, notes.page), { at: notes.shared.toISOString(), by: null, since: true });
+    assert.deepEqual(await page(cara, supplier.page), { at: supplier.shared.toISOString(), by: null, since: true });
+    assert.deepEqual(await page(cara, notes.page), { at: notes.archived.toISOString(), by: { name: 'Cara', you: true }, since: false });
+    assert.deepEqual(await page(ana, supplier.page), { at: supplier.archived.toISOString(), by: { name: 'Ana', you: true }, since: false });
+
+    const [anas, caras] = await Promise.all([ana, cara].map(async (who) => {
+      const assistant = new Assistant(homing.url, assistants.claude);
+      await assistant.connect(who.browser);
+      return assistant.open();
+    }));
+    const read = async (chat: typeof anas, id: string) => (await chat.call('read', { ref: `page:${id}` })).text;
+    assert.match(await read(anas, notes.page), /^Archived since .+: no longer active/m);
+    assert.match(await read(caras, supplier.page), /^Archived since .+: no longer active/m);
+    assert.match(await read(caras, notes.page), /^Archived on .+: no longer active/m);
+    assert.match(await read(anas, supplier.page), /^Archived on .+: no longer active/m);
+  });
+
+  test('nor straight against the database, with or without an assistant', async () => {
+    for (const [reader, page, other] of [[ana, notes, cara], [cara, supplier, ana]] as const) {
+      for (const principal of [{ person: reader.id }, { person: reader.id, agent: 'Claude' }]) {
+        await as(principal, async (s) => {
+          assert.deepEqual([...(await s.tx`select person_id, agent, at from page_archives where page_id = ${page.page}::uuid`)], []);
+          assert.deepEqual([...(await s.tx`select archived from pages where id = ${page.page}::uuid`)], [{ archived: true }]);
+          assert.deepEqual([...(await s.tx`select * from page_archived(${page.page}::uuid)`)], [{ at: page.shared, archivedBy: null, since: true }]);
+        });
+        for (const column of ['archived_at', 'archived_by', 'created_at', '*']) {
+          await assert.rejects(as(principal, (s) => s.tx`select ${s.tx.unsafe(column)} from pages where id = ${page.page}::uuid`), refused, column);
+        }
+      }
+      // The one who archived it still sees her own, through her assistant too.
+      for (const principal of [{ person: other.id }, { person: other.id, agent: 'Claude' }]) {
+        const own = await as(principal, (s) => s.tx`select archived, person_id, agent from page_archives where page_id = ${page.page}::uuid`);
+        assert.deepEqual(own.map((row) => [row.archived, row.personId, row.agent]), [[true, other.id, page === supplier ? 'Claude' : null]]);
+      }
+    }
+
+    // From when Ana could see Cara's notes, what happens to them is hers to see too.
+    await as({ ...ana, direct: true }, (s) => archivePage(s, notes.page, false));
+    const seen = async (who: Member) =>
+      (await as(who, (s) => s.tx`select archived, person_id from page_archives where page_id = ${notes.page}::uuid order by at`)).map((row) => [row.archived, row.personId]);
+    assert.deepEqual(await seen(ana), [[false, ana.id]]);
+    assert.deepEqual(await seen(cara), [[true, cara.id], [false, ana.id]]);
   });
 });
 
