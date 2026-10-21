@@ -133,7 +133,7 @@ export function ShareSpaceFields({ name, conversion, choice, onChange, disabled,
 function LeavingRules({ title, rules }: { title: string; rules: ConversionData['rulesLeaving'] }) {
   return (
     <>
-      <p className="text-base font-medium">{title}</p>
+      <p className="text-base font-semibold">{title}</p>
       <ul className="flex flex-col gap-2">
         {rules.map((rule, index) => (
           <li key={index}>

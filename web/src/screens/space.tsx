@@ -110,7 +110,7 @@ function Where({ space }: { space: SpaceData }) {
       {[...space.path].reverse().map((above, index) => (
         <Fragment key={above.id}>
           {index > 0 && ', in '}
-          <Link href={`/spaces/${above.id}`} className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+          <Link href={`/spaces/${above.id}`} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
             {above.name}
           </Link>
         </Fragment>

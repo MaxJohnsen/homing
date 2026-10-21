@@ -106,7 +106,7 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
       {account.assistants.length === 0 ? (
         <div className="flex flex-col items-center gap-2 rounded-lg bg-muted px-4 pt-2 pb-5 text-center">
           <img src={empty} alt="" width={960} height={640} className="w-48" />
-          <p className="text-base font-medium">No assistants yet</p>
+          <p className="text-base font-semibold">No assistants yet</p>
         </div>
       ) : (
         <ul className="flex flex-col gap-2">
@@ -114,7 +114,7 @@ function Assistants({ account, actions }: { account: AccountData; actions?: Acco
             <li key={assistant.clientId} className="flex flex-col gap-3 rounded-xl bg-muted px-4 py-3">
               <div className="flex items-center gap-3">
                 <div className="flex min-w-0 flex-1 flex-col">
-                  <span className="truncate text-base font-medium">{assistant.name}</span>
+                  <span className="truncate text-base font-semibold">{assistant.name}</span>
                   <span className="truncate text-sm text-muted-foreground">
                     From {siteOf(assistant.clientId)}, connected {dateOf(assistant.connectedAt)}
                   </span>
@@ -207,7 +207,7 @@ function SignInMethods({ account, actions, restoring }: { account: AccountData; 
             <div className="flex items-center gap-3">
               <KeyRound aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
               <div className="flex min-w-0 flex-1 flex-col">
-                <span className="truncate text-base font-medium">{passkey.name ? `Passkey on ${passkey.name}` : 'Passkey'}</span>
+                <span className="truncate text-base font-semibold">{passkey.name ? `Passkey on ${passkey.name}` : 'Passkey'}</span>
                 <span className="text-sm text-muted-foreground">Added {dateOf(passkey.createdAt)}</span>
               </div>
               {(account.passkeys.length > 1 || account.password) && removing !== passkey.id && (

@@ -9,7 +9,7 @@ export function NotFound() {
       </a>
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center gap-4 py-12">
         <h1 className="text-2xl font-semibold tracking-tight">There’s no page here</h1>
-        <a href="/" className="w-fit rounded-sm text-base font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary focus-visible:ring-[3px] focus-visible:ring-ring/70 focus-visible:outline-none">Go to Homing</a>
+        <a href="/" className="w-fit rounded-sm text-base text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary focus-visible:ring-[3px] focus-visible:ring-ring/70 focus-visible:outline-none">Go to Homing</a>
       </main>
     </div>
   );

@@ -33,6 +33,8 @@ export interface ProposalData {
    * sent, and the admins who can decide it.
    */
   request?: { by: string | null; yours: boolean; why: string | null; sent: boolean; emailed?: boolean | null; admins: string[] } | null;
+  /** For a rule or an include that isn't a request, why the assistant proposed it. */
+  why?: string | null;
   /** Who decided it, when that was someone else. */
   decidedBy?: string | null;
   /** The assistant that withdrew it, when you didn't yourself. */

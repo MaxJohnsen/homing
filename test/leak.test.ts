@@ -692,7 +692,7 @@ describe('through the app’s endpoints', () => {
       // Searching for anything of the other client's finds nothing.
       for (const query of ['launch', 'salary', 'raise', 'diary', 'plan', target.name, `${target.name.toLowerCase()}-report`, 'prices']) {
         const found = (await get(`/api/search?q=${encodeURIComponent(query)}`)).body;
-        const spaces = [found.pages, found.sources, found.rules, found.skills].flat().map((hit: { space: { id: string | null } }) => hit.space.id);
+        const spaces = [found.pages, found.sources, found.rules, found.skills, found.tasks].flat().map((hit: { space: { id: string | null } }) => hit.space.id);
         assert.ok(spaces.every((id) => id === intruder.space || id === intruder.personalSpaceId), query);
         assert.ok(found.spaces.every((space: { id: string }) => space.id === intruder.space || space.id === intruder.personalSpaceId), query);
       }

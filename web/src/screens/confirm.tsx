@@ -63,8 +63,8 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why) && (
-                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why}”</p>
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why) && (
+                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why}”</p>
               )}
             </div>
             <ProposalDetails

@@ -155,7 +155,7 @@ export function SpaceFields({ draft, onChange, places, audience, problem, disabl
       </div>
 
       <div className="flex flex-col gap-2">
-        <p id={`${id}-who`} className="text-base font-medium">Who is it for?</p>
+        <p id={`${id}-who`} className="text-base font-semibold">Who is it for?</p>
         <RadioCards
           labelledBy={`${id}-who`}
           surface="muted"
@@ -177,7 +177,7 @@ export function SpaceFields({ draft, onChange, places, audience, problem, disabl
       )}
       {draft.who === 'with others' && parent && (
         <div className="flex flex-col gap-2">
-          <p id={`${id}-access`} className="text-base font-medium">Who has access?</p>
+          <p id={`${id}-access`} className="text-base font-semibold">Who has access?</p>
           <RadioCards
             labelledBy={`${id}-access`}
             surface="muted"

@@ -68,7 +68,7 @@ export function NewSpace({ spaces, start, name, create, onCreated, onCancel }: {
       </Section>
       <p className="max-w-2xl text-sm text-muted-foreground">
         Moving a space from another Homing, or bringing one back?{' '}
-        <Link href="/spaces/import" className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+        <Link href="/spaces/import" className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
           Import its export
         </Link>
         , and it becomes a space of its own that only you have.

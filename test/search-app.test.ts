@@ -1,5 +1,5 @@
-// Issue #40, search on every screen: the same results assistants get, grouped as pages, sources,
-// rules, skills and spaces, each saying where it is, and only what the person can see.
+// Issue #40, search on every screen: the same results assistants get, grouped as pages, tasks,
+// sources, rules, skills and spaces, each saying where it is, and only what the person can see.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -9,6 +9,7 @@ import { addSource, createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
+import { addTask } from '../src/tasks.ts';
 import { as, db, member, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
@@ -37,6 +38,9 @@ before(async () => {
   await as({ person: ana.id, direct: true }, async (s) => {
     await addRule(s, { spaceId: acme, kind: 'requirement', body: 'Never send launch prices by email', shared: true });
     await saveSkill(s, { spaceId: acme, files: [{ path: 'SKILL.md', body: '---\nname: launch-checklist\ndescription: What to check before a launch\n---\n' }], shared: true });
+    await addTask(s, { spaceId: website, title: 'Book the launch venue', due: '2026-11-03', shared: true });
+    await addTask(s, { spaceId: website, title: 'Ask Gunnar about the launch bonus' });
+    await addTask(s, { spaceId: northwind, title: 'Send the launch budget to Northwind', shared: true });
   });
 });
 
@@ -62,6 +66,17 @@ test('search finds pages, sources, rules, skills and spaces, and says where each
   assert.equal(found.pages.filter((page: { title: string }) => page.title === 'Launch plan').length, 1);
 });
 
+test('search finds tasks, as assistants do, and only the ones each person can see', async () => {
+  const forAna = (await find(ana, 'launch')).tasks as { title: string; due: string | null; done: boolean; onlyYou: boolean; space: { name: string } }[];
+  assert.deepEqual(forAna.map((task) => [task.title, task.due, task.done, task.onlyYou, task.space.name]).sort(), [
+    ['Ask Gunnar about the launch bonus', null, false, true, 'Launch website'],
+    ['Book the launch venue', '2026-11-03', false, false, 'Launch website'],
+    ['Send the launch budget to Northwind', null, false, false, 'Northwind'],
+  ]);
+  // Cara can't open Northwind, and Ana's own task is Ana's.
+  assert.deepEqual((await find(cara, 'launch')).tasks.map((task: { title: string }) => task.title), ['Book the launch venue']);
+});
+
 test('search shows each person only what they can see', async () => {
   // Cara can't open Northwind and doesn't see Ana's own item.
   const forCara = await find(cara, 'launch');
@@ -76,7 +91,7 @@ test('search shows each person only what they can see', async () => {
 });
 
 test('an empty search finds nothing, and a long one is cut short', async () => {
-  assert.deepEqual(await find(ana, ''), { spaces: [], pages: [], rules: [], skills: [], sources: [] });
+  assert.deepEqual(await find(ana, ''), { spaces: [], pages: [], rules: [], skills: [], sources: [], tasks: [] });
   // Only the first 200 characters count, so the launch is still found.
   assert.equal((await find(ana, `launch ${'x'.repeat(500)}`)).pages.length, 2);
 });

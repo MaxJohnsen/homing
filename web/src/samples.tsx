@@ -71,7 +71,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/pages/search': { label: 'Searching a space’s pages, with nothing found', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><SamplePages data={{ ...samplePages, pages: [], total: 0 }} filters={{ q: 'sauna', type: '', from: 0 }} /></Space></InApp> },
   '/spaces/pages/empty': { label: 'A space with no pages yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="pages"><SamplePages space={sampleSpace.root} data={{ pages: [], total: 0, all: 0, types: [] }} /></Space></InApp> },
   '/search': { label: 'Search, everything that matches', render: () => <InApp route={{ name: 'search' }}><SampleSearch /></InApp> },
-  '/search/none': { label: 'Search, with nothing found', render: () => <InApp route={{ name: 'search' }}><Search data={{ spaces: [], pages: [], rules: [], skills: [], sources: [] }} query="sauna" kind="all" from={0} onKind={() => {}} onFrom={() => {}} /></InApp> },
+  '/search/none': { label: 'Search, with nothing found', render: () => <InApp route={{ name: 'search' }}><Search data={{ spaces: [], pages: [], rules: [], skills: [], sources: [], tasks: [] }} query="sauna" kind="all" from={0} onKind={() => {}} onFrom={() => {}} /></InApp> },
   '/load-failed': { label: 'Something that didn’t load', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="pages"><LoadFailed paths={[]} /></Space></InApp> },
   '/spaces/sources': { label: 'A space’s sources', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="sources"><SampleSources /></Space></InApp> },
   '/spaces/sources/empty': { label: 'A space with no sources yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="sources"><Sources space={sampleSpace.root} data={{ sources: [], total: 0, all: 0 }} filters={{ q: '', type: '', from: 0 }} onFilters={() => {}} /></Space></InApp> },
@@ -305,7 +305,7 @@ function SampleSources() {
 }
 
 function SampleSearch() {
-  const [kind, setKind] = useState<'all' | 'pages' | 'sources' | 'rules' | 'skills' | 'spaces'>('all');
+  const [kind, setKind] = useState<'all' | 'pages' | 'tasks' | 'sources' | 'rules' | 'skills' | 'spaces'>('all');
   return <Search data={sampleSearch} query="launch" kind={kind} from={0} onKind={setKind} onFrom={() => {}} />;
 }
 

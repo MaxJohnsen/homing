@@ -19,6 +19,7 @@ export const proposal: ProposalData = {
   shared: true,
   onlyHere: false,
   state: 'open',
+  why: 'Gunnar asked for Norwegian at the steering group.',
   alreadyApplies: [
     { kind: 'preference', text: 'Write reports in English.', from: 'your personal space' },
     { kind: 'requirement', text: 'Never name other clients in documents for Acme.', from: 'Acme' },
@@ -255,6 +256,7 @@ export const sampleAdmin: AdminData = {
 // Cara asks Claude for a rule in Northwind, a client space only its admins change the rules of.
 export const requestProposal: ProposalData = {
   ...proposal,
+  why: null,
   space: 'Northwind',
   within: 'Acme',
   kind: 'requirement',
@@ -301,6 +303,7 @@ export const closedExcludeProposal: ProposalData = {
   action: 'exclude',
   state: 'requested',
   request: { by: 'Cara Lund', yours: false, why: 'Those rules don’t fit this client.', sent: true, admins: ['Ana Berg', 'Jon Dahl'] },
+  why: null,
   include: { open: false, space: null, rules: [], skill: null, current: true, shown: 'include:sample' },
 };
 
@@ -309,6 +312,7 @@ export const closedIncludeProposal: ProposalData = {
   ...includeProposal,
   state: 'requested',
   request: { by: 'Cara Lund', yours: false, why: 'Clients get the same rules as us.', sent: true, admins: ['Ana Berg', 'Jon Dahl'] },
+  why: null,
   include: { open: false, space: null, rules: [], skill: null, current: true, shown: '' },
 };
 
@@ -433,6 +437,10 @@ export const sampleSearch: SearchData = {
   rules: [{ id: 'rule-1', text: 'Never announce a launch date before the client does.', kind: 'requirement', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
   skills: [{ id: 'skill-1', name: 'launch-checklist', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
   sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'New launch date November 20, but he hasn’t told his team yet.', onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } }],
+  tasks: [
+    { id: 't5', title: 'Book the venue for the launch', due: '2026-11-03', done: false, onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+    { id: 't6', title: 'Draft the launch plan', due: null, done: true, onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
+  ],
 };
 
 /** What changed lately in Ana's spaces. */
@@ -467,6 +475,7 @@ export const sampleOverview: OverviewData = {
 /** A space Claude suggests on its own, for the person to change and create, or decline. */
 export const suggestedSpace: ProposalData = {
   ...proposal,
+  why: null,
   id: 'suggested-space',
   space: 'Personal',
   personal: true,
@@ -494,6 +503,7 @@ export const suggestedSpace: ProposalData = {
 /** Claude proposes adding someone to Acme, by name. */
 export const memberProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'member',
   action: 'members',
   text: null,
@@ -504,6 +514,7 @@ export const memberProposal: ProposalData = {
 /** Claude proposes sharing something Ana learned from an email with everyone in Acme. */
 export const publishProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'publish',
   action: 'publish',
   text: null,
@@ -526,6 +537,7 @@ export const publishProposal: ProposalData = {
 /** Claude proposes sharing Ana's kitchen renovation with others, at her request. */
 export const convertProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'convert',
   action: 'convert',
   space: 'Kitchen renovation',
@@ -547,6 +559,7 @@ export const convertProposal: ProposalData = {
 /** Claude suggests archiving Acme's finished rebrand. */
 export const archiveProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'archive',
   action: 'archive',
   space: 'Rebrand 2025',
@@ -559,6 +572,7 @@ export const archiveProposal: ProposalData = {
 /** Claude suggests archiving a page others in Acme see, which waits for Ana. */
 export const pageArchiveProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'page-archive',
   action: 'archive page',
   space: 'Acme',
@@ -580,6 +594,7 @@ export const pageArchiveProposal: ProposalData = {
 /** Claude proposes sharing one of Ana's tasks with everyone in Acme. */
 export const taskProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'task',
   action: 'task',
   text: null,
@@ -603,6 +618,7 @@ export const taskProposal: ProposalData = {
  */
 export const planProposal: ProposalData = {
   ...proposal,
+  why: null,
   id: 'plan',
   action: 'plan',
   space: 'Kitchen renovation',

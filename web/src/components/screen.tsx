@@ -54,7 +54,7 @@ export function Section({ title, description, children, tone = 'plain', classNam
 /** A small label, such as "Admin". */
 export function Tag({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-foreground', className)}>
+    <span className={cn('inline-flex shrink-0 items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs font-semibold text-foreground', className)}>
       {children}
     </span>
   );

@@ -218,7 +218,7 @@ function Welcome({ data }: { data: HomeData }) {
           <CopyAddress value={data.mcpUrl} />
           <p className="max-w-[60ch] text-base text-muted-foreground">
             Your personal space is ready for anything that’s just yours.{' '}
-            <Link href="/spaces/new" className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>Start a space</Link>{' '}
+            <Link href="/spaces/new" className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>Start a space</Link>{' '}
             for a client, a project or anything you share with others.
           </p>
         </div>

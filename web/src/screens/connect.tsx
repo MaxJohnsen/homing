@@ -44,7 +44,7 @@ export function Connect({
           <div className="flex flex-col gap-2">
             <h1 className="text-2xl font-semibold tracking-tight text-balance">Connect {assistant.name} to Homing?</h1>
             <p className="text-base text-muted-foreground">
-              Connect it only if you came here from <span className="font-medium text-foreground">{assistant.site}</span>.
+              Connect it only if you came here from <span className="font-semibold text-foreground">{assistant.site}</span>.
             </p>
           </div>
 

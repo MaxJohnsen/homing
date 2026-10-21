@@ -86,7 +86,7 @@ function About({ page, now }: { page: PageData; now?: Date }) {
   return (
     <>
       {capitalize(/^[aeiou]/i.test(kind) ? 'an' : 'a')} {kind} in{' '}
-      <Link href={`/spaces/${page.space.id}`} className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+      <Link href={`/spaces/${page.space.id}`} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
         {where}
       </Link>
       , updated {ago(page.updatedAt, now)}.{' '}

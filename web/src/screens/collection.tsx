@@ -292,7 +292,7 @@ function JoinCollection({ page, actions, onDone }: { page: PageData; actions: Pa
               role="radio"
               aria-checked={everyone === value}
               onClick={() => setEveryone(value)}
-              className={cn('rounded-full px-3 py-1 text-sm font-medium text-muted-foreground hover:text-foreground', focusRing, everyone === value && 'bg-card text-foreground')}
+              className={cn('rounded-full px-3 py-1 text-sm font-semibold text-muted-foreground hover:text-foreground', focusRing, everyone === value && 'bg-card text-foreground')}
             >
               {label}
             </button>

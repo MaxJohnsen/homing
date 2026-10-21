@@ -66,7 +66,7 @@ const direct = (who: Member) => ({ person: who.id, direct: true as const });
 test('a rule an assistant proposes applies only once the person approves it', async () => {
   const { ana, ref, space, claude } = await acme();
 
-  const proposed = await propose(claude.ana, { space: ref, change: 'add', kind: 'preference', text: 'Write status reports in Norwegian', shared: true });
+  const proposed = await propose(claude.ana, { space: ref, change: 'add', kind: 'preference', text: 'Write status reports in Norwegian', shared: true, why: 'Gunnar asked for Norwegian.' });
   // Claude gets a link to give Ana, on Homing's own pages.
   assert.ok(proposed.text.includes(new URL(`/proposals/${proposed.id}`, homing.url).toString()), proposed.text);
 
@@ -79,10 +79,10 @@ test('a rule an assistant proposes applies only once the person approves it', as
   // Ana sees exactly what Claude asked for, and where.
   const shown = await page(ana, proposed.id);
   assert.equal(shown.status, 200);
-  const { assistant, space: where, action, kind, text, shared, onlyHere, state } = shown.body.proposal;
+  const { assistant, space: where, action, kind, text, shared, onlyHere, state, why } = shown.body.proposal;
   assert.deepEqual(
-    { assistant, where, action, kind, text, shared, onlyHere, state },
-    { assistant: 'Claude', where: 'Acme', action: 'add', kind: 'preference', text: 'Write status reports in Norwegian', shared: true, onlyHere: false, state: 'open' },
+    { assistant, where, action, kind, text, shared, onlyHere, state, why },
+    { assistant: 'Claude', where: 'Acme', action: 'add', kind: 'preference', text: 'Write status reports in Norwegian', shared: true, onlyHere: false, state: 'open', why: 'Gunnar asked for Norwegian.' },
   );
 
   const approved = await decide(ana, proposed.id, { approve: true });

@@ -1790,6 +1790,8 @@ export function proposalData(proposal: ProposalView) {
           admins: proposal.admins,
         }
       : null,
+    // For a rule or an include, why the assistant proposed it. A request says why in its own part.
+    why: !proposal.request && ['add rule', 'change rule', 'remove rule', 'add include', 'remove include'].includes(proposal.action) ? proposal.reason : null,
     // Who decided it, when that was someone other than the reader.
     decidedBy: proposal.names.decidedBy,
     // The assistant that withdrew it, if the person didn't themselves.
