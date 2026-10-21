@@ -17,7 +17,7 @@ let ana: Member, cara: Member, ben: Member;
 let acme: string;
 let claude: Awaited<ReturnType<Assistant['open']>>;
 
-type TaskRow = { id: string; title: string; due: string | null; shared: boolean; assignee: { name: string } | null; done: { by: { name: string } | null } | null; by: { name: string | null; you: boolean } | null; agent: string | null };
+type TaskRow = { id: string; title: string; due: string | null; shared: boolean; assignee: { name: string } | null; done: { by: { name: string } | null } | null; by: { name: string | null; you: boolean; imported?: boolean } | null; agent: string | null };
 const tasksAs = async (who: Member) => (await who.browser.json(`/api/spaces/${acme}/tasks`)).body as { open: TaskRow[]; done: TaskRow[] };
 const remember = (task: Record<string, unknown>) => claude.call('remember', { space: `space:${acme}`, task });
 
@@ -117,6 +117,18 @@ test('a task stays changeable after the person it was for leaves, and done is wh
   // And a description has a length.
   assert.equal((await ana.browser.json(`/api/spaces/${venue}/tasks`, { title: 'Long', description: 'x'.repeat(20001) })).status, 400);
   assert.equal((await ana.browser.json(`/api/spaces/${ana.personalSpaceId}/tasks`, { title: 'Hello', shared: true })).status, 403);
+});
+
+test('a task an assistant kept, imported, says whose assistant kept it, marked imported', async () => {
+  const trip = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Trip' }));
+  assert.ok(!(await claude.call('remember', { space: `space:${trip}`, task: { title: 'Book the ferry' } })).failed);
+  const zip = new Uint8Array(await (await ana.browser.fetch(`/api/spaces/${trip}/export`)).arrayBuffer());
+  const upload = (path: string) => ana.browser.fetch(path, { method: 'POST', body: zip, headers: { 'content-type': 'application/zip' } }).then((response) => response.json());
+  const { hash } = await upload('/api/import/preview');
+  const { id: copy } = await upload(`/api/import?${new URLSearchParams({ name: 'Trip, again', hash })}`);
+  // Nobody here kept it, Ana included: it says she did, before it was imported.
+  const [kept] = (await ana.browser.json(`/api/spaces/${copy}/tasks`)).body.open as TaskRow[];
+  assert.deepEqual([kept.title, kept.agent, kept.by], ['Book the ferry', 'Claude', { name: 'Ana', you: false, imported: true }]);
 });
 
 test('an assistant never rewrites a task the user wrote, and keeps a task and knowledge apart', async () => {

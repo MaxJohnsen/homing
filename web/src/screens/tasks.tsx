@@ -42,6 +42,18 @@ export interface TaskActions {
 }
 
 /**
+ * Whose assistant kept a task: "Kept by Claude" for your own, "Kept by Ana Berg’s Claude" for
+ * someone else's, with "(imported)" when it came in an import, or "Kept by an assistant" when
+ * whose it was can't be said. Not "for", which says whom a task is for.
+ */
+function keptBy(task: TaskData): string | undefined {
+  if (!task.agent) return undefined;
+  if (task.by?.you) return `Kept by ${task.agent}`;
+  if (!task.by?.name) return 'Kept by an assistant';
+  return `Kept by ${task.by.name}’s ${task.agent}${task.by.imported ? ' (imported)' : ''}`;
+}
+
+/**
  * What needs doing in a space (spec §7): the open tasks, soonest due first, each saying who it's
  * for and whether it's only yours, and what was done lately. Ticking one off is one click; your own
  * can be shared with everyone in the space.
@@ -102,12 +114,11 @@ function TaskRow({ task, space, actions, now }: { task: TaskData; space: SpaceDa
   };
   const due = task.due && !task.done ? dueOf(task.due, now) : undefined;
   const onlyYou = !task.shared && !space.private;
-  const keptFor = nameIn(task.by ?? null);
   const meta = [
     due?.text,
     task.assignee && task.shared ? `For ${nameIn(task.assignee) ?? 'someone in the space'}` : undefined,
     task.done ? `Done ${dateOf(task.done.at)}${task.done.by && !task.done.by.you && nameIn(task.done.by) ? ` by ${nameIn(task.done.by)}` : ''}` : undefined,
-    task.agent && !task.done ? `Kept by ${task.agent}${keptFor ? ` for ${keptFor}` : ''}` : undefined,
+    !task.done ? keptBy(task) : undefined,
   ].filter(Boolean);
 
   return (
