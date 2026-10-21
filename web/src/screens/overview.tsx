@@ -105,9 +105,9 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
               {data.spaces.map((inside) => (
                 <li key={inside.id}>
                   <Link href={`/spaces/${inside.id}`} className={cn('flex items-center gap-2 rounded-lg px-2 py-1.5 text-base leading-snug font-semibold hover:bg-muted', inside.archived && 'text-muted-foreground', focusRing)}>
-                    {inside.name}
-                    {inside.archived && <span className="text-sm font-normal">Archived</span>}
-                    <ChevronRight aria-hidden="true" className="size-4 text-muted-foreground" />
+                    <span className="min-w-0 break-words">{inside.name}</span>
+                    {inside.archived && <span className="shrink-0 text-sm font-normal">Archived</span>}
+                    <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
                   </Link>
                 </li>
               ))}
