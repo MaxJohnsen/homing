@@ -71,8 +71,9 @@ export type AssistantKind = keyof typeof assistants;
 
 /** What a conversation starts from, and the references the checks need. */
 export interface World {
-  ana: { id: string; personalSpaceId: string };
-  cara: { id: string };
+  /** Ana and Cara, each signed in to their own browser, where they decide what their assistants propose. */
+  ana: { id: string; personalSpaceId: string; browser: Browser };
+  cara: { id: string; browser: Browser };
   spaces: { acme: string; northwind: string; relaunch: string; fjord: string; kitchen: string; running: string; personal: string };
   items: { budgetHint: string; golive: string; shortAnswers: string; reportRule: string; gunnarMorning: string };
   pages: { oldCms: string; relaunch: string };
@@ -83,7 +84,7 @@ export interface World {
   assistant: Assistant;
 }
 
-const as = <T>(bench: Bench, principal: Principal, fn: (s: Session) => Promise<T>) => withPrincipal(bench.sql, principal, fn);
+export const as = <T>(bench: Bench, principal: Principal, fn: (s: Session) => Promise<T>) => withPrincipal(bench.sql, principal, fn);
 
 /** A page with its items, on the shared side or the writer's own. Returns the page and its items' ids. */
 async function page(s: Session, spaceId: string, title: string, type: string | undefined, items: string[], shared = true) {
@@ -237,8 +238,8 @@ export async function makeWorld(bench: Bench, kind: AssistantKind): Promise<Worl
   await assistant.connect(ana.browser);
   const [{ now }] = await bench.admin`select clock_timestamp() as now`;
   return {
-    ana: { id: ana.id, personalSpaceId: ana.personalSpaceId },
-    cara: { id: cara.id },
+    ana: { id: ana.id, personalSpaceId: ana.personalSpaceId, browser: ana.browser },
+    cara: { id: cara.id, browser: cara.browser },
     spaces,
     items: { budgetHint: own.budgetHint, golive: shared.golive, shortAnswers: rules.shortAnswers, reportRule: rules.reportRule, gunnarMorning: own.gunnarMorning },
     pages: { oldCms: own.oldCms, relaunch: shared.relaunchPage },

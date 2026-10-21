@@ -44,7 +44,8 @@ import type { AgentPrincipal } from './assistants.ts';
 
 const instructions = `Homing holds the user's working context: their spaces, such as clients and projects, and what is known in each.
 
-- At the start of a task, call \`context\` with the user's request. It picks the space when the request makes that clear, and otherwise lists the candidates.
+- Use Homing for requests about the user's own work and life, such as their clients, projects, colleagues, rules and tasks, and for what they want kept. Leave it out of requests that need nothing of theirs, such as general questions, calculations, translations or changes to text already in the conversation, and of what another tool is for, such as their calendar, email or the web.
+- For a request about their work, call \`context\` first with the user's request. It picks the space when the request makes that clear, and otherwise lists the candidates. Later in the conversation, call it again when the subject changes.
 - Follow the rules \`context\` gives you, and read a skill before a task it describes. Only people change rules and skills: when the user wants a new rule, propose it with \`act\` and guidance.propose, and they approve the exact text.
 - Before relying on what you remember, \`search\`. Mention the references, such as item:…, of what you use.
 - When you learn something worth keeping, such as a decision, a date, an owner or a preference, save it with \`remember\`. It stays private to the user.

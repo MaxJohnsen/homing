@@ -1,6 +1,138 @@
 # Benchmark results
 
-Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. How they were run, and every prompt, is in the [README](README.md).
+Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. The same day, harder conversations for benchmark 1 tested a new recommended instruction. How they were run, and every prompt, is in the [README](README.md).
+
+## Harder conversations and a new instruction, 21 October 2026
+
+The recommended instruction began with "At the start of a task, call `context` with the user's request", and in the first run it pulled Homing into 9 of 12 control questions, against 1 of 12 without it. That line is now two:
+
+> - Use Homing for requests about the user's own work and life, such as their clients, projects, colleagues, rules and tasks, and for what they want kept. Leave it out of requests that need nothing of theirs, such as general questions, calculations, translations or changes to text already in the conversation, and of what another tool is for, such as their calendar, email or the web.
+> - For a request about their work, call `context` first with the user's request. It picks the space when the request makes that clear, and otherwise lists the candidates. Later in the conversation, call it again when the subject changes.
+
+The rest of Homing's MCP instructions is unchanged. Benchmark 1's harder conversations compare it with the old instruction and with the tools alone: 41 conversations, with four other tools beside Homing's, in which 27 things the user says are labeled as helped by Homing, 30 as not, and 2 as either. Both models did each three times in each variant: 738 conversations, for USD 7.84. Benchmark 1 itself ran again with the new instruction: 132 conversations, for USD 1.54. Smoke and pilot runs came first, for USD 1.97.
+
+### What it means for Homing
+
+**The new instruction keeps Homing to the user's work, and still uses it there.** The old one made Claude call Homing for 37% of the things it can't help with, and GPT for all of them: every one of the 14 unrelated questions, every request for the calendar, the inbox, the web and the notes app, and every follow-up such as "Make it a bit more formal". The new one left Homing out of 93% and 94% of them, and used it for 98% and 96% of the things it helps with. On benchmark 1's 20 tasks about Ana's work it asked Homing in every conversation and did 100% and 98% of them, as before, and called Homing for none of the 12 control questions, against 1 and 6 of 6 with the old instruction in the rerun.
+
+| Variant | Model | Used when it helps | Left alone otherwise | Precision | Task done |
+|---|---|---|---|---|---|
+| mcp-only | claude-sonnet-5.5 | 100% | 93% | 93% | 98% |
+| mcp-only | gpt-6.1-sol | 100% | 79% | 81% | 93% |
+| old instruction | claude-sonnet-5.5 | 100% | 63% | 71% | 100% |
+| old instruction | gpt-6.1-sol | 100% | 0% | 47% | 94% |
+| new instruction | claude-sonnet-5.5 | 98% | 93% | 93% | 97% |
+| new instruction | gpt-6.1-sol | 96% | 94% | 94% | 92% |
+
+**With the tools alone, Claude did as well; GPT didn't.** Claude used Homing when it helped and left it alone 93% of the time without any instruction, the same as with the new one. GPT, with the tools alone, also checked Homing for general questions that sound like work, such as what a DNS TTL does, and for what belongs to another tool, such as whether Gunnar answered an email: it left Homing alone 79% of the time. The new instruction brings it to 94%. So the instruction's worth is in saying when Homing helps, not in making assistants call it more: without it, both already called Homing for everything about Ana's work. The spec (§10) now says so.
+
+**Other tools.** Every request that belongs to the calendar, the inbox, the web or the notes app used that tool, in every variant, and the ones that need both, such as preparing for tomorrow's 13:00 meeting, used both. What differs is whether Homing was called as well: with the old instruction, GPT called it for all 18 of the others' requests and Claude for 15; with the new one, 2 and 3, all to ask whether Gunnar had answered, where GPT went on to mark Ana's task to send him the timeline as done, which arguably helps.
+
+**Several turns.** In conversations of three turns, every variant used Homing in every turn that needed it, including changing a reminder from Friday to Monday, which moved the task instead of adding a second one, 18 times of 18. The difference is the turns between: with the old instruction, GPT called `context` again for "Make it a bit more formal" and for an aside about DNS, every time. With the new one and with the tools alone, the only turn they called it for needlessly was the first of a birthday message for Ana's sister, which every variant did: it is Ana's life, though Homing knows nothing about Ingrid.
+
+**What it gets wrong.** One case: "What's a good structure for a status report?" Acme has a skill for exactly that. With the new instruction, the question read as general, and 5 of 6 conversations left Homing out. With the old one both models called Homing, but only Claude went on to find the skill, 3 times of 3; `context` without a space lists spaces, not skills. It is the price of the new line, and a reason for Homing to make skills easier to find (below).
+
+**Two people together: no leaks.** In 18 scenarios, 3 variants with both models three times, Ana's and Cara's assistants worked in Website relaunch over four conversations each. Everything Homing answered to their 339 calls, everything the models wrote, and the harness's own reads were checked word for word against everything private to the other person: none had any of it. In all 18, Ana's assistant proposed sharing Mona's condition and kept her worry private, Cara's assistant found the shared condition and kept her own note private, the page about Mona read differently for each of them, and Cara's rule request reached Ana and, once she approved it, applied to both. The one step that failed: in a new conversation, GPT with the new instruction asked Ana which site she meant, 2 times of 3, instead of finding the relaunch, where the new rule was.
+
+**Where Homing falls short: a request that doesn't name its space.** For a vague request, `context` without a space lists the spaces that fit and nothing more. Claude then searches; GPT asks the user. "Should we go with Azure or AWS?" was answered from Northwind's decision in all 9 of Claude's conversations and none of GPT's, which asked which project, in every variant. The same made GPT ask which deadline Ana meant, and which site in the scenario above. A real user would answer, so this costs a turn rather than the task, but `context` could show what it found. It also lists spaces as fitting when nothing does: for "Why is the sky blue?", four.
+
+**Cost and time.** With GPT, the new instruction costs about a third less than the old one, close to the tools alone: 2.1 calls to Homing and USD 0.0079 per conversation, against 3.3 and 0.0115, and 10.5 against 14.1 seconds. With Claude it costs about what the tools alone do.
+
+#### Worth deciding
+
+Suggestions for Homing's tools, from these results and the rerun's. None is built here.
+
+1. `context` without a space could show the few best matches, with their spaces, as `search` does, so a model answers "Should we go with Azure or AWS?" instead of asking which project; and say so when nothing matches, instead of listing spaces that fit.
+2. `context` without a space could also list the skills that match the request, as `search` does, so "a good structure for a status report" leads to Acme's.
+3. `knowledge.publish` could say who sharing reaches, such as everyone in Northwind for an item in Website relaunch, which isn't closed. GPT copied Gunnar's hint up to Northwind to share it there (rerun, below).
+
+### Benchmark 1, harder conversations
+
+In the tables, a rate is over all three runs, with the lowest and highest single run in brackets. Rates about Homing's use count the things the user said, a turn at a time; task done counts conversations.
+
+| Variant | Model | Used when it helps | Left alone otherwise | Precision | Task done | Other tool used | Homing calls | Model calls | Tokens in / out | Latency | Cost each | Cost |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| mcp-only | claude-sonnet-5.5 | 100% (100–100) | 93% (93–93) | 93% (93–93) | 98% (98–98) | 100% (100–100) | 1.6 | 2.9 | 25,273 / 557 | 7.5 s (4.7) | $0.0117 | $1.43 |
+| mcp-only | gpt-6.1-sol | 100% (100–100) | 79% (77–80) | 81% (79–82) | 93% (93–95) | 100% (100–100) | 1.9 | 3.3 | 17,689 / 228 | 10.3 s (6.5) | $0.0072 | $0.88 |
+| old-instruction | claude-sonnet-5.5 | 100% (100–100) | 63% (60–67) | 71% (69–73) | 100% (100–100) | 100% (100–100) | 2.1 | 3.1 | 29,608 / 601 | 8.4 s (5.4) | $0.0133 | $1.63 |
+| old-instruction | gpt-6.1-sol | 100% (100–100) | 0% (0–0) | 47% (47–47) | 94% (93–95) | 100% (100–100) | 3.3 | 4.6 | 29,431 / 329 | 14.1 s (9.4) | $0.0115 | $1.42 |
+| instruction | claude-sonnet-5.5 | 98% (96–100) | 93% (93–93) | 93% (93–93) | 97% (95–98) | 100% (100–100) | 1.6 | 2.9 | 27,813 / 583 | 7.9 s (5.2) | $0.0123 | $1.51 |
+| instruction | gpt-6.1-sol | 96% (96–96) | 94% (93–97) | 94% (93–96) | 92% (90–93) | 100% (100–100) | 2.1 | 3.5 | 20,857 / 263 | 10.5 s (5.9) | $0.0079 | $0.97 |
+
+Left alone otherwise, by kind of conversation:
+
+| Kind | mcp-only, claude-sonnet-5.5 | mcp-only, gpt-6.1-sol | old-instruction, claude-sonnet-5.5 | old-instruction, gpt-6.1-sol | instruction, claude-sonnet-5.5 | instruction, gpt-6.1-sol |
+|---|---|---|---|---|---|---|
+| ambiguous | 100% | 50% | 25% | 0% | 100% | 100% |
+| unrelated | 100% | 100% | 86% | 0% | 100% | 100% |
+| multi-turn | 83% | 83% | 83% | 0% | 83% | 83% |
+| competing | 83% | 44% | 17% | 0% | 83% | 89% |
+
+Used when it helps was 100% for every kind and variant, except ambiguous requests with the new instruction: 89% for Claude and 83% for GPT, all of it report-structure.
+
+Per task, the conversations that did it, where any variant missed one:
+
+| Task | mcp-only, claude-sonnet-5.5 | mcp-only, gpt-6.1-sol | old-instruction, claude-sonnet-5.5 | old-instruction, gpt-6.1-sol | instruction, claude-sonnet-5.5 | instruction, gpt-6.1-sol |
+|---|---|---|---|---|---|---|
+| deadline | 3/3 | 1/3 | 3/3 | 2/3 | 3/3 | 2/3 |
+| report-structure | 0/3 | 0/3 | 3/3 | 0/3 | 0/3 | 0/3 |
+| azure-or-aws | 3/3 | 0/3 | 3/3 | 0/3 | 3/3 | 0/3 |
+| budget-math | 3/3 | 3/3 | 3/3 | 3/3 | 2/3 | 2/3 |
+| together | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 1/3 |
+
+Every other task was done in every conversation. The misses in deadline, azure-or-aws and together were questions back, such as which project Ana meant, and report-structure's were general advice without Acme's skill. budget-math's two were the checks' fault: one answer said the hint was more than 67,500, which is right, where the check only took "less", and one kept the wish as a task to ask Gunnar, where the check only took a note. The checks now take both, and both conversations pass with them; the tables count them as the run did.
+
+Two people's assistants together, scenarios with each step done, of 3:
+
+| Step | mcp-only, claude-sonnet-5.5 | mcp-only, gpt-6.1-sol | old-instruction, claude-sonnet-5.5 | old-instruction, gpt-6.1-sol | instruction, claude-sonnet-5.5 | instruction, gpt-6.1-sol |
+|---|---|---|---|---|---|---|
+| Ana's assistant proposed sharing Mona's condition, and Ana approved it | 3 | 3 | 3 | 3 | 3 | 3 |
+| Ana's assistant kept her worry private, and didn't propose sharing it | 3 | 3 | 3 | 3 | 3 | 3 |
+| Cara's assistant kept her note private, and didn't propose sharing it | 3 | 3 | 3 | 3 | 3 | 3 |
+| Cara's assistant asked for the rule for everyone, as a request | 3 | 3 | 3 | 3 | 3 | 3 |
+| Cara sent it, and it reached Ana, the space's admin | 3 | 3 | 3 | 3 | 3 | 3 |
+| Ana approved it, and it applies to both | 3 | 3 | 3 | 3 | 3 | 3 |
+| Ana's assistant got the new rule | 3 | 3 | 3 | 3 | 3 | 1 |
+| The page about Mona reads differently for each | 3 | 3 | 3 | 3 | 3 | 3 |
+| Leaks | 0 | 0 | 0 | 0 | 0 | 0 |
+
+### Benchmark 1 with the new instruction
+
+The 20 tasks about Ana's work and the 2 control questions, three times, beside the rerun's results with the old instruction.
+
+| Instruction | Model | Asked Homing | Task done | Homing on controls | Homing calls | Tokens in / out | Latency | Cost each |
+|---|---|---|---|---|---|---|---|---|
+| old (rerun) | claude-sonnet-5.5 | 100% (100–100) | 100% (100–100) | 1/6 | 2.9 | 27,366 / 520 | 7.9 s (7.4) | $0.0139 |
+| old (rerun) | gpt-6.1-sol | 100% (100–100) | 98% (95–100) | 6/6 | 3.5 | 23,313 / 250 | 12.0 s (10.9) | $0.0100 |
+| new | claude-sonnet-5.5 | 100% (100–100) | 100% (100–100) | 0/6 | 2.8 | 27,054 / 488 | 7.3 s (6.6) | $0.0136 |
+| new | gpt-6.1-sol | 100% (100–100) | 98% (95–100) | 0/6 | 3.3 | 22,713 / 245 | 12.4 s (10.6) | $0.0097 |
+
+Every task was done in every conversation but one, report-format by GPT, whose answer left out that reports are in English, as in the rerun. Every request for a new rule was proposed with `act`.
+
+### Changed along the way
+
+The smoke run found a fault in the harness: the scenario of two people looked for the approved rule in the whole database, where other scenarios ran at the same time, instead of in its own world. It now looks in its own spaces, and a private task counts as a private note, as one model kept Cara's. After the pilot, deadline also counts as done when the answer asks which deadline with Ana's own candidates, which only Homing knows, and email-draft's first turn needs two of Gunnar, the two weeks and the go-live date, instead of the date alone. After the full run, budget-math's checks were made to take either way of comparing and a task as well as a note, above. None of these changes touches whether Homing was used.
+
+### Limitations
+
+The first run's limitations, below, hold here too. Besides those:
+
+- **The labels are judgment.** Whether Homing helps is a call made for each turn when the conversation was written, and some could go either way: Homing knows nothing of Ana's sister, but it is Ana's life, and checking whether Gunnar replied could start from the timeline he was sent. The README lists every label.
+- **Scripted users aren't people.** They say the same thing whatever the assistant answered, and never answer a question back, which turns "Which project do you mean?" into a failure a real user would fix with one more turn.
+- **Four stand-ins aren't the apps' tools.** The other tools answer from canned data, and Claude.ai and ChatGPT offer more of them, with their own descriptions, memory and system prompts.
+- **One scenario for two people.** Ana's and Cara's assistants worked in one space, on one subject, over four conversations each. The leak check is word for word: it would miss a paraphrase of something private. But a model can only pass on what Homing gave it, and every answer Homing gave was checked.
+
+### Spending
+
+| Phase | Conversations | USD |
+|---|---|---|
+| Smoke run, harder conversations | 15, stopped at its limit | 0.58 |
+| Pilot, harder conversations | 72 | 1.40 |
+| Harder conversations | 738 | 7.84 |
+| Benchmark 1 with the new instruction | 132 | 1.54 |
+| **Total** | | **11.36** |
+
+Each run had a limit of its own, USD 16 for the harder conversations, to keep the ledger's total under USD 45. The ledger's total is now USD 25.86 over the benchmarks so far, against the cap of USD 50; the key's own usage since the first run is USD 25.80.
 
 ## Rerun of benchmarks 1 and 2, 21 October 2026
 
@@ -35,7 +167,7 @@ Class by class:
 
 **What is left.**
 
-- **The instruction still pulls Homing into unrelated questions.** With it, GPT called Homing for both control questions every time, 6 of 6, as in the first run, and Claude 1 of 6, against 3 before. Without it, neither did. Its first line, "At the start of a task, call `context`", is the next thing to fix.
+- **The instruction still pulls Homing into unrelated questions.** With it, GPT called Homing for both control questions every time, 6 of 6, as in the first run, and Claude 1 of 6, against 3 before. Without it, neither did. Its first line, "At the start of a task, call `context`", is what the new instruction, above, replaces.
 - **A new miss, from more information.** Asked to share Gunnar's hint "with everyone on the Northwind team", GPT now sees in `search` that the hint is in Website relaunch, a space below Northwind. In 4 of its 6 conversations it saved a copy in Northwind and proposed sharing the copy instead. Sharing the hint where it is would have reached the same people, since Website relaunch isn't closed, but nothing told the model so. Claude shared the original 6 times of 6.
 - **archive-page needed a new check.** Since #90, archiving Ana's page in Website relaunch, which others can open, waits for her approval. Scored with the old check, which wanted the page archived at once, all 12 failed, each having proposed it as Homing asked. The check now accepts the waiting proposal, and those 12 were run again with it, for USD 0.15, and passed.
 

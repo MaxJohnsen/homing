@@ -41,7 +41,7 @@ function table(header: string[], rows: string[][]): string {
 }
 
 /** The order variants are described in. */
-const variantOrder = ['mcp-only', 'instruction', 'act', 'dedicated', 'core', 'relevant', 'full'];
+const variantOrder = ['mcp-only', 'old-instruction', 'instruction', 'act', 'dedicated', 'core', 'relevant', 'full'];
 
 /** Groups by variant and model, variants in the order they're described, then models by name. */
 function groups(results: Result[]) {
@@ -74,6 +74,15 @@ function perTask(results: Result[]): string {
 /** Why a conversation didn't do its task, in a few kinds. */
 function reasonOf(result: Result): string {
   const failures = result.failures ?? [];
+  if (result.turns) {
+    // Harder conversations: Homing's use is scored on its own, so only what was asked counts here.
+    if (result.leaks?.length) return 'leaked something private';
+    if (result.outOfTurns) return 'ran out of turns';
+    if (result.steps?.some((one) => !one.done)) return 'a step together was not done';
+    if (failures.some((failure) => failure.endsWith("wasn't used"))) return "didn't use the tool it belongs to";
+    if (failures.some((failure) => failure.includes('facts'))) return /\?\s*$/.test(result.answer ?? '') ? 'asked the user back' : 'answer missed facts';
+    return result.writes?.length ? 'made the wrong change' : 'made no change';
+  }
   if (result.outOfTurns) return failures.length === 1 ? 'did it, but ran out of turns before answering' : 'ran out of turns';
   if (result.kind === 'control') return 'asked Homing anyway';
   if (failures.includes('Homing was never asked')) return 'never asked Homing';
@@ -93,6 +102,88 @@ function reasons(results: Result[]): string {
     ['Reason', ...columns.map((column) => `${column.variant}, ${shortModel(column.model)}`)],
     kinds.map((kind) => [kind, ...columns.map((column) => String(column.results.filter((result) => !result.pass && reasonOf(result) === kind).length))]),
   )}\n`;
+}
+
+/** Every labeled turn of the results, with the run it was in. */
+const turnsOf = (results: Result[]) => results.flatMap((result) => (result.turns ?? []).map((turn) => ({ ...turn, run: result.run, group: result.group })));
+type LabeledTurn = ReturnType<typeof turnsOf>[number];
+
+/** A rate over turns, with the lowest and highest single run: "83% (80–85)". */
+function turnRate(turns: LabeledTurn[], counted: (turn: LabeledTurn) => boolean, test: (turn: LabeledTurn) => boolean): string {
+  const these = turns.filter(counted);
+  if (!these.length) return '–';
+  const runs = [...new Set(these.map((turn) => turn.run))].sort();
+  const all = percent(these.filter(test).length, these.length);
+  if (runs.length < 2) return all;
+  const byRun = runs.map((run) => {
+    const inRun = these.filter((turn) => turn.run === run);
+    return Math.round((100 * inRun.filter(test).length) / inRun.length);
+  });
+  return `${all} (${Math.min(...byRun)}–${Math.max(...byRun)})`;
+}
+
+const helps = (turn: LabeledTurn) => turn.homing === true;
+const doesnt = (turn: LabeledTurn) => turn.homing === false;
+const groupOrder = ['ambiguous', 'unrelated', 'multi-turn', 'competing', 'together'];
+
+/** Benchmark 1's harder conversations: whether Homing was used when it helps and left alone otherwise, and how the tasks went. */
+function harder(results: Result[]): string {
+  const out: string[] = ['## Benchmark 1: harder conversations\n'];
+  out.push(
+    table(
+      ['Variant', 'Model', 'Used when it helps', 'Left alone otherwise', 'Precision', 'Task done', 'Other tool used', 'Homing calls', 'Model calls', 'Tokens in / out', 'Latency', 'Cost each', 'Cost'],
+      groups(results).map(({ variant, model, results: these }) => {
+        const turns = turnsOf(these);
+        const c = costs(these);
+        return [
+          variant,
+          shortModel(model),
+          turnRate(turns, helps, (turn) => turn.used),
+          turnRate(turns, doesnt, (turn) => !turn.used),
+          turnRate(turns, (turn) => turn.used && turn.homing !== undefined, helps),
+          rate(these, (r) => r.pass),
+          turnRate(turns, (turn) => Boolean(turn.tool), (turn) => Boolean(turn.usedTool)),
+          mean(these.map((r) => r.homingCalls ?? 0)).toFixed(1),
+          mean(these.map((r) => r.modelCalls ?? 0)).toFixed(1),
+          c.tokens,
+          c.latency,
+          c.cost,
+          `$${c.total.toFixed(2)}`,
+        ];
+      }),
+    ),
+  );
+  const columns = groups(results);
+  const byGroup = (label: string, counted: (turn: LabeledTurn) => boolean, test: (turn: LabeledTurn) => boolean) =>
+    table(
+      [label, ...columns.map((column) => `${column.variant}, ${shortModel(column.model)}`)],
+      groupOrder
+        .filter((group) => turnsOf(results).some((turn) => turn.group === group && counted(turn)))
+        .map((group) => [group, ...columns.map((column) => turnRate(turnsOf(column.results), (turn) => turn.group === group && counted(turn), test))]),
+    );
+  out.push(`\nUsed when it helps, by kind of conversation:\n\n${byGroup('Kind', helps, (turn) => turn.used)}\n`);
+  out.push(`Left alone otherwise, by kind of conversation:\n\n${byGroup('Kind', doesnt, (turn) => !turn.used)}\n`);
+  out.push(`Per task, conversations that did it:\n\n${perTask(results)}\n${reasons(results)}`);
+  const together = results.filter((result) => result.group === 'together');
+  if (together.length) {
+    const stepNames = [...new Set(together.flatMap((result) => (result.steps ?? []).map((one) => one.step)))];
+    out.push(
+      `\nTwo people's assistants together, steps done:\n\n${table(
+        ['Step', ...columns.map((column) => `${column.variant}, ${shortModel(column.model)}`)],
+        [
+          ...stepNames.map((name) => [
+            name,
+            ...columns.map((column) => {
+              const these = column.results.filter((result) => result.group === 'together');
+              return `${these.filter((result) => result.steps?.some((one) => one.step === name && one.done)).length}/${these.length}`;
+            }),
+          ]),
+          ['Leaks', ...columns.map((column) => String(column.results.reduce((sum, result) => sum + (result.leaks?.length ?? 0), 0)))],
+        ],
+      )}\n`,
+    );
+  }
+  return out.join('\n');
 }
 
 /** What a call Homing refused got wrong, from its answer: the kinds the results of 20 October name. */
@@ -162,6 +253,9 @@ export function report(all: Result[]): string {
     );
     out.push(`\nPer task, conversations that did it:\n\n${perTask(b1)}\n${reasons(b1)}${refusals(b1)}`);
   }
+
+  const hard = valid.filter((result) => result.benchmark === 'b1-hard');
+  if (hard.length) out.push(harder(hard));
 
   const b2 = valid.filter((result) => result.benchmark === 'b2');
   if (b2.length) {
