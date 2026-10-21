@@ -107,7 +107,7 @@ export function Source({ source }: { source: SourceData }) {
         meta={
           <>
             A source in{' '}
-            <Link href={`/spaces/${source.space.id}/sources`} className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+            <Link href={`/spaces/${source.space.id}/sources`} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
               {where}
             </Link>
             . {kept} on {dateOf(source.keptAt)}. {who}

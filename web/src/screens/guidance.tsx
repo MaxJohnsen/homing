@@ -308,7 +308,7 @@ function IncludeForm({ space, what, options, include, onDone }: {
 
 function TextLink({ href, children }: { href: string; children: ReactNode }) {
   return (
-    <Link href={href} className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+    <Link href={href} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
       {children}
     </Link>
   );
@@ -449,7 +449,7 @@ function RuleForm({ space, shared, actions, onDone }: { space: SpaceData; shared
             role="radio"
             aria-checked={kind === option}
             onClick={() => setKind(option)}
-            className={cn('rounded-full px-3.5 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground', focusRing, kind === option && 'bg-card text-foreground')}
+            className={cn('rounded-full px-3.5 py-1.5 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground', focusRing, kind === option && 'bg-card text-foreground')}
           >
             {option === 'preference' ? 'Preference' : 'Requirement'}
           </button>

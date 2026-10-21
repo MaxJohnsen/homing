@@ -161,10 +161,10 @@ export function Changes({ changes, more, from, onFrom, now, updating = false, ..
             Showing {(from + 1).toLocaleString('en-US')}–{(from + (changes?.length ?? 0)).toLocaleString('en-US')}
           </p>
           <div className="flex gap-2">
-            <button type="button" disabled={from === 0} onClick={() => onFrom(Math.max(0, from - 50))} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-medium disabled:opacity-40', focusRing)}>
+            <button type="button" disabled={from === 0} onClick={() => onFrom(Math.max(0, from - 50))} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-40', focusRing)}>
               Newer
             </button>
-            <button type="button" disabled={!more} onClick={() => onFrom(from + 50)} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-medium disabled:opacity-40', focusRing)}>
+            <button type="button" disabled={!more} onClick={() => onFrom(from + 50)} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-40', focusRing)}>
               Older
             </button>
           </div>

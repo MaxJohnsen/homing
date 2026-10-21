@@ -321,7 +321,7 @@ function SpaceTree({ spaces, current, crowded }: { spaces: SpaceSummary[]; curre
 function PersonMenu({ person, onSignOut }: { person: ShellProps['person']; onSignOut: () => void }) {
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger className={cn('flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-base font-medium hover:bg-background/70', focusRing)}>
+      <DropdownMenuTrigger className={cn('flex w-full items-center gap-3 rounded-lg px-2 py-2 text-left text-base hover:bg-background/70', focusRing)}>
         <Avatar name={person.name} className="bg-card" />
         <span className="flex-1 truncate">{person.name}</span>
         <ChevronDown aria-hidden="true" className="size-4 text-muted-foreground" />

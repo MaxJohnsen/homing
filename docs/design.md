@@ -65,7 +65,7 @@ Paper to read on, a linen shelf for your spaces, sage for what you can act on, a
 
 Surfaces differ by a step in tone, never by lines or shadows. Only what floats over the page, such as a menu or a dialog, casts a shadow. There are no labels above headings, and facts are said in a sentence, "Updated by Cara Lund on 14 October", never strung together with dots.
 
-Figtree is the only typeface, and it ships with the app. A screen in the app has a 34 px title. A decision, and each page outside the app, has one heading at 24 px, because it is a sentence saying who wants what. Section headings and the exact change are 18 px, running text 16 px, secondary text 14 px, and small labels such as "Only you" 12 px. That is the whole scale. Hierarchy comes from it, two weights and the muted color, never from another size, capitals or letter-spacing. Running text is in full ink, and the muted color is for what's secondary. Corners start at 14 px, and buttons and fields are pills.
+Figtree is the only typeface, and it ships with the app. A screen in the app has a 34 px title. A decision, and each page outside the app, has one heading at 24 px, because it is a sentence saying who wants what. Section headings and the exact change are 18 px, running text 16 px, secondary text 14 px, and small labels such as "Only you" 12 px. That is the whole scale. Hierarchy comes from it, two weights, regular and semibold, and the muted color, never from another size, capitals or letter-spacing. Running text is in full ink, and the muted color is for what's secondary. Corners start at 14 px, and buttons and fields are pills.
 
 ## Components
 

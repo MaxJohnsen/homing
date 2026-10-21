@@ -80,7 +80,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           <div className="flex items-start gap-2">
             <OutcomeIcon kind="approved" className="mt-0.5 size-5" />
             <div className="flex flex-col gap-0.5">
-              <p className="text-base font-medium">{done.heading}</p>
+              <p className="text-base font-semibold">{done.heading}</p>
               {done.detail && <p className="text-sm text-muted-foreground">{done.detail}</p>}
             </div>
           </div>
@@ -107,7 +107,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
         initialMessage ? <FieldError>{initialMessage}</FieldError> : <p className="text-sm text-muted-foreground">Getting the change from Homing…</p>
       ) : !outcome ? (
         <>
-          <p className="text-base font-medium">
+          <p className="text-base font-semibold">
             {proposal.action === 'plan' && proposal.plan
               ? proposal.plan.create
                 ? `Create ${proposal.plan.create.name} in ${placeOf(proposal)} and make ${proposal.plan.steps.length === 1 ? 'this change' : `these ${proposal.plan.steps.length} changes`} in it?`
@@ -182,7 +182,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
           <div className="flex items-start gap-2">
             <OutcomeIcon kind={outcome.kind} className="mt-0.5 size-5" />
             <div className="flex flex-col gap-0.5">
-              <p className="text-base font-medium">{outcome.heading}</p>
+              <p className="text-base font-semibold">{outcome.heading}</p>
               <p className="text-sm text-muted-foreground">{outcome.detail}</p>
             </div>
           </div>

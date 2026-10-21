@@ -214,10 +214,10 @@ export function Pager({ total, from, onChange, noun = ['page', 'pages'] }: { tot
         Showing {(first + 1).toLocaleString('en-US')}–{last.toLocaleString('en-US')} of {count(total, ...noun)}
       </p>
       <div className="flex gap-2">
-        <button type="button" disabled={first === 0} onClick={() => onChange(Math.max(0, first - pageSize))} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-medium disabled:opacity-40', focusRing)}>
+        <button type="button" disabled={first === 0} onClick={() => onChange(Math.max(0, first - pageSize))} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-40', focusRing)}>
           Previous
         </button>
-        <button type="button" disabled={last >= total} onClick={() => onChange(first + pageSize)} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-medium disabled:opacity-40', focusRing)}>
+        <button type="button" disabled={last >= total} onClick={() => onChange(first + pageSize)} className={cn('rounded-full bg-secondary px-4 py-2 text-sm font-semibold disabled:opacity-40', focusRing)}>
           Next
         </button>
       </div>
@@ -238,7 +238,7 @@ function Choose<T extends string>({ label, value, options, onChange }: {
       <select
         value={value}
         onChange={(event) => onChange(event.target.value as T)}
-        className={cn('h-10 rounded-full bg-muted pr-8 pl-4 text-sm font-medium text-foreground', focusRing)}
+        className={cn('h-10 rounded-full bg-muted pr-8 pl-4 text-sm font-semibold text-foreground', focusRing)}
       >
         {options.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>

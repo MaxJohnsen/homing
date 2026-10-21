@@ -12,7 +12,7 @@ function urlOf(url: string): string {
   return page ? `/pages/${page[1].toLowerCase()}` : defaultUrlTransform(url);
 }
 
-const link = cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing);
+const link = cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing);
 
 // The type scale has room for one heading size inside a page, so every heading in an item takes it.
 const heading = 'text-lg leading-snug font-semibold tracking-[-0.01em] mt-2';

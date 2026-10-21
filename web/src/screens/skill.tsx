@@ -7,7 +7,7 @@ import { Link } from '@/lib/router';
 /** A skill opens like a page: what it does, its instructions and files, where it comes from and what it replaces. */
 export function Skill({ skill }: { skill: SkillData }) {
   const space = skill.spaceId && skill.spaceName && (
-    <Link href={`/spaces/${skill.spaceId}/skills`} className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+    <Link href={`/spaces/${skill.spaceId}/skills`} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
       {skill.spaceName}
     </Link>
   );
@@ -30,7 +30,7 @@ export function Skill({ skill }: { skill: SkillData }) {
           {skill.replaces.map((other) => (
             <p key={other.id}>
               Where it applies, it replaces{' '}
-              <Link href={`/skills/${other.id}`} className={cn('rounded-sm font-medium text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
+              <Link href={`/skills/${other.id}`} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
                 {other.spaceName ? `${other.spaceName}’s ${skill.name}` : `the ${skill.name} from a space above`}
               </Link>
               .
@@ -49,7 +49,7 @@ export function Skill({ skill }: { skill: SkillData }) {
             {skill.files.map((file) => (
               <li key={file.path}>
                 <details className="group rounded-xl bg-muted">
-                  <summary className={cn('cursor-pointer list-none rounded-xl px-4 py-3 text-base font-medium [&::-webkit-details-marker]:hidden', focusRing)}>{file.path}</summary>
+                  <summary className={cn('cursor-pointer list-none rounded-xl px-4 py-3 text-base font-semibold [&::-webkit-details-marker]:hidden', focusRing)}>{file.path}</summary>
                   <pre className="overflow-x-auto px-4 pb-4 text-sm leading-relaxed whitespace-pre-wrap">{file.body}</pre>
                 </details>
               </li>
