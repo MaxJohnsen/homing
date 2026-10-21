@@ -99,7 +99,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
             </ul>
           </Part>
         )}
-        {(data.spaces.length > 0 || (space.admin && !space.archived)) && (
+        {(data.spaces.length > 0 || (space.admin && !space.archive)) && (
           <Part title="Spaces inside">
             <ul className="-mx-2 flex flex-col empty:hidden">
               {data.spaces.map((inside) => (
@@ -112,7 +112,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                 </li>
               ))}
             </ul>
-            {space.admin && !space.archived && (
+            {space.admin && !space.archive && (
               <Link href={`/spaces/new?in=${space.id}`} className={cn('flex items-center gap-2 rounded-lg px-2 py-1.5 -mx-2 text-base text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}>
                 <Plus aria-hidden="true" className="size-4" />
                 New space in {space.personal ? 'your personal space' : space.name}
