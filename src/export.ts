@@ -4,10 +4,12 @@
 // holds the rules and skills as AGENTS.md files and SKILL.md folders. Everything is read in the
 // person's own session, so row-level security keeps anyone else's private side out underneath.
 
+import { posix } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { stringify } from 'yaml';
 import { personOf, type Session } from './db.ts';
-import { importedAuthor, itemColumns, visible, type Imported, type ImportedAuthor, type ImportedPerson, type Item } from './knowledge.ts';
+import { includeSeen } from './guidance.ts';
+import { current, importedAuthor, itemColumns, visible, type Imported, type ImportedAuthor, type ImportedPerson, type Item } from './knowledge.ts';
 import { frontmatter } from './skills.ts';
 import { accessibleSpaces, listSpaces, peopleNames, type Space } from './spaces.ts';
 import type { Task } from './tasks.ts';
@@ -134,6 +136,29 @@ export interface Manifest {
     updatedAt: string;
     imported?: ImportedFrom;
   }[];
+  /**
+   * What each space's guidance includes by link, as the exporter sees it: for everyone, and their
+   * own. What it brings in is a space's rules or a skill, by id when it's in the export, or by
+   * name when it isn't, which can't come back in an import. Older exports have none.
+   */
+  includes: {
+    id: string;
+    /** The space whose guidance includes it. */
+    space: string;
+    visibility: Visibility;
+    /** The exporter's own, waiting while the space includes the same for everyone. */
+    waiting: boolean;
+    /** The space in the export whose rules it brings in. */
+    rules: string | null;
+    /** The skill in the export it brings in, by its page. */
+    skill: string | null;
+    /** What it brings in from outside the export: a space's rules, or one of its skills, by name. */
+    elsewhere: { space: string; skill: string | null } | null;
+    /** Who added it, and when. */
+    author: Author;
+    addedAt: string;
+    imported?: ImportedFrom;
+  }[];
 }
 
 /**
@@ -232,8 +257,31 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     order by t.created_at, t.id
   `;
 
+  // What each space's guidance includes, as the person sees it there: for everyone, and their own,
+  // only while they can open what it points to, so one they can't leaves no trace. Theirs waits
+  // while the space includes the same for everyone.
+  const includes = await s.tx<{ id: string; spaceId: string; privateTo: string | null; spaceIncluded: string | null; skillIncluded: string | null; fromName: string; skillName: string | null; waiting: boolean; addedBy: string | null; addedAt: Date; imported: Imported | null }[]>`
+    select i.id, i.space_id, i.private_to, i.space_included, i.skill_included, x.name as from_name, t.body as skill_name,
+           i.private_to is not null and exists (
+             select from includes o
+             where o.space_id = i.space_id and o.private_to is null and o.removed_at is null
+               and coalesce(o.space_included, o.skill_included) = coalesce(i.space_included, i.skill_included)
+           ) as waiting,
+           i.added_by, i.added_at, i.imported
+    from includes i
+    left join lateral (
+      select t.body, t.space_id from content t
+      where t.page_id = i.skill_included and t.kind = 'title' and ${visible(s, 't')} and ${current(s, 't')}
+      order by t.private_to is null
+      limit 1
+    ) t on true
+    join spaces x on x.id = coalesce(i.space_included, t.space_id) and x.id in (${accessibleSpaces(s)})
+    where i.space_id in ${s.tx(ids)} and i.removed_at is null and ${includeSeen(s, 'i')}
+    order by i.added_at, i.id
+  `;
+
   // Who imported what came in an import, when, and from where, where the person can see it.
-  const importIds = [...new Set([...spaceRows, ...pages, ...found, ...revisions, ...sources, ...archives, ...gathered, ...tasks].map((row) => row.imported?.import).filter((id) => id !== undefined))];
+  const importIds = [...new Set([...spaceRows, ...pages, ...found, ...revisions, ...sources, ...archives, ...gathered, ...tasks, ...includes].map((row) => row.imported?.import).filter((id) => id !== undefined))];
   const imports = new Map((importIds.length === 0 ? [] : await s.tx<{ id: string; importedBy: string | null; importedAt: Date; instance: string }[]>`
     select id, imported_by, imported_at, instance from imports where id in ${s.tx(importIds)}
   `).map((row) => [row.id, row]));
@@ -259,10 +307,11 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
     ...archives.map((archive) => archive.personId),
     ...gathered.map((gathering) => gathering.addedBy),
     ...tasks.flatMap((task) => [task.writtenBy, task.assignee, task.doneBy]),
+    ...includes.map((include) => include.addedBy),
   ].filter((id) => id !== null);
   const names = await peopleNames(s, named);
   // Those named in imports, among the rest in the order they come.
-  for (const row of [...spaceRows, ...spaceArchives, ...pages, ...found, ...revisions, ...sources, ...archives, ...gathered, ...tasks] as { imported?: (Imported & SpaceImported & { archivedBy?: ImportedPerson; assignee?: ImportedPerson; doneBy?: ImportedPerson }) | null }[]) {
+  for (const row of [...spaceRows, ...spaceArchives, ...pages, ...found, ...revisions, ...sources, ...archives, ...gathered, ...tasks, ...includes] as { imported?: (Imported & SpaceImported & { archivedBy?: ImportedPerson; assignee?: ImportedPerson; doneBy?: ImportedPerson }) | null }[]) {
     const imported = row.imported;
     for (const person of [imported?.author, imported?.publishedBy, imported?.archivedBy, imported?.assignee, imported?.doneBy, imported?.creator]) {
       const token = elsewhere(imported, person);
@@ -292,6 +341,7 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
   const items = found.filter((item) => item.kind !== 'removed' || (item.supersedes && seen.has(item.supersedes)));
   const itemIds = new Set(items.map((item) => item.id));
   const pageIds = new Set(pages.map((page) => page.id));
+  const exported = new Set(ids);
   const firstSeen = new Map(pages.map((page) => [page.id, page.seen]));
   // References in text to anything left out lose their id, so nothing outside the bundle shows through.
   // Rules and skills' files stay word for word, as guidance comes out as it went in.
@@ -402,6 +452,21 @@ async function collect(s: Session, spaceId: string, instance: URL, now: Date): P
       updatedAt: time(task.updatedAt),
       ...from(task.imported),
     })),
+    includes: includes.map((include) => {
+      const inside = include.spaceIncluded ? exported.has(include.spaceIncluded) : pageIds.has(include.skillIncluded!);
+      return {
+        id: include.id,
+        space: include.spaceId,
+        visibility: side(include.privateTo),
+        waiting: include.waiting,
+        rules: inside ? include.spaceIncluded : null,
+        skill: inside ? include.skillIncluded : null,
+        elsewhere: inside ? null : { space: include.fromName, skill: include.skillName },
+        author: author(include.addedBy, null, include.imported),
+        addedAt: time(include.addedAt),
+        ...from(include.imported),
+      };
+    }),
   };
 
   for (const item of manifest.items) {
@@ -603,6 +668,7 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
   const tasksIn = groupBy(m.tasks, (task) => task.space);
   const sourcesIn = groupBy(m.sources, (source) => source.space);
   const childrenOf = groupBy(m.spaces.filter((space) => space.parent), (space) => space.parent!);
+  const includesIn = groupBy(m.includes, (include) => include.space);
   const spaceName = new Map(m.spaces.map((space) => [space.id, space.name]));
   const usedOn = new Map<string, Set<string>>();
   let written = 0;
@@ -818,7 +884,8 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
         if (file.kind === 'file' && file.path && safePath(file.path)) files[`guidance/${layout.skills.get(skill.id)}/${file.path}`] = file.body;
       }
     }
-    if (rules.length || skills.length) {
+    const included = includesIn.get(space.id) ?? [];
+    if (rules.length || skills.length || included.length) {
       const rule = (item: Data) => {
         const marks = [item.onlyHere && 'Only here.', item.visibility === 'private' && `${Privately}.`].filter(Boolean).join(' ');
         const text = item.body.trim().split('\n').map((line, at) => (at === 0 || !line ? line : `  ${line}`)).join('\n');
@@ -832,6 +899,25 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
         const description = frontmatter(parts.find((item) => item.path === 'SKILL.md')?.body ?? '').description;
         return `- [${oneLine(name.body, 200).replace(/[[\]]/g, '')}](${local(layout.skills.get(page.id)!)}/SKILL.md)${description ? `: ${oneLine(description, 300)}` : ''}${name.visibility === 'private' ? ` (${Privately}.)` : ''}`;
       };
+      // What it includes, linked from here where it's in the export.
+      const from = (path: string) => posix.relative(posix.dirname(`guidance/${join(folder, 'AGENTS.md')}`), path);
+      const rulesOf = (id: string) => {
+        const name = oneLine(spaceName.get(id)!, 200);
+        const file = layout.files.get(m.pages.find((page) => page.space === id && page.type === 'guidance')?.id ?? '');
+        return file ? `[${name.replace(/[[\]]/g, '')}](${from(file)})` : name;
+      };
+      const include = (x: Manifest['includes'][number]) => {
+        const marks = [x.visibility === 'private' && `${Privately}.`, x.waiting && 'Waiting while it’s included for everyone.'].filter(Boolean).join(' ');
+        const skillPage = x.skill && m.pages.find((page) => page.id === x.skill);
+        const what = x.rules
+          ? `The rules of ${rulesOf(x.rules)}`
+          : skillPage && layout.skills.has(skillPage.id)
+            ? `The skill [${oneLine(titles.get(skillPage.id) ?? 'skill', 200).replace(/[[\]]/g, '')}](${from(`guidance/${layout.skills.get(skillPage.id)}/SKILL.md`)}), from ${oneLine(spaceName.get(skillPage.space)!, 200)}`
+            : x.elsewhere?.skill
+              ? `The skill ${oneLine(x.elsewhere.skill, 200)} from ${oneLine(x.elsewhere.space, 200)}, which isn’t in this export`
+              : `The rules of ${oneLine(x.elsewhere?.space ?? 'a space', 200)}, which isn’t in this export`;
+        return `- ${what}.${marks ? ` (${marks})` : ''}`;
+      };
       const requirements = ordered('requirement');
       const preferences = ordered('preference');
       files[`guidance/${join(folder, 'AGENTS.md')}`] = [
@@ -843,6 +929,7 @@ async function readable(m: Manifest, layout: Layout): Promise<Record<string, str
         ...(requirements.length ? ['## Requirements', '', ...requirements.map(rule), ''] : []),
         ...(preferences.length ? ['## Preferences', '', ...preferences.map(rule), ''] : []),
         ...(skills.length ? ['## Skills', '', ...skills.map(skill), ''] : []),
+        ...(included.length ? ['## Also included', '', `Guidance kept elsewhere that applies in ${named} too, as if it were set here:`, '', ...included.map(include), ''] : []),
       ].join('\n');
     }
   }

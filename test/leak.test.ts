@@ -399,6 +399,12 @@ describe('straight against the database', () => {
         imported((own) => ({ gathered: [{ collection: own.page, page, space: own.space, private: false, createdAt: now, imported: {} }] })),
         imported(() => ({ gathered: [{ collection: page, page: theirs.pageId, space: target.space, private: false, createdAt: now, imported: {} }] })),
         imported(() => ({ pageArchives: [{ page, archived: true, at: now, imported: {} }] })),
+        // Nor an include in their space, nor of their guidance, nor of anything the import didn't bring.
+        imported((own) => ({ includes: [{ space: target.space, private: true, rules: own.space, skill: null, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: target.space, skill: null, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: null, skill: target.skill.pageId, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: intruder.space, skill: null, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: null, skill: intruder.skill.pageId, addedAt: now, imported: {} }] })),
       ]) {
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), kept);
       }

@@ -18,6 +18,8 @@ export interface ImportPreviewData {
   /** Each rule word for word, with what it refers to in the export by name. */
   rules: { space: string; kind: 'requirement' | 'preference'; text: string; onlyHere: boolean; private: boolean }[];
   skills: { space: string; name: string; private: boolean }[];
+  /** What a space's guidance includes from another, its rules or a skill: from the file, or from outside it, which won't come along. */
+  includes: { space: string; kind: 'rules' | 'skill'; from: string; skill: string | null; private: boolean; waiting: boolean; inFile: boolean }[];
   /** A fingerprint of the export, so the import is of exactly what was shown. */
   hash: string;
 }
@@ -155,6 +157,30 @@ export function ImportSpace({ actions, onImported, onCancel, shown }: {
                 ))}
               </ul>
             )}
+          </Section>
+        )}
+        {preview && preview.includes.length > 0 && (
+          <Section title="Included from other spaces" description="Guidance a space brings in from another by link, as if it were set there.">
+            <ul className="flex flex-col gap-1">
+              {preview.includes.map((include, index) => {
+                const what = include.kind === 'rules' ? `the rules of ${include.inFile ? here(include.from) : include.from}` : `the skill ${include.skill} from ${include.inFile ? here(include.from) : include.from}`;
+                return (
+                  <li key={index} className="flex flex-col gap-0.5 py-2">
+                    <span className="text-base">
+                      {include.inFile
+                        ? `${here(include.space)} includes ${what}.`
+                        : `${here(include.space)} included ${what}, which isn’t in the file. ${include.kind === 'rules' ? 'They' : 'It'} won’t apply here.`}
+                    </span>
+                    {(include.private || include.waiting) && (
+                      <span className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                        {include.waiting && 'Waiting, since it’s included for everyone too'}
+                        {include.private && <OnlyYou />}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
           </Section>
         )}
         {preview && preview.skills.length > 0 && (
