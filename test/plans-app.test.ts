@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
+import { addRule } from '../src/guidance.ts';
 import { proposePlan } from '../src/proposals.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, changeMember, createSpace } from '../src/spaces.ts';
@@ -392,4 +393,27 @@ test('a plan shares only what’s in its own space, even written straight to the
   const [kept] = await admin`select private_to from tasks where id = ${task}`;
   assert.deepEqual([row.privateTo, kept.privateTo], [ana.id, ana.id]);
   assert.equal((await seenBy(cara, home))!.tasks.length, 0);
+});
+
+test('a plan’s changes take spaces, rules and limits as their own actions do, and search finds it', async () => {
+  const { ana, home, claude, plan } = await people();
+  // Kitchen is closed, so only Ana has it and it's created at once; Home's shared rule applies in it.
+  const kitchen = refOf('space', (await claude.call('act', { action: 'space.create', input: { name: 'Kitchen', who: 'with others', in: 'Home', closed: true } })).text);
+  const above = await as({ ...ana, direct: true }, (s) => addRule(s, { spaceId: home, kind: 'preference', body: 'Keep the hallway clear.', shared: true }));
+  const rule = { action: 'guidance.propose', input: { change: 'add', kind: 'preference', text: 'Close the windows when you leave.', shared: true } };
+
+  // A rule decides where it changes, so one set in Home can't change in a plan for Kitchen.
+  const elsewhere = await plan({ space: 'Kitchen', changes: [{ action: 'guidance.propose', input: { change: 'change', rule: `item:${above.id}`, text: 'Keep the hallway clear of shoes.' } }, rule] });
+  assert.match(elsewhere.text, new RegExp(`Change 1 \\(guidance\\.propose\\): That rule is set in Home \\(space:${home}\\), so that's where it changes, not in Kitchen: propose it on its own`));
+  // A page never stands in for the space where who's in it changes.
+  const page = refOf('page', (await claude.call('remember', { space: `space:${kitchen}`, page: 'Tiles', text: 'Grey tiles.' })).text);
+  assert.match((await plan({ space: 'Kitchen', changes: [{ action: 'members.change', input: { space: `page:${page}`, person: 'Cara', change: 'add' } }, rule] })).text, /Change 1 \(members\.change\): That's a page, not a space/);
+  // A rule has the length it has on its own.
+  assert.match((await plan({ space: 'Kitchen', changes: [{ action: 'guidance.propose', input: { change: 'add', kind: 'preference', text: 'x'.repeat(4001), shared: true } }, rule] })).text, /Change 1 \(guidance\.propose\): That input doesn't fit guidance\.propose\. text:/);
+
+  // Named by its name, the plan goes in, and search finds it by what it changes.
+  const proposed = await plan({ space: 'Kitchen', changes: [{ action: 'members.change', input: { space: 'Kitchen', person: 'Cara', change: 'add' } }, rule] });
+  assert.ok(!proposed.failed, proposed.text);
+  const found = (await claude.call('search', { query: 'windows' })).text;
+  assert.match(found, new RegExp(`- Waiting for the user: A plan of 2 changes, decided together: add Cara; add a preference \\(shared\\): "Close the windows when you leave\\." \\(proposal:${proposalOf(proposed.text)}, in Kitchen\\)`));
 });
