@@ -1,6 +1,6 @@
 # Benchmarks
 
-Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks): whether models call Homing when they should, whether they build `act`'s payloads as well as they use dedicated tools, and how much `context` should give. Real models talk to a local Homing through its real MCP tools, and the harness checks what happened. The results are in [results.md](results.md).
+Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks): whether models call Homing when they should, whether they build `act`'s payloads as well as they use dedicated tools, and how much `context` should give. Benchmark 1 also has harder conversations, which ask whether models use Homing when it helps and leave it alone otherwise. Real models talk to a local Homing through its real MCP tools, and the harness checks what happened. The results are in [results.md](results.md).
 
 The models cost money, so CI never runs this.
 
@@ -19,7 +19,7 @@ npm run bench -- report rerun           # its tables
 npm run bench -- compare full rerun     # the first run's failures beside the rerun's
 ```
 
-`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs, `--concurrency` how many conversations run at once and `--phase` the name of a run whose results are kept apart, in `results/<phase>.jsonl`. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
+`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs, `--variants` some of the variants, `--concurrency` how many conversations run at once and `--phase` the name of a run whose results are kept apart, in `results/<phase>.jsonl`. Benchmark 1's harder conversations are `--only b1-hard`. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
 
 Each conversation is one line in `results/<phase>.jsonl`: the tools called with their arguments, Homing's answers (shortened), the model's answer, tokens, time and cost. A run skips what already has a result there, so a stopped run continues without paying for anything twice.
 
@@ -37,23 +37,30 @@ The key is read from its file when a call is made and only ever sent in the Auth
 
 **A world per conversation.** Each conversation starts from a new world, made through Homing's own operations (`homing.ts`), so nothing one conversation saves shows up in another. Ana Berg works at Acme, a consultancy, with her colleague Cara Lund. Acme's client Northwind is relaunching its website, in a space below Northwind, and Fjord Bank is a closed client space only Ana has. Her personal space holds a kitchen renovation and her running. There are shared and private rules, a status report skill, about 30 pages written by both of them, things Ana's assistant saved for her alone, two private tasks and a shared one, and a rule her assistant proposed that she hasn't decided yet. Her assistant connects over OAuth the way Claude or ChatGPT does, and acts as her over MCP.
 
-**The conversation** (`agent.ts`). The model gets Homing's tools from `tools/list` as functions. The harness forwards each call to Homing and returns its answer, for up to 10 model calls. The system prompt is a plain assistant's, "You are a helpful assistant. Today is Tuesday, 20 October 2026.", plus Homing's MCP instructions in the variants that have them. When a change was asked for and the model stops without making one, usually to ask permission, the user replies once with "Yes, please go ahead." The results say how often that was needed.
+**The conversation** (`agent.ts`). The model gets Homing's tools from `tools/list` as functions. The harness forwards each call to Homing and returns its answer, for up to 10 model calls. The system prompt is a plain assistant's, "You are a helpful assistant. Today is Tuesday, 20 October 2026.", plus Homing's MCP instructions in the variants that have them. When a change was asked for and the model stops without making one, usually to ask permission, the user replies once with "Yes, please go ahead." The results say how often that was needed. In benchmark 1's harder conversations the user can say up to three things, one after another, scripted in advance, and each gets up to 10 model calls and its own "go ahead".
 
 **Variants** (`variants.ts`) change only how Homing is presented, never Homing:
 
 | Benchmark | Variants |
 |---|---|
 | 1. MCP reliability | `mcp-only`: the tools and their descriptions. `instruction`: the same, with Homing's MCP instructions, which hold its one recommended instruction, in the system prompt. |
+| 1, harder conversations | `mcp-only`, `old-instruction` and `instruction`: the tools alone, with Homing's MCP instructions as they were before 21 October, and as they are now. All three with four other tools beside Homing's. |
 | 2. Tool design | `act`: Homing's five tools. `dedicated`: each of `act`'s actions is a function of its own (11 on 20 October, 13 on 21 October), with `act`'s description of it and that action's own input, and the harness turns each call back into `act`. Homing's words that point to `act` point to the matching function instead. Both with the instructions. |
 | 3. Context size | `core`: `context` without what's relevant to the request. `relevant`: `context` as Homing gives it, the core plus up to 10 matching items, one line each. `full`: that, plus the pages those items are on, in full, up to five. All with the instructions. |
 
 **Checks** (`benchmarks.ts`) are deterministic, and no model judges another. A question counts as answered when the model asked Homing and its answer has the expected facts, matched by patterns such as "1 March" written any of the usual ways. A change counts as done when Homing's database shows it afterwards: the item saved in the right space, the task due on Friday, the proposal with the right rule, item or person. Benchmark 2 also records whether the first write was the expected tool and action, and whether Homing accepted it the first time. Benchmark 1 has two control questions Homing has nothing to do with, to see whether the instruction makes a model call it anyway.
 
+**Harder conversations** (`harder.ts`) ask whether a model uses Homing when it makes the answer or the action better, and leaves it alone otherwise. Every conversation also offers four other tools, as a chat app would (`others.ts`): a web search, a calendar, an email inbox and a notes app, which answer from canned data about Ana's week. There are 41 conversations of five kinds: requests that may or may not be about Ana's work, questions Homing has nothing to do with, conversations of three turns, requests that belong to another tool, to Homing or to both, and two people's assistants working together. Each thing the user says is labeled: Homing helps, it doesn't, or either is fine, such as a follow-up the conversation may already answer.
+
+They are scored by what the user said, a turn at a time. Homing counts as used in a turn when any of its tools was called. "Used when it helps" is the share of the turns where it helps in which it was used, "left alone otherwise" the share of the turns where it doesn't in which it wasn't, and "precision" the share of the turns where it was used in which it helps. Whether the task was done is scored on its own, as in benchmark 1: the facts in each turn's answer, what Homing's database shows afterwards, and whether a turn that belongs to another tool used it. A conversation that calls Homing when it needn't can still do its task; it costs time and tokens instead.
+
+**Two people together** (`together.ts`). Ana's and Cara's assistants connect over OAuth, each as its own person, and talk with them in four conversations of their own. Ana's assistant saves what Mona in legal decided about the cookie banner and proposes sharing it, which Ana approves, and keeps Ana's worry about it private. Cara's assistant finds what was shared, keeps a private note of Cara's on the same subject, and asks for a rule for everyone on the relaunch. Cara is a member, so that is a request: she sends it and Ana, the admin, approves it. Then each assistant is asked about the banner again. The harness approves as each person through the app's decision API, with what the decision page shows them, as their click would. It also reads the page about Mona as each assistant, where each of them has a private note: each must see the shared items and their own note, never the other's. Leaks are checked word for word, in every tool result and every answer of one person's assistant, against every text private to the other: items, page titles, tasks, sources, spaces only they have, and proposals nobody else was sent, as well as the words only one of them uses, such as the Lindqvist agency in Ana's worry. There must be none.
+
 **Models.** Claude Sonnet 5.5 and GPT-6.1 Sol: the newest of Anthropic's Sonnet and of OpenAI's Sol models on OpenRouter's list on 20 October 2026, each in the middle of its maker's range there (between Haiku and Opus, and between Luna and Astra), at the same price, USD 2 per million input tokens and 10 per million output tokens. Each runs at its API's default reasoning, served by its own maker where OpenRouter can.
 
 **Caching and strict mode.** The system prompt and the newest message are marked for Anthropic's prompt cache; OpenAI cached long prompts on its own, as the cached-token counts show. Functions are sent with `strict: false`. Sent through OpenRouter without a `strict` field, GPT-6.1 Sol called them as if they were strict: it filled every optional field, and always sent `context` a made-up `space`, such as `" "` or `"personal"`, which Homing refuses. With `strict: false` it left them out. That is what we saw, in 7 conversations and 10 single calls (see [results.md](results.md)); whether to send `strict` is each client's choice.
 
-**Changed along the way.** Smoke runs of 30 conversations in all came before the pilot, and three things changed after them. Functions got `strict: false`, as above. A reminder saved in the personal space now counts as done: Claude Haiku 5.5 saved one there in the first smoke run, and a reminder works from there. And the task share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team, and `search` can't find tasks: both GPT conversations asked which space and didn't share it, and Claude searched space after space, once only after the "go ahead". The first wording is kept as share-task-vague, which isn't in the results of 20 October and runs from the rerun of 21 October on. After the full run, the patterns for a few facts were made stricter for the next run; scoring the stored answers again with them changes 4 fact counts, where the old pattern took "follow up by email" for "Gunnar prefers email", and no result. For the rerun, archive-page also counts as done when archiving the page waits for Ana's approval: since #90, a page in a space others can open is archived once the user approves, even one only they see.
+**Changed along the way.** Smoke runs of 30 conversations in all came before the pilot, and three things changed after them. Functions got `strict: false`, as above. A reminder saved in the personal space now counts as done: Claude Haiku 5.5 saved one there in the first smoke run, and a reminder works from there. And the task share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team, and `search` can't find tasks: both GPT conversations asked which space and didn't share it, and Claude searched space after space, once only after the "go ahead". The first wording is kept as share-task-vague, which isn't in the results of 20 October and runs from the rerun of 21 October on. After the full run, the patterns for a few facts were made stricter for the next run; scoring the stored answers again with them changes 4 fact counts, where the old pattern took "follow up by email" for "Gunnar prefers email", and no result. For the rerun, archive-page also counts as done when archiving the page waits for Ana's approval: since #90, a page in a space others can open is archived once the user approves, even one only they see. How the harder conversations' checks changed after their smoke run, pilot and full run is in [results.md](results.md#changed-along-the-way).
 
 ## Prompts
 
@@ -83,6 +90,65 @@ The key is read from its file when a call is made and only ever sent in the Auth
 | spain | governed | Set up a space for planning my trip to Spain next spring. It's just for me. |
 | percent | control | What's 15% of 2,400? |
 | translate | control | How do I say 'see you next week' in Norwegian? |
+
+### 1, harder conversations
+
+"Homing helps" is the label of each thing the user says, in order: whether what Homing knows makes the answer or the action better. A request Homing can't improve is labeled no even when it touches Ana's life, such as the pace for her marathon goal, which the question already gives. report-structure is labeled yes because Acme has a skill for exactly this, though the question reads as general. "Other tool" is the tool the request belongs to, which must be used for it to count as done. The other tools know Ana's calendar for the week, four emails, among them Gunnar's about the budget and his answer about the timeline, three notes, and what a web search finds about the weather, WCAG and Azure's prices.
+
+| Task | Kind | Homing helps | Other tool | What the user says |
+|---|---|---|---|---|
+| bank-signoff | ambiguous | yes |  | What was that thing with the bank again, about who signs off on bigger orders? |
+| deadline | ambiguous | yes |  | When's the deadline again? |
+| report-structure | ambiguous | yes |  | What's a good structure for a status report? |
+| azure-or-aws | ambiguous | yes |  | Should we go with Azure or AWS? |
+| cookie-who | ambiguous | yes |  | Who do I talk to about the cookie thing? |
+| kitchen-guy | ambiguous | yes |  | Did the guy doing my kitchen say when he starts? |
+| ttl | ambiguous | no |  | What does a DNS TTL do, and what should it be before a migration? |
+| pace | ambiguous | no |  | What pace per kilometer do I need for a 3:45 marathon? |
+| notice-period | ambiguous | no |  | What's a typical notice period in a consulting contract? |
+| headless | ambiguous | no |  | What's the difference between a headless CMS and a traditional one? |
+| percent | unrelated | no |  | What's 15% of 2,400? |
+| translate | unrelated | no |  | How do I say 'see you next week' in Norwegian? |
+| capital | unrelated | no |  | What's the capital of Australia? |
+| berlin-wall | unrelated | no |  | What year did the Berlin Wall fall? |
+| palindrome | unrelated | no |  | Write a Python function that checks whether a string is a palindrome. |
+| git-undo | unrelated | no |  | How do I undo my last git commit but keep the changes? |
+| friendlier | unrelated | no |  | Make this sound friendlier: 'Send me the report by Friday.' |
+| fahrenheit | unrelated | no |  | What's 72 °F in Celsius? |
+| sky | unrelated | no |  | Why is the sky blue? |
+| synonyms | unrelated | no |  | Give me three synonyms for 'important'. |
+| let-const | unrelated | no |  | In JavaScript, what's the difference between let and const? |
+| mortgage | unrelated | no |  | Explain what a mortgage is in two sentences. |
+| football | unrelated | no |  | How many players does a football team have on the pitch? |
+| compound | unrelated | no |  | If I put 10,000 in at 5% a year, compounded yearly, what do I have after three years? |
+| migration-follow-up | multi-turn | yes, either, yes |  | When does the Northwind relaunch go live? → And who's doing the content migration? → OK. Remind me to check in with her about it on Thursday. |
+| change-of-mind | multi-turn | yes, yes, either |  | Remind me to call Gunnar about the budget on Friday. → Actually, make that Monday instead. → And does he prefer calls or email? |
+| budget-math | multi-turn | no, yes, yes |  | What's 15% of 450,000? → Is that more or less than what Gunnar hinted the budget might grow by? → OK. Note that I want to ask him for the full amount he hinted at. |
+| birthday | multi-turn | no, no, no |  | Help me write a short birthday message for my sister Ingrid. → Make it a bit funnier. → Perfect. Now translate it into Norwegian. |
+| email-draft | multi-turn | yes, no, yes |  | Draft a short email to Gunnar saying the relaunch might slip by two weeks. → Make it a bit more formal. → Thanks, I've sent it. Keep a note that I told him today. |
+| dns-handover | multi-turn | yes, no, yes |  | Who at Northwind owns hosting and DNS? → What does a DNS TTL do, by the way? → Got it. Per is leaving at the end of November, and Ola Nordmann takes over. Note that. |
+| calendar-tomorrow | competing | no | `calendar_list_events` | What's on my calendar tomorrow? |
+| gunnar-replied | competing | no | `email_search` | Did Gunnar reply to my email about the timeline? |
+| rain | competing | no | `web_search` | Will it rain in Oslo tomorrow? |
+| wcag-ratio | competing | no | `web_search` | Search the web for the contrast ratio WCAG 2.1 AA requires for normal text. |
+| azure-price | competing | no | `web_search` | What does a basic Azure App Service plan cost per month? |
+| oat-milk | competing | no | `notes_save` | Add oat milk to the shopping list in my notes. |
+| meeting-prep | competing | yes | `calendar_list_events` | Help me prepare for my 13:00 meeting tomorrow. |
+| budget-email | competing | yes | `email_search` | Gunnar emailed me about the budget. What did he say? Keep anything important for the project. |
+| wcag-project | competing | yes |  | Does the relaunch have to meet WCAG, and when is the audit? |
+| kari | competing | yes |  | Who is Kari Lie? |
+| together | together | yes, every turn |  | Four conversations, below. |
+
+The four conversations of together, in order, with what the harness does between them:
+
+| Who | What they say |
+|---|---|
+| Ana | Mona Lie approved the cookie banner today, on one condition: the reject button must be as visible as the accept button. Save that for the relaunch and share it with the team. → One more, just for me, don't share it: I think her condition costs us a week, and the Lindqvist agency's estimate looks too optimistic. |
+| | Ana approves sharing what Mona decided, and nothing that holds her worry. |
+| Cara | What's the latest on the cookie banner for the relaunch? → Keep a private note for me, not for the team: I'll ask Lars whether the Osprey component can show both buttons equally. → Make it a rule for everyone on the relaunch: any change to the cookie banner needs Mona's approval before it goes live. |
+| | Cara sends her request; it must reach Ana, who approves it; it must then apply to both. |
+| Ana | I'm about to change the cookie banner text. Anything I should keep in mind? |
+| Cara | Summarize what we know about the cookie banner so far. |
 
 ### 2. Tool design
 

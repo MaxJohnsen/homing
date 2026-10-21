@@ -5,11 +5,56 @@
 
 import type { Tool } from '@modelcontextprotocol/client';
 import type { Setup, Trace } from './agent.ts';
-import type { Bench, World } from './homing.ts';
+import type { AssistantKind, Bench, World } from './homing.ts';
+import type { Model } from './openrouter.ts';
 import { contextSized, dedicated, mcpOnly, recommended, type ContextSize } from './variants.ts';
 
 /** Alternatives for one fact: an answer has the fact when it matches any of them. */
-type Fact = RegExp[];
+export type Fact = RegExp[];
+
+/** One thing the user says in a conversation, and what should come of it. */
+export interface Turn {
+  say: string;
+  kind: Task['kind'];
+  /**
+   * Whether Homing should be used for it: true when it makes the answer or the action better,
+   * false when it doesn't. Left out when either is fine, such as a follow-up the conversation may
+   * already answer.
+   */
+  homing?: boolean;
+  facts?: Fact[];
+  need?: number;
+  /** Another tool it belongs to, such as web_search. */
+  tool?: string;
+}
+
+/** How a turn went: whether Homing and the tool it belongs to were used, and the facts in its answer. */
+export interface TurnResult {
+  homing?: boolean;
+  used: boolean;
+  tool?: string;
+  usedTool?: boolean;
+  facts?: { found: number; of: number };
+}
+
+/** A conversation the harness runs itself, such as two people's assistants working together. */
+export interface Scenario {
+  bench: Bench;
+  model: Model;
+  kind: AssistantKind;
+  setup(tools: Tool[], instructions: string): Setup;
+  label: string;
+}
+
+/** What came of a scenario: every conversation in it as one trace, and what wasn't done. */
+export interface Outcome {
+  trace: Trace;
+  turns: TurnResult[];
+  failures: string[];
+  steps: { step: string; done: boolean }[];
+  /** Where one person's assistant got something private to the other. There must be none. */
+  leaks: string[];
+}
 
 export interface Task {
   id: string;
@@ -23,10 +68,16 @@ export interface Task {
   expect?: string[];
   /** What must be true in Homing afterwards. Returns what isn't. */
   check?(look: Look): Promise<string[]>;
+  /** Benchmark 1's harder conversations: what kind of conversation it is. */
+  group?: string;
+  /** What the user says, turn by turn, each labeled. The prompt is the first. */
+  turns?: Turn[];
+  /** Runs the conversations itself, instead of one conversation with the prompt. */
+  run?(scenario: Scenario): Promise<Outcome>;
 }
 
 export interface Benchmark {
-  id: 'b1' | 'b2' | 'b3';
+  id: 'b1' | 'b2' | 'b3' | 'b1-hard';
   name: string;
   variants: string[];
   tasks: Task[];
@@ -35,18 +86,18 @@ export interface Benchmark {
 
 // Dates the way models write them: "1 March", "March 1st", "2027-03-01".
 const months = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august', 'september', 'october', 'november', 'december'];
-function date(day: number, month: string): Fact {
+export function date(day: number, month: string): Fact {
   const m = months.indexOf(month) + 1;
   const iso = `-${String(m).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
   const short = month.slice(0, 3);
   return [new RegExp(`\\b${day}(st|nd|rd|th)?\\.?\\s+(of\\s+)?${short}`), new RegExp(`${short}[a-z]*\\.?\\s+${day}(st|nd|rd|th)?\\b`), new RegExp(iso)];
 }
-const any = (...patterns: RegExp[]): Fact => patterns;
+export const any = (...patterns: RegExp[]): Fact => patterns;
 
 // Facts several tasks look for, matched only where they're said, not where a word happens to appear.
-const perOwnsHosting = any(/hansen|\bper\b[^.\n]{0,60}\b(hosting|dns)\b|\b(hosting|dns)\b[^.\n]{0,60}\bper\b/);
-const prefersEmail = any(/(prefers?|rather have|likes)[^.\n]{0,30}\be-?mails?\b|e-?mails? (over|rather than|instead of|before) (a |phone )?calls?/);
-const itTeamRunsAzure = any(/\bit team|already (runs?|uses|using|on|has|in)\b/);
+export const perOwnsHosting = any(/hansen|\bper\b[^.\n]{0,60}\b(hosting|dns)\b|\b(hosting|dns)\b[^.\n]{0,60}\bper\b/);
+export const prefersEmail = any(/(prefers?|rather have|likes)[^.\n]{0,30}\be-?mails?\b|e-?mails? (over|rather than|instead of|before) (a |phone )?calls?/);
+export const itTeamRunsAzure = any(/\bit team|already (runs?|uses|using|on|has|in)\b/);
 
 /** The world after a conversation, read with the admin role but only ever about this world's people and spaces. */
 export class Look {
@@ -118,10 +169,10 @@ export class Look {
   }
 }
 
-const northwindTree = (w: World) => [w.spaces.northwind, w.spaces.relaunch];
+export const northwindTree = (w: World) => [w.spaces.northwind, w.spaces.relaunch];
 
 /** "saved 15 March", or why not. */
-const unless = (ok: boolean, why: string) => (ok ? [] : [why]);
+export const unless = (ok: boolean, why: string) => (ok ? [] : [why]);
 
 // What Homing should do, whichever way the model gets there.
 const checks = {
@@ -407,23 +458,26 @@ export const b3: Benchmark = {
 
 export const benchmarks = [b1, b2, b3];
 
-/** Everything the model wrote, the way the checks read it. */
-export function answerOf(trace: Trace): string {
-  return trace.texts.join('\n\n');
+/** Everything the model wrote, or in one of the user's turns, the way the checks read it. */
+export function answerOf(trace: Trace, turn?: number): string {
+  return trace.texts
+    .filter((text) => turn === undefined || text.turn === turn)
+    .map((text) => text.text)
+    .join('\n\n');
 }
 
-/** How many of the task's facts the answer has, and whether that's enough. */
-export function factsIn(task: Task, answer: string): { found: number; of: number; enough: boolean } {
+/** How many of a task's or a turn's facts the answer has, and whether that's enough. */
+export function factsIn(task: { facts?: Fact[]; need?: number }, answer: string): { found: number; of: number; enough: boolean } {
   const text = answer.toLowerCase().replace(/[   ]/g, ' ');
   const facts = task.facts ?? [];
   const found = facts.filter((fact) => fact.some((pattern) => pattern.test(text))).length;
   return { found, of: facts.length, enough: found >= (task.need ?? facts.length) };
 }
 
-/** The writes a conversation made, as `remember` or `act:` and the action, in order. */
-export function writesOf(trace: Trace): { name: string; failed: boolean }[] {
+/** The writes a conversation made, or one of its turns, as `remember` or `act:` and the action, in order. */
+export function writesOf(trace: Trace, turn?: number): { name: string; failed: boolean }[] {
   return trace.calls
-    .filter((call) => call.tool === 'remember' || call.tool === 'act')
+    .filter((call) => (call.tool === 'remember' || call.tool === 'act') && (turn === undefined || call.turn === turn))
     .map((call) => ({
       name: call.tool === 'act' ? `act:${typeof call.args === 'object' ? String(call.args.action) : '?'}` : 'remember',
       failed: call.failed,
@@ -432,3 +486,17 @@ export function writesOf(trace: Trace): { name: string; failed: boolean }[] {
 
 /** Read tools, which every Homing conversation should start with. */
 export const readTools = new Set(['context', 'search', 'read']);
+
+/** How each of a conversation's turns went, and the facts or tools a turn missed. */
+export function scoreTurns(turns: Turn[], trace: Trace): { turns: TurnResult[]; failures: string[] } {
+  const failures: string[] = [];
+  const scored = turns.map((turn, index) => {
+    const calls = trace.calls.filter((call) => call.turn === index);
+    const facts = turn.facts ? factsIn(turn, answerOf(trace, index)) : undefined;
+    const usedTool = turn.tool ? calls.some((call) => call.name === turn.tool) : undefined;
+    if (facts && !facts.enough) failures.push(`turn ${index + 1}: the answer has ${facts.found} of ${facts.of} facts`);
+    if (usedTool === false) failures.push(`turn ${index + 1}: ${turn.tool} wasn't used`);
+    return { homing: turn.homing, used: calls.some((call) => call.tool), tool: turn.tool, usedTool, facts: facts && { found: facts.found, of: facts.of } };
+  });
+  return { turns: scored, failures };
+}

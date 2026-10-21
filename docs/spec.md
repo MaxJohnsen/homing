@@ -380,7 +380,7 @@ More about the tools:
 
 **Clients.**
 
-- There are three levels of integration: MCP only, which works whenever the client calls the tools; MCP plus one recommended instruction, which is more consistent; and native integration, where context loads reliably and sessions are captured through hooks. The recommended instruction is part of Homing's MCP instructions, so clients that show those follow it without setup.
+- There are three levels of integration: MCP only, which works whenever the client calls the tools; MCP plus one recommended instruction, which says when Homing helps, so the assistant uses it for the person's work and leaves it out of the rest; and native integration, where context loads reliably and sessions are captured through hooks. The recommended instruction is part of Homing's MCP instructions, so clients that show those follow it without setup.
 - With native integration, Homing learns from conversations automatically unless you say "don't keep this". Otherwise it learns through `remember`. It keeps the knowledge, not the transcript, and background learning never depends on the chat client.
 - Space detection is a suggestion that asks when unsure. Git remotes are hints. There is no hidden "current space".
 - Homing requires no repository structure, local workspace or separate chat app. Prompts and MCP Apps are enhancements.
@@ -430,7 +430,7 @@ When instances work together:
 To run before building more than is needed.
 
 0. **Small items vs. a plain wiki.** Feed the same sources over simulated weeks into a plain agent-maintained wiki and into pages of small, sourced items kept by the upkeep operations. Compare correctness, staleness, drift, traceability and cost. Add structure only where it wins.
-1. **MCP reliability.** How consistently Claude and ChatGPT call Homing on realistic prompts, with MCP only and with one recommended instruction.
+1. **MCP reliability.** How consistently Claude and ChatGPT call Homing on realistic prompts, and leave it out where it can't help, with MCP only and with one recommended instruction.
 2. **Tool design.** Whether agents build `act` payloads correctly compared with dedicated tools, and whether they choose correctly between `remember` and `act`.
 3. **Context size.** Core only, core plus relevant summaries, and core plus full pages, compared on quality, number of calls, latency and tokens.
 4. **Retrieval.** Links plus full-text search, with and without semantic search, with row-level security on.

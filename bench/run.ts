@@ -11,12 +11,14 @@
 // in ~/.config/homing/bench-spend.json, and only one run at a time may use it. CI never runs this.
 
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import type { Tool } from '@modelcontextprotocol/client';
 import { parseArgs } from 'node:util';
 import { converse, homingOver, type Trace } from './agent.ts';
-import { answerOf, benchmarks, factsIn, Look, readTools, writesOf, type Benchmark, type Task } from './benchmarks.ts';
+import { answerOf, benchmarks, factsIn, Look, readTools, scoreTurns, writesOf, type Benchmark, type Task, type TurnResult } from './benchmarks.ts';
 import { hardCap, Ledger, ledgerPath, OverBudget, usd } from './budget.ts';
 import { makeWorld, startHoming, type AssistantKind, type Bench } from './homing.ts';
 import { fileKey, keyUsage, listedModels, Model, redact } from './openrouter.ts';
+import { b1Hard } from './harder.ts';
 import { compare, report } from './report.ts';
 
 const here = new URL('./', import.meta.url);
@@ -34,9 +36,12 @@ const { positionals, values } = parseArgs({
     models: { type: 'string', default: defaultModels.join(',') },
     concurrency: { type: 'string', default: '4' },
     phase: { type: 'string' },
+    variants: { type: 'string' },
   },
 });
 const command = positionals[0];
+/** Every benchmark, with benchmark 1's harder conversations after the first three. */
+const all = [...benchmarks, b1Hard];
 const runs = Number(values.runs);
 const concurrency = Number(values.concurrency);
 
@@ -71,7 +76,7 @@ export interface Result {
   choice?: boolean;
   complete?: boolean;
   firstTry?: boolean;
-  calls?: { name: string; tool?: string; args: unknown; failed: boolean; answer: string }[];
+  calls?: { name: string; tool?: string; args: unknown; failed: boolean; answer: string; turn?: number }[];
   answer?: string;
   modelCalls?: number;
   nudged?: boolean;
@@ -82,6 +87,12 @@ export interface Result {
   modelMs?: number;
   homingMs?: number;
   totalMs?: number;
+  /** Benchmark 1's harder conversations: the kind of conversation, and how each of the user's turns went. */
+  group?: string;
+  turns?: TurnResult[];
+  /** Two people's assistants working together: each step, and anything one got that is private to the other. */
+  steps?: { step: string; done: boolean }[];
+  leaks?: string[];
 }
 
 interface Job {
@@ -110,73 +121,109 @@ const assistantFor = (model: Model): AssistantKind => (model.id.startsWith('anth
 
 async function runJob(bench: Bench, job: Job): Promise<Result> {
   const base = { key: keyOf(job), phase: job.phase, benchmark: job.benchmark.id, variant: job.variant, model: job.model.id, task: job.task.id, kind: job.task.kind, run: job.run };
+  const task = job.task;
+  if (task.run) {
+    const setup = (tools: Tool[], instructions: string) => job.benchmark.setup(job.variant, tools, instructions);
+    const outcome = await task.run({ bench, model: job.model, kind: assistantFor(job.model), setup, label: base.key });
+    return { ...base, group: task.group, ...resultOf(outcome.trace, outcome.failures), turns: outcome.turns, steps: outcome.steps, leaks: outcome.leaks };
+  }
   const world = await makeWorld(bench, assistantFor(job.model));
   const session = await world.assistant.open();
   try {
     const { tools } = await session.client.listTools();
     const instructions = session.client.getInstructions() ?? '';
     const setup = job.benchmark.setup(job.variant, tools, instructions);
-    const writes = (trace: Trace) => writesOf(trace).length > 0;
+    const look = (trace: Trace) => new Look(bench, world, trace);
+    // Asking first is fair for a change. A user who asked for it says yes once.
+    const changes = (kind: Task['kind']) => kind === 'write' || kind === 'governed';
+    const nudge = 'Yes, please go ahead.';
+
+    if (task.turns) {
+      const turns = task.turns;
+      const trace = await converse({
+        model: job.model,
+        setup,
+        homing: homingOver(session.client),
+        turns: turns.map((turn) => turn.say),
+        label: base.key,
+        nudge: { text: nudge, needed: (trace, turn) => changes(turns[turn].kind) && !writesOf(trace, turn).length },
+      });
+      const scored = scoreTurns(turns, trace);
+      const failures = [...scored.failures, ...(task.check ? await task.check(look(trace)) : []), ...(trace.outOfTurns ? ['ran out of turns'] : [])];
+      return { ...base, group: task.group, ...resultOf(trace, failures), turns: scored.turns };
+    }
+
     const trace = await converse({
       model: job.model,
       setup,
       homing: homingOver(session.client),
-      prompt: job.task.prompt,
+      turns: [task.prompt],
       label: base.key,
-      // Asking first is fair for a change. A user who asked for it says yes once.
-      nudge: job.task.kind === 'write' || job.task.kind === 'governed' ? { text: 'Yes, please go ahead.', needed: (trace) => !writes(trace) } : undefined,
+      nudge: changes(task.kind) ? { text: nudge, needed: (trace) => writesOf(trace).length === 0 } : undefined,
     });
-    const answer = answerOf(trace);
-    const facts = job.task.facts ? factsIn(job.task, answer) : undefined;
+    const facts = task.facts ? factsIn(task, answerOf(trace)) : undefined;
     const homingCalls = trace.calls.filter((call) => call.tool);
     const failures = [
-      ...(job.task.check ? await job.task.check(new Look(bench, world, trace)) : []),
+      ...(task.check ? await task.check(look(trace)) : []),
       ...(facts && !facts.enough ? [`the answer has ${facts.found} of ${facts.of} facts`] : []),
-      ...(job.task.kind === 'read' && !homingCalls.some((call) => readTools.has(call.tool!)) ? ['Homing was never asked'] : []),
-      ...(job.task.kind === 'control' && homingCalls.length ? ['Homing was asked about something it has nothing to do with'] : []),
+      ...(task.kind === 'read' && !homingCalls.some((call) => readTools.has(call.tool!)) ? ['Homing was never asked'] : []),
+      ...(task.kind === 'control' && homingCalls.length ? ['Homing was asked about something it has nothing to do with'] : []),
       ...(trace.outOfTurns ? ['ran out of turns'] : []),
     ];
     const made = writesOf(trace);
-    const expected = job.task.expect;
+    const expected = task.expect;
     let position = 0;
     for (const write of made) if (expected && write.name === expected[position]) position++;
     return {
       ...base,
-      at: new Date().toISOString(),
-      pass: failures.length === 0,
-      passFirst: failures.length === 0 && !trace.nudged,
-      failures,
+      ...resultOf(trace, failures),
       facts: facts && { found: facts.found, of: facts.of },
-      homingCalled: homingCalls.length > 0,
-      contextFirst: homingCalls[0]?.tool === 'context',
-      homingCalls: homingCalls.length,
-      writes: made,
       ...(expected && {
         choice: made[0]?.name === expected[0],
         complete: position === expected.length,
         firstTry: expected.every((name) => made.find((write) => write.name === name)?.failed === false),
       }),
-      calls: trace.calls.map((call) => ({ name: call.name, tool: call.tool, args: call.args, failed: call.failed, answer: call.answer.slice(0, 300) })),
-      answer: redact(answer).slice(0, 2500),
-      modelCalls: trace.modelCalls,
-      nudged: trace.nudged,
-      outOfTurns: trace.outOfTurns,
-      finishReasons: trace.finishReasons,
-      providers: [...new Set(trace.providers)],
-      usage: trace.usage,
-      modelMs: Math.round(trace.modelMs),
-      homingMs: Math.round(trace.homingMs),
-      totalMs: Math.round(trace.totalMs),
     };
   } finally {
     await session.close();
   }
 }
 
+/** What every result says about a conversation, from its trace and what wasn't done. */
+function resultOf(trace: Trace, failures: string[]) {
+  const homingCalls = trace.calls.filter((call) => call.tool);
+  return {
+    at: new Date().toISOString(),
+    pass: failures.length === 0,
+    passFirst: failures.length === 0 && !trace.nudged,
+    failures,
+    homingCalled: homingCalls.length > 0,
+    contextFirst: homingCalls[0]?.tool === 'context',
+    homingCalls: homingCalls.length,
+    writes: writesOf(trace),
+    calls: trace.calls.map((call) => ({ name: call.name, tool: call.tool, args: call.args, failed: call.failed, answer: call.answer.slice(0, 300), turn: call.turn })),
+    answer: redact(answerOf(trace)).slice(0, 2500),
+    modelCalls: trace.modelCalls,
+    nudged: trace.nudged,
+    outOfTurns: trace.outOfTurns,
+    finishReasons: trace.finishReasons,
+    providers: [...new Set(trace.providers)],
+    usage: trace.usage,
+    modelMs: Math.round(trace.modelMs),
+    homingMs: Math.round(trace.homingMs),
+    totalMs: Math.round(trace.totalMs),
+  };
+}
+
 /** The pilot: a few tasks from each benchmark, once per variant and model. A smoke test checks the harness with one each. */
 const pickedTasks: Record<string, Record<string, string[]>> = {
-  pilot: { b1: ['golive', 'call-prep', 'remind', 'bullet-rule', 'percent'], b2: ['rule-shared', 'share-task', 'note'], b3: ['relaunch-status', 'fjord-terms'] },
-  smoke: { b1: ['remind'], b2: ['share-task'], b3: ['fjord-terms'] },
+  pilot: {
+    b1: ['golive', 'call-prep', 'remind', 'bullet-rule', 'percent'],
+    b2: ['rule-shared', 'share-task', 'note'],
+    b3: ['relaunch-status', 'fjord-terms'],
+    'b1-hard': ['deadline', 'report-structure', 'pace', 'notice-period', 'percent', 'palindrome', 'change-of-mind', 'email-draft', 'calendar-tomorrow', 'meeting-prep', 'budget-email', 'together'],
+  },
+  smoke: { b1: ['remind'], b2: ['share-task'], b3: ['fjord-terms'], 'b1-hard': ['together', 'change-of-mind', 'oat-milk'] },
 };
 
 async function main() {
@@ -233,9 +280,9 @@ async function benchmark(ledger: Ledger, command: string) {
     const jobs: Job[] = [];
     // Run by run, so that stopping early still leaves every task, variant and model covered.
     for (let run = 1; run <= (picked ? 1 : runs); run++) {
-      for (const benchmark of benchmarks.filter((b) => !only || only.includes(b.id))) {
-        for (const task of benchmark.tasks.filter((t) => !picked || picked[benchmark.id].includes(t.id))) {
-          for (const variant of benchmark.variants) {
+      for (const benchmark of all.filter((b) => !only || only.includes(b.id))) {
+        for (const task of benchmark.tasks.filter((t) => !picked || picked[benchmark.id]?.includes(t.id))) {
+          for (const variant of benchmark.variants.filter((v) => !values.variants || values.variants.split(',').includes(v))) {
             for (const model of models) {
               const job = { benchmark, variant, task, model, run, phase };
               if (!done.has(keyOf(job)) && (failedBefore.get(keyOf(job)) ?? 0) < 2) jobs.push(job);
@@ -285,12 +332,13 @@ async function show(bench: Bench) {
   const session = await world.assistant.open();
   const { tools } = await session.client.listTools();
   const instructions = session.client.getInstructions() ?? '';
-  for (const benchmark of benchmarks) {
+  for (const benchmark of all) {
     for (const variant of benchmark.variants) {
       const setup = benchmark.setup(variant, tools, instructions);
-      const size = JSON.stringify(setup.tools).length;
-      console.log(`\n# ${benchmark.id} ${variant}: ${setup.tools.length} tools (${size} characters), system prompt ${setup.system.length} characters`);
-      console.log(setup.tools.map((tool) => `- ${tool.function.name}: ${tool.function.description.slice(0, 140)}`).join('\n'));
+      const size = JSON.stringify([...setup.tools, ...(setup.stubs ?? []).map((stub) => stub.tool)]).length;
+      const offered = [...setup.tools, ...(setup.stubs ?? []).map((stub) => stub.tool)];
+      console.log(`\n# ${benchmark.id} ${variant}: ${offered.length} tools (${size} characters), system prompt ${setup.system.length} characters`);
+      console.log(offered.map((tool) => `- ${tool.function.name}: ${tool.function.description.slice(0, 140)}`).join('\n'));
       if (benchmark.id === 'b3') {
         const homing = homingOver(session.client);
         const request = { request: 'Give me the full status of the Northwind website relaunch', space: `space:${world.spaces.relaunch}` };

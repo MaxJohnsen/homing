@@ -72,6 +72,15 @@ test('the instructions say to propose a new rule, which the user approves, not t
   await claude.close();
 });
 
+test('the instructions say when Homing helps, and to leave it out of requests that need nothing of the user’s', async () => {
+  const { claude } = await world();
+  const instructions = claude.client.getInstructions() ?? '';
+  assert.match(instructions, /Use Homing for requests about the user's own work and life/);
+  assert.match(instructions, /Leave it out of requests that need nothing of theirs/);
+  assert.doesNotMatch(instructions, /At the start of a task, call `context`/);
+  await claude.close();
+});
+
 test('a reference decides where remember saves, so the space can be left out, or be one above it', async () => {
   const { relaunch, northwind, golive, claude } = await world();
 
