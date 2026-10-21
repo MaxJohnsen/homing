@@ -449,7 +449,7 @@ export function Members({ space, actions }: { space: SpaceData; actions?: Member
           </div>
         )}
         {status && <p role="status" className="text-sm text-muted-foreground">{status}</p>}
-        <ul className="-mx-3 grid gap-1 sm:grid-cols-2">
+        <ul className="-mx-3 grid grid-cols-1 gap-1 sm:grid-cols-2">
           {space.members.map((member) => (
             <MemberRow
               key={member.id}

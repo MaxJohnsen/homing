@@ -45,7 +45,7 @@ export function Admin({ data, invite }: { data: AdminData; invite?: MakeInvite }
       </Section>
 
       <Section title="People" tone="raised" description={`${count(data.people.length, 'person uses', 'people use')} Homing here.`}>
-        <ul className="-mx-3 grid gap-1 sm:grid-cols-2">
+        <ul className="-mx-3 grid grid-cols-1 gap-1 sm:grid-cols-2">
           {data.people.map((person) => (
             <li key={person.email} className="flex items-center gap-3 rounded-xl px-3 py-3">
               <Avatar name={person.name} className="size-10 text-sm" />
