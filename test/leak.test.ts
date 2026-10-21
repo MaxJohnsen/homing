@@ -40,7 +40,7 @@ import {
   type Source,
 } from '../src/knowledge.ts';
 import { decide, openProposals, proposalData, proposeInclude, proposePageArchive, proposeRule, readProposal, searchProposals, Undecidable, type PlanStep, type Proposal } from '../src/proposals.ts';
-import { saveSkill, skillsFor } from '../src/skills.ts';
+import { saveSkill, skillsFor, skillsMatching } from '../src/skills.ts';
 import { addTask, readTask, searchTasks } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { makeCollaborative } from '../src/share-space.ts';
@@ -206,6 +206,8 @@ for (const [layer, sql] of [
           assert.equal(await readPage(s, target.skill.pageId), undefined);
           const found = await search(s, target.skill.name.replaceAll('-', ' '));
           assert.ok(found.every((hit) => hit.spaceId === intruder.space || hit.spaceId === intruder.person.personalSpaceId));
+          const fitting = await skillsMatching(s, `${target.skill.name.replaceAll('-', ' ')} ${target.name}`, 20);
+          assert.ok(fitting.every((skill) => skill.spaceId === intruder.space || skill.spaceId === intruder.person.personalSpaceId));
           assert.equal(await readProposal(s, target.proposal.id), undefined);
           assert.equal((await openProposals(s, target.space)).length, 0);
           for (const rule of target.rules) {

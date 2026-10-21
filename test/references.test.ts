@@ -10,6 +10,7 @@ import { authDatabaseUrl } from '../src/db.ts';
 import { addRule } from '../src/guidance.ts';
 import { createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
+import { saveSkill } from '../src/skills.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { addTask } from '../src/tasks.ts';
 import { Assistant, testAssistants } from './assistant.ts';
@@ -377,5 +378,59 @@ test('a page says who wrote each item, so an assistant can tell what a person wr
   const attempt = await claude.call('remember', { replaces: `item:${typed.id}`, text: 'Ola Nordmann owns hosting and DNS' });
   assert.equal(attempt.failed, true);
   assert.match(attempt.text, /Agents never change what people wrote/);
+  await claude.close();
+});
+
+test('context without a space shows what matched, with its space, and the skills that fit', async () => {
+  const { ana, ben, northwind, fjord, beta, claude } = await world();
+  await as({ ...ana, direct: true }, async (s) => {
+    const skill = '---\nname: status-report\ndescription: The status report a client gets every other Friday.\n---\nSay where the work stands, then what is next.';
+    await saveSkill(s, { spaceId: northwind, shared: true, files: [{ path: 'SKILL.md', body: skill }] });
+    const page = await createPage(s, { spaceId: fjord, title: 'Contract', shared: true });
+    await writeItem(s, { pageId: page, body: 'Fjord Bank wants a status report every month', shared: true });
+  });
+  await as({ ...ben, direct: true }, (s) =>
+    saveSkill(s, { spaceId: beta.space, shared: true, files: [{ path: 'SKILL.md', body: '---\nname: beta-report\ndescription: The status report Beta sends.\n---\nFor Beta.' }] }),
+  );
+
+  const text = (await claude.call('context', { request: 'What should a status report look like?' })).text;
+  assert.match(text, /^You are Ana\. Choose the space this is about/);
+  assert.match(text, new RegExp(`## Spaces that fit\\n(- .*\\n)*- Northwind \\(space:${northwind}\\)`));
+  assert.match(text, new RegExp(`## Spaces that fit\\n(- .*\\n)*- Fjord Bank \\(space:${fjord}\\)`));
+  assert.match(text, /## Relevant to the request\n- Contract: Fjord Bank wants a status report every month \(item:[0-9a-f-]+, in Fjord Bank, written by Ana\)/);
+  assert.match(text, /## Skills that fit\n.+\n- status-report: The status report a client gets every other Friday\. \(page:[0-9a-f-]+, in Northwind\)/);
+  // Ben's skill and space never show, though they match too.
+  assert.doesNotMatch(text, /Beta|beta-report/);
+  await claude.close();
+});
+
+test('context without a space says so when nothing of the user’s matches, and picks a space only on more than a word in common', async () => {
+  const { relaunch, golive, claude } = await world();
+  for (const request of ['Why is the sky blue?', "What's 15% of 2,400?"]) {
+    const text = (await claude.call('context', { request })).text;
+    assert.match(text, /^You are Ana\. Nothing in Homing matches this request\. If it isn't about the user's work, answer it without Homing\./);
+    assert.doesNotMatch(text, /Spaces that fit|Relevant to the request/);
+  }
+  // Of "website" and "live", only "live" is in the relaunch's knowledge: too little to pick it. With "relaunch" as well, it's picked.
+  const one = (await claude.call('context', { request: 'Is the website live?' })).text;
+  assert.match(one, new RegExp(`## Spaces that fit\\n- Website relaunch \\(space:${relaunch}\\)\\n\\n## Relevant to the request\\n(- .*\\n)*- Go-live: The relaunch goes live on 1 March 2027 \\(item:${golive.id}, in Website relaunch, private\\)`));
+  assert.match((await claude.call('context', { request: 'When does the relaunch go live?' })).text, /^Picked Website relaunch, because it is the only space with matching knowledge or skills\./);
+  await claude.close();
+});
+
+test('proposing to share an item says who it would reach, so an assistant shares it where it is', async () => {
+  const { ana, northwind, golive, claude } = await world();
+  const act = (await claude.client.listTools()).tools.find((tool) => tool.name === 'act')!;
+  assert.match(act.description!, /Everyone who can open its space sees it, which includes the spaces above it unless it is closed, so share an item where it is\./);
+
+  const open = await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${golive.id}` } });
+  assert.match(open.text, /Once approved, everyone who can open Website relaunch sees it: 2 people, including everyone in Northwind, since it isn't closed\. Shared where it is, it already reaches them: there is no need to copy it to a space above\./);
+
+  // In a closed space, only the people added to it.
+  const board = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Board', parentId: northwind, closed: true }));
+  const note = await as({ ...ana, agent: 'Claude' }, async (s) => writeItem(s, { pageId: await createPage(s, { spaceId: board, title: 'Board' }), body: 'The board meets in May' }));
+  const closed = await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${note.id}` } });
+  assert.match(closed.text, /Once approved, everyone who can open Board sees it: 1 person\. It is closed, so people in Northwind who weren't added to it don't see it\./);
+  assert.doesNotMatch(closed.text, /copy it/);
   await claude.close();
 });

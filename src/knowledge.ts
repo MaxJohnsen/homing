@@ -913,6 +913,28 @@ export function termsOf(query: string): string | undefined {
 }
 
 /**
+ * The words of a request that tell it apart, without the common ones that match nearly anything,
+ * such as "what" or "the", and without numbers on their own. Common words are PostgreSQL's English
+ * stopwords; words in other languages all count. Empty when nothing is left.
+ */
+export async function tellingWords(s: Session, text: string): Promise<string> {
+  const words = text.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32) ?? [];
+  if (!words.length) return '';
+  const [{ telling }] = await s.tx<{ telling: string | null }[]>`
+    select string_agg(word, ' ' order by n) as telling from unnest(${words}::text[]) with ordinality as w (word, n)
+    where word !~ '^[0-9]+$' and length(to_tsvector('english', word)) > 0
+  `;
+  return telling ?? '';
+}
+
+/** How many of the words a text has, matched as search matches them: longer words by how they start. */
+export function wordsIn(text: string, words: string): number {
+  const have = text.toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
+  const wanted = [...new Set(words.toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [])];
+  return wanted.filter((want) => have.some((word) => (want.length >= 4 ? word.startsWith(want) : word === want))).length;
+}
+
+/**
  * Searches items and sources the viewer can see, optionally within a space
  * and the spaces below it, and optionally only knowledge, without guidance.
  * Longer words match by how they start, so "launch" finds "launches"; short
