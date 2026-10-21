@@ -1,8 +1,91 @@
 # Benchmark results
 
-Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks), run on 20 October 2026 against Homing as it is on main ([98a6ae2](https://github.com/MaxJohnsen/homing/commit/98a6ae2); nothing in its MCP tools has changed since). Claude Sonnet 5.5 and GPT-6.1 Sol, through OpenRouter, each did every task three times in every variant: 648 conversations, for USD 7.93. How they were run, and every prompt, is in the [README](README.md).
+Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. How they were run, and every prompt, is in the [README](README.md).
 
-## What it means for Homing
+## Rerun of benchmarks 1 and 2, 21 October 2026
+
+The same prompts, models, settings and three runs as the first run, against main at [b44ad36](https://github.com/MaxJohnsen/homing/commit/b44ad36), plus share-task-vague, the first wording of share-task, which failed in the first smoke runs: 480 conversations, for USD 5.47. Since the first run, #95 let a reference decide its space, made tasks and proposals searchable, said `replaces` is for what assistants wrote, showed who wrote each item, and reworded the instruction's line on rules. `act` also gained three actions (`space.share`, `space.export` and `plan.propose`), and since #90 archiving a page in a space others can open waits for the user's approval. The first run's limitations, below, hold for this one too.
+
+### What it means for Homing
+
+**The fixes worked.** Homing refused none of the 1,448 calls the models made, against 93 of 1,551 in the first run, and every failure the first run traced to references and spaces is gone. Tasks done in both benchmarks rose from 96% to 100% for Claude and from 91% to 98% for GPT, and in benchmark 2 Homing accepted every write the first time, where before it accepted 82 to 89%.
+
+| Failure in the first run | First run, Claude | First run, GPT | Rerun, Claude | Rerun, GPT |
+|---|---|---|---|---|
+| Refused: `replaces` on what a person wrote | 17 | 18 | 0 | 0 |
+| Refused: a reference with another space | 25 | 12 | 0 | 0 |
+| Refused: a name or a page where a space was expected | 11 | 7 | 0 | 0 |
+| Refused: something else | 3 | 0 | 0 | 0 |
+| Conversations with a refused call | 29 of 234 | 22 of 234 | 0 of 240 | 0 of 240 |
+| Mark a task done by what it's about (done) | 6 of 6 | 0 of 6 | 6 of 6 | 6 of 6 |
+| …calls to Homing it took, mean | 7.7 | 2.3 | 3.0 | 4.0 |
+| Share a task, not saying where (share-task-vague) | not run | not run | 6 of 6 | 6 of 6 |
+| Withdraw a proposal (withdraw) | 6 of 6 | 5 of 6 | 6 of 6 | 6 of 6 |
+| Northwind's IT lead is leaving (new-contact) | 4 of 6 | 1 of 6 | 6 of 6 | 6 of 6 |
+| …ran out of turns | 2 of 6 | 5 of 6 | 0 of 6 | 0 of 6 |
+| A new rule, with the instruction: told the user to add it | 0 of 15 | 3 of 15 | 0 of 15 | 0 of 15 |
+
+Class by class:
+
+- **`replaces` on what a person wrote.** Models tried `replaces` 70 times in the first run and 12 times in this one, each time on Erik's quote, which Ana's assistant had written, and Homing accepted all 12. For "the relaunch moves to 15 March", which a person wrote, they saved the new date beside the old one, 12 times of 12.
+- **References and spaces.** Models named a reference and gave a space as well in 156 writes in the first run, and in 2 now; they leave the space out and let the reference decide. Nobody gave a name or a page where a space was expected.
+- **Tasks and proposals.** `search` finds them now. Marking the timeline task done took Claude 3.0 calls to Homing instead of 7.7, and GPT found the task every time instead of asking which space. The vague share-task, which GPT never did in the smoke runs and Claude did only by opening space after space, was done 12 times of 12.
+- **Running out of turns.** Without the refusals, telling Homing that Northwind's IT lead is leaving was done 12 times of 12, never out of turns.
+- **The rule line.** Reworded to "propose it with `act` and guidance.propose, and they approve the exact text", it no longer reads as "add it yourself": GPT proposed the rule all 15 times.
+
+**What is left.**
+
+- **The instruction still pulls Homing into unrelated questions.** With it, GPT called Homing for both control questions every time, 6 of 6, as in the first run, and Claude 1 of 6, against 3 before. Without it, neither did. Its first line, "At the start of a task, call `context`", is the next thing to fix.
+- **A new miss, from more information.** Asked to share Gunnar's hint "with everyone on the Northwind team", GPT now sees in `search` that the hint is in Website relaunch, a space below Northwind. In 4 of its 6 conversations it saved a copy in Northwind and proposed sharing the copy instead. Sharing the hint where it is would have reached the same people, since Website relaunch isn't closed, but nothing told the model so. Claude shared the original 6 times of 6.
+- **archive-page needed a new check.** Since #90, archiving Ana's page in Website relaunch, which others can open, waits for her approval. Scored with the old check, which wanted the page archived at once, all 12 failed, each having proposed it as Homing asked. The check now accepts the waiting proposal, and those 12 were run again with it, for USD 0.15, and passed.
+
+**Cost and time hardly changed.** Input tokens per conversation rose by up to a fifth, with longer tool descriptions and the new actions, while Claude made fewer calls to Homing: 2.8 instead of 3.6 per conversation with `act`. Cost per conversation stayed within a quarter of a cent of the first run's.
+
+### Benchmark 1: MCP reliability
+
+| Variant | Model | Asked Homing | context first | Task done | Without "go ahead" | Reads | Saves | Governed | Homing on controls |
+|---|---|---|---|---|---|---|---|---|---|
+| mcp-only | claude-sonnet-5.5 | 100% (100–100) | 80% (80–80) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 0/6 |
+| mcp-only | gpt-6.1-sol | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 0/6 |
+| instruction | claude-sonnet-5.5 | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 1/6 |
+| instruction | gpt-6.1-sol | 100% (100–100) | 100% (100–100) | 98% (95–100) | 98% (95–100) | 97% (90–100) | 100% (100–100) | 100% (100–100) | 6/6 |
+
+| Variant | Model | Homing calls | Model calls | Tokens in / out | Cached input | Latency | Cost each | Cost |
+|---|---|---|---|---|---|---|---|---|
+| mcp-only | claude-sonnet-5.5 | 2.8 | 2.9 | 24,262 / 452 | 90% | 6.5 s (5.6) | $0.0126 | $0.83 |
+| mcp-only | gpt-6.1-sol | 2.7 | 3.4 | 16,728 / 183 | 89% | 9.8 s (9.2) | $0.0078 | $0.52 |
+| instruction | claude-sonnet-5.5 | 2.9 | 3.1 | 27,366 / 520 | 91% | 7.9 s (7.4) | $0.0139 | $0.92 |
+| instruction | gpt-6.1-sol | 3.5 | 4.2 | 23,313 / 250 | 91% | 12.0 s (10.9) | $0.0100 | $0.66 |
+
+Every task was done in every conversation except these: report-format, once by GPT with the instruction, whose answer left out that reports are in English; and the controls, percent and translate, where with the instruction GPT asked Homing all 6 times and Claude once, for translate.
+
+### Benchmark 2: Tool design
+
+| Variant | Model | Made a change | Right tool first | Accepted first time | All writes made | Task done | Without "go ahead" | Homing calls | Tokens in / out | Latency | Cost each | Cost |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| act | claude-sonnet-5.5 | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 2.8 | 29,333 / 455 | 7.7 s (7.2) | $0.0123 | $0.66 |
+| act | gpt-6.1-sol | 100% (100–100) | 87% (83–89) | 100% (100–100) | 100% (100–100) | 96% (94–100) | 96% (94–100) | 3.4 | 23,664 / 225 | 15.2 s (10.3) | $0.0092 | $0.50 |
+| dedicated | claude-sonnet-5.5 | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 100% (100–100) | 2.7 | 28,750 / 437 | 7.0 s (6.6) | $0.0124 | $0.67 |
+| dedicated | gpt-6.1-sol | 100% (100–100) | 91% (89–94) | 100% (100–100) | 100% (100–100) | 96% (94–100) | 96% (94–100) | 3.3 | 23,340 / 213 | 12.2 s (11.2) | $0.0091 | $0.49 |
+
+Every task was done in every conversation except GPT's 4 copies of Gunnar's hint, above, 2 in each variant. Where GPT's first write wasn't the expected one, 12 times, it saved a note first: before archiving the page or the kitchen space, as in the first run, and the 4 copies of the hint. `act` and the dedicated tools did equally well again.
+
+### Spending
+
+| Phase | Conversations | USD |
+|---|---|---|
+| Rerun of benchmarks 1 and 2 | 480 | 5.25 |
+| archive-page under the old check, run again after it changed | 12 | 0.14 |
+| A call whose cost OpenRouter didn't report, counted at its worst case | | 0.07 |
+| **Total** | | **5.47** |
+
+The rerun had a limit of USD 6.50 of its own. The ledger's total is now USD 14.50 over 4,576 model calls, against the cap of USD 50; the key's own usage since the first run is USD 14.30.
+
+## First run, 20 October 2026
+
+Benchmarks 1 to 3, run against Homing as it was on main ([98a6ae2](https://github.com/MaxJohnsen/homing/commit/98a6ae2)). Claude Sonnet 5.5 and GPT-6.1 Sol, through OpenRouter, each did every task three times in every variant: 648 conversations, for USD 7.93.
+
+### What it means for Homing
 
 **Models call Homing reliably when a request is about the user's work.** Both models asked Homing in all 240 conversations about Ana's work, with Homing's tools alone and with its instruction, and did 92 to 98% of the tasks. The rest failed on references and spaces, below, not on whether Homing was called.
 
@@ -27,7 +110,7 @@ These cost turns. Telling Homing that Northwind's IT lead is leaving and who tak
 
 **Sent without a `strict` field, GPT called functions as if they were strict.** Through OpenRouter, GPT-6.1 Sol filled every optional field of functions sent without `strict`, so `context` always got a made-up space such as `" "` or `"personal"`, which Homing refuses. In 7 conversations it made 64 calls, Homing refused all 64, and it never did a task. With `strict: false` it left optional fields out, as the rest of these results show. That is what we saw; we didn't find it described by OpenAI or OpenRouter. Whether to send `strict` is each client's choice, and we couldn't see what ChatGPT does. A client that calls strictly would need every optional field to accept null, which Homing's don't.
 
-### Worth deciding
+#### Worth deciding
 
 These are suggestions from the results. None is built here.
 
@@ -38,7 +121,7 @@ These are suggestions from the results. None is built here.
 5. Consider adding the top few relevant pages in full to `context`, bounded, which answers part of the spec's open question on a default context budget.
 6. Accept null for optional fields, for clients that call functions strictly. Check what ChatGPT does when #30 resumes.
 
-## Benchmark 1: MCP reliability
+### Benchmark 1: MCP reliability
 
 In the tables, a rate is over all three runs, with the lowest and highest single run in brackets. Tokens are input and output per conversation, latency is the mean with the median in brackets, and cost is OpenRouter's.
 
@@ -95,7 +178,7 @@ Why the others weren't done:
 | made no change | 0 | 0 | 0 | 2 |
 | ran out of turns | 0 | 1 | 0 | 2 |
 
-## Benchmark 2: Tool design
+### Benchmark 2: Tool design
 
 Do models build `act`'s payloads as well as they use dedicated tools, one per action, and do they choose correctly between `remember` and `act`? "Made a change" is any call to `remember` or `act`; whether that was the right tool, and whether Homing accepted it the first time, is counted among those. The 7 conversations whose first change wasn't the expected one were all GPT saving a note that the old CMS or the kitchen was done before archiving it, which does no harm. Claude's misses on tell-team came from the space refusals above: it spent its turns getting the space right, then ran out of them or stopped to ask before proposing the share.
 
@@ -139,7 +222,7 @@ Why the others weren't done:
 | made the wrong change | 1 | 0 | 0 | 0 |
 | ran out of turns | 0 | 0 | 2 | 0 |
 
-## Benchmark 3: Context size
+### Benchmark 3: Context size
 
 How much should `context` give: the core alone, the core plus the relevant items (Homing as it is), or that plus the pages those items are on, in full? Every question has facts on one or two pages; "Facts found" counts them in the answers.
 
@@ -154,11 +237,11 @@ How much should `context` give: the core alone, the core plus the relevant items
 
 Every task was answered completely in every run and variant, by both models.
 
-## Changed along the way
+### Changed along the way
 
 Smoke runs of 30 conversations came before the pilot, and three things changed after them: functions got `strict: false`; a reminder saved in the personal space counts as done; and share-task was reworded. It first said "Share my task about the revised timeline with the rest of the team.", which doesn't say which team. Both GPT conversations asked which space and shared nothing, since `search` can't find tasks, and Claude searched space after space. That is a second case of tasks that can't be found by searching, which these results don't count. The first wording is kept for the next run as share-task-vague. The [README](README.md#how-they-work) has the details.
 
-## Limitations
+### Limitations
 
 - **API models aren't the apps.** Claude.ai and ChatGPT add their own system prompts, other tools that compete for a request, such as web search and memory, and their own handling of MCP: how tools are named, whether functions are called strictly, and in Claude.ai, Homing's approval card. These runs use a plain system prompt, Homing's tools only, and links instead of the card. They validate neither the ChatGPT app and its connector nor Claude.ai.
 - **One turn.** The user says one thing, plus "Yes, please go ahead." once if no change was made. A real user would answer a question, which would turn most "asked the user back" failures into successes.
@@ -169,7 +252,7 @@ Smoke runs of 30 conversations came before the pilot, and three things changed a
 - **The full variant's extra reads.** In benchmark 3's full variant, the harness reads the pages it adds itself. Those reads aren't counted as Homing calls, though their time is in the latency.
 - **One model per maker, three runs.** Each at its API's default reasoning and temperature, in October 2026. The ranges are the lowest and highest of the three runs, not confidence intervals. The strict-mode finding rests on 7 conversations and 10 single calls.
 
-## Spending
+### Spending
 
 | Phase | Conversations | USD |
 |---|---|---|

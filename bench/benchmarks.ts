@@ -85,9 +85,9 @@ export class Look {
   /** Proposals made for Ana in the conversation. */
   async newProposals() {
     return this.bench.admin<
-      { id: string; action: string; spaceId: string; itemId: string | null; taskId: string | null; change: Record<string, any>; state: string; itemBody: string | null }[]
+      { id: string; action: string; spaceId: string; itemId: string | null; taskId: string | null; pageId: string | null; change: Record<string, any>; state: string; itemBody: string | null }[]
     >`
-      select p.id, p.action, p.space_id, p.item_id, p.task_id, p.change, p.state, c.body as item_body
+      select p.id, p.action, p.space_id, p.item_id, p.task_id, p.page_id, p.change, p.state, c.body as item_body
       from proposals p left join content c on c.id = p.item_id
       where p.private_to = ${this.world.ana.id}::uuid and p.created_at > ${this.world.madeAt}
     `;
@@ -311,7 +311,11 @@ export const b2: Benchmark = {
       kind: 'governed',
       expect: ['act:page.archive'],
       prompt: 'Archive my old CMS notes page, that system is gone.',
-      check: async (look) => unless(await look.pageArchived(look.world.pages.oldCms), 'the old CMS notes are not archived'),
+      // Since #90, a page in a space others can open, even one only Ana sees, is archived once she approves.
+      check: async (look) => {
+        const proposed = (await look.newProposals()).some((p) => p.action === 'archive page' && p.pageId === look.world.pages.oldCms);
+        return unless(proposed || (await look.pageArchived(look.world.pages.oldCms)), 'the old CMS notes are not archived, nor waiting to be');
+      },
     },
     {
       id: 'rename',
