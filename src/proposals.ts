@@ -1,6 +1,6 @@
 import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
-import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
+import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
@@ -179,8 +179,12 @@ export interface PlanView {
   steps: PlanStepView[];
   /** Who will see what it shares: how many people have the space now, whether people above too, and who it adds. */
   audience: { people: number; above: boolean; adding: string[] };
-  /** While it waits and adds someone: what they'll see there once it's approved. */
-  sees: { pages: number; archived: number; tasks: number; rules: number; spaces: number } | null;
+  /**
+   * While it waits and adds someone: what they'll see there once it's approved. Its rules are those
+   * set there or above; included ones are counted by where they're set, as far as the person deciding
+   * can open them, and whether it includes rules they can't open, which others may.
+   */
+  sees: { pages: number; archived: number; tasks: number; rules: number; included: { from: string; rules: number }[]; elsewhere: boolean; spaces: number } | null;
   /** What approving checks every change against, so it makes only what was shown. */
   shown: string;
 }
@@ -931,10 +935,14 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
 /**
  * What someone a plan adds will see in its space once it's approved, as the person deciding can
  * tell: its shared pages, archived ones apart, its open shared tasks, the shared rules that apply
- * there, set in it or above it, and the spaces in it that aren't closed. Rules a space includes from
- * elsewhere depend on what each person can open, so they're left out.
+ * there, set in it or above it, and the spaces in it that aren't closed. Rules included for everyone
+ * reach someone only if they can open where they're set, and what the new person can open elsewhere
+ * is never looked up, since that would tell the person deciding. So the included rules the person
+ * deciding sees are counted by where they're set, and of what's included that they can't open, only
+ * that there is some, which their admin rights already show them.
  */
 async function seenThere(s: Session, at: { where: string | null; parent: string | null }, steps: PlanStep[], views: PlanStepView[], spaces: Space[]): Promise<NonNullable<PlanView['sees']>> {
+  const { where, parent } = at;
   let now = { pages: 0, archived: 0, tasks: 0 };
   let rules: Rule[] = [];
   let inside = 0;
@@ -962,6 +970,20 @@ async function seenThere(s: Session, at: { where: string | null; parent: string 
     rules = (await rulesFor(s, at.parent)).filter((rule) => !(rule.spaceId === at.parent && rule.onlyHere));
   }
   const shared = rules.filter((rule) => rule.privateTo === null && !rule.personal && rule.includedIn === null);
+  // Included for everyone there, by the space or one above it, not by the person deciding for themselves.
+  const included = new Map<string, number>();
+  for (const rule of rules) {
+    if (rule.privateTo !== null || !rule.includedIn?.shared || rule.includedIn.personal) continue;
+    const from = rule.spaceName ?? 'another space';
+    included.set(from, (included.get(from) ?? 0) + 1);
+  }
+  // What the space, or a space above it, includes for everyone that the person deciding can't open,
+  // which they learn only where they're an admin.
+  const byId = new Map(spaces.map((space) => [space.id, space]));
+  let elsewhere = false;
+  for (let at = (where ?? parent) ? byId.get((where ?? parent)!) : undefined; at && !elsewhere; at = at.parentId ? byId.get(at.parentId) : undefined) {
+    elsewhere = (await includesNotOpen(s, at.id)).some((include) => include.kind === 'rules');
+  }
   const titles = new Set(views.flatMap((step) => (step.publication?.sharesTitle && step.item ? [step.item.pageId] : [])));
   const removed = steps.filter((step, index) => step.action === 'remove rule' && views[index].rule?.shared).length;
   return {
@@ -969,6 +991,8 @@ async function seenThere(s: Session, at: { where: string | null; parent: string 
     archived: now.archived,
     tasks: now.tasks + steps.filter((step) => step.action === 'share task').length,
     rules: shared.length + steps.filter((step) => step.action === 'add rule' && step.shared).length - removed,
+    included: [...included].map(([from, count]) => ({ from, rules: count })),
+    elsewhere,
     spaces: inside,
   };
 }

@@ -660,7 +660,7 @@ export const planProposal: ProposalData = {
       { action: 'add', publication: null, item: null, task: null, member: null, rule: { kind: 'requirement', text: 'Get every quote in writing.', now: null, shared: true, onlyHere: false }, problem: null },
     ],
     audience: { people: 1, above: false, adding: ['Jonas Holm'] },
-    sees: { pages: 2, archived: 0, tasks: 1, rules: 1, spaces: 0 },
+    sees: { pages: 2, archived: 0, tasks: 1, rules: 1, included: [{ from: 'Home', rules: 1 }], elsewhere: true, spaces: 0 },
     why: 'Jonas is helping with the kitchen.',
     shown: '[]',
   },

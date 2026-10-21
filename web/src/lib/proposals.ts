@@ -104,7 +104,12 @@ export interface PlanData {
   /** Who has the space now, whether people above it too, and who the plan adds. */
   audience: { people: number; above: boolean; adding: string[] };
   /** While it waits and adds someone: what they'll see there once it's approved. */
-  sees: { pages: number; archived: number; tasks: number; rules: number; spaces: number } | null;
+  /**
+   * While it waits and adds someone: what they'll see there once it's approved. Rules included from
+   * elsewhere are counted by where they're set, as far as you can open them, and elsewhere says it
+   * also includes rules you can't open, which they see if they can open them.
+   */
+  sees: { pages: number; archived: number; tasks: number; rules: number; included?: { from: string; rules: number }[]; elsewhere?: boolean; spaces: number } | null;
   why: string | null;
   /** What approving sends back, so it makes only what was shown. */
   shown: string;
