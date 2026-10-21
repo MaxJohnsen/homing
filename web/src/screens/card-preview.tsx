@@ -17,7 +17,7 @@ export function CardPreview({ sample }: { sample?: 'long' | 'request' | 'space' 
           <figure key={key} className="flex min-w-0 flex-col gap-2">
             <figcaption className="text-sm text-muted-foreground">{host.label}</figcaption>
             <div className="overflow-hidden rounded-xl border" style={{ background: hostBackground[key] }}>
-              <iframe title={`Approval card in ${host.label}`} src={`/card.html?host=${key}${sample ? `&sample=${sample}` : ''}`} className={`block w-full border-0 ${sample === 'done' || sample === 'refused' ? 'h-[20rem]' : sample === 'space' || sample === 'convert' || sample === 'plan' || sample === 'plan-blocked' ? 'h-[60rem]' : sample ? 'h-[46rem]' : 'h-[34rem]'}`} />
+              <iframe title={`Approval card in ${host.label}`} src={`/card.html?host=${key}${sample ? `&sample=${sample}` : ''}`} className={`block w-full border-0 ${sample === 'done' || sample === 'refused' ? 'h-[20rem]' : sample === 'convert' || sample === 'plan' || sample === 'plan-blocked' ? 'h-[92rem]' : sample === 'space' ? 'h-[60rem]' : sample ? 'h-[46rem]' : 'h-[34rem]'}`} />
             </div>
           </figure>
         ))}

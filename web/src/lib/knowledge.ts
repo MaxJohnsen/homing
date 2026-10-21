@@ -175,6 +175,8 @@ export interface ChangeData {
   overview?: boolean;
   by: Author;
   agent: string | null;
+  /** Who shared it from their own side, when that's what changed. */
+  sharedBy?: Author;
   at: string;
   onlyYou: boolean;
   /** On a page that's archived. */
@@ -192,7 +194,7 @@ export interface OverviewData {
   pages: number;
   collections: PageSummary[];
   decisions: PageSummary[];
-  waiting: { id: string; action: 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'add include' | 'remove include' | 'plan'; kind: string; text: string | null; asked?: boolean; member?: 'add' | 'make admin' | 'make member' | 'remove' | null; included?: 'rules' | 'skill' | null; changes?: number | null; assistant: string; request: { by: string | null; yours: boolean; sent: boolean } | null }[];
+  waiting: { id: string; action: 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page' | 'add include' | 'remove include' | 'plan'; kind: string; text: string | null; asked?: boolean; member?: 'add' | 'make admin' | 'make member' | 'remove' | null; included?: 'rules' | 'skill' | null; changes?: number | null; assistant: string; request: { by: string | null; yours: boolean; sent: boolean } | null }[];
   spaces: { id: string; name: string; closed: boolean; archived?: boolean }[];
 }
 

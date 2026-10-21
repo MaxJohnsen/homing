@@ -194,7 +194,7 @@ function PageRow({ page, space, now, aside }: { page: PageSummary; space: Pick<S
             {(page.onlyYou || page.gatheredShared === false) && !space.private && <OnlyYou />}
           </span>
           {page.excerpt && <span className="line-clamp-2 text-sm text-muted-foreground">{plain(page.excerpt)}</span>}
-          <span className="text-sm text-muted-foreground">{kind ? `${kind}, ${updated}` : capitalize(updated)}{page.archived && '. Archived'}</span>
+          <span className="text-sm text-muted-foreground">{kind ? `${kind}, ${updated}` : capitalize(updated)}{page.archived && ', archived'}</span>
         </div>
         {!aside && <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />}
       </Link>

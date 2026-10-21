@@ -92,27 +92,27 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                 <li key={item.id}>
                   <Link href={`/proposals/${item.id}`} className={cn('flex flex-col rounded-lg px-2 py-1.5 hover:bg-muted', focusRing)}>
                     <span className="line-clamp-2 text-base leading-snug font-semibold">{item.action === 'plan' && !item.text ? `${item.changes} changes` : (item.text ?? (item.included ? 'From a space you can’t open' : 'A rule change'))}</span>
-                    <span className="text-sm text-muted-foreground">{item.action === 'plan' ? (item.text ? `${item.assistant} proposes this space, with ${item.changes === 1 ? 'a change' : `${item.changes} changes`} in it` : `${item.assistant} proposes them together`) : item.request && !item.request.yours ? `${item.request.by ?? 'A member'} asks` : item.action === 'publish' ? `${item.assistant} proposes sharing this` : item.action === 'share task' ? `${item.assistant} proposes sharing this task` : item.action === 'archive space' ? `${item.assistant} suggests archiving it` : item.action === 'share space' ? `${item.assistant} proposes sharing it with others` : item.action === 'add space' ? (item.asked ? 'A new space, waiting for your approval' : `${item.assistant} suggests a space`) : item.action === 'change members' ? `${item.assistant} proposes ${{ add: 'adding them', 'make admin': 'making them an admin', 'make member': 'making them a member, not an admin', remove: 'removing them' }[item.member ?? 'add']}` : item.action === 'add include' || item.action === 'remove include' ? `${item.assistant} proposes ${item.action === 'add include' ? 'including' : 'no longer including'} ${item.included === 'skill' ? 'this skill' : 'its rules'}` : `${item.assistant} proposes`}</span>
+                    <span className="text-sm text-muted-foreground">{item.action === 'plan' ? (item.text ? `${item.assistant} proposes this space, with ${item.changes === 1 ? 'a change' : `${item.changes} changes`} in it` : `${item.assistant} proposes them together`) : item.request && !item.request.yours ? `${item.request.by ?? 'A member'} asks` : item.action === 'publish' ? `${item.assistant} proposes sharing this` : item.action === 'share task' ? `${item.assistant} proposes sharing this task` : item.action === 'archive space' ? `${item.assistant} suggests archiving it` : item.action === 'archive page' ? `${item.assistant} ${item.asked ? 'proposes' : 'suggests'} archiving this page` : item.action === 'reopen page' ? `${item.assistant} proposes reopening this page` : item.action === 'change rule' ? `${item.assistant} proposes this wording` : item.action === 'remove rule' ? `${item.assistant} proposes removing it` : item.action === 'share space' ? `${item.assistant} proposes sharing it with others` : item.action === 'add space' ? (item.asked ? 'A new space, waiting for your approval' : `${item.assistant} suggests a space`) : item.action === 'change members' ? `${item.assistant} proposes ${{ add: 'adding them', 'make admin': 'making them an admin', 'make member': 'making them a member, not an admin', remove: 'removing them' }[item.member ?? 'add']}` : item.action === 'add include' || item.action === 'remove include' ? `${item.assistant} proposes ${item.action === 'add include' ? 'including' : 'no longer including'} ${item.included === 'skill' ? 'this skill' : 'its rules'}` : `${item.assistant} proposes`}</span>
                   </Link>
                 </li>
               ))}
             </ul>
           </Part>
         )}
-        {(data.spaces.length > 0 || (space.admin && !space.archived)) && (
+        {(data.spaces.length > 0 || (space.admin && !space.archive)) && (
           <Part title="Spaces inside">
             <ul className="-mx-2 flex flex-col empty:hidden">
               {data.spaces.map((inside) => (
                 <li key={inside.id}>
                   <Link href={`/spaces/${inside.id}`} className={cn('flex items-center gap-2 rounded-lg px-2 py-1.5 text-base leading-snug font-semibold hover:bg-muted', inside.archived && 'text-muted-foreground', focusRing)}>
-                    {inside.name}
-                    {inside.archived && <span className="text-sm font-normal">Archived</span>}
-                    <ChevronRight aria-hidden="true" className="size-4 text-muted-foreground" />
+                    <span className="min-w-0 break-words">{inside.name}</span>
+                    {inside.archived && <span className="shrink-0 text-sm font-normal">Archived</span>}
+                    <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
                   </Link>
                 </li>
               ))}
             </ul>
-            {space.admin && !space.archived && (
+            {space.admin && !space.archive && (
               <Link href={`/spaces/new?in=${space.id}`} className={cn('flex items-center gap-2 rounded-lg px-2 py-1.5 -mx-2 text-base text-muted-foreground hover:bg-muted hover:text-foreground', focusRing)}>
                 <Plus aria-hidden="true" className="size-4" />
                 New space in {space.personal ? 'your personal space' : space.name}

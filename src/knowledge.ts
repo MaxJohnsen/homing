@@ -732,6 +732,9 @@ export interface Change {
   writtenBy: string | null;
   agent: string | null;
   imported: Imported | null;
+  /** Who shared it from their own side, and when, if someone did. */
+  publishedBy: string | null;
+  publishedAt: Date | null;
   at: Date;
   onlyYou: boolean;
 }
@@ -765,7 +768,7 @@ export async function recentChanges(
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
-    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, imported, at, only_you, overview,
+    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, imported, published_by, published_at, at, only_you, overview,
            exists (select from pages p where p.id = recent.page_id and p.archived_at is not null) as page_archived
     from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
@@ -777,7 +780,7 @@ export async function recentChanges(
                select from content o where o.page_id = c.page_id and o.kind = 'text' and o.created_at < c.created_at and ${visible(s, 'o')}
              ) as new_page,
              -- Shared from someone's own side, it's new when it was shared.
-             c.written_by, c.agent, c.imported, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
+             c.written_by, c.agent, c.imported, c.published_by, c.published_at, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
              (select p.type from pages p where p.id = c.page_id) is not distinct from 'overview' as overview,
              ${current(s, 'c')} as is_current,
              ${sharedAsCopy(s, 'c')} as shared_as_copy

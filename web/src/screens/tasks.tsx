@@ -8,7 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { nameIn } from '@/lib/knowledge';
+import { nameIn, type Author } from '@/lib/knowledge';
 import type { SpaceData } from '@/lib/spaces';
 
 /** A task as a space's Tasks shows it. */
@@ -22,7 +22,9 @@ export interface TaskData {
   /** Who it's for. Someone you can't see has neither name nor id. */
   assignee: { id: string | null; name: string | null; you: boolean; imported?: boolean } | null;
   done: { at: string; by: { name: string | null; you: boolean; imported?: boolean } | null } | null;
-  /** The assistant that kept it for someone, if one did. */
+  /** Who it was kept for or by. */
+  by?: Author;
+  /** The assistant that kept it for them, if one did. */
   agent: string | null;
 }
 
@@ -37,6 +39,18 @@ export interface TaskActions {
   add: (input: { title: string; due: string | null; shared: boolean }) => Promise<string | undefined>;
   done: (taskId: string, done: boolean) => Promise<string | undefined>;
   share: (taskId: string) => Promise<string | undefined>;
+}
+
+/**
+ * Whose assistant kept a task: "Kept by Claude" for your own, "Kept by Ana Berg’s Claude" for
+ * someone else's, with "(imported)" when it came in an import, or "Kept by an assistant" when
+ * whose it was can't be said. Not "for", which says whom a task is for.
+ */
+function keptBy(task: TaskData): string | undefined {
+  if (!task.agent) return undefined;
+  if (task.by?.you) return `Kept by ${task.agent}`;
+  if (!task.by?.name) return 'Kept by an assistant';
+  return `Kept by ${task.by.name}’s ${task.agent}${task.by.imported ? ' (imported)' : ''}`;
 }
 
 /**
@@ -104,7 +118,7 @@ function TaskRow({ task, space, actions, now }: { task: TaskData; space: SpaceDa
     due?.text,
     task.assignee && task.shared ? `For ${nameIn(task.assignee) ?? 'someone in the space'}` : undefined,
     task.done ? `Done ${dateOf(task.done.at)}${task.done.by && !task.done.by.you && nameIn(task.done.by) ? ` by ${nameIn(task.done.by)}` : ''}` : undefined,
-    task.agent && !task.done ? `Kept by ${task.agent}` : undefined,
+    !task.done ? keptBy(task) : undefined,
   ].filter(Boolean);
 
   return (
