@@ -15,8 +15,10 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
-import { AccessDenied, authDatabaseUrl } from '../src/db.ts';
+import { AccessDenied, authDatabaseUrl, type Session } from '../src/db.ts';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { exportSpace, manifestOf } from '../src/export.ts';
+import { workFolder } from '../src/import.ts';
 import { addInclude, addRule, editRule, IncludeRefused, includesIn, removeRule, rulesFor } from '../src/guidance.ts';
 import {
   addSource,
@@ -46,7 +48,7 @@ import { startServer, type Homing } from '../src/server.ts';
 import { makeCollaborative } from '../src/share-space.ts';
 import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, authDb, db, member, person, refused, type Member, type Person } from './helpers.ts';
+import { admin, as, authDb, db, importAgain, importInto, member, person, refused, type Member, type Person } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 interface Client {
@@ -388,7 +390,7 @@ describe('straight against the database', () => {
       // One that stays in its own spaces goes in, and is undone here.
       await assert.rejects(as({ ...me, direct: true }, async (s) => {
         const own = imported((space) => ({ items: [item({ page: space.page, space: space.space, kind: 'title' })] }));
-        await s.tx`select import_bundle(${s.tx.json(own as never)})`;
+        await importInto(s, own as never);
         throw new Error('undone');
       }), /undone/);
       for (const bundle of [
@@ -413,8 +415,21 @@ describe('straight against the database', () => {
         imported((own) => ({ includes: [{ space: own.space, private: true, rules: intruder.space, skill: null, addedAt: now, imported: {} }] })),
         imported((own) => ({ includes: [{ space: own.space, private: true, rules: null, skill: intruder.skill.pageId, addedAt: now, imported: {} }] })),
       ]) {
-        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), kept);
+        await assert.rejects(as({ ...me, direct: true }, (s) => importInto(s, bundle as never)), kept);
       }
+      // Nor write into the other client's import under way, finish it or take it out.
+      const theirs_ = await as({ ...target.person, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({
+        from: { instance: 'https://elsewhere.test', exportedBy: 'Them', exportedAt: now, space: crypto.randomUUID() },
+        spaces: [{ id: crypto.randomUUID(), name: 'Theirs, coming', parent: null, closed: false, archivedAt: null, imported: {} }],
+      })}) as id`)[0].id);
+      for (const call of [
+        (s: Session) => s.tx`select import_load(${theirs_}::uuid, ${s.tx.json({ pages: [] })})`,
+        (s: Session) => s.tx`select import_finish(${theirs_}::uuid, ${s.tx.json({ includes: [] })})`,
+        (s: Session) => s.tx`select import_discard(${theirs_}::uuid)`,
+      ]) {
+        await assert.rejects(as({ ...me, direct: true }, call), refused);
+      }
+      await as({ ...target.person, direct: true }, (s) => s.tx`select import_discard(${theirs_}::uuid)`);
       // Nor on pages of theirs that anyone may write on, as far as the page goes: a page with
       // nothing on it yet, their overview, and two pages with titles, for a collection.
       const [empty, overview, first, second] = await admin<{ id: string }[]>`
@@ -429,7 +444,7 @@ describe('straight against the database', () => {
         imported(() => ({ items: [item({ page: overview.id, space: target.space })] })),
         imported(() => ({ gathered: [{ collection: first.id, page: second.id, space: target.space, private: true, createdAt: now, imported: {} }] })),
       ]) {
-        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), refused);
+        await assert.rejects(as({ ...me, direct: true }, (s) => importInto(s, bundle as never)), refused);
       }
       await admin`delete from content where page_id in ${admin([first.id, second.id])}`;
       await admin`delete from pages where id in ${admin([empty.id, overview.id, first.id, second.id])}`;
@@ -932,7 +947,11 @@ describe('through an include', () => {
   test('nor through an export, nor anything of someone else’s own include', async () => {
     const holds = async (who: Member, space: string, sql: typeof db) => {
       const manifest = (await as(who, (s) => manifestOf(s, space, homing.url), sql))!;
-      const zip = (await as(who, (s) => exportSpace(s, space, homing.url), sql))!.zip;
+      await mkdir(workFolder, { recursive: true });
+      const exported = await as(who, (s) => exportSpace(s, space, homing.url, workFolder), sql);
+      assert.ok(exported && exported !== 'too large');
+      const zip = await readFile(exported.path);
+      await rm(exported.path);
       return { manifest, text: Object.values(unzipSync(zip)).map((file) => strFromU8(file)).join('\n') };
     };
     for (const sql of [db, admin]) {
@@ -980,9 +999,7 @@ describe('through a page archived while it was someone’s own', () => {
   // Exports a space and imports it again, as the app does, as a new space.
   const restore = async (who: Member, space: string, name: string): Promise<string> => {
     const bytes = new Uint8Array(await (await who.browser.fetch(`/api/spaces/${space}/export`)).arrayBuffer());
-    const upload = async (path: string) => (await who.browser.fetch(path, { method: 'POST', body: bytes, headers: { 'content-type': 'application/zip' } })).json();
-    const { hash } = await upload('/api/import/preview');
-    return (await upload(`/api/import?${new URLSearchParams({ name, hash })}`)).id;
+    return importAgain(who, bytes, name);
   };
 
   before(async () => {

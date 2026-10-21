@@ -1,10 +1,11 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { OnlyYou } from '@/components/only-you';
 import { dateOf, ScreenHeader, Section } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { cn } from 'cn';
 
 /** What an export would bring, before anything is created. */
 export interface ImportPreviewData {
@@ -24,50 +25,109 @@ export interface ImportPreviewData {
   hash: string;
 }
 
+/** How far along a preview being read, or an import, is, as Homing says. */
+export type ImportProgress =
+  | { state: 'reading' | 'importing'; done: number; total: number }
+  | { state: 'done'; id: string }
+  | { state: 'failed'; message: string }
+  | { state: 'none' };
+
 export interface ImportActions {
-  preview: (file: File) => Promise<{ preview: ImportPreviewData } | { problem: string }>;
-  import: (file: File, name: string, hash: string) => Promise<{ id: string } | { problem: string; field?: string }>;
+  /** Sends the file to be read, saying how much of it is sent as it goes. */
+  preview: (file: File, sent: (fraction: number) => void) => Promise<{ preview: ImportPreviewData } | { problem: string }>;
+  /** Starts importing what was previewed, under a name. */
+  import: (name: string, hash: string) => Promise<{ started: true } | { problem: string; field?: string }>;
+  progress: () => Promise<ImportProgress>;
 }
 
 /**
  * Importing a space from an export (spec §3): choose the zip, see what it brings, its rules word
  * for word, then it becomes a new space only you have, and opens.
  */
-export function ImportSpace({ actions, onImported, onCancel, shown }: {
+export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: {
   actions: ImportActions;
   onImported: (id: string) => void;
   onCancel: () => void;
-  /** A preview to start from, for the screens' samples. */
+  /** A preview to start from, and what's under way, for the screens' samples. */
   shown?: ImportPreviewData;
+  underWay?: { doing: 'sending' | 'reading' | 'importing'; fraction: number; file?: File };
 }) {
-  const [file, setFile] = useState<File>();
+  const [file, setFile] = useState<File | undefined>(underWay?.file);
   const [preview, setPreview] = useState<ImportPreviewData | undefined>(shown);
   const [name, setName] = useState(shown?.name ?? '');
   const [problem, setProblem] = useState<{ field?: string; message: string }>();
-  const [busy, setBusy] = useState(false);
+  // What's under way: sending the file, Homing reading it, or importing it, and how far along.
+  const [step, setStep] = useState<{ doing: 'sending' | 'reading' | 'importing'; fraction: number } | undefined>(underWay);
+  const picker = useRef<HTMLInputElement>(null);
+  const busy = step !== undefined;
+
+  // An import that's still going, as when the person comes back to this screen, carries on here.
+  useEffect(() => {
+    if (shown) return;
+    void actions.progress().then((now) => {
+      if (now.state === 'importing') void follow();
+    });
+  }, []);
+
+  /** Follows an import until it's done, then opens the new space. */
+  const follow = async () => {
+    setStep({ doing: 'importing', fraction: 0 });
+    for (;;) {
+      const now = await actions.progress();
+      if (now.state === 'done') return onImported(now.id);
+      if (now.state === 'failed') {
+        setStep(undefined);
+        setProblem({ message: now.message });
+        return;
+      }
+      if (now.state === 'importing') setStep({ doing: 'importing', fraction: now.total ? now.done / now.total : 0 });
+      await new Promise((resolve) => setTimeout(resolve, 700));
+    }
+  };
 
   const choose = async (chosen: File | undefined) => {
+    if (!chosen) return;
     setFile(chosen);
     setPreview(undefined);
     setProblem(undefined);
-    if (!chosen) return;
-    setBusy(true);
-    const answer = await actions.preview(chosen);
-    setBusy(false);
-    if ('problem' in answer) setProblem({ message: answer.problem });
+    setStep({ doing: 'sending', fraction: 0 });
+    let reading = false;
+    const answer = actions.preview(chosen, (fraction) => {
+      // Once it's all sent, Homing reads it, and says how far it's got.
+      if (fraction >= 1 && !reading) {
+        reading = true;
+        void (async () => {
+          while (reading) {
+            setStep((last) => (last && last.doing !== 'importing' ? { doing: 'reading', fraction: last.doing === 'reading' ? last.fraction : 0 } : last));
+            const now = await actions.progress();
+            if (!reading) break;
+            if (now.state === 'reading') setStep({ doing: 'reading', fraction: now.total ? now.done / now.total : 0 });
+            await new Promise((resolve) => setTimeout(resolve, 700));
+          }
+        })();
+      } else if (!reading) setStep({ doing: 'sending', fraction });
+    });
+    const result = await answer;
+    reading = false;
+    setStep(undefined);
+    if ('problem' in result) setProblem({ message: result.problem });
     else {
-      setPreview(answer.preview);
-      setName(answer.preview.name);
+      setPreview(result.preview);
+      setName(result.preview.name);
     }
   };
 
   const bring = async () => {
-    if (!file || !preview || !name.trim()) return;
-    setBusy(true);
-    const answer = await actions.import(file, name.trim(), preview.hash);
-    setBusy(false);
-    if ('problem' in answer) setProblem({ field: answer.field, message: answer.problem });
-    else onImported(answer.id);
+    if (!preview || !name.trim()) return;
+    setProblem(undefined);
+    setStep({ doing: 'importing', fraction: 0 });
+    const answer = await actions.import(name.trim(), preview.hash);
+    if ('problem' in answer) {
+      setStep(undefined);
+      setProblem({ field: answer.field, message: answer.problem });
+      return;
+    }
+    await follow();
   };
 
   const exporter = preview?.from.exportedBy || 'whoever exported it';
@@ -88,17 +148,37 @@ export function ImportSpace({ actions, onImported, onCancel, shown }: {
         <Section tone="raised">
           <div className="flex flex-col gap-2">
             <Label htmlFor="import-file">The export, a zip file</Label>
-            <Input
+            <input
+              ref={picker}
               id="import-file"
               type="file"
               accept=".zip,application/zip"
-              className="h-11 py-2 text-base md:text-base"
+              className="sr-only"
+              tabIndex={-1}
               disabled={busy}
-              onChange={(event) => void choose(event.target.files?.[0])}
-              aria-invalid={Boolean(problem && !preview) || undefined}
-              aria-describedby={problem && !preview ? 'import-problem' : undefined}
+              onChange={(event) => {
+                void choose(event.target.files?.[0]);
+                event.target.value = '';
+              }}
             />
-            {busy && !preview && <p role="status" className="text-sm text-muted-foreground">Reading the export…</p>}
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="lg"
+                className="min-h-11 text-base sm:px-5"
+                disabled={busy}
+                onClick={() => picker.current?.click()}
+                aria-invalid={Boolean(problem && !preview) || undefined}
+                aria-describedby={problem && !preview ? 'import-problem' : undefined}
+              >
+                {file ? 'Choose another file' : 'Choose the zip'}
+              </Button>
+              <span className="text-sm text-muted-foreground break-all">{file ? `${file.name}, ${sizeOf(file.size)}` : 'No file chosen yet'}</span>
+            </div>
+            {step && step.doing !== 'importing' && (
+              <UnderWay label={step.doing === 'sending' ? `Sending ${file?.name ?? 'the export'}` : 'Reading the export'} fraction={step.fraction} />
+            )}
             {problem && !preview && <FieldError id="import-problem">{problem.message}</FieldError>}
           </div>
           {preview && (
@@ -199,7 +279,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown }: {
         {preview && (
           <div className="flex flex-col gap-3">
             {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
-            {busy && <p role="status" className="text-sm text-muted-foreground">Importing. A big space takes a little while.</p>}
+            {step?.doing === 'importing' && <UnderWay label={`Importing ${name.trim() || top}`} note="You can leave this page, and it carries on." fraction={step.fraction} />}
             <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onCancel}>Cancel</Button>
               <Button type="submit" size="lg" className="h-11 text-base sm:px-5" disabled={busy || !name.trim()}>Import {name.trim() || top}</Button>
@@ -209,6 +289,24 @@ export function ImportSpace({ actions, onImported, onCancel, shown }: {
       </form>
     </>
   );
+}
+
+/** How far along something is, as a bar and in words. */
+function UnderWay({ label, note, fraction }: { label: string; note?: string; fraction: number }) {
+  const percent = Math.max(0, Math.min(100, Math.round(fraction * 100)));
+  return (
+    <div role="status" className="flex flex-col gap-1.5">
+      <span className="text-sm text-muted-foreground">{label}: {percent}%{note ? `. ${note}` : ''}</span>
+      <div className="h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={label}>
+        <div className={cn('h-full rounded-full bg-primary transition-[width]')} style={{ width: `${percent}%` }} />
+      </div>
+    </div>
+  );
+}
+
+/** A file's size, in words. */
+function sizeOf(bytes: number): string {
+  return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : bytes >= 1024 ** 2 ? `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
 function count(n: number, noun: string): string {

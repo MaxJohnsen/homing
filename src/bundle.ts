@@ -1,23 +1,19 @@
-// Reading an export for import (spec §3): what's in its homing.json, checked whole, what it would
-// bring, and what Homing writes for it. An export is untrusted, so this runs in a worker of its own
-// with limited memory (import.ts), and nothing here touches the database.
+// Reading an export for import (spec §3), a part at a time. homing.json says what the export is,
+// with its short lists, and names the files of its long ones, which hold a line each and are read
+// one file at a time, so even a big export is never held whole. Everything is checked as it's
+// read: what it says, its limits, and that it holds together as far as what came before shows,
+// and the database checks the rest as it's written. An export is untrusted, so this runs in a
+// worker of its own with limited memory (import.ts), and nothing here touches the database.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { rewriteReferences, safePath, type Manifest } from './export.ts';
+import { importLimits, lists, rewriteReferences, safePath, type Header, type ListName } from './export.ts';
 import { oneLineTitle } from './knowledge.ts';
 import { frontmatter } from './skills.ts';
 import { cleanName, sameName } from './spaces.ts';
-import { fileIn, ZipRefused } from './zip.ts';
+import { ZipReader, ZipRefused } from './zip.ts';
 
-/**
- * The most Homing takes in one import: the zip, its homing.json unpacked, the files the zip lists,
- * and the objects in homing.json, so even a small zip can't make Homing build millions of them.
- * 32 MB of homing.json is about 60,000 items, read in half a second, and written in about 4
- * seconds on a laptop, while creating spaces waits (architecture.md, "Export and import"). What the
- * preview shows has limits of its own: the rules' text, and the whole preview.
- */
-export const importLimits = { upload: 100 * 1024 * 1024, manifest: 32 * 1024 * 1024, files: 250_000, objects: 2_000_000, rules: 1_000_000, preview: 5 * 1024 * 1024 };
+export { importLimits };
 
 /** The most Homing keeps of each kind of text, as its own screens and tools take them. */
 const longest = { knowledge: 20_000, overview: 2_000, title: 200, rule: 4_000, file: 512 * 1024, type: 40, name: 200, task: 200, description: 20_000, excerpt: 20_000 };
@@ -33,108 +29,200 @@ export class ImportRefused extends Error {
   }
 }
 
+export const tooLarge = 'That export is larger than Homing imports at once. Exports from Homing never are.';
+const unreadable = 'That export’s homing.json isn’t readable, so Homing can’t import it.';
+const tooManyRules = 'That export has more rules than Homing can show you to read first, so Homing won’t import it.';
+const tooMuchToShow = 'That export holds more than Homing can show you before importing it, so Homing won’t import it. Export less of it at a time.';
+const tooManyFiles = `That export has more files than Homing imports at once, ${importLimits.files.toLocaleString('en')}.`;
+/** Refusals of an export for how much it holds, rather than for what it says. */
+export const sizeRefusals = new Set([tooLarge, tooManyRules, tooMuchToShow, tooManyFiles]);
+const apart = (problem: string) => new ImportRefused(`That export doesn’t hold together, so Homing won’t import it: ${problem}.`);
+
 const id = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 const time = z.iso.datetime({ offset: true });
 const text = (max: number) => z.string().max(max);
 const name = text(longest.name).nullable();
 const key = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
-const author = z.strictObject({ by: z.enum(['person', 'agent', 'routine']), person: key.nullable(), agent: name });
+const authorSchema = z.strictObject({ by: z.enum(['person', 'agent', 'routine']), person: key.nullable(), agent: name });
+type Author = z.infer<typeof authorSchema>;
 const side = z.enum(['shared', 'private']);
 // Where something was imported from before, which an export of an import says. A new import records its own.
 const imported = z.strictObject({ id: id.optional(), from: text(2000).optional(), by: key.nullable().optional(), at: time.optional() }).optional();
 
-const manifestSchema = z.strictObject({
+const headerSchema = z.strictObject({
   format: z.literal('homing-export'),
-  version: z.literal(1),
+  version: z.literal(2),
   instance: text(2000),
   exportedAt: time,
   exportedBy: z.strictObject({ person: key, name: text(longest.name) }),
   space: id,
   people: z.array(z.strictObject({ key, name })),
   spaces: z.array(z.strictObject({
-    id, name: text(200), parent: id.nullable(), closed: z.boolean(), private: z.boolean(), creator: author.nullable(),
+    id, name: text(200), parent: id.nullable(), closed: z.boolean(), private: z.boolean(), creator: authorSchema.nullable(),
     archived: z.strictObject({ at: time, by: key.nullable() }).nullable(), createdAt: time, folder: text(10_000), imported,
   })).min(1),
-  spaceArchives: z.array(z.strictObject({ space: id, archived: z.boolean(), author, at: time })),
-  pages: z.array(z.strictObject({
-    id, space: id, type: text(longest.type).nullable(), createdAt: time,
-    archived: z.strictObject({ at: time, by: key.nullable() }).nullable(), file: text(10_000).nullable(), imported,
-  })),
-  items: z.array(z.strictObject({
-    id, page: id, space: id, kind: z.enum(['title', 'text', 'requirement', 'preference', 'file', 'removed']),
-    path: text(1000).nullable(), body: text(longest.file), visibility: side, author, createdAt: time, writtenAt: time,
-    supersedes: id.nullable(), onlyHere: z.boolean().optional(), reachesDown: z.boolean().optional(), publishedFrom: id.nullable(),
-    published: z.strictObject({ by: key.nullable(), at: time }).nullable(), sources: z.array(id), sourcesElsewhere: z.number().int().min(0).max(1_000_000), imported,
-  })),
-  revisions: z.array(z.strictObject({
-    item: id, visibility: side, body: text(longest.file), author, writtenAt: time, replacedAt: time, imported,
-  })),
-  sources: z.array(z.strictObject({
-    id, space: id, visibility: side, reference: text(longest.excerpt).nullable(), excerpt: text(longest.excerpt), author, createdAt: time, imported,
-  })),
-  links: z.array(z.strictObject({ item: id, from: id, to: id })),
-  gathered: z.array(z.strictObject({ collection: id, page: id, visibility: side, author, createdAt: time })),
-  pageArchives: z.array(z.strictObject({ page: id, archived: z.boolean(), author, at: time })),
-  tasks: z.array(z.strictObject({
-    id, space: id, visibility: side, title: text(longest.task), description: text(longest.description).nullable(),
-    due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), assignee: key.nullable(),
-    done: z.strictObject({ at: time, by: key.nullable() }).nullable(), author, createdAt: time, updatedAt: time, imported,
-  })),
-  // Exports from before includes were exported have none.
+  spaceArchives: z.array(z.strictObject({ space: id, archived: z.boolean(), author: authorSchema, at: time })),
   includes: z.array(z.strictObject({
     id, space: id, visibility: side, waiting: z.boolean(), rules: id.nullable(), skill: id.nullable(),
-    elsewhere: z.strictObject({ space: text(longest.name), skill: text(longest.name).nullable() }).nullable(), author, addedAt: time, imported,
-  })).optional(),
+    elsewhere: z.strictObject({ space: text(longest.name), skill: text(longest.name).nullable() }).nullable(), author: authorSchema, addedAt: time, imported,
+  })),
+  files: z.strictObject(Object.fromEntries(lists.map((list) => [list, z.array(z.string().regex(new RegExp(`^homing/${list}-\\d{5}\\.jsonl$`))).max(10_000)])) as Record<ListName, z.ZodArray<z.ZodString>>),
 });
 
-/** A zip's homing.json, read and checked, with a fingerprint of it, or a refusal saying what's wrong. */
-export function readExport(zip: Uint8Array): { manifest: Manifest; hash: string } {
-  let json: Buffer;
-  try {
-    json = fileIn(Buffer.from(zip.buffer, zip.byteOffset, zip.byteLength), 'homing.json', { files: importLimits.files, size: importLimits.manifest });
-  } catch (error) {
-    if (!(error instanceof ZipRefused)) throw error;
-    throw new ImportRefused({
-      'not a zip': 'That isn’t a zip file. Choose the zip Homing gave you when you exported a space.',
-      missing: 'That zip isn’t an export from Homing: it has no homing.json.',
-      'too many files': `That export has more files than Homing imports at once, ${importLimits.files.toLocaleString('en')}.`,
-      'too large': tooLarge,
-      damaged: 'That zip is damaged, so Homing can’t read it.',
-    }[error.reason]);
-  }
-  // Counted before anything is built from it: every object and list starts with a bracket.
-  let objects = 0;
-  for (const byte of json) if (byte === 0x7b || byte === 0x5b) objects++;
-  if (objects > importLimits.objects) throw new ImportRefused(tooLarge);
-  let value: unknown;
-  try {
-    value = JSON.parse(json.toString('utf8'));
-  } catch {
-    throw new ImportRefused('That export’s homing.json isn’t readable, so Homing can’t import it.');
-  }
-  const head = value as { format?: unknown; version?: unknown };
-  if (head?.format !== 'homing-export') throw new ImportRefused('That zip isn’t an export from Homing.');
-  if (head.version !== 1) {
-    throw new ImportRefused(typeof head.version === 'number' && head.version > 1
-      ? `That export is from a newer Homing, in version ${head.version} of the format. Update this Homing to import it.`
-      : 'That export is in a format this Homing doesn’t know.');
-  }
-  const parsed = manifestSchema.safeParse(value);
-  if (!parsed.success) {
-    const issue = parsed.error.issues[0];
-    const where = issue.path.join('.').slice(0, 100);
-    if (issue.code === 'too_big') throw new ImportRefused(`That export holds more than Homing keeps, so Homing won’t import it: ${where} is longer than Homing keeps.`);
-    // Said briefly, however much is wrong, such as every key that doesn't belong.
-    throw new ImportRefused(`That export was changed or damaged, so Homing won’t import it: ${where} ${issue.message.toLowerCase().slice(0, 200)}.`);
-  }
-  const manifest = parsed.data as Manifest;
-  manifest.includes ??= [];
-  const problem = problemIn(manifest);
-  if (problem) throw new ImportRefused(`That export doesn’t hold together, so Homing won’t import it: ${problem}.`);
-  return { manifest, hash: createHash('sha256').update(json).digest('hex') };
+const lineSchemas = {
+  pages: z.strictObject({
+    id, space: id, type: text(longest.type).nullable(), createdAt: time,
+    archived: z.strictObject({ at: time, by: key.nullable() }).nullable(), file: text(10_000).nullable(), imported,
+  }),
+  sources: z.strictObject({
+    id, space: id, visibility: side, reference: text(longest.excerpt).nullable(), excerpt: text(longest.excerpt), author: authorSchema, createdAt: time, imported,
+  }),
+  items: z.strictObject({
+    id, page: id, space: id, kind: z.enum(['title', 'text', 'requirement', 'preference', 'file', 'removed']),
+    path: text(1000).nullable(), body: text(longest.file), visibility: side, author: authorSchema, createdAt: time, writtenAt: time,
+    supersedes: id.nullable(), onlyHere: z.boolean().optional(), reachesDown: z.boolean().optional(), publishedFrom: id.nullable(),
+    published: z.strictObject({ by: key.nullable(), at: time }).nullable(), sources: z.array(id).max(10_000), sourcesElsewhere: z.number().int().min(0).max(1_000_000), imported,
+  }),
+  revisions: z.strictObject({
+    item: id, visibility: side, body: text(longest.file), author: authorSchema, writtenAt: time, replacedAt: time, imported,
+  }),
+  gathered: z.strictObject({ collection: id, page: id, visibility: side, author: authorSchema, createdAt: time }),
+  pageArchives: z.strictObject({ page: id, archived: z.boolean(), author: authorSchema, at: time }),
+  tasks: z.strictObject({
+    id, space: id, visibility: side, title: text(longest.task), description: text(longest.description).nullable(),
+    due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), assignee: key.nullable(),
+    done: z.strictObject({ at: time, by: key.nullable() }).nullable(), author: authorSchema, createdAt: time, updatedAt: time, imported,
+  }),
+};
+
+type Read = keyof typeof lineSchemas;
+/** The long lists an import reads, in the order it writes them. Links follow from the text, so they're never read. */
+const reads: Read[] = ['pages', 'sources', 'items', 'revisions', 'gathered', 'pageArchives', 'tasks'];
+type Line<L extends Read> = z.infer<(typeof lineSchemas)[L]>;
+type HeaderInclude = Header['includes'][number];
+
+/** What zod found wrong, said briefly, however much is wrong. */
+function refusalOf(issues: z.core.$ZodIssue[], where = ''): ImportRefused {
+  const issue = issues[0];
+  const path = [where, ...issue.path.map(String)].filter(Boolean).join('.').slice(0, 100);
+  if (issue.code === 'too_big') return new ImportRefused(`That export holds more than Homing keeps, so Homing won’t import it: ${path} is longer than Homing keeps.`);
+  return new ImportRefused(`That export was changed or damaged, so Homing won’t import it: ${path} ${issue.message.toLowerCase().slice(0, 200)}.`);
 }
 
-export const tooLarge = `That export is larger than Homing imports at once, ${importLimits.manifest / 1024 / 1024} MB of knowledge.`;
+/** Why a zip can't be read, for the person. */
+function zipRefusal(error: unknown): never {
+  if (!(error instanceof ZipRefused)) throw error;
+  throw new ImportRefused({
+    'not a zip': 'That isn’t a zip file. Choose the zip Homing gave you when you exported a space.',
+    missing: 'That zip isn’t an export from Homing: it has no homing.json.',
+    'too many files': tooManyFiles,
+    'too large': tooLarge,
+    damaged: 'That zip is damaged, so Homing can’t read it.',
+  }[error.reason]);
+}
+
+function parse(json: Buffer | string): unknown {
+  try {
+    return JSON.parse(typeof json === 'string' ? json : json.toString('utf8'));
+  } catch {
+    throw new ImportRefused(unreadable);
+  }
+}
+
+/** An export in a zip file, opened: what homing.json says, and its long lists a file at a time. */
+export class Bundle {
+  readonly header: Header;
+  /** How much there is to read, and how much has been, unpacked. */
+  readonly total: number;
+  done = 0;
+  private readonly zip: ZipReader;
+
+  private constructor(zip: ZipReader, header: Header, total: number) {
+    this.zip = zip;
+    this.header = header;
+    this.total = total;
+  }
+
+  /** Opens the zip and reads homing.json, refusing what Homing doesn't import. */
+  static open(path: string): Bundle {
+    let zip: ZipReader;
+    try {
+      zip = ZipReader.file(path, (name) => name === 'homing.json' || name.startsWith('homing/'), { files: importLimits.files });
+    } catch (error) {
+      zipRefusal(error);
+    }
+    try {
+      let raw: Buffer;
+      try {
+        raw = zip.read('homing.json', importLimits.header);
+      } catch (error) {
+        zipRefusal(error);
+      }
+      // Counted before anything is built from it: every object and list starts with a bracket.
+      let objects = 0;
+      for (const byte of raw) if (byte === 0x7b || byte === 0x5b) objects++;
+      if (objects > importLimits.objects) throw new ImportRefused(tooLarge);
+      const value = parse(raw);
+      const head = value as { format?: unknown; version?: unknown };
+      if (head?.format !== 'homing-export') throw new ImportRefused('That zip isn’t an export from Homing.');
+      if (head.version !== 2) {
+        throw new ImportRefused(typeof head.version !== 'number'
+          ? 'That export is in a format this Homing doesn’t know.'
+          : head.version > 2
+            ? `That export is from a newer Homing, in version ${head.version} of the format. Update this Homing to import it.`
+            : `That export is from an earlier Homing, in version ${head.version} of the format, which this Homing no longer imports. Export the space again to import it.`);
+      }
+      const parsed = headerSchema.safeParse(value);
+      if (!parsed.success) throw refusalOf(parsed.error.issues);
+      const header = parsed.data as Header;
+      let total = 0;
+      for (const list of reads) {
+        for (const file of header.files[list]) {
+          const entry = zip.entries.get(file);
+          if (!entry) throw new ImportRefused('That export is missing some of its files, so Homing can’t import it.');
+          if (entry.size > importLimits.chunk) throw new ImportRefused(tooLarge);
+          total += entry.size;
+        }
+      }
+      if (total > importLimits.unpacked) throw new ImportRefused(tooLarge);
+      return new Bundle(zip, header, total);
+    } catch (error) {
+      zip.close();
+      throw error;
+    }
+  }
+
+  /** A long list's lines, as text, a file at a time. */
+  *raw(list: ListName): Generator<string> {
+    for (const file of this.header.files[list]) {
+      let chunk: Buffer;
+      try {
+        chunk = this.zip.read(file, importLimits.chunk);
+      } catch (error) {
+        zipRefusal(error);
+      }
+      // Counted before anything is built from it: every object and list starts with a bracket.
+      let objects = 0;
+      for (const byte of chunk) if (byte === 0x7b || byte === 0x5b) objects++;
+      if (objects > importLimits.objects) throw new ImportRefused(tooLarge);
+      this.done += chunk.length;
+      for (const line of chunk.toString('utf8').split('\n')) if (line) yield line;
+    }
+  }
+
+  /** A long list's entries, each checked for what it says and how long it is. */
+  *lines<L extends Read>(list: L): Generator<Line<L>> {
+    for (const line of this.raw(list)) {
+      const parsed = lineSchemas[list].safeParse(parse(line));
+      if (!parsed.success) throw refusalOf(parsed.error.issues, list);
+      yield parsed.data as Line<L>;
+    }
+  }
+
+  close(): void {
+    this.zip.close();
+  }
+}
 
 /**
  * A name as Homing shows one that came in an export: on one line, without control characters, or
@@ -155,270 +243,584 @@ const kept = /[\u00ad\u061c\u200c-\u200f]/;
  * and tabs stay, a file may start with a byte order mark, and the joiners, direction marks and
  * soft hyphens languages need stay too.
  */
-function hiddenIn(text: string, kind: string): boolean {
+function hiddenIn(body: string, kind: string): boolean {
   const controls = kind === 'file' ? /[\p{Cc}--[\t\n\r\f]]/v : /[\p{Cc}--[\t\n\r]]/v;
-  return controls.test(text) || /\p{Cf}/u.test((kind === 'file' ? text.replace(/^\ufeff/, '') : text).replace(new RegExp(kept, 'g'), ''));
-}
-
-/** What doesn't hold together in an export, if anything: what points nowhere, or where it can't. */
-function problemIn(m: Manifest): string | undefined {
-  // Everyone named is one of the export's people, and an author is a person, an agent, or a routine.
-  const people = new Set<string>();
-  for (const person of m.people) {
-    if (people.has(person.key)) return `${person.key} appears twice`;
-    people.add(person.key);
-  }
-  if (!people.has(m.exportedBy.person)) return 'whoever exported it isn’t among its people';
-  const authors = [
-    ...m.spaces.map((space) => space.creator), ...m.spaceArchives.map((archive) => archive.author), ...m.items.map((item) => item.author),
-    ...m.revisions.map((revision) => revision.author), ...m.sources.map((source) => source.author), ...m.gathered.map((gathering) => gathering.author),
-    ...m.pageArchives.map((archive) => archive.author), ...m.tasks.map((task) => task.author), ...m.includes.map((include) => include.author),
-  ];
-  for (const author of authors) {
-    const fits = !author || (author.by === 'person' ? author.person !== null && author.agent === null : author.by === 'agent' ? author.agent !== null : author.person === null && author.agent === null);
-    if (!fits) return 'an author is neither a person, an agent nor a routine';
-    if (author?.person && !people.has(author.person)) return `${author.person} isn’t among its people`;
-  }
-  const keys = [
-    ...m.spaces.map((space) => space.archived?.by), ...m.pages.map((page) => page.archived?.by), ...m.items.map((item) => item.published?.by),
-    ...m.tasks.flatMap((task) => [task.assignee, task.done?.by]),
-  ];
-  for (const person of keys) if (person && !people.has(person)) return `${person} isn’t among its people`;
-  const seen = new Set<string>();
-  for (const thing of [...m.spaces, ...m.pages, ...m.items, ...m.sources, ...m.tasks, ...m.includes]) {
-    if (seen.has(thing.id)) return `${thing.id} appears twice`;
-    seen.add(thing.id);
-  }
-  const spaces = new Map<string, Manifest['spaces'][number]>();
-  const named = new Map<string, string[]>();
-  for (const [at, space] of m.spaces.entries()) {
-    if (at === 0 ? space.id !== m.space || space.parent !== null : space.parent === null || !spaces.has(space.parent)) return `space ${space.id} isn’t under the exported space`;
-    try {
-      const name = cleanName(space.name);
-      named.get(space.parent ?? '')?.push(name) ?? named.set(space.parent ?? '', [name]);
-    } catch {
-      return `space ${space.id} has a name Homing doesn’t take`;
-    }
-    spaces.set(space.id, space);
-  }
-  // Spaces in one place have different names, as Homing keeps them: side by side in order, the same name is next to itself.
-  for (const siblings of named.values()) {
-    const sorted = siblings.sort(byName);
-    const twice = sorted.find((name, at) => at > 0 && sameName(sorted[at - 1], name));
-    if (twice) return `two spaces in one place are both called ${twice}`;
-  }
-  const pages = new Map(m.pages.map((page) => [page.id, page]));
-  const once = new Set<string>();
-  for (const page of m.pages) {
-    if (!spaces.has(page.space)) return `page ${page.id} is in a space that isn’t in the export`;
-    if (page.type === 'guidance' || page.type === 'overview') {
-      if (once.has(`${page.space} ${page.type}`)) return `space ${page.space} has two ${page.type} pages`;
-      once.add(`${page.space} ${page.type}`);
-    } else if (page.type !== null && page.type !== 'skill' && ['guidance', 'skill', 'overview'].includes(oneLineTitle(page.type).toLowerCase())) {
-      return `page ${page.id} has a type Homing keeps for itself`;
-    }
-    if (page.archived && notKnowledge(page.type)) return `page ${page.id} can’t be archived`;
-  }
-  // What each kind of page holds, and how long each kind of text may be.
-  const kinds = new Map([['guidance', ['requirement', 'preference', 'removed']], ['skill', ['title', 'file', 'removed']], ['overview', ['text']]]);
-  const tooLong = (item: { kind: string; body: string }, page: Manifest['pages'][number]) =>
-    item.kind === 'file' ? Buffer.byteLength(item.body) > longest.file
-      : item.body.length > (item.kind === 'title' ? longest.title : item.kind === 'requirement' || item.kind === 'preference' ? longest.rule : page.type === 'overview' ? longest.overview : longest.knowledge);
-  const sources = new Map(m.sources.map((source) => [source.id, source]));
-  for (const source of m.sources) if (!spaces.has(source.space)) return `source ${source.id} is in a space that isn’t in the export`;
-  const items = new Map(m.items.map((item) => [item.id, item]));
-  const reaches = (item: Manifest['items'][number]) => reachesDown(item, pages, items);
-  for (const item of m.items) {
-    const page = pages.get(item.page);
-    if (!page || page.space !== item.space) return `item ${item.id} is on a page that isn’t in the export`;
-    if (!(kinds.get(page.type ?? '') ?? ['title', 'text']).includes(item.kind)) return `item ${item.id} doesn’t belong on its page`;
-    if (tooLong(item, page)) return `item ${item.id} is longer than Homing keeps`;
-    if (item.kind === 'removed' && item.body !== '') return `item ${item.id} removes something, and says something too`;
-    // Rules and skills are what assistants follow, so nothing in them may be hidden.
-    if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(item.body, item.kind)) return `item ${item.id} has characters that hide what it says`;
-    if ((item.kind === 'file') !== (item.path !== null)) return `item ${item.id} has a path only a skill’s file has`;
-    if (item.path !== null && !safePath(item.path)) return `item ${item.id} has a path outside its skill`;
-    if (item.sources.length && item.kind !== 'text') return `item ${item.id} cites sources, which only knowledge does`;
-    if (item.sources.some((source) => !sources.has(source))) return `item ${item.id} cites a source that isn’t in the export`;
-    if (new Set(item.sources).size !== item.sources.length) return `item ${item.id} cites a source twice`;
-    // What an item replaced, or was shared from, is on its page.
-    const replaced = item.supersedes === null ? undefined : items.get(item.supersedes);
-    if ((item.supersedes !== null || item.kind === 'removed') && !(item.kind === 'text' || item.kind === 'removed')) return `item ${item.id} can’t replace anything`;
-    if (item.supersedes !== null && (!replaced || replaced.page !== item.page || replaced === item)) return `item ${item.id} replaces something that isn’t on its page`;
-    if (item.kind === 'removed' && (!replaced || replaced.visibility !== item.visibility)) return `item ${item.id} removes something it can’t`;
-    // A removal reaches as far as what it removes, so the spaces below see it's gone.
-    if (item.kind === 'removed' && item.reachesDown !== undefined && item.reachesDown !== reaches(replaced!)) return `item ${item.id} reaches further or less far than what it removes`;
-    if (item.kind === 'text' && replaced && (replaced.kind !== 'text' || (item.visibility === 'shared' && replaced.visibility === 'private'))) return `item ${item.id} replaces something it can’t`;
-    if (item.publishedFrom !== null) {
-      const original = items.get(item.publishedFrom);
-      if (!original || original.page !== item.page || original.visibility !== 'private' || item.visibility !== 'shared' || item.kind !== 'text') return `item ${item.id} was shared from something that isn’t on its page`;
-    }
-  }
-  // And nothing replaces itself, however far round.
-  if (inWritingOrder(m.items) === undefined) return 'some items replace each other in a circle';
-  // A skill is named as its SKILL.md says, in lowercase words, and holds one file at each place.
-  const replacedIds = new Set(m.items.map((item) => item.supersedes).filter((target) => target !== null));
-  const onPage = new Map<string, Manifest['items']>();
-  for (const item of m.items) if (!replacedIds.has(item.id) && item.kind !== 'removed') onPage.get(item.page)?.push(item) ?? onPage.set(item.page, [item]);
-  for (const page of m.pages.filter((candidate) => candidate.type === 'skill')) {
-    const live = onPage.get(page.id) ?? [];
-    const paths = live.filter((item) => item.kind === 'file').map((item) => `${item.visibility} ${item.path}`);
-    if (new Set(paths).size !== paths.length) return `skill ${page.id} has two files at one place`;
-    for (const title of live.filter((item) => item.kind === 'title')) {
-      if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(title.body) || title.body.length > 64) return `skill ${page.id} has a name Homing doesn’t take`;
-      const skillMd = live.find((item) => item.path === 'SKILL.md' && item.visibility === title.visibility);
-      if (skillMd && frontmatter(skillMd.body).name !== title.body) return `skill ${title.body} is named differently in its SKILL.md`;
-    }
-  }
-  for (const revision of m.revisions) {
-    const item = items.get(revision.item);
-    if (!item) return 'an earlier version belongs to an item that isn’t in the export';
-    if (tooLong({ kind: item.kind, body: revision.body }, pages.get(item.page)!)) return `an earlier version of item ${item.id} is longer than Homing keeps`;
-    if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(revision.body, item.kind)) return `an earlier version of item ${item.id} has characters that hide what it says`;
-  }
-  const sharedTitle = new Set(m.items.filter((item) => item.kind === 'title' && item.visibility === 'shared').map((item) => item.page));
-  const ownTitle = new Set(m.items.filter((item) => item.kind === 'title').map((item) => item.page));
-  const gatherings = new Set<string>();
-  for (const gathering of m.gathered) {
-    const collection = pages.get(gathering.collection);
-    const page = pages.get(gathering.page);
-    const titled = gathering.visibility === 'shared' ? sharedTitle : ownTitle;
-    if (!collection || !page || collection === page || collection.space !== page.space || notKnowledge(collection.type) || notKnowledge(page.type)
-      || !titled.has(collection.id) || !titled.has(page.id)) return `a collection gathers a page it can’t`;
-    const key = `${gathering.collection} ${gathering.page} ${gathering.visibility}`;
-    if (gatherings.has(key)) return `a collection gathers a page twice`;
-    gatherings.add(key);
-  }
-  for (const archive of m.pageArchives) if (!pages.has(archive.page) || notKnowledge(pages.get(archive.page)!.type)) return `a page that can’t be archived was`;
-  for (const task of m.tasks) {
-    if (!spaces.has(task.space)) return `task ${task.id} is in a space that isn’t in the export`;
-    if (!task.title.trim()) return `task ${task.id} has no title`;
-    if (task.due && Number.isNaN(Date.parse(`${task.due}T00:00:00Z`))) return `task ${task.id} is due on a day that doesn’t exist`;
-  }
-  return problemInIncludes(m, spaces, pages, onPage);
-}
-
-/**
- * What doesn't hold together in what the spaces' guidance includes: each brings in one space's
- * rules or one skill, in the export or named outside it, never its own space's or one above it,
- * which apply there already, once on each side, and for everyone only what's shared.
- */
-function problemInIncludes(m: Manifest, spaces: Map<string, Manifest['spaces'][number]>, pages: Map<string, Manifest['pages'][number]>, onPage: Map<string, Manifest['items']>): string | undefined {
-  // Each space's place in the tree, so whether one is above another is one comparison.
-  const enter = new Map<string, number>();
-  const leave = new Map<string, number>();
-  const below = new Map<string, string[]>();
-  for (const space of m.spaces.slice(1)) below.get(space.parent!)?.push(space.id) ?? below.set(space.parent!, [space.id]);
-  let clock = 0;
-  const stack: [string, boolean][] = [[m.space, false]];
-  while (stack.length) {
-    const [space, done] = stack.pop()!;
-    if (done) {
-      leave.set(space, clock++);
-      continue;
-    }
-    enter.set(space, clock++);
-    stack.push([space, true], ...(below.get(space) ?? []).map((child): [string, boolean] => [child, false]));
-  }
-  const appliesIn = (from: string, space: string) => enter.get(from)! <= enter.get(space)! && leave.get(space)! <= leave.get(from)!;
-  // Someone's own include waits exactly while the space includes the same for everyone.
-  const target = (include: Manifest['includes'][number]) => include.rules ?? include.skill ?? `elsewhere ${JSON.stringify(include.elsewhere)}`;
-  const forEveryone = new Set(m.includes.filter((include) => include.visibility === 'shared').map((include) => `${include.space} ${target(include)}`));
-  const there = new Set<string>();
-  for (const include of m.includes) {
-    if (!spaces.has(include.space)) return `include ${include.id} is in a space that isn’t in the export`;
-    if ([include.rules, include.skill, include.elsewhere].filter((target) => target !== null).length !== 1) return `include ${include.id} doesn’t include one thing`;
-    if (include.waiting && include.visibility !== 'private') return `include ${include.id} for everyone can’t wait`;
-    if (include.visibility === 'private' && include.waiting !== forEveryone.has(`${include.space} ${target(include)}`)) return `include ${include.id} says it waits when it doesn’t, or the other way round`;
-    if (include.elsewhere !== null) continue;
-    let from: string;
-    if (include.rules !== null) {
-      const space = spaces.get(include.rules);
-      if (!space) return `include ${include.id} includes rules that aren’t in the export`;
-      if (include.visibility === 'shared' && space.private) return `include ${include.id} includes for everyone rules that only the exporter has`;
-      from = space.id;
-    } else {
-      const page = pages.get(include.skill!);
-      const titles = (onPage.get(include.skill!) ?? []).filter((item) => item.kind === 'title');
-      if (!page || page.type !== 'skill' || !titles.length) return `include ${include.id} includes a skill that isn’t in the export`;
-      if (include.visibility === 'shared' && !titles.some((title) => title.visibility === 'shared')) return `include ${include.id} includes for everyone a skill that only the exporter has`;
-      from = page.space;
-    }
-    if (appliesIn(from, include.space)) return `include ${include.id} includes guidance that applies there already`;
-    const key = `${include.space} ${include.visibility} ${include.rules ?? include.skill}`;
-    if (there.has(key)) return `include ${include.id} is there twice`;
-    there.add(key);
-  }
-  return undefined;
-}
-
-/**
- * Times as an export gives them, to the millisecond, with microseconds added where several fall in
- * the same millisecond, so they keep their order and still read the same.
- */
-function inOrder(times: string[]): string[] {
-  const seen = new Map<string, number>();
-  return times.map((at) => {
-    const n = seen.get(at) ?? 0;
-    seen.set(at, n + 1);
-    return n === 0 || !/\.\d{3}Z$/.test(at) ? at : at.replace(/Z$/, `${String(Math.min(n, 999)).padStart(3, '0')}Z`);
-  });
-}
-
-/**
- * The items in an order they can be written in, what one replaced or was shared from before it,
- * and otherwise as the export lists them. Undefined when some replace each other in a circle.
- */
-function inWritingOrder(items: Manifest['items']): Manifest['items'] | undefined {
-  const byId = new Map(items.map((item) => [item.id, item]));
-  const done = new Set<string>();
-  const doing = new Set<string>();
-  const order: Manifest['items'] = [];
-  for (const first of items) {
-    // Depth first, without recursion, so a long chain of updates can't run out of stack.
-    const stack: [Manifest['items'][number], boolean][] = [[first, false]];
-    while (stack.length) {
-      const [item, ready] = stack.pop()!;
-      if (done.has(item.id)) continue;
-      if (ready) {
-        doing.delete(item.id);
-        done.add(item.id);
-        order.push(item);
-        continue;
-      }
-      if (doing.has(item.id)) return undefined;
-      doing.add(item.id);
-      stack.push([item, true]);
-      for (const before of [item.publishedFrom, item.supersedes]) {
-        const target = before === null ? undefined : byId.get(before);
-        if (target && !done.has(target.id)) {
-          if (doing.has(target.id)) return undefined;
-          stack.push([target, false]);
-        }
-      }
-    }
-  }
-  return order;
-}
-
-/**
- * Whether an item reaches the spaces below its own: a rule unless it's only here, a skill always,
- * knowledge never, and a removal as far as what it removes.
- */
-function reachesDown(item: Manifest['items'][number], pages: Map<string, Manifest['pages'][number]>, items: Map<string, Manifest['items'][number]>, depth = 0): boolean {
-  if (item.kind === 'removed') {
-    const removed = items.get(item.supersedes ?? '');
-    return removed && depth < 100 ? reachesDown(removed, pages, items, depth + 1) : item.reachesDown === true;
-  }
-  const type = pages.get(item.page)?.type;
-  return type === 'skill' || (type === 'guidance' && item.onlyHere !== true);
+  return controls.test(body) || /\p{Cf}/u.test((kind === 'file' ? body.replace(/^\ufeff/, '') : body).replace(new RegExp(kept, 'g'), ''));
 }
 
 /** Names in an order where the same name, as Homing compares names, comes together. */
 const byName = new Intl.Collator('en', { sensitivity: 'accent' }).compare;
 
-function notKnowledge(type: string | null): boolean {
-  return type === 'guidance' || type === 'skill' || type === 'overview';
+const kinds = ['title', 'text', 'requirement', 'preference', 'file', 'removed'] as const;
+type Kind = (typeof kinds)[number];
+/** What a page is, as far as what it holds goes. */
+const Sort = { knowledge: 0, guidance: 1, skill: 2, overview: 3 } as const;
+const sortOf = (type: string | null) => (type === 'guidance' ? Sort.guidance : type === 'skill' ? Sort.skill : type === 'overview' ? Sort.overview : Sort.knowledge);
+/** What each sort of page holds. */
+const holds: Kind[][] = [['title', 'text'], ['requirement', 'preference', 'removed'], ['title', 'file', 'removed'], ['text']];
+
+/** What's kept of each item for what comes after it, packed in a number: its kind, side, reach, whether it's been replaced, its space and its page. */
+const packItem = (kind: number, isPrivate: boolean, reaches: boolean, space: number, page: number) => kind + (isPrivate ? 8 : 0) + (reaches ? 16 : 0) + space * 64 + page * 64 * 2 ** 20;
+const itemKind = (packed: number) => kinds[packed % 8];
+const itemPrivate = (packed: number) => Math.floor(packed / 8) % 2 === 1;
+const itemReaches = (packed: number) => Math.floor(packed / 16) % 2 === 1;
+const itemReplaced = (packed: number) => Math.floor(packed / 32) % 2 === 1;
+const itemPage = (packed: number) => Math.floor(packed / (64 * 2 ** 20));
+
+/** A skill page's parts as they come, to check once all of it has. */
+interface SkillParts {
+  page: string;
+  titles: { id: string; body: string; private: boolean }[];
+  files: { id: string; path: string; private: boolean; name?: string }[];
+}
+
+/** The rows Homing writes for a part of an export, as import_load takes them. */
+export type Batch = Partial<Record<Read | 'citations', unknown[]>>;
+
+/**
+ * Reads an export through, checking each line against what came before, and keeping only what
+ * later lines need: its spaces and people, its pages, and a little about each item. To import it,
+ * it also turns each line into what Homing writes, with new ids.
+ */
+export class Reader {
+  readonly bundle: Bundle;
+  readonly header: Header;
+  private readonly spaceIndex = new Map<string, number>();
+  private readonly people = new Set<string>();
+  private readonly pages = new Map<string, number>();
+  private pageSpace = new Int32Array(1024);
+  private pageSort = new Uint8Array(1024);
+  private pageTitled = new Uint8Array(1024);
+  private readonly titles = new Map<string, string>();
+  private readonly items = new Map<string, number>();
+  private readonly skills = new Map<string, SkillParts>();
+  private readonly once = new Set<string>();
+  /** For the preview: what's in each space, what's counted on each side, the rules and what they refer to. */
+  private readonly sources: number[];
+  private readonly tasks: number[];
+  private shared = 0;
+  private private = 0;
+  private readonly rules: { id: string; space: number; kind: 'requirement' | 'preference'; body: string; onlyHere: boolean; private: boolean }[] = [];
+  private ruleText = 0;
+  private readonly replacedRules = new Set<string>();
+  /** References in rules and skills' files, and those of them that point to something in the export, with what they're called. */
+  private readonly mentioned = new Set<string>();
+  readonly inside = new Set<string>();
+  private readonly labels = new Map<string, string>();
+  /** For importing: how each id becomes a new one, and which references in guidance point inside the export. */
+  private readonly to?: (old: string) => string;
+  private readonly guidanceInside: Set<string>;
+  private readonly last = new Map<string, { at: string; n: number }>();
+  private readonly names: Map<string, string | null>;
+
+  constructor(bundle: Bundle, importing?: { key: string; inside: Set<string> }) {
+    this.bundle = bundle;
+    this.header = bundle.header;
+    if (importing) {
+      // Each id becomes one of its own for this import, the same wherever it's referred to, without a list of them all.
+      this.to = (old: string) => {
+        const hash = createHash('sha256').update(importing.key).update(old).digest();
+        hash[6] = (hash[6] & 0x0f) | 0x40;
+        hash[8] = (hash[8] & 0x3f) | 0x80;
+        const hex = hash.subarray(0, 16).toString('hex');
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+      };
+    }
+    this.guidanceInside = importing?.inside ?? new Set();
+    this.sources = this.header.spaces.map(() => 0);
+    this.tasks = this.header.spaces.map(() => 0);
+    this.names = new Map(this.header.people.map((person) => [person.key, person.name === null ? null : plainName(person.name) || null]));
+    this.checkHeader();
+  }
+
+  /** What doesn't hold together in homing.json itself: its people, authors, and spaces. */
+  private checkHeader() {
+    const h = this.header;
+    for (const person of h.people) {
+      if (this.people.has(person.key)) throw apart(`${person.key} appears twice`);
+      this.people.add(person.key);
+    }
+    if (!this.people.has(h.exportedBy.person)) throw apart('whoever exported it isn’t among its people');
+    for (const author of [...h.spaces.map((space) => space.creator), ...h.spaceArchives.map((archive) => archive.author), ...h.includes.map((include) => include.author)]) this.author(author);
+    for (const space of h.spaces) this.person(space.archived?.by ?? null);
+    const named = new Map<string, string[]>();
+    for (const [at, space] of h.spaces.entries()) {
+      if (this.spaceIndex.has(space.id)) throw apart(`${space.id} appears twice`);
+      if (at === 0 ? space.id !== h.space || space.parent !== null : space.parent === null || !this.spaceIndex.has(space.parent)) throw apart(`space ${space.id} isn’t under the exported space`);
+      try {
+        const clean = cleanName(space.name);
+        named.get(space.parent ?? '')?.push(clean) ?? named.set(space.parent ?? '', [clean]);
+      } catch {
+        throw apart(`space ${space.id} has a name Homing doesn’t take`);
+      }
+      this.spaceIndex.set(space.id, at);
+    }
+    // Spaces in one place have different names, as Homing keeps them: side by side in order, the same name is next to itself.
+    for (const siblings of named.values()) {
+      const sorted = siblings.sort(byName);
+      const twice = sorted.find((candidate, at) => at > 0 && sameName(sorted[at - 1], candidate));
+      if (twice) throw apart(`two spaces in one place are both called ${twice}`);
+    }
+  }
+
+  private person(key: string | null) {
+    if (key !== null && !this.people.has(key)) throw apart(`${key} isn’t among its people`);
+  }
+
+  private author(author: Author | null) {
+    if (!author) return;
+    const fits = author.by === 'person' ? author.person !== null && author.agent === null : author.by === 'agent' ? author.agent !== null : author.person === null && author.agent === null;
+    if (!fits) throw apart('an author is neither a person, an agent nor a routine');
+    this.person(author.person);
+  }
+
+  private space(of: string, id: string): number {
+    const at = this.spaceIndex.get(of);
+    if (at === undefined) throw apart(`${id} is in a space that isn’t in the export`);
+    return at;
+  }
+
+  /**
+   * Times as an export gives them, with microseconds added to those in the same millisecond as the
+   * one before, so they keep their order. An export lists each page's items together, so one run
+   * for all of them keeps each page's in order, without one for every page.
+   */
+  private inOrder(list: string, at: string): string {
+    const last = this.last.get(list);
+    if (last?.at !== at || !/\.\d{3}Z$/.test(at)) {
+      this.last.set(list, { at, n: 0 });
+      return at;
+    }
+    last.n++;
+    return at.replace(/Z$/, `${String(Math.min(last.n, 999)).padStart(3, '0')}Z`);
+  }
+
+  /** Who did what there, as imported provenance: their key in the export and their name, never anyone here. */
+  private by(author: Author) {
+    return {
+      by: author.by, person: author.person, name: author.person === null ? null : (this.names.get(author.person) ?? null),
+      agent: author.agent === null ? null : plainName(author.agent) || 'Assistant',
+    };
+  }
+
+  private personOf(key: string | null) {
+    return key === null ? undefined : { person: key, name: this.names.get(key) ?? null };
+  }
+
+  private words(body: string) {
+    return this.to ? rewriteReferences(body, (old) => this.to!(old)) : body;
+  }
+
+  /** In rules and skills' files, a reference to something the export doesn't hold stays as it was written. */
+  private verbatim(kind: string, body: string) {
+    if (kind !== 'file' && kind !== 'requirement' && kind !== 'preference') return this.words(body);
+    return this.to ? rewriteReferences(body, (old) => (this.guidanceInside.has(old) ? this.to!(old) : old)) : body;
+  }
+
+  private mention(body: string) {
+    for (const ref of mentions(body)) this.mentioned.add(ref);
+  }
+
+  private found(id: string, label: string) {
+    this.inside.add(id);
+    if (!this.labels.has(id)) this.labels.set(id, label);
+  }
+
+  /** What Homing writes first: the spaces, with the name given for the first, and where the export came from. */
+  begin(name: string): string {
+    const h = this.header;
+    const to = this.to!;
+    return JSON.stringify({
+      from: { instance: h.instance, exportedBy: plainName(h.exportedBy.name), exportedAt: h.exportedAt, space: h.space },
+      spaces: h.spaces.map((space, at) => ({
+        id: to(space.id), name: at === 0 ? name : cleanName(space.name), parent: space.parent === null ? null : to(space.parent), closed: space.closed,
+        createdAt: this.inOrder('spaces', space.createdAt), archivedAt: space.archived?.at ?? null,
+        imported: { id: space.id, ...(space.creator && { creator: this.by(space.creator) }), ...(space.archived?.by && { archivedBy: this.personOf(space.archived.by) }) },
+      })),
+    });
+  }
+
+  /** Reads one long list through, handing what Homing writes for it to `batch` a few thousand rows at a time, when importing. */
+  async readList(list: Read, batch?: (rows: Batch) => Promise<void>): Promise<void> {
+    let rows: Batch = {};
+    let size = 0;
+    const add = (name: keyof Batch, row: unknown) => {
+      if (!batch) return;
+      (rows[name] ??= []).push(row);
+      size++;
+    };
+    let file = this.bundle.done;
+    for (const line of this.bundle.lines(list)) {
+      // A batch is at most what a file holds, so each stays a few megabytes.
+      if (batch && size && (this.bundle.done !== file || size >= 5000)) {
+        await batch(rows);
+        rows = {};
+        size = 0;
+      }
+      file = this.bundle.done;
+      this.take(list, line, add);
+    }
+    if (batch && size) await batch(rows);
+  }
+
+  private take(list: Read, line: unknown, add: (name: keyof Batch, row: unknown) => void) {
+    const to = this.to;
+    switch (list) {
+      case 'pages':
+        return this.page(line as Line<'pages'>, add);
+      case 'items':
+        return this.item(line as Line<'items'>, add);
+      case 'sources': {
+        const source = line as Line<'sources'>;
+        this.sources[this.space(source.space, source.id)]++;
+        this.author(source.author);
+        if (this.mentioned.has(source.id)) this.found(source.id, oneLineTitle(source.reference ?? source.excerpt));
+        if (to) {
+          add('sources', {
+            id: to(source.id), space: to(source.space), private: source.visibility === 'private', reference: source.reference && this.words(source.reference),
+            excerpt: this.words(source.excerpt), createdAt: this.inOrder('sources', source.createdAt), imported: { id: source.id, author: this.by(source.author) },
+          });
+        }
+        return;
+      }
+      case 'revisions': {
+        const revision = line as Line<'revisions'>;
+        const packed = this.items.get(revision.item);
+        if (packed === undefined) throw apart('an earlier version belongs to an item that isn’t in the export');
+        const kind = itemKind(packed);
+        if (this.tooLong(kind, this.pageSort[itemPage(packed)], revision.body)) throw apart(`an earlier version of item ${revision.item} is longer than Homing keeps`);
+        if ((kind === 'requirement' || kind === 'preference' || kind === 'file') && hiddenIn(revision.body, kind)) throw apart(`an earlier version of item ${revision.item} has characters that hide what it says`);
+        this.author(revision.author);
+        if (to) {
+          add('revisions', {
+            // Private whenever its item is, as well as when it was private there.
+            item: to(revision.item), kind, private: revision.visibility === 'private' || itemPrivate(packed),
+            body: this.verbatim(kind, revision.body), writtenAt: revision.writtenAt, replacedAt: this.inOrder('revisions', revision.replacedAt), imported: { author: this.by(revision.author) },
+          });
+        }
+        return;
+      }
+      case 'gathered': {
+        const gathering = line as Line<'gathered'>;
+        const collection = this.pages.get(gathering.collection);
+        const page = this.pages.get(gathering.page);
+        if (collection === undefined || page === undefined || collection === page || this.pageSpace[collection] !== this.pageSpace[page]
+          || this.pageSort[collection] !== Sort.knowledge || this.pageSort[page] !== Sort.knowledge) throw apart('a collection gathers a page it can’t');
+        this.author(gathering.author);
+        if (to) {
+          add('gathered', {
+            collection: to(gathering.collection), page: to(gathering.page), space: to(this.header.spaces[this.pageSpace[page]].id), private: gathering.visibility === 'private',
+            createdAt: this.inOrder('gathered', gathering.createdAt), imported: { author: this.by(gathering.author) },
+          });
+        }
+        return;
+      }
+      case 'pageArchives': {
+        const archive = line as Line<'pageArchives'>;
+        const page = this.pages.get(archive.page);
+        if (page === undefined || this.pageSort[page] !== Sort.knowledge) throw apart('a page that can’t be archived was');
+        this.author(archive.author);
+        if (to) add('pageArchives', { page: to(archive.page), archived: archive.archived, at: this.inOrder('pageArchives', archive.at), imported: { author: this.by(archive.author) } });
+        return;
+      }
+      case 'tasks': {
+        const task = line as Line<'tasks'>;
+        this.tasks[this.space(task.space, task.id)]++;
+        if (!task.title.trim()) throw apart(`task ${task.id} has no title`);
+        if (task.due && Number.isNaN(Date.parse(`${task.due}T00:00:00Z`))) throw apart(`task ${task.id} is due on a day that doesn’t exist`);
+        this.person(task.assignee);
+        this.person(task.done?.by ?? null);
+        this.author(task.author);
+        if (this.mentioned.has(task.id)) this.found(task.id, task.title);
+        if (to) {
+          add('tasks', {
+            id: to(task.id), space: to(task.space), private: task.visibility === 'private', title: this.words(task.title).replace(/\s+/g, ' ').trim(),
+            description: task.description && this.words(task.description), due: task.due, doneAt: task.done?.at ?? null, createdAt: this.inOrder('tasks', task.createdAt), updatedAt: task.updatedAt,
+            imported: { id: task.id, author: this.by(task.author), ...(task.assignee && { assignee: this.personOf(task.assignee) }), ...(task.done?.by && { doneBy: this.personOf(task.done.by) }) },
+          });
+        }
+        return;
+      }
+    }
+  }
+
+  private page(page: Line<'pages'>, add: (name: keyof Batch, row: unknown) => void) {
+    if (this.pages.has(page.id)) throw apart(`${page.id} appears twice`);
+    const space = this.space(page.space, page.id);
+    const sort = sortOf(page.type);
+    if (sort === Sort.guidance || sort === Sort.overview) {
+      if (this.once.has(`${page.space} ${page.type}`)) throw apart(`space ${page.space} has two ${page.type} pages`);
+      this.once.add(`${page.space} ${page.type}`);
+    } else if (page.type !== null && sort !== Sort.skill && ['guidance', 'skill', 'overview'].includes(oneLineTitle(page.type).toLowerCase())) {
+      throw apart(`page ${page.id} has a type Homing keeps for itself`);
+    }
+    if (page.archived && sort !== Sort.knowledge) throw apart(`page ${page.id} can’t be archived`);
+    this.person(page.archived?.by ?? null);
+    const at = this.pages.size;
+    if (at >= this.pageSpace.length) {
+      const space2 = new Int32Array(at * 2);
+      space2.set(this.pageSpace);
+      this.pageSpace = space2;
+      const sort2 = new Uint8Array(at * 2);
+      sort2.set(this.pageSort);
+      this.pageSort = sort2;
+      const titled2 = new Uint8Array(at * 2);
+      titled2.set(this.pageTitled);
+      this.pageTitled = titled2;
+    }
+    this.pages.set(page.id, at);
+    this.pageSpace[at] = space;
+    this.pageSort[at] = sort;
+    if (this.to) {
+      const to = this.to;
+      add('pages', {
+        id: to(page.id), space: to(page.space), type: page.type === null ? null : oneLineTitle(page.type) || null, createdAt: this.inOrder('pages', page.createdAt),
+        archivedAt: page.archived?.at ?? null, imported: { id: page.id, ...(page.archived?.by && { archivedBy: this.personOf(page.archived.by) }) },
+      });
+    }
+  }
+
+  private tooLong(kind: Kind, sort: number, body: string) {
+    return kind === 'file' ? Buffer.byteLength(body) > longest.file
+      : body.length > (kind === 'title' ? longest.title : kind === 'requirement' || kind === 'preference' ? longest.rule : sort === Sort.overview ? longest.overview : longest.knowledge);
+  }
+
+  private item(item: Line<'items'>, add: (name: keyof Batch, row: unknown) => void) {
+    if (this.items.has(item.id)) throw apart(`${item.id} appears twice`);
+    const pageAt = this.pages.get(item.page);
+    const space = this.spaceIndex.get(item.space);
+    if (pageAt === undefined || space === undefined || this.pageSpace[pageAt] !== space) throw apart(`item ${item.id} is on a page that isn’t in the export`);
+    const sort = this.pageSort[pageAt];
+    if (!holds[sort].includes(item.kind)) throw apart(`item ${item.id} doesn’t belong on its page`);
+    if (this.tooLong(item.kind, sort, item.body)) throw apart(`item ${item.id} is longer than Homing keeps`);
+    if (item.kind === 'removed' && item.body !== '') throw apart(`item ${item.id} removes something, and says something too`);
+    // Rules and skills are what assistants follow, so nothing in them may be hidden.
+    if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(item.body, item.kind)) throw apart(`item ${item.id} has characters that hide what it says`);
+    if ((item.kind === 'file') !== (item.path !== null)) throw apart(`item ${item.id} has a path only a skill’s file has`);
+    if (item.path !== null && !safePath(item.path)) throw apart(`item ${item.id} has a path outside its skill`);
+    if (item.sources.length && item.kind !== 'text') throw apart(`item ${item.id} cites sources, which only knowledge does`);
+    if (new Set(item.sources).size !== item.sources.length) throw apart(`item ${item.id} cites a source twice`);
+    this.author(item.author);
+    this.person(item.published?.by ?? null);
+    // What an item replaced, or was shared from, is on its page, and comes before it.
+    const replaced = item.supersedes === null ? undefined : this.items.get(item.supersedes);
+    if ((item.supersedes !== null || item.kind === 'removed') && !(item.kind === 'text' || item.kind === 'removed')) throw apart(`item ${item.id} can’t replace anything`);
+    if (item.supersedes !== null && (replaced === undefined || itemPage(replaced) !== pageAt)) throw apart(`item ${item.id} replaces something that isn’t on its page before it`);
+    if (item.kind === 'removed' && (replaced === undefined || itemPrivate(replaced) !== (item.visibility === 'private'))) throw apart(`item ${item.id} removes something it can’t`);
+    // A removal reaches as far as what it removes, so the spaces below see it's gone.
+    if (item.kind === 'removed' && item.reachesDown !== itemReaches(replaced!)) throw apart(`item ${item.id} reaches further or less far than what it removes`);
+    if (item.kind === 'text' && replaced !== undefined && (itemKind(replaced) !== 'text' || (item.visibility === 'shared' && itemPrivate(replaced)))) throw apart(`item ${item.id} replaces something it can’t`);
+    if (item.publishedFrom !== null) {
+      const original = this.items.get(item.publishedFrom);
+      if (original === undefined || itemPage(original) !== pageAt || !itemPrivate(original) || item.visibility !== 'shared' || item.kind !== 'text') throw apart(`item ${item.id} was shared from something that isn’t on its page before it`);
+    }
+    const reaches = item.kind === 'removed' ? itemReaches(replaced!) : sort === Sort.skill || (sort === Sort.guidance && item.onlyHere !== true);
+    this.items.set(item.id, packItem(kinds.indexOf(item.kind), item.visibility === 'private', reaches, space, pageAt));
+
+    // What's there now, counted on its side, and what it replaced no longer.
+    if (item.kind === 'text' || item.kind === 'requirement' || item.kind === 'preference' || (item.kind === 'title' && sort === Sort.skill)) {
+      if (item.visibility === 'shared') this.shared++;
+      else this.private++;
+    }
+    if (replaced !== undefined && !itemReplaced(replaced)) {
+      const kind = itemKind(replaced);
+      if (kind === 'text' || kind === 'requirement' || kind === 'preference') {
+        if (itemPrivate(replaced)) this.private--;
+        else this.shared--;
+      }
+      this.items.set(item.supersedes!, replaced + 32);
+      if (kind === 'requirement' || kind === 'preference') this.replacedRules.add(item.supersedes!);
+    }
+    if (item.kind === 'title') {
+      this.pageTitled[pageAt] = 1;
+      this.titles.set(item.page, oneLineTitle(item.body));
+    }
+    if (item.kind === 'requirement' || item.kind === 'preference') {
+      // However many rules an export has, what's read of them stays within what the preview could show.
+      this.ruleText += item.body.length;
+      if (this.ruleText > importLimits.rules * 4) throw new ImportRefused(tooManyRules);
+      if (!this.to) this.rules.push({ id: item.id, space, kind: item.kind, body: item.body, onlyHere: item.onlyHere === true, private: item.visibility === 'private' });
+      this.mention(item.body);
+    }
+    if (sort === Sort.skill) {
+      const parts = this.skills.get(item.page) ?? { page: item.page, titles: [], files: [] };
+      this.skills.set(item.page, parts);
+      if (item.kind === 'title') parts.titles.push({ id: item.id, body: item.body, private: item.visibility === 'private' });
+      if (item.kind === 'file') {
+        parts.files.push({ id: item.id, path: item.path!, private: item.visibility === 'private', ...(item.path === 'SKILL.md' && { name: frontmatter(item.body).name }) });
+        this.mention(item.body);
+      }
+      if (item.kind === 'removed') {
+        parts.titles = parts.titles.filter((title) => title.id !== item.supersedes);
+        parts.files = parts.files.filter((file) => file.id !== item.supersedes);
+      }
+    }
+    if (this.mentioned.has(item.id)) this.found(item.id, oneLineTitle(item.body));
+
+    if (this.to) {
+      const to = this.to;
+      add('items', {
+        id: to(item.id), page: to(item.page), space: to(item.space), kind: item.kind, path: item.path,
+        body: item.kind === 'title' ? oneLineTitle(item.body) || 'Untitled' : this.verbatim(item.kind, item.body),
+        private: item.visibility === 'private', supersedes: item.supersedes && to(item.supersedes), reachesDown: reaches, publishedFrom: item.publishedFrom && to(item.publishedFrom),
+        publishedAt: item.published?.at ?? null, createdAt: this.inOrder('items', item.createdAt), writtenAt: item.writtenAt,
+        imported: {
+          id: item.id, author: this.by(item.author), ...(item.published?.by && { publishedBy: this.personOf(item.published.by) }),
+          ...(item.sourcesElsewhere > 0 && { sourcesElsewhere: item.sourcesElsewhere }),
+        },
+      });
+      for (const source of item.sources) add('citations', { item: to(item.id), source: to(source) });
+    }
+  }
+
+  /** What can only be checked once everything is read: each skill, and what the spaces include. */
+  finish(): void {
+    // A skill is named as its SKILL.md says, in lowercase words, and holds one file at each place.
+    for (const parts of this.skills.values()) {
+      const paths = parts.files.map((file) => `${file.private} ${file.path}`);
+      if (new Set(paths).size !== paths.length) throw apart(`skill ${parts.page} has two files at one place`);
+      for (const title of parts.titles) {
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(title.body) || title.body.length > 64) throw apart(`skill ${parts.page} has a name Homing doesn’t take`);
+        const skillMd = parts.files.find((file) => file.path === 'SKILL.md' && file.private === title.private);
+        if (skillMd && skillMd.name !== title.body) throw apart(`skill ${title.body} is named differently in its SKILL.md`);
+      }
+    }
+    this.checkIncludes();
+  }
+
+  /**
+   * What the spaces' guidance includes: each brings in one space's rules or one skill, in the
+   * export or named outside it, never its own space's or one above it, which apply there already,
+   * once on each side, and for everyone only what's shared. Someone's own waits exactly while the
+   * space includes the same for everyone.
+   */
+  private checkIncludes() {
+    const h = this.header;
+    const above = (from: string, space: string) => {
+      for (let at: string | null = space; at !== null; at = h.spaces[this.spaceIndex.get(at)!].parent) if (at === from) return true;
+      return false;
+    };
+    const target = (include: HeaderInclude) => include.rules ?? include.skill ?? `elsewhere ${JSON.stringify(include.elsewhere)}`;
+    const forEveryone = new Set(h.includes.filter((include) => include.visibility === 'shared').map((include) => `${include.space} ${target(include)}`));
+    const there = new Set<string>();
+    for (const include of h.includes) {
+      if (!this.spaceIndex.has(include.space)) throw apart(`include ${include.id} is in a space that isn’t in the export`);
+      if ([include.rules, include.skill, include.elsewhere].filter((x) => x !== null).length !== 1) throw apart(`include ${include.id} doesn’t include one thing`);
+      if (include.waiting && include.visibility !== 'private') throw apart(`include ${include.id} for everyone can’t wait`);
+      if (include.visibility === 'private' && include.waiting !== forEveryone.has(`${include.space} ${target(include)}`)) throw apart(`include ${include.id} says it waits when it doesn’t, or the other way round`);
+      if (include.elsewhere !== null) continue;
+      let from: string;
+      if (include.rules !== null) {
+        const at = this.spaceIndex.get(include.rules);
+        if (at === undefined) throw apart(`include ${include.id} includes rules that aren’t in the export`);
+        if (include.visibility === 'shared' && h.spaces[at].private) throw apart(`include ${include.id} includes for everyone rules that only the exporter has`);
+        from = include.rules;
+      } else {
+        const at = this.pages.get(include.skill!);
+        const titles = this.skills.get(include.skill!)?.titles ?? [];
+        if (at === undefined || this.pageSort[at] !== Sort.skill || !titles.length) throw apart(`include ${include.id} includes a skill that isn’t in the export`);
+        if (include.visibility === 'shared' && !titles.some((title) => !title.private)) throw apart(`include ${include.id} includes for everyone a skill that only the exporter has`);
+        from = h.spaces[this.pageSpace[at]].id;
+      }
+      if (above(from, include.space)) throw apart(`include ${include.id} includes guidance that applies there already`);
+      const key = `${include.space} ${include.visibility} ${include.rules ?? include.skill}`;
+      if (there.has(key)) throw apart(`include ${include.id} is there twice`);
+      there.add(key);
+    }
+  }
+
+  /** What Homing writes last: the includes of what the export holds. One of something outside it can't come back. */
+  ending(): string {
+    const to = this.to!;
+    return JSON.stringify({
+      includes: this.header.includes.filter((include) => include.elsewhere === null).map((include) => ({
+        space: to(include.space), private: include.visibility === 'private', rules: include.rules && to(include.rules), skill: include.skill && to(include.skill),
+        addedAt: this.inOrder('includes', include.addedAt), imported: { id: include.id, author: this.by(include.author) },
+      })),
+    });
+  }
+
+  /** Finds what the rules and skills' files refer to that came before them, by reading again only the lines that hold their ids. */
+  resolve(): void {
+    for (const ref of this.mentioned) {
+      const space = this.spaceIndex.get(ref);
+      if (space !== undefined) this.found(ref, this.header.spaces[space].name);
+      else if (this.titles.has(ref)) this.found(ref, this.titles.get(ref)!);
+      else if (this.pages.has(ref)) this.found(ref, 'Untitled');
+    }
+    const pending = [...this.mentioned].filter((ref) => !this.labels.has(ref));
+    if (!pending.length) return;
+    for (const list of ['sources', 'items', 'tasks'] as const) {
+      for (const line of this.bundle.raw(list)) {
+        const hit = pending.find((ref) => line.includes(ref));
+        if (!hit) continue;
+        const entry = parse(line) as { id?: string; reference?: string | null; excerpt?: string; body?: string; title?: string };
+        if (entry.id === hit) this.found(hit, oneLineTitle(entry.title ?? entry.reference ?? entry.excerpt ?? entry.body ?? ''));
+      }
+    }
+  }
+
+  /** What importing the export would bring, for the person to check, as the JSON the app gets. */
+  preview(hash: string): string {
+    const h = this.header;
+    const short = (value: string) => oneLineTitle(value).slice(0, 80);
+    const labelled = (body: string) => body.replace(references, (whole, words: string | undefined, linkedKind: string | undefined, linked: string | undefined, kind: string | undefined, bare: string | undefined) => {
+      const label = this.labels.get((linked ?? bare)!.toLowerCase());
+      if (label === undefined) return whole;
+      return linked ? `${words} (${linkedKind!.toLowerCase()} “${short(label)}”)` : `${kind!.toLowerCase()} “${short(label)}”`;
+    });
+    // Listed under the space they're in, as a tree.
+    const below = new Map<string, number[]>();
+    for (const [at, space] of h.spaces.entries()) if (at > 0) below.get(space.parent!)?.push(at) ?? below.set(space.parent!, [at]);
+    const tree: number[] = [];
+    const depth = new Map<number, number>([[0, 0]]);
+    const stack = [0];
+    while (stack.length) {
+      const at = stack.pop()!;
+      tree.push(at);
+      for (const child of (below.get(h.spaces[at].id) ?? []).toReversed()) {
+        depth.set(child, depth.get(at)! + 1);
+        stack.push(child);
+      }
+    }
+    const pageCounts = h.spaces.map(() => 0);
+    for (const at of this.pages.values()) if (this.pageSort[at] === Sort.knowledge && this.pageTitled[at]) pageCounts[this.pageSpace[at]]++;
+    const rules: ImportPreview['rules'] = [];
+    let length = 0;
+    for (const rule of this.rules) {
+      if (this.replacedRules.has(rule.id)) continue;
+      rules.push({ space: h.spaces[rule.space].name, kind: rule.kind, text: labelled(rule.body), onlyHere: rule.onlyHere, private: rule.private });
+      length += rules.at(-1)!.text.length;
+      if (length > importLimits.rules) throw new ImportRefused(tooManyRules);
+    }
+    const preview: ImportPreview = {
+      name: h.spaces[0].name,
+      from: { instance: h.instance.slice(0, 200), exportedBy: plainName(h.exportedBy.name), exportedAt: h.exportedAt },
+      spaces: tree.map((at) => ({
+        name: h.spaces[at].name, depth: depth.get(at)!, closed: h.spaces[at].closed, archived: h.spaces[at].archived !== null,
+        pages: pageCounts[at], sources: this.sources[at], tasks: this.tasks[at],
+      })),
+      shared: this.shared,
+      private: this.private,
+      rules,
+      skills: [...this.skills.values()].flatMap((parts) => parts.titles.map((title) => ({
+        space: h.spaces[this.pageSpace[this.pages.get(parts.page)!]].name, name: title.body, private: title.private,
+      }))),
+      includes: h.includes.map((include) => {
+        const skill = include.skill === null ? undefined : this.pages.get(include.skill);
+        const from = include.rules !== null ? h.spaces[this.spaceIndex.get(include.rules)!].name : skill !== undefined ? h.spaces[this.pageSpace[skill]].name : plainName(include.elsewhere!.space);
+        const skillName = skill !== undefined ? (this.titles.get(include.skill!) ?? 'skill') : include.elsewhere?.skill ? plainName(include.elsewhere.skill) : null;
+        return {
+          space: h.spaces[this.spaceIndex.get(include.space)!].name, kind: skillName === null ? 'rules' as const : 'skill' as const, from: short(from), skill: skillName === null ? null : short(skillName),
+          private: include.visibility === 'private', waiting: include.waiting, inFile: include.elsewhere === null,
+        };
+      }),
+      hash,
+    };
+    const json = JSON.stringify(preview);
+    if (Buffer.byteLength(json) > importLimits.preview) throw new ImportRefused(tooMuchToShow);
+    return json;
+  }
 }
 
 /** What an import would bring, for the person to check before anything is created. */
@@ -440,195 +842,53 @@ export interface ImportPreview {
    * says: those in the file come along, and those from outside it can't.
    */
   includes: { space: string; kind: 'rules' | 'skill'; from: string; skill: string | null; private: boolean; waiting: boolean; inFile: boolean }[];
-  /** A fingerprint of what was read, so the import is of exactly this. */
+  /** A fingerprint of the file, so the import is of exactly this. */
   hash: string;
-}
-
-/** What importing the export would bring. Nothing is created. */
-export function previewOf(m: Manifest, hash: string): ImportPreview {
-  const replaced = new Set(m.items.map((item) => item.supersedes).filter((id) => id !== null));
-  const current = m.items.filter((item) => !replaced.has(item.id) && item.kind !== 'removed');
-  const pages = new Map(m.pages.map((page) => [page.id, page]));
-  const spaceName = new Map(m.spaces.map((space) => [space.id, space.name]));
-  const depth = new Map<string, number>();
-  for (const space of m.spaces) depth.set(space.id, space.parent === null ? 0 : depth.get(space.parent)! + 1);
-  // What a reference points to in the export, by name, so a rule says what it refers to.
-  const titles = new Map(m.items.filter((item) => item.kind === 'title').map((item) => [item.page, item.body]));
-  const items = new Map(m.items.map((item) => [item.id, item]));
-  const sources = new Map(m.sources.map((source) => [source.id, source]));
-  const tasks = new Map(m.tasks.map((task) => [task.id, task.title]));
-  // Each name at most a line's worth, however often a rule refers to it.
-  const short = (text: string) => oneLineTitle(text).slice(0, 80);
-  const named = (id: string) => titles.get(id) ?? spaceName.get(id) ?? (items.has(id) ? items.get(id)!.body : undefined)
-    ?? (sources.has(id) ? sources.get(id)!.reference ?? sources.get(id)!.excerpt : undefined) ?? tasks.get(id);
-  const labelOf = (id: string) => {
-    const name = named(id);
-    return name === undefined ? undefined : short(name);
-  };
-  const labelled = (body: string) => body.replace(references, (whole, words: string | undefined, linkedKind: string | undefined, linked: string | undefined, kind: string | undefined, bare: string | undefined) => {
-    const label = labelOf((linked ?? bare)!.toLowerCase());
-    if (label === undefined) return whole;
-    return linked ? `${words} (${linkedKind!.toLowerCase()} “${label}”)` : `${kind!.toLowerCase()} “${label}”`;
-  });
-  // Listed under the space they're in, as a tree.
-  const below = new Map<string, Manifest['spaces']>();
-  for (const space of m.spaces.slice(1)) below.get(space.parent!)?.push(space) ?? below.set(space.parent!, [space]);
-  const tree: Manifest['spaces'] = [];
-  const stack = [m.spaces[0]];
-  while (stack.length) {
-    const space = stack.pop()!;
-    tree.push(space);
-    stack.push(...(below.get(space.id) ?? []).toReversed());
-  }
-  const tally = (ids: string[]) => {
-    const counts = new Map<string, number>();
-    for (const id of ids) counts.set(id, (counts.get(id) ?? 0) + 1);
-    return counts;
-  };
-  const pageCounts = tally([...new Set(current.filter((item) => item.kind === 'title' && !notKnowledge(pages.get(item.page)!.type)).map((item) => item.page))].map((page) => pages.get(page)!.space));
-  const sourceCounts = tally(m.sources.map((source) => source.space));
-  const taskCounts = tally(m.tasks.map((task) => task.space));
-  const counted = current.filter((item) => item.kind === 'text' || item.kind === 'requirement' || item.kind === 'preference' || (item.kind === 'title' && pages.get(item.page)?.type === 'skill'));
-  return {
-    name: m.spaces[0].name,
-    from: { instance: m.instance.slice(0, 200), exportedBy: plainName(m.exportedBy.name), exportedAt: m.exportedAt },
-    spaces: tree.map((space) => ({
-      name: space.name,
-      depth: depth.get(space.id)!,
-      closed: space.closed,
-      archived: space.archived !== null,
-      pages: pageCounts.get(space.id) ?? 0,
-      sources: sourceCounts.get(space.id) ?? 0,
-      tasks: taskCounts.get(space.id) ?? 0,
-    })),
-    shared: counted.filter((item) => item.visibility === 'shared').length + m.tasks.filter((task) => task.visibility === 'shared').length,
-    private: counted.filter((item) => item.visibility === 'private').length + m.tasks.filter((task) => task.visibility === 'private').length,
-    rules: rulesOf(current.filter((item) => item.kind === 'requirement' || item.kind === 'preference'), (item) => ({
-      space: spaceName.get(item.space)!, kind: item.kind as 'requirement' | 'preference', text: labelled(item.body), onlyHere: item.onlyHere === true, private: item.visibility === 'private',
-    })),
-    skills: current
-      .filter((item) => item.kind === 'title' && pages.get(item.page)?.type === 'skill')
-      .map((item) => ({ space: spaceName.get(item.space)!, name: item.body, private: item.visibility === 'private' })),
-    includes: m.includes.map((include) => {
-      const skill = include.skill === null ? undefined : pages.get(include.skill);
-      const from = include.rules !== null ? spaceName.get(include.rules)! : skill ? spaceName.get(skill.space)! : plainName(include.elsewhere!.space);
-      const name = skill ? titles.get(skill.id)! : include.elsewhere?.skill ? plainName(include.elsewhere.skill) : null;
-      return {
-        space: spaceName.get(include.space)!, kind: name === null ? 'rules' as const : 'skill' as const, from: short(from), skill: name === null ? null : short(name),
-        private: include.visibility === 'private', waiting: include.waiting, inFile: include.elsewhere === null,
-      };
-    }),
-    hash,
-  };
-}
-
-/** Every rule, as long as all of them can be read before importing. */
-function rulesOf<T extends { text: string }>(items: Manifest['items'], rule: (item: Manifest['items'][number]) => T): T[] {
-  const rules: T[] = [];
-  let length = 0;
-  for (const item of items) {
-    rules.push(rule(item));
-    length += rules.at(-1)!.text.length;
-    if (length > importLimits.rules) throw new ImportRefused('That export has more rules than Homing can show you to read first, so Homing won’t import it.');
-  }
-  return rules;
-}
-
-/**
- * What importing the export would bring, as the JSON the app gets, at most so large, so however
- * an export is made, what's shown of it stays small.
- */
-export function previewJson(m: Manifest, hash: string): string {
-  const json = JSON.stringify(previewOf(m, hash));
-  if (Buffer.byteLength(json) > importLimits.preview) throw new ImportRefused('That export holds more than Homing can show you before importing it, so Homing won’t import it. Export less of it at a time.');
-  return json;
 }
 
 const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 /** A reference in text, as a Markdown link or on its own, as an export writes them. */
 const references = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\((page|item|source|space|task):(${uuid})\\)|\\b(page|item|source|space|task):(${uuid})`, 'gi');
 
+/** What a text refers to in Homing, by id. Links' words hold no brackets, so it takes time in step with the text. */
+export function mentions(body: string): string[] {
+  return [...body.matchAll(references)].map((match) => (match[3] ?? match[5]).toLowerCase());
+}
+
+/** Reads an export through, to show what it would bring, telling how far it's got after each file. Nothing is created. */
+export async function inspect(path: string, hash: string, progress: (done: number, total: number) => void): Promise<{ preview: string; inside: string[] }> {
+  const bundle = Bundle.open(path);
+  try {
+    const reader = new Reader(bundle);
+    for (const list of reads) {
+      await reader.readList(list, async () => {});
+      progress(bundle.done, bundle.total);
+    }
+    reader.finish();
+    reader.resolve();
+    return { preview: reader.preview(hash), inside: [...reader.inside] };
+  } finally {
+    bundle.close();
+  }
+}
+
 /**
- * What Homing writes for an import, as JSON for import_bundle, with the new space's name: a new id
- * for everything, references in text pointed to them, and who did what as imported provenance.
+ * Reads an export through to import it: first what Homing writes to start, then a batch for each
+ * part of a long list, then what it writes last, each handed on and written before the next.
  */
-export function payloadOf(m: Manifest, name: string): string {
-  // A new id for everything, and every reference to it follows, in text too. In rules and skills'
-  // files, a reference to something the export doesn't hold stays as it was written.
-  const fresh = new Map<string, string>();
-  for (const thing of [...m.spaces, ...m.pages, ...m.items, ...m.sources, ...m.tasks]) fresh.set(thing.id, randomUUID());
-  const to = (old: string) => fresh.get(old)!;
-  const maybe = (old: string | null) => (old === null ? null : to(old));
-  const words = (body: string) => rewriteReferences(body, (old) => fresh.get(old));
-  const verbatim = (kind: string, body: string) => (kind === 'file' || kind === 'requirement' || kind === 'preference' ? rewriteReferences(body, (old) => fresh.get(old) ?? old) : words(body));
-  const pages = new Map(m.pages.map((page) => [page.id, page]));
-  const items = new Map(m.items.map((item) => [item.id, item]));
-  // Things written in the same millisecond keep the order the export lists them in.
-  const [spaceTimes, pageTimes, itemTimes, sourceTimes, taskTimes, gatheredTimes, revisionTimes, archiveTimes] = [
-    m.spaces.map((space) => space.createdAt), m.pages.map((page) => page.createdAt), m.items.map((item) => item.createdAt), m.sources.map((source) => source.createdAt),
-    m.tasks.map((task) => task.createdAt), m.gathered.map((gathering) => gathering.createdAt), m.revisions.map((revision) => revision.replacedAt),
-    m.pageArchives.map((archive) => archive.at),
-  ].map(inOrder);
-  // Who did what there, as imported provenance: their key in the export and their name, never anyone here.
-  const names = new Map(m.people.map((person) => [person.key, person.name === null ? null : plainName(person.name) || null]));
-  const person = (key: string | null) => (key === null ? undefined : { person: key, name: names.get(key) ?? null });
-  const by = (author: Manifest['items'][number]['author']) => ({
-    by: author.by, person: author.person, name: author.person === null ? null : (names.get(author.person) ?? null), agent: author.agent === null ? null : plainName(author.agent) || 'Assistant',
-  });
-  const place = new Map(m.items.map((item, at) => [item.id, at]));
-  // Only what's in the export comes back: an include of something outside it can't.
-  const inside = m.includes.filter((include) => include.elsewhere === null);
-  const includeTimes = inOrder(inside.map((include) => include.addedAt));
-  // Each list is written out in turn, so besides the export itself only one is ever held whole.
-  const lists: [string, () => unknown][] = [
-    ['from', () => ({ instance: m.instance, exportedBy: plainName(m.exportedBy.name), exportedAt: m.exportedAt, space: m.space })],
-    ['spaces', () => m.spaces.map((space, at) => ({
-      id: to(space.id), name: at === 0 ? name : cleanName(space.name), parent: maybe(space.parent), closed: space.closed,
-      createdAt: spaceTimes[at], archivedAt: space.archived?.at ?? null,
-      imported: { id: space.id, ...(space.creator && { creator: by(space.creator) }), ...(space.archived?.by && { archivedBy: person(space.archived.by) }) },
-    }))],
-    ['pages', () => m.pages.map((page, at) => ({
-      id: to(page.id), space: to(page.space), type: page.type === null ? null : oneLineTitle(page.type) || null, createdAt: pageTimes[at], archivedAt: page.archived?.at ?? null,
-      imported: { id: page.id, ...(page.archived?.by && { archivedBy: person(page.archived.by) }) },
-    }))],
-    ['items', () => inWritingOrder(m.items)!.map((item) => ({
-      id: to(item.id), page: to(item.page), space: to(item.space), kind: item.kind, path: item.path,
-      body: item.kind === 'title' ? oneLineTitle(item.body) || 'Untitled' : verbatim(item.kind, item.body),
-      private: item.visibility === 'private', supersedes: maybe(item.supersedes), reachesDown: reachesDown(item, pages, items), publishedFrom: maybe(item.publishedFrom),
-      publishedAt: item.published?.at ?? null, createdAt: itemTimes[place.get(item.id)!], writtenAt: item.writtenAt,
-      imported: {
-        id: item.id, author: by(item.author), ...(item.published?.by && { publishedBy: person(item.published.by) }),
-        ...(item.sourcesElsewhere > 0 && { sourcesElsewhere: item.sourcesElsewhere }),
-      },
-    }))],
-    ['citations', () => m.items.flatMap((item) => item.sources.map((source) => ({ item: to(item.id), source: to(source) })))],
-    ['sources', () => m.sources.map((source, at) => ({
-      id: to(source.id), space: to(source.space), private: source.visibility === 'private', reference: source.reference && words(source.reference),
-      excerpt: words(source.excerpt), createdAt: sourceTimes[at], imported: { id: source.id, author: by(source.author) },
-    }))],
-    ['revisions', () => m.revisions.map((revision, at) => ({
-      // Private whenever its item is, as well as when it was private there.
-      item: to(revision.item), space: to(items.get(revision.item)!.space), private: revision.visibility === 'private' || items.get(revision.item)!.visibility === 'private',
-      body: verbatim(items.get(revision.item)!.kind, revision.body),
-      writtenAt: revision.writtenAt, replacedAt: revisionTimes[at], imported: { author: by(revision.author) },
-    }))],
-    ['gathered', () => m.gathered.map((gathering, at) => ({
-      collection: to(gathering.collection), page: to(gathering.page), space: to(pages.get(gathering.page)!.space), private: gathering.visibility === 'private',
-      createdAt: gatheredTimes[at], imported: { author: by(gathering.author) },
-    }))],
-    ['pageArchives', () => m.pageArchives.map((archive, at) => ({ page: to(archive.page), archived: archive.archived, at: archiveTimes[at], imported: { author: by(archive.author) } }))],
-    ['tasks', () => m.tasks.map((task, at) => ({
-      id: to(task.id), space: to(task.space), private: task.visibility === 'private', title: words(task.title).replace(/\s+/g, ' ').trim(),
-      description: task.description && words(task.description), due: task.due, doneAt: task.done?.at ?? null, createdAt: taskTimes[at], updatedAt: task.updatedAt,
-      imported: {
-        id: task.id, author: by(task.author),
-        ...(task.assignee && { assignee: person(task.assignee) }), ...(task.done?.by && { doneBy: person(task.done.by) }),
-      },
-    }))],
-    ['includes', () => inside.map((include, at) => ({
-      space: to(include.space), private: include.visibility === 'private', rules: maybe(include.rules), skill: maybe(include.skill), addedAt: includeTimes[at],
-      imported: { id: include.id, author: by(include.author) },
-    }))],
-  ];
-  return `{${lists.map(([key, list]) => `"${key}":${JSON.stringify(list())}`).join(',')}}`;
+export async function load(
+  path: string,
+  importing: { key: string; name: string; inside: string[] },
+  write: { begin: (payload: string) => Promise<void>; batch: (payload: string, done: number, total: number) => Promise<void>; finish: (payload: string) => Promise<void> },
+): Promise<void> {
+  const bundle = Bundle.open(path);
+  try {
+    const reader = new Reader(bundle, { key: importing.key, inside: new Set(importing.inside) });
+    await write.begin(reader.begin(cleanName(importing.name)));
+    for (const list of reads) await reader.readList(list, (rows) => write.batch(JSON.stringify(rows), bundle.done, bundle.total));
+    reader.finish();
+    await write.finish(reader.ending());
+  } finally {
+    bundle.close();
+  }
 }

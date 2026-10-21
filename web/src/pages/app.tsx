@@ -147,24 +147,44 @@ function HomePage({ me, waiting, recent }: { me: AccountData; waiting?: WaitingD
 
 /** Importing a space from an export, then opening it. */
 function ImportSpacePage() {
-  // The zip goes as it is, and Homing reads it there and never keeps it.
-  const send = async <T,>(path: string, file: File): Promise<T | { problem: string; field?: string }> => {
-    try {
-      const response = await fetch(path, { method: 'POST', body: file, headers: { 'content-type': 'application/zip' } });
-      const body = await response.json().catch(() => ({}));
-      return response.ok ? (body as T) : { problem: body.message ?? 'Something went wrong. Try again.', field: body.field };
-    } catch {
-      return { problem: 'Homing can’t be reached right now. Check your connection and try again.' };
-    }
-  };
+  const failed = (body: { message?: string; field?: string }) => ({ problem: body.message ?? 'Something went wrong. Try again.', field: body.field });
+  const unreachable = { problem: 'Homing can’t be reached right now. Check your connection and try again.' };
   return (
     <ImportSpace
       actions={{
-        preview: async (file) => {
-          const answer = await send<ImportPreviewData>('/api/import/preview', file);
-          return 'problem' in answer ? answer : { preview: answer };
+        // The zip goes as it is, onto Homing's disk, saying how much of it is sent as it goes.
+        preview: (file, sent) => new Promise((resolve) => {
+          const request = new XMLHttpRequest();
+          request.open('POST', '/api/import/preview');
+          request.setRequestHeader('content-type', 'application/zip');
+          request.upload.onprogress = (event) => event.lengthComputable && sent(event.loaded / event.total);
+          request.upload.onload = () => sent(1);
+          request.onload = () => {
+            let body: Record<string, unknown> = {};
+            try {
+              body = JSON.parse(request.responseText);
+            } catch {}
+            resolve(request.status === 200 ? { preview: body as unknown as ImportPreviewData } : failed(body));
+          };
+          request.onerror = () => resolve(unreachable);
+          request.send(file);
+        }),
+        import: async (name, hash) => {
+          try {
+            const response = await fetch(`/api/import?${new URLSearchParams({ name, hash })}`, { method: 'POST' });
+            const body = await response.json().catch(() => ({}));
+            return response.ok ? { started: true as const } : failed(body);
+          } catch {
+            return unreachable;
+          }
         },
-        import: (file, name, hash) => send<{ id: string }>(`/api/import?${new URLSearchParams({ name, hash })}`, file),
+        progress: async () => {
+          try {
+            return await (await fetch('/api/import')).json();
+          } catch {
+            return { state: 'none' };
+          }
+        },
       }}
       onImported={async (id) => {
         await reload('/api/spaces');

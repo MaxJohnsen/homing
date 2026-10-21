@@ -265,12 +265,12 @@ export async function peopleNames(s: Session, ids: (string | null)[]): Promise<M
 
 /**
  * The spaces the principal can access: a person's through the access table,
- * a space only itself. Homing filters with this explicitly, and row-level
- * security applies the same rule underneath.
+ * except those an import is still filling, a space only itself. Homing filters
+ * with this explicitly, and row-level security applies the same rule underneath.
  */
 export function accessibleSpaces(s: Session) {
   return 'person' in s.principal
-    ? s.tx`select space_id from space_access where person_id = ${s.principal.person}::uuid`
+    ? s.tx`select a.space_id from space_access a where a.person_id = ${s.principal.person}::uuid and not exists (select from importing i where i.space_id = a.space_id)`
     : s.tx`select ${s.principal.space}::uuid`;
 }
 

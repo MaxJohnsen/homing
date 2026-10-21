@@ -1,18 +1,33 @@
-// Reads an export in a worker of its own (import.ts), with limited memory, so an export made to be
-// heavy only ever stops this worker, and Homing keeps answering everyone else meanwhile.
+// Reads an export in a worker of its own (import.ts), with limited memory, a file of it at a time,
+// so an export made to be heavy only ever stops this worker, and Homing keeps answering everyone
+// else meanwhile. To import, it hands over each part and waits until it's written.
 
 import { parentPort, workerData } from 'node:worker_threads';
-import { ImportRefused, payloadOf, previewJson, readExport } from './bundle.ts';
+import { ImportRefused, inspect, load } from './bundle.ts';
 
-const task = workerData as { zip: Uint8Array; name?: string; hash?: string };
+const port = parentPort!;
+const task = workerData as { path: string; hash: string } | { path: string; key: string; name: string; inside: string[] };
+
+/** Hands a part over, and waits until it's written. */
+const hand = (message: object) =>
+  new Promise<void>((resolve, reject) => {
+    port.once('message', (answer: { ok: boolean }) => (answer.ok ? resolve() : reject(new Error('Stopped.'))));
+    port.postMessage(message);
+  });
 
 try {
-  const { manifest, hash } = readExport(task.zip);
-  if (task.name === undefined) parentPort!.postMessage({ value: previewJson(manifest, hash) });
-  // The import is of exactly what the person saw.
-  else if (task.hash !== hash) parentPort!.postMessage({ refused: 'That isn’t the export you looked at. Choose it again to see what it brings.' });
-  else parentPort!.postMessage({ value: payloadOf(manifest, task.name) });
+  if ('hash' in task) {
+    const { preview, inside } = await inspect(task.path, task.hash, (done, total) => port.postMessage({ type: 'progress', done, total }));
+    port.postMessage({ type: 'preview', preview, inside });
+  } else {
+    await load(task.path, task, {
+      begin: (payload) => hand({ type: 'begin', payload }),
+      batch: (payload, done, total) => hand({ type: 'batch', payload, done, total }),
+      finish: (payload) => hand({ type: 'finish', payload }),
+    });
+    port.postMessage({ type: 'done' });
+  }
 } catch (error) {
   if (!(error instanceof ImportRefused)) throw error;
-  parentPort!.postMessage({ refused: error.message });
+  port.postMessage({ type: 'refused', message: error.message });
 }

@@ -206,7 +206,7 @@ test('names are one line of visible text, and two at once can’t take the same 
   assert.deepEqual(raced.map((answer) => answer.status).sort(), [200, 400, 400]);
 });
 
-test('the app serves new space and settings as screens of its own', async () => {
+test('the app serves new space, importing a space and settings as screens of their own', async () => {
   const acme = (await spacesOf(ana)).find((space) => space.name === 'Acme')!.id;
-  for (const path of ['/spaces/new', `/spaces/${acme}/settings`]) assert.equal((await fetch(new URL(path, homing.url))).status, 200, path);
+  for (const path of ['/spaces/new', '/spaces/import', `/spaces/${acme}/settings`]) assert.equal((await fetch(new URL(path, homing.url))).status, 200, path);
 });

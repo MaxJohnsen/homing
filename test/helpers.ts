@@ -64,10 +64,37 @@ export async function member(url: URL, name: string, { verified = true }: { veri
 
 export type Member = Awaited<ReturnType<typeof member>>;
 
+/** Imports an export as the app does: sends it to be previewed, imports that, and waits until it's in. Returns the new space. */
+export async function importAgain(who: Member, zip: Uint8Array<ArrayBuffer>, name: string): Promise<string> {
+  const previewed = await who.browser.fetch('/api/import/preview', { method: 'POST', body: zip, headers: { 'content-type': 'application/zip' } });
+  const { hash } = (await previewed.json()) as { hash: string };
+  assert.equal(previewed.status, 200);
+  const started = await who.browser.fetch(`/api/import?${new URLSearchParams({ name, hash })}`, { method: 'POST' });
+  assert.equal(started.status, 202);
+  for (;;) {
+    const { body } = await who.browser.json('/api/import');
+    if (body.state === 'failed') throw new Error(body.message);
+    if (body.state === 'done') return body.id as string;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 /** Waits until the condition holds, such as another request waiting on a lock. */
 export async function until(condition: () => Promise<boolean>) {
   for (let tries = 0; !(await condition()); tries++) {
     if (tries > 100) throw new Error('timed out');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/**
+ * Writes an import the way Homing does, straight against the store, in the session's transaction:
+ * its spaces first, then everything else in one batch, then what it includes.
+ */
+export async function importInto(s: Session, bundle: { from: unknown; spaces: unknown[]; includes?: unknown[] } & Record<string, unknown>) {
+  const { from, spaces, includes = [], ...rows } = bundle;
+  const [{ id }] = await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({ from, spaces } as never)}) as id`;
+  await s.tx`select import_load(${id}::uuid, ${s.tx.json(rows as never)})`;
+  const [{ space }] = await s.tx<{ space: string }[]>`select import_finish(${id}::uuid, ${s.tx.json({ includes } as never)}) as space`;
+  return space;
 }

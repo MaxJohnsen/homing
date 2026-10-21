@@ -102,6 +102,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/new': { label: 'Starting a space', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/import': { label: 'Importing a space', render: () => <InApp route={{ name: 'import space' }}><ImportSpace actions={sampleImport} onImported={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/import/preview': { label: 'Importing a space, what it brings', render: () => <InApp route={{ name: 'import space' }}><ImportSpace actions={sampleImport} onImported={() => {}} onCancel={() => {}} shown={sampleImportPreview} /></InApp> },
+  '/spaces/import/sending': { label: 'Importing a space, while the file is sent', render: () => <InApp route={{ name: 'import space' }}><ImportSpace actions={sampleImport} onImported={() => {}} onCancel={() => {}} underWay={{ doing: 'sending', fraction: 0.42, file: new File([new Uint8Array(10)], 'northwind-2026-10-18.zip') }} /></InApp> },
+  '/spaces/import/importing': { label: 'Importing a space, under way', render: () => <InApp route={{ name: 'import space' }}><ImportSpace actions={sampleImport} onImported={() => {}} onCancel={() => {}} shown={sampleImportPreview} underWay={{ doing: 'importing', fraction: 0.63, file: new File([new Uint8Array(10)], 'northwind-2026-10-18.zip') }} /></InApp> },
   '/spaces/new/in': { label: 'Starting a space in Acme', render: () => <InApp route={{ name: 'new space' }}><NewSpace spaces={sampleSpaces} start="acme" create={notCreated} onCreated={() => {}} onCancel={() => {}} /></InApp> },
   '/spaces/settings/personal': { label: 'Sharing a space from your personal space', render: () => <InApp spaceId="kitchen"><Space space={sampleSpace.kitchen} view="settings"><SpaceSettings space={sampleSpace.kitchen} rename={async () => 'Samples don’t save anything.'} share={sampleShareSpace} /></Space></InApp> },
   '/spaces/settings': { label: 'A space’s settings, for its admins', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="settings"><SpaceSettings space={sampleSpace.closed} rename={async () => 'Samples don’t save anything.'} archive={async () => 'Samples don’t save anything.'} /></Space></InApp> },
@@ -340,4 +342,5 @@ const sampleImportPreview: ImportPreviewData = {
 const sampleImport: ImportActions = {
   preview: async () => ({ preview: sampleImportPreview }),
   import: async () => ({ problem: 'Samples don’t save anything.' }),
+  progress: async () => ({ state: 'none' }),
 };
