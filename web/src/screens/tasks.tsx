@@ -8,7 +8,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { nameIn } from '@/lib/knowledge';
+import { nameIn, type Author } from '@/lib/knowledge';
 import type { SpaceData } from '@/lib/spaces';
 
 /** A task as a space's Tasks shows it. */
@@ -22,7 +22,9 @@ export interface TaskData {
   /** Who it's for. Someone you can't see has neither name nor id. */
   assignee: { id: string | null; name: string | null; you: boolean; imported?: boolean } | null;
   done: { at: string; by: { name: string | null; you: boolean; imported?: boolean } | null } | null;
-  /** The assistant that kept it for someone, if one did. */
+  /** Who it was kept for or by. */
+  by?: Author;
+  /** The assistant that kept it for them, if one did. */
   agent: string | null;
 }
 
@@ -100,11 +102,12 @@ function TaskRow({ task, space, actions, now }: { task: TaskData; space: SpaceDa
   };
   const due = task.due && !task.done ? dueOf(task.due, now) : undefined;
   const onlyYou = !task.shared && !space.private;
+  const keptFor = nameIn(task.by ?? null);
   const meta = [
     due?.text,
     task.assignee && task.shared ? `For ${nameIn(task.assignee) ?? 'someone in the space'}` : undefined,
     task.done ? `Done ${dateOf(task.done.at)}${task.done.by && !task.done.by.you && nameIn(task.done.by) ? ` by ${nameIn(task.done.by)}` : ''}` : undefined,
-    task.agent && !task.done ? `Kept by ${task.agent}` : undefined,
+    task.agent && !task.done ? `Kept by ${task.agent}${keptFor ? ` for ${keptFor}` : ''}` : undefined,
   ].filter(Boolean);
 
   return (

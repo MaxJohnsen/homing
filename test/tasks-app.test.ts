@@ -17,7 +17,7 @@ let ana: Member, cara: Member, ben: Member;
 let acme: string;
 let claude: Awaited<ReturnType<Assistant['open']>>;
 
-type TaskRow = { id: string; title: string; due: string | null; shared: boolean; assignee: { name: string } | null; done: { by: { name: string } | null } | null; agent: string | null };
+type TaskRow = { id: string; title: string; due: string | null; shared: boolean; assignee: { name: string } | null; done: { by: { name: string } | null } | null; by: { name: string | null; you: boolean } | null; agent: string | null };
 const tasksAs = async (who: Member) => (await who.browser.json(`/api/spaces/${acme}/tasks`)).body as { open: TaskRow[]; done: TaskRow[] };
 const remember = (task: Record<string, unknown>) => claude.call('remember', { space: `space:${acme}`, task });
 
@@ -75,7 +75,9 @@ test('a task of your own is shared only by you, and assistants never write the s
   assert.equal((await cara.browser.json(`/api/tasks/${id}`, { done: true })).status, 404);
   assert.equal((await cara.browser.json(`/api/tasks/${id}/share`, {})).status, 404);
   assert.equal((await ana.browser.json(`/api/tasks/${id}/share`, {})).status, 200);
-  assert.ok((await tasksAs(cara)).open.some((task) => task.title === 'Prepare the steering group'));
+  // Cara sees whose assistant kept it, so it doesn't read like her own Claude.
+  const shared = (await tasksAs(cara)).open.find((task) => task.title === 'Prepare the steering group');
+  assert.deepEqual([shared?.agent, shared?.by], ['Claude', { name: 'Ana', you: false }]);
   // Shared now, it's the space's: the assistant leaves it to people.
   assert.match((await remember({ ref: `task:${id}`, done: true })).text, /people change shared tasks in Homing/);
   await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`insert into tasks (space_id, title) values (${acme}::uuid, 'Hello')`), refused);

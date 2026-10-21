@@ -136,7 +136,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const found = await read(async (s) => {
           if (!(await spaceView(s, route.id))) return undefined;
           const { open, done } = await tasksIn(s, route.id);
-          const names = await peopleNames(s, [...open, ...done].flatMap((task) => [task.assignee, task.doneBy]));
+          const names = await peopleNames(s, [...open, ...done].flatMap((task) => [task.assignee, task.doneBy, task.writtenBy]));
           return { open, done, names };
         });
         if (!found) return answer(res, 404, noSpace);
@@ -154,7 +154,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             at: task.doneAt,
             by: task.doneBy ? { name: found.names.get(task.doneBy) ?? null, you: task.doneBy === person } : task.imported?.doneBy ? { name: task.imported.doneBy.name, you: false, imported: true } : null,
           },
-          agent: task.agent,
+          // Who kept it, and the assistant that did it for them, so a shared task says whose assistant that was.
+          ...authorOf(found.names, person, task.writtenBy, task.agent, task.imported),
         });
         json(res, 200, { open: found.open.map(shape), done: found.done.map(shape) });
         break;
