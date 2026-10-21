@@ -175,6 +175,8 @@ export interface ChangeData {
   overview?: boolean;
   by: Author;
   agent: string | null;
+  /** Who shared it from their own side, when that's what changed. */
+  sharedBy?: Author;
   at: string;
   onlyYou: boolean;
   /** On a page that's archived. */

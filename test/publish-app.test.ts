@@ -94,8 +94,11 @@ test('what rests on a private email is shared as a copy: the others see it as An
     [true, true, [['Email from Gunnar, Re: launch', false]]],
   ]);
   assert.equal((await as(ana, (s) => search(s, 'Oslo', { spaceId: acme }))).length, 1, 'search shows it once too');
-  const latest = (await cara.browser.json('/api/changes?limit=1')).body.changes as { text: string }[];
+  const latest = (await cara.browser.json('/api/changes?limit=1')).body.changes as { text: string; sharedBy: unknown }[];
   assert.equal(latest[0].text, 'The launch is on 14 November, in Oslo.');
+  // What changed is the sharing, so it says who shared it, from each side.
+  assert.deepEqual(latest[0].sharedBy, { name: 'Ana', you: false });
+  assert.deepEqual((await ana.browser.json('/api/changes?limit=1')).body.changes[0].sharedBy, { name: 'Ana', you: true });
   assert.match((await claude.call('read', { ref: `proposal:${proposed.proposal}` })).text, /The user shared it on .+\. Everyone in the space sees it now\./);
 });
 

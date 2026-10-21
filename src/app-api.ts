@@ -546,7 +546,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const { spaces, found, names } = await read(async (s) => {
           const spaces = await listSpaces(s);
           const found = await recentChanges(s, { offset: clamp(Number.parseInt(query.get('offset') ?? '0', 10)), limit, archived: query.get('archived') === '1', spaces });
-          return { spaces, found, names: await peopleNames(s, found.changes.map((change) => change.writtenBy)) };
+          return { spaces, found, names: await peopleNames(s, found.changes.flatMap((change) => [change.writtenBy, change.publishedBy])) };
         });
         const where = placeIn(spaces);
         const archived = new Set(spaces.filter((space) => space.archived).map((space) => space.id));
@@ -563,6 +563,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             newPage: change.newPage,
             overview: change.overview,
             ...authorOf(names, person, change.writtenBy, change.agent, change.imported),
+            // Shared from someone's own side, the change is the sharing, so it says who shared it.
+            sharedBy: change.publishedBy && change.publishedAt?.getTime() === change.at.getTime()
+              ? { name: names.get(change.publishedBy) ?? null, you: change.publishedBy === person }
+              : null,
             at: change.at,
             onlyYou: change.onlyYou,
             pageArchived: change.pageArchived,

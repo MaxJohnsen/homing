@@ -13,8 +13,9 @@ function dayOf(at: string, now = new Date()): string {
   return days <= 0 ? 'Today' : days === 1 ? 'Yesterday' : dateOf(at);
 }
 
-/** "by Cara Lund", "by you", "by Claude, for you", "by Cara Lund through Claude". */
+/** "by Cara Lund", "by you", "by Claude, for you", "by Cara Lund through Claude", or "shared by Cara Lund". */
 function byWhom(change: ChangeData): string {
+  if (change.sharedBy) return `shared by ${nameIn(change.sharedBy) ?? 'someone in the space'}`;
   const person = nameIn(change.by);
   if (change.agent) return person === 'you' ? `by ${change.agent}, for you` : person ? `by ${person} through ${change.agent}` : `by ${change.agent}`;
   return person ? `by ${person}` : 'by someone no longer in the space';
