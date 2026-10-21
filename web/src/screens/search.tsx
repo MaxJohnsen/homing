@@ -45,7 +45,7 @@ export function Search({ data, query, kind, from, onKind, onFrom }: {
     <>
       <ScreenHeader
         title="Search"
-        meta={query
+        meta={query && !(data && total === 0)
           ? data
             ? capped ? `The best matches for “${query}” in all your spaces.` : `${count(total, 'result', 'results')} for “${query}” in all your spaces.`
             : `Searching for “${query}”.`
