@@ -341,8 +341,8 @@ test('a space’s admins see only that it includes something they can’t open, 
 
   // Jon, an admin who can't open Standards, learns that it's there, who added it and when, and nothing more.
   const seen = await as(jon, (s) => s.tx`select * from includes_not_open(${acme}::uuid)`);
-  assert.deepEqual(seen.map((row) => Object.keys(row).sort()), [['addedAt', 'addedBy', 'id', 'kind']]);
-  assert.deepEqual(seen.map((row) => [row.id, row.kind, row.addedBy]), [[include.id, 'rules', ana.id]]);
+  assert.deepEqual(seen.map((row) => Object.keys(row).sort()), [['addedAt', 'addedBy', 'id', 'importedAdder', 'kind']]);
+  assert.deepEqual(seen.map((row) => [row.id, row.kind, row.addedBy, row.importedAdder]), [[include.id, 'rules', ana.id, null]]);
   assert.doesNotMatch(JSON.stringify([...seen]), new RegExp(standards));
   // Cara, a member, and Ana, who can open it, get nothing from it.
   for (const someone of [cara, ana]) assert.equal((await as(someone, (s) => s.tx`select from includes_not_open(${acme}::uuid)`)).length, 0);

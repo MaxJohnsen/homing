@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { AccessDenied, authDatabaseUrl } from '../src/db.ts';
+import { exportSpace, manifestOf } from '../src/export.ts';
 import { addInclude, addRule, editRule, IncludeRefused, includesIn, removeRule, rulesFor } from '../src/guidance.ts';
 import {
   addSource,
@@ -399,6 +400,12 @@ describe('straight against the database', () => {
         imported((own) => ({ gathered: [{ collection: own.page, page, space: own.space, private: false, createdAt: now, imported: {} }] })),
         imported(() => ({ gathered: [{ collection: page, page: theirs.pageId, space: target.space, private: false, createdAt: now, imported: {} }] })),
         imported(() => ({ pageArchives: [{ page, archived: true, at: now, imported: {} }] })),
+        // Nor an include in their space, nor of their guidance, nor of anything the import didn't bring.
+        imported((own) => ({ includes: [{ space: target.space, private: true, rules: own.space, skill: null, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: target.space, skill: null, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: null, skill: target.skill.pageId, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: intruder.space, skill: null, addedAt: now, imported: {} }] })),
+        imported((own) => ({ includes: [{ space: own.space, private: true, rules: null, skill: intruder.skill.pageId, addedAt: now, imported: {} }] })),
       ]) {
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select import_bundle(${s.tx.json(bundle as never)})`), kept);
       }
@@ -832,14 +839,14 @@ describe('through the app’s endpoints', () => {
 
 describe('through an include', () => {
   let homing: Homing;
-  let ana: Member, ben: Member;
-  let acme: string, lounge: string, rule: string;
+  let ana: Member, ben: Member, cara: Member;
+  let acme: string, lounge: string, rule: string, office: string;
   // What Ben must never learn: Acme's rules and skill, and that the lounge includes them.
   const secret = /Acme|acme-invoice|prices|Norwegian/;
 
   before(async () => {
     homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
-    [ana, ben] = [await member(homing.url, 'Ana'), await member(homing.url, 'Ben')];
+    [ana, ben, cara] = [await member(homing.url, 'Ana'), await member(homing.url, 'Ben'), await member(homing.url, 'Cara')];
     // Ana's client Acme, which Ben can't open, and a lounge they share, whose guidance includes
     // Acme's rules, first for Ana and then for everyone, and Acme's skill.
     ({ acme, lounge, rule } = await as({ person: ana.id, direct: true }, async (s) => {
@@ -855,6 +862,15 @@ describe('through an include', () => {
       await addInclude(s, { spaceId: lounge, included: { skill: skill.pageId }, shared: true });
       return { acme, lounge, rule: rule.id };
     }));
+    // An office Ana shares with Cara, whose guidance includes, only for Ana, a studio they can both open.
+    office = await as({ person: ana.id, direct: true }, async (s) => {
+      const studio = await createSpace(s, { name: 'Studio' });
+      await addMember(s, studio, cara.id);
+      const office = await createSpace(s, { name: 'Office' });
+      await addMember(s, office, cara.id);
+      await addInclude(s, { spaceId: office, included: { space: studio } });
+      return office;
+    });
   });
 
   after(() => homing.close());
@@ -905,6 +921,26 @@ describe('through an include', () => {
     const [include] = await admin`select id from includes where space_id = ${lounge} and private_to is null and space_included = ${acme}`;
     assert.equal((await ben.browser.json(`/api/includes/${include.id}/remove`, { space: lounge })).status, 404);
     assert.equal((await ben.browser.json(`/api/spaces/${lounge}/includes`, { space: acme })).status, 404);
+  });
+
+  test('nor through an export, nor anything of someone else’s own include', async () => {
+    const holds = async (who: Member, space: string, sql: typeof db) => {
+      const manifest = (await as(who, (s) => manifestOf(s, space, homing.url), sql))!;
+      const zip = (await as(who, (s) => exportSpace(s, space, homing.url), sql))!.zip;
+      return { manifest, text: Object.values(unzipSync(zip)).map((file) => strFromU8(file)).join('\n') };
+    };
+    for (const sql of [db, admin]) {
+      // Ben's export of the lounge holds nothing of Acme, nor that the lounge includes it.
+      const lounged = await holds(ben, lounge, sql);
+      assert.deepEqual(lounged.manifest.includes, []);
+      assert.doesNotMatch(lounged.text, secret);
+      // Cara can open the studio, but Ana's own include of it in the office isn't hers to export, nor a sign of it.
+      const officed = await holds(cara, office, sql);
+      assert.deepEqual(officed.manifest.includes, []);
+      assert.doesNotMatch(officed.text, /Studio/);
+      // Ana's own export has it, as hers.
+      assert.deepEqual((await holds(ana, office, sql)).manifest.includes.map((include) => [include.visibility, include.elsewhere?.space]), [['private', 'Studio']]);
+    }
   });
 
   test('nor straight against the database', async () => {

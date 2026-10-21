@@ -328,6 +328,11 @@ const sampleImportPreview: ImportPreviewData = {
     { space: 'Northwind', kind: 'preference', text: 'Keep my notes short.', onlyHere: false, private: true },
   ],
   skills: [{ space: 'Northwind', name: 'status-report', private: false }],
+  includes: [
+    { space: 'Website', kind: 'rules', from: 'Contracts', skill: null, private: false, waiting: false, inFile: true },
+    { space: 'Northwind', kind: 'rules', from: 'Standards', skill: null, private: false, waiting: false, inFile: false },
+    { space: 'Contracts', kind: 'skill', from: 'Team handbook', skill: 'invoice-check', private: true, waiting: false, inFile: false },
+  ],
   hash: '',
 };
 

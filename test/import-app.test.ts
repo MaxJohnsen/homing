@@ -13,7 +13,7 @@ import { strFromU8, unzipSync } from 'fflate';
 import { authDatabaseUrl } from '../src/db.ts';
 import { previewJson, previewOf } from '../src/bundle.ts';
 import { rewriteReferences, type Manifest } from '../src/export.ts';
-import { addRule, removeRule } from '../src/guidance.ts';
+import { addInclude, addRule, removeRule } from '../src/guidance.ts';
 import { ImportRefused, importSpace, readForImport } from '../src/import.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
@@ -28,7 +28,7 @@ import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
 let ana: Member, cara: Member, ben: Member, otherCara: Member;
-let acme: string, notes: string;
+let acme: string, notes: string, website: string, brand: string;
 
 before(async () => {
   homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
@@ -86,18 +86,40 @@ before(async () => {
     await addTask(s, { spaceId: acme, title: 'Book a bigger venue' });
     const banners = await addTask(s, { spaceId: acme, title: 'Order the banners', shared: true });
     await changeTask(s, banners.id, { done: true });
-    const website = await createSpace(s, { name: 'Website', parentId: acme });
+    website = await createSpace(s, { name: 'Website', parentId: acme });
     const booking = await createPage(s, { spaceId: website, title: 'Booking flow', shared: true });
     await writeItem(s, { pageId: booking, body: 'Jon builds the booking flow.', shared: true });
     legal = await createSpace(s, { name: 'Legal', parentId: acme, closed: true });
     await addRule(s, { spaceId: legal, kind: 'requirement', body: 'Contracts go through Ola.', shared: true });
     await archiveSpace(s, await createSpace(s, { name: 'Old site', parentId: acme }), true);
+    // Guidance one space includes from another: a sibling's rules, a skill, and Ana's own.
+    brand = await createSpace(s, { name: 'Brand', parentId: acme });
+    await addRule(s, { spaceId: brand, kind: 'preference', body: 'Use the green logo.', shared: true });
+    const checklist = await saveSkill(s, {
+      spaceId: website, shared: true,
+      files: [{ path: 'SKILL.md', body: '---\nname: launch-checklist\ndescription: Checks that a launch is ready.\n---\n\nGo through the list.\n' }],
+    });
+    await addInclude(s, { spaceId: website, included: { space: legal }, shared: true });
+    await addInclude(s, { spaceId: legal, included: { skill: checklist.pageId }, shared: true });
+    await addInclude(s, { spaceId: legal, included: { space: website } });
+    // Hers waits once Cara includes the same for everyone.
+    await addInclude(s, { spaceId: website, included: { space: brand } });
+    // And the rules of a space outside Acme.
+    const standards = await createSpace(s, { name: 'Standards' });
+    await addRule(s, { spaceId: standards, kind: 'requirement', body: 'Name files by date.', shared: true });
+    await addInclude(s, { spaceId: acme, included: { space: standards }, shared: true });
     return acme;
   });
   // A space whose creator isn't known, as when they've left.
   await admin`update spaces set created_by = null, agent = null where id = ${legal}`;
   await as({ person: ana.id, agent: 'Claude' }, (s) => writeItem(s, { pageId: gunnar, body: 'Gunnar asked for the budget by Friday.' }));
   await as({ ...cara, direct: true }, async (s) => {
+    await addInclude(s, { spaceId: website, included: { space: brand }, shared: true });
+    // Her own include, and one for everyone of rules only she can open: neither is Ana's to export, nor a sign of them.
+    const hers = await createSpace(s, { name: 'Cara’s standards' });
+    await addRule(s, { spaceId: hers, kind: 'requirement', body: 'Cara checks the numbers.', shared: true });
+    await addInclude(s, { spaceId: website, included: { space: hers }, shared: true });
+    await addInclude(s, { spaceId: acme, included: { space: hers } });
     await writeItem(s, { pageId: plan, body: 'The launch party is at Bislett.', shared: true });
     await writeItem(s, { pageId: gunnar, body: 'Gunnar seemed tired on the call.' });
   });
@@ -144,7 +166,7 @@ test('an export comes back as a new space only you have, and exported again it s
   // The spaces in Acme were made at the same moment, so any may come first.
   assert.deepEqual(
     preview.body.spaces.map((space: { name: string; depth: number; closed: boolean; archived: boolean }) => [space.name, space.depth, space.closed, space.archived]).sort(),
-    [['Acme', 0, false, false], ['Legal', 1, true, false], ['Old site', 1, false, true], ['Website', 1, false, false]],
+    [['Acme', 0, false, false], ['Brand', 1, false, false], ['Legal', 1, true, false], ['Old site', 1, false, true], ['Website', 1, false, false]],
   );
   assert.deepEqual(preview.body.spaces[0], { name: 'Acme', depth: 0, closed: false, archived: false, pages: 5, sources: 2, tasks: 3 });
   // Rules word for word, saying by name what they refer to in the export, and as written what they refer to outside it.
@@ -155,8 +177,23 @@ test('an export comes back as a new space only you have, and exported again it s
     { space: 'Acme', kind: 'requirement', text: 'Check Gunnar (page “Gunnar Holm”) before writing about the budget.', onlyHere: false, private: false },
     { space: 'Acme', kind: 'preference', text: `Keep my own notes on page:${notes}.`, onlyHere: false, private: true },
     { space: 'Legal', kind: 'requirement', text: 'Contracts go through Ola.', onlyHere: false, private: false },
+    { space: 'Brand', kind: 'preference', text: 'Use the green logo.', onlyHere: false, private: false },
   ]);
-  assert.deepEqual(preview.body.skills, [{ space: 'Acme', name: 'status-report', private: false }]);
+  assert.deepEqual(preview.body.skills, [{ space: 'Acme', name: 'status-report', private: false }, { space: 'Website', name: 'launch-checklist', private: false }]);
+  // What spaces include from each other comes along; the rules of Standards, outside the file, can't.
+  assert.deepEqual(preview.body.includes, [
+    { space: 'Website', kind: 'rules', from: 'Legal', skill: null, private: false, waiting: false, inFile: true },
+    { space: 'Legal', kind: 'skill', from: 'Website', skill: 'launch-checklist', private: false, waiting: false, inFile: true },
+    { space: 'Legal', kind: 'rules', from: 'Website', skill: null, private: true, waiting: false, inFile: true },
+    { space: 'Website', kind: 'rules', from: 'Brand', skill: null, private: true, waiting: true, inFile: true },
+    { space: 'Acme', kind: 'rules', from: 'Standards', skill: null, private: false, waiting: false, inFile: false },
+    { space: 'Website', kind: 'rules', from: 'Brand', skill: null, private: false, waiting: false, inFile: true },
+  ]);
+  // The readable part says so beside the rules.
+  const files = unzipSync(before.bytes);
+  assert.match(strFromU8(files['guidance/website/AGENTS.md']), /^- The rules of \[Legal\]\(\.\.\/legal\/AGENTS\.md\)\.$/m);
+  assert.match(strFromU8(files['guidance/legal/AGENTS.md']), /^- The skill \[launch-checklist\]\(\.\.\/website\/skills\/launch-checklist\/SKILL\.md\), from Website\.$/m);
+  assert.match(strFromU8(files['guidance/AGENTS.md']), /^- The rules of Standards, which isn’t in this export\.$/m);
   const spaces = await spacesOf(ana);
 
   // A space called the same as one she has is refused; another name is a new space at the top.
@@ -170,7 +207,7 @@ test('an export comes back as a new space only you have, and exported again it s
   // Only Ana has it and the spaces in it, the closed one too.
   const members = await admin`select distinct person_id from space_access where space_id in (select space_subtree(${copy}))`;
   assert.deepEqual(members.map((row) => row.personId), [ana.id]);
-  assert.equal(await spacesOf(ana), spaces + 4);
+  assert.equal(await spacesOf(ana), spaces + 5);
   // Nobody here made them: who did comes along by name, if the export says.
   assert.equal((await admin`select count(*)::int as n from spaces where id in (select space_subtree(${copy})) and (created_by is not null or agent is not null)`)[0].n, 0);
   // References in rules and skills' files follow what they point to in the export; others stay as written.
@@ -185,8 +222,19 @@ test('an export comes back as a new space only you have, and exported again it s
   const [draft] = await admin`select private_to from revisions where space_id in (select space_subtree(${copy})) and body = 'The launch budget is 1 MNOK.'`;
   assert.equal(draft.privateTo, ana.id);
 
+  // Includes come back as guidance, credited to nobody here: those for everyone, and Ana's own.
+  const includes = await admin`select private_to, added_by, imported -> 'author' ->> 'name' as by from includes where space_id in (select space_subtree(${copy})) order by added_at`;
+  assert.deepEqual(includes.map((row) => [row.privateTo, row.addedBy, row.by]), [[null, null, 'Ana'], [null, null, 'Ana'], [ana.id, null, 'Ana'], [ana.id, null, 'Ana'], [null, null, 'Cara']]);
+  // Cara, made an admin of it, can't open Legal: she sees only that Website includes something for everyone, and who added it there.
+  const [{ id: websiteHere }] = await admin`select id from spaces where parent_id = ${copy} and name = 'Website'`;
+  await as({ ...ana, direct: true }, (s) => addMember(s, copy, cara.id, 'admin'));
+  const hidden = (await cara.browser.json(`/api/spaces/${websiteHere}/rules`)).body.includes.filter((include: { spaceId: string | null }) => include.spaceId === null);
+  assert.deepEqual(hidden.map((include: { addedBy: string }) => include.addedBy), ['Ana (imported)']);
+
   // Exported again, it means the same, with new ids.
   const after = await exported(ana, copy);
+  assert.ok(before.manifest.includes.some((include) => include.elsewhere?.space === 'Standards'));
+  assert.ok(after.manifest.includes.every((include) => include.elsewhere === null));
   assert.deepEqual(meaning(after.manifest), meaning(before.manifest));
   const ids = new Set([...before.manifest.spaces, ...before.manifest.pages, ...before.manifest.items, ...before.manifest.sources, ...before.manifest.tasks].map((thing) => thing.id));
   assert.ok([...after.manifest.spaces, ...after.manifest.pages, ...after.manifest.items, ...after.manifest.sources, ...after.manifest.tasks].every((thing) => !ids.has(thing.id)));
@@ -383,6 +431,20 @@ test('an export is held to what Homing keeps, and to rules that hide nothing', a
     ['a skill name Homing doesn’t take', (m) => { item(m, 'status-report').body = 'Status Report'; }, /name Homing doesn’t take/],
     ['a skill named otherwise in its SKILL.md', (m) => { item(m, 'status-report').body = 'weekly-report'; }, /named differently in its SKILL\.md/],
     ['a skill’s file too large', (m) => { file(m, 'references/tone.md').body = 'x'.repeat(512 * 1024 + 1); }, /longer than Homing keeps/],
+    ['an include of the rules of the space above', (m) => { const include = m.includes.find((entry) => entry.rules && entry.visibility === 'shared')!; include.rules = m.spaces.find((space) => space.id === include.space)!.parent; }, /applies there already/],
+    ['an include for everyone of rules only the exporter has', (m) => {
+      const include = m.includes.find((entry) => entry.rules && entry.visibility === 'private' && !entry.waiting)!;
+      include.visibility = 'shared';
+      m.spaces.find((space) => space.id === include.rules)!.private = true;
+    }, /only the exporter has/],
+    ['an include for everyone of a skill only the exporter has', (m) => { for (const title of m.items.filter((entry) => entry.body === 'launch-checklist')) title.visibility = 'private'; }, /only the exporter has/],
+    ['an include for everyone that waits', (m) => { m.includes.find((entry) => entry.visibility === 'shared' && entry.rules)!.waiting = true; }, /can’t wait/],
+    ['an include of one’s own that waits when nothing is included for everyone', (m) => { m.includes.find((entry) => entry.visibility === 'private' && !entry.waiting)!.waiting = true; }, /waits when it doesn’t/],
+    ['an include of one’s own that doesn’t wait though the same is included for everyone', (m) => { m.includes.find((entry) => entry.waiting)!.waiting = false; }, /or the other way round/],
+    ['an include of its own space’s rules', (m) => { const include = m.includes.find((entry) => entry.rules)!; include.rules = include.space; }, /applies there already/],
+    ['an include of rules not in the export', (m) => { m.includes.find((entry) => entry.rules)!.rules = crypto.randomUUID(); }, /rules that aren’t in the export/],
+    ['an include there twice', (m) => { m.includes.push({ ...m.includes.find((entry) => entry.rules)!, id: crypto.randomUUID() }); }, /is there twice/],
+    ['an include of two things', (m) => { m.includes.find((entry) => entry.rules)!.skill = m.includes.find((entry) => entry.skill)!.skill; }, /doesn’t include one thing/],
     ['a source cited twice', (m) => { const cites = m.items.find((entry) => entry.sources.length)!; cites.sources = [cites.sources[0], cites.sources[0]]; }, /cites a source twice/],
     ['two files at one place', (m) => { m.items.push({ ...file(m, 'references/tone.md'), id: crypto.randomUUID() }); }, /two files at one place/],
     ['two spaces with one name', (m) => { m.spaces.find((space) => space.name === 'Legal')!.name = 'website'; }, /both called/],
@@ -622,6 +684,11 @@ function meaning(m: Manifest) {
     sources: m.sources.map((source) => ({ source: sources.get(source.id), visibility: source.visibility, author: by(source.author), createdAt: source.createdAt })),
     links: m.links.map((link) => ({ item: item(link.item), from: pages.get(link.from), to: pages.get(link.to) })),
     gathered: m.gathered.map((gathering) => ({ collection: pages.get(gathering.collection), page: pages.get(gathering.page), visibility: gathering.visibility, author: by(gathering.author), createdAt: gathering.createdAt })),
+    // What spaces include from each other in the export: one from outside it can't come back.
+    includes: m.includes.filter((include) => include.elsewhere === null).map((include) => ({
+      space: path(include.space), visibility: include.visibility, waiting: include.waiting, rules: include.rules && path(include.rules),
+      skill: include.skill && pages.get(include.skill), author: by(include.author), addedAt: include.addedAt,
+    })),
     tasks: m.tasks.map((task) => ({
       ...task, id: undefined, space: path(task.space), imported: undefined, author: by(task.author), assignee: someone(task.assignee), done: task.done && { at: task.done.at, by: someone(task.done.by) },
     })),

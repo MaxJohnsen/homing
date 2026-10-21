@@ -901,8 +901,11 @@ function inclusionData(includedIn: Inclusion | null) {
 /** For a space's admin, what it includes for everyone that they can't open, of one kind: who added it, and when. */
 async function notOpen(s: Session, spaceId: string, kind: 'rules' | 'skill') {
   const hidden = (await includesNotOpen(s, spaceId)).filter((include) => include.kind === kind);
-  const names = await peopleNames(s, hidden.map((include) => include.addedBy));
-  return hidden.map((include) => ({ id: include.id, spaceId: null, spaceName: null, shared: true, addedBy: names.get(include.addedBy) ?? null, addedAt: include.addedAt }));
+  const names = await peopleNames(s, hidden.map((include) => include.addedBy).filter((id) => id !== null));
+  // Someone named in an import is nobody here, so they're said to be imported.
+  const adder = (include: (typeof hidden)[number]) =>
+    include.addedBy ? (names.get(include.addedBy) ?? null) : include.importedAdder ? `${include.importedAdder} (imported)` : null;
+  return hidden.map((include) => ({ id: include.id, spaceId: null, spaceName: null, shared: true, addedBy: adder(include), addedAt: include.addedAt }));
 }
 
 /** Where in a long list to start: from the top, and never past what any list could hold. */

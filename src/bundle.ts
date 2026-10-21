@@ -80,6 +80,11 @@ const manifestSchema = z.strictObject({
     due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), assignee: key.nullable(),
     done: z.strictObject({ at: time, by: key.nullable() }).nullable(), author, createdAt: time, updatedAt: time, imported,
   })),
+  // Exports from before includes were exported have none.
+  includes: z.array(z.strictObject({
+    id, space: id, visibility: side, waiting: z.boolean(), rules: id.nullable(), skill: id.nullable(),
+    elsewhere: z.strictObject({ space: text(longest.name), skill: text(longest.name).nullable() }).nullable(), author, addedAt: time, imported,
+  })).optional(),
 });
 
 /** A zip's homing.json, read and checked, with a fingerprint of it, or a refusal saying what's wrong. */
@@ -123,6 +128,7 @@ export function readExport(zip: Uint8Array): { manifest: Manifest; hash: string 
     throw new ImportRefused(`That export was changed or damaged, so Homing won’t import it: ${where} ${issue.message.toLowerCase().slice(0, 200)}.`);
   }
   const manifest = parsed.data as Manifest;
+  manifest.includes ??= [];
   const problem = problemIn(manifest);
   if (problem) throw new ImportRefused(`That export doesn’t hold together, so Homing won’t import it: ${problem}.`);
   return { manifest, hash: createHash('sha256').update(json).digest('hex') };
@@ -166,7 +172,7 @@ function problemIn(m: Manifest): string | undefined {
   const authors = [
     ...m.spaces.map((space) => space.creator), ...m.spaceArchives.map((archive) => archive.author), ...m.items.map((item) => item.author),
     ...m.revisions.map((revision) => revision.author), ...m.sources.map((source) => source.author), ...m.gathered.map((gathering) => gathering.author),
-    ...m.pageArchives.map((archive) => archive.author), ...m.tasks.map((task) => task.author),
+    ...m.pageArchives.map((archive) => archive.author), ...m.tasks.map((task) => task.author), ...m.includes.map((include) => include.author),
   ];
   for (const author of authors) {
     const fits = !author || (author.by === 'person' ? author.person !== null && author.agent === null : author.by === 'agent' ? author.agent !== null : author.person === null && author.agent === null);
@@ -179,7 +185,7 @@ function problemIn(m: Manifest): string | undefined {
   ];
   for (const person of keys) if (person && !people.has(person)) return `${person} isn’t among its people`;
   const seen = new Set<string>();
-  for (const thing of [...m.spaces, ...m.pages, ...m.items, ...m.sources, ...m.tasks]) {
+  for (const thing of [...m.spaces, ...m.pages, ...m.items, ...m.sources, ...m.tasks, ...m.includes]) {
     if (seen.has(thing.id)) return `${thing.id} appears twice`;
     seen.add(thing.id);
   }
@@ -289,6 +295,60 @@ function problemIn(m: Manifest): string | undefined {
     if (!task.title.trim()) return `task ${task.id} has no title`;
     if (task.due && Number.isNaN(Date.parse(`${task.due}T00:00:00Z`))) return `task ${task.id} is due on a day that doesn’t exist`;
   }
+  return problemInIncludes(m, spaces, pages, onPage);
+}
+
+/**
+ * What doesn't hold together in what the spaces' guidance includes: each brings in one space's
+ * rules or one skill, in the export or named outside it, never its own space's or one above it,
+ * which apply there already, once on each side, and for everyone only what's shared.
+ */
+function problemInIncludes(m: Manifest, spaces: Map<string, Manifest['spaces'][number]>, pages: Map<string, Manifest['pages'][number]>, onPage: Map<string, Manifest['items']>): string | undefined {
+  // Each space's place in the tree, so whether one is above another is one comparison.
+  const enter = new Map<string, number>();
+  const leave = new Map<string, number>();
+  const below = new Map<string, string[]>();
+  for (const space of m.spaces.slice(1)) below.get(space.parent!)?.push(space.id) ?? below.set(space.parent!, [space.id]);
+  let clock = 0;
+  const stack: [string, boolean][] = [[m.space, false]];
+  while (stack.length) {
+    const [space, done] = stack.pop()!;
+    if (done) {
+      leave.set(space, clock++);
+      continue;
+    }
+    enter.set(space, clock++);
+    stack.push([space, true], ...(below.get(space) ?? []).map((child): [string, boolean] => [child, false]));
+  }
+  const appliesIn = (from: string, space: string) => enter.get(from)! <= enter.get(space)! && leave.get(space)! <= leave.get(from)!;
+  // Someone's own include waits exactly while the space includes the same for everyone.
+  const target = (include: Manifest['includes'][number]) => include.rules ?? include.skill ?? `elsewhere ${JSON.stringify(include.elsewhere)}`;
+  const forEveryone = new Set(m.includes.filter((include) => include.visibility === 'shared').map((include) => `${include.space} ${target(include)}`));
+  const there = new Set<string>();
+  for (const include of m.includes) {
+    if (!spaces.has(include.space)) return `include ${include.id} is in a space that isn’t in the export`;
+    if ([include.rules, include.skill, include.elsewhere].filter((target) => target !== null).length !== 1) return `include ${include.id} doesn’t include one thing`;
+    if (include.waiting && include.visibility !== 'private') return `include ${include.id} for everyone can’t wait`;
+    if (include.visibility === 'private' && include.waiting !== forEveryone.has(`${include.space} ${target(include)}`)) return `include ${include.id} says it waits when it doesn’t, or the other way round`;
+    if (include.elsewhere !== null) continue;
+    let from: string;
+    if (include.rules !== null) {
+      const space = spaces.get(include.rules);
+      if (!space) return `include ${include.id} includes rules that aren’t in the export`;
+      if (include.visibility === 'shared' && space.private) return `include ${include.id} includes for everyone rules that only the exporter has`;
+      from = space.id;
+    } else {
+      const page = pages.get(include.skill!);
+      const titles = (onPage.get(include.skill!) ?? []).filter((item) => item.kind === 'title');
+      if (!page || page.type !== 'skill' || !titles.length) return `include ${include.id} includes a skill that isn’t in the export`;
+      if (include.visibility === 'shared' && !titles.some((title) => title.visibility === 'shared')) return `include ${include.id} includes for everyone a skill that only the exporter has`;
+      from = page.space;
+    }
+    if (appliesIn(from, include.space)) return `include ${include.id} includes guidance that applies there already`;
+    const key = `${include.space} ${include.visibility} ${include.rules ?? include.skill}`;
+    if (there.has(key)) return `include ${include.id} is there twice`;
+    there.add(key);
+  }
   return undefined;
 }
 
@@ -375,6 +435,11 @@ export interface ImportPreview {
   /** Every rule there is now, word for word, with what it refers to in the export by name, and every skill by name. */
   rules: { space: string; kind: 'requirement' | 'preference'; text: string; onlyHere: boolean; private: boolean }[];
   skills: { space: string; name: string; private: boolean }[];
+  /**
+   * What each space's guidance includes from another space, its rules or a skill, as the export
+   * says: those in the file come along, and those from outside it can't.
+   */
+  includes: { space: string; kind: 'rules' | 'skill'; from: string; skill: string | null; private: boolean; waiting: boolean; inFile: boolean }[];
   /** A fingerprint of what was read, so the import is of exactly this. */
   hash: string;
 }
@@ -444,6 +509,15 @@ export function previewOf(m: Manifest, hash: string): ImportPreview {
     skills: current
       .filter((item) => item.kind === 'title' && pages.get(item.page)?.type === 'skill')
       .map((item) => ({ space: spaceName.get(item.space)!, name: item.body, private: item.visibility === 'private' })),
+    includes: m.includes.map((include) => {
+      const skill = include.skill === null ? undefined : pages.get(include.skill);
+      const from = include.rules !== null ? spaceName.get(include.rules)! : skill ? spaceName.get(skill.space)! : plainName(include.elsewhere!.space);
+      const name = skill ? titles.get(skill.id)! : include.elsewhere?.skill ? plainName(include.elsewhere.skill) : null;
+      return {
+        space: spaceName.get(include.space)!, kind: name === null ? 'rules' as const : 'skill' as const, from: short(from), skill: name === null ? null : short(name),
+        private: include.visibility === 'private', waiting: include.waiting, inFile: include.elsewhere === null,
+      };
+    }),
     hash,
   };
 }
@@ -502,6 +576,9 @@ export function payloadOf(m: Manifest, name: string): string {
     by: author.by, person: author.person, name: author.person === null ? null : (names.get(author.person) ?? null), agent: author.agent === null ? null : plainName(author.agent) || 'Assistant',
   });
   const place = new Map(m.items.map((item, at) => [item.id, at]));
+  // Only what's in the export comes back: an include of something outside it can't.
+  const inside = m.includes.filter((include) => include.elsewhere === null);
+  const includeTimes = inOrder(inside.map((include) => include.addedAt));
   // Each list is written out in turn, so besides the export itself only one is ever held whole.
   const lists: [string, () => unknown][] = [
     ['from', () => ({ instance: m.instance, exportedBy: plainName(m.exportedBy.name), exportedAt: m.exportedAt, space: m.space })],
@@ -547,6 +624,10 @@ export function payloadOf(m: Manifest, name: string): string {
         id: task.id, author: by(task.author),
         ...(task.assignee && { assignee: person(task.assignee) }), ...(task.done?.by && { doneBy: person(task.done.by) }),
       },
+    }))],
+    ['includes', () => inside.map((include, at) => ({
+      space: to(include.space), private: include.visibility === 'private', rules: maybe(include.rules), skill: maybe(include.skill), addedAt: includeTimes[at],
+      imported: { id: include.id, author: by(include.author) },
     }))],
   ];
   return `{${lists.map(([key, list]) => `"${key}":${JSON.stringify(list())}`).join(',')}}`;

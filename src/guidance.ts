@@ -372,13 +372,16 @@ export async function removeInclude(s: Session, includeId: string, spaceId: stri
 export interface IncludeNotOpen {
   id: string;
   kind: 'rules' | 'skill';
-  addedBy: string;
+  /** Who added it here, or null for one that came in an import. */
+  addedBy: string | null;
   addedAt: Date;
+  /** For one that came in an import, the name of who added it there, if the export said. */
+  importedAdder: string | null;
 }
 
 /** For a space's admins, what it includes for everyone that they can't open. Nobody else gets any. */
 export async function includesNotOpen(s: Session, spaceId: string): Promise<IncludeNotOpen[]> {
-  return s.tx<IncludeNotOpen[]>`select id, kind, added_by, added_at from includes_not_open(${spaceId}::uuid)`;
+  return s.tx<IncludeNotOpen[]>`select id, kind, added_by, added_at, imported_adder from includes_not_open(${spaceId}::uuid)`;
 }
 
 /**
