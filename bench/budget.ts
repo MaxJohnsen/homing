@@ -8,8 +8,8 @@ import { closeSync, existsSync, openSync, readFileSync, renameSync, unlinkSync, 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-/** The most the benchmarks may ever spend, in USD, across every run, pilot and retry. */
-export const hardCap = 50;
+/** The most the benchmarks may ever spend, in USD, across every run, pilot and retry. Raised from 50 for benchmark 0 (Max, 22 October 2026). */
+export const hardCap = 60;
 
 /** The ledger's home: next to the key, outside every checkout of the repository. */
 export const ledgerPath = join(homedir(), '.config/homing/bench-spend.json');

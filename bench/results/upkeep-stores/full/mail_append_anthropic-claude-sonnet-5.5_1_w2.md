@@ -1,0 +1,56 @@
+# Mother's 70th birthday (personal)
+- Ana's mother turns 70. Family celebration on Saturday 10 October 2026 at 13:00 at Frognerseteren. Ingrid Berg (organiser) asked Ana to bring a cake (30 Aug 2026); not yet confirmed. (m020, 2026-08-30)
+- It is a surprise. Ingrid Berg asked Ana not to say anything to their mother (Ingrid's reply of 5 Sept to Ana's plan). (m040, 2026-09-05)
+
+# Bergen trip 9 September (personal)
+- Nordfly booking Oslo–Bergen on Wednesday 9 September 2026 at 07:10. Booking number QX7P2L. (m037, 2026-09-04)
+
+# Bislett løpeklubb (personal)
+- The club (contact: Tone Haug) is entering the Oslo half marathon on Saturday 19 September 2026. Registration closes 5 September, so sign up before then. Interval training every Tuesday at 18:00 from the clubhouse until the race. (m017, 2026-08-28; m018, 2026-08-29)
+- On 4 Sept Ana asked Tone Haug to register her for the half marathon on 19 September 2026. Her goal is under 1:45. Confirmation of registration not yet seen. (m036, 2026-09-04)
+
+# Jonas Vik (person)
+- New developer at Acme, starting 14 September 2026. He will sit next to Ana. Announced by Cara Lund. (m035, 2026-09-03)
+
+# Northwind website relaunch (project)
+- Go-live date: 1 March 2027 (agreed at kickoff on 24 Aug 2026). (m002, 2026-08-24; m006, 2026-08-25)
+- Budget: 450,000 NOK, approved by Gunnar Holm on 24 Aug 2026. (m002, 2026-08-24; m006, 2026-08-25)
+- Owners: Cara Lund (Acme) owns content migration from the old Fram CMS; Per Hansen (Northwind) owns hosting and DNS. (m002, 2026-08-24; m006, 2026-08-25)
+- Steering group meets every four weeks; first meeting 14 September 2026. (m002, 2026-08-24; m006, 2026-08-25)
+- Open decision: hosting on Azure or AWS. Northwind's IT team already runs Azure; procurement has received an offer from AWS. Per Hansen is preparing a comparison for the steering group on 14 September. (m003, 2026-08-24)
+- Migration plan (Cara, 25 Aug): about 1,200 pages move from the old Fram CMS; product pages first, news last. Concern: Fram's API is limited to 10 requests/second, making bulk export slow; Cara asked Lars Moe at Fram to raise the limit (open). On 26 Aug Cara got admin access to Fram; the export API works, just slowly. (m005, 2026-08-25; m011, 2026-08-26)
+- Fram CMS API rate limit: the limit of 10 requests per second applies to all customers on the Standard plan. Fram can raise it to 50 requests per second on the Enterprise plan, which costs 20,000 NOK a month extra. (Source: Lars Moe, account manager at Fram CMS, to Cara Lund, 31 Aug.) (m023, 2026-08-31)
+- Impact of the API limit: at 10 requests per second the bulk export/migration of the 1,200 pages takes about three weeks longer than planned. Cara Lund finds 20,000 NOK a month for Enterprise a lot and suggested asking Gunnar whether he would rather pay or move the date. (m025, 2026-09-01)
+- OPEN decision for Gunnar Holm: either pay Fram 20,000 NOK a month for a higher API limit, or accept a migration about three weeks longer, which puts the 1 March go-live at risk. Ana emailed him on 1 Sept and proposed discussing it at the steering group on 14 September. No answer yet. (m025, 2026-09-01; m026, 2026-09-01)
+- Decision: plan for Matomo as analytics on the new site, not Google Analytics. Reason (Northwind legal, Mona Lie): Matomo can run on Northwind's own servers, so no data goes to the US. (m024, 2026-08-31)
+- The cookie banner needs Mona Lie's (Northwind legal) approval before launch. (m024, 2026-08-31)
+- Purchase order number for the relaunch is PO-77120 (from Lise Berg, Northwind, 2 Sept). It must be put on every invoice. (m029, 2026-09-02)
+- Gunnar Holm proposes a pilot in October 2026 with the product pages on staging before moving everything. If the pilot goes well, the rest follows. (m034, 2026-09-03)
+
+# Northwind cloud platform: Azure or AWS (decision)
+- Per Hansen (Northwind) sent the steering group a comparison on 3 Sept 2026 and recommends **Azure**. AWS is about 15% cheaper per year, but needs a new framework agreement and the team would have to learn a new platform. Northwind already runs Azure, and the Azure region in Norway keeps the data in the country, which Mona in legal values. Status: recommendation only; the steering group's decision is not yet recorded. (m033, 2026-09-03)
+
+# Fjord Bank framework agreement (client)
+- Framework agreement with Acme renews 1 January 2027. Current price 1.2 million NOK per year. Either party can terminate with three months' notice, so any changes must be agreed before 1 October 2026. (m004, 2026-08-25)
+- Kari Lie (Finance Director, Fjord Bank) must sign all orders over 100,000 NOK. (m004, 2026-08-25)
+- From January 2027 Fjord Bank (Kari Lie) wants monthly invoices instead of quarterly, to fit their new budget system. (m032, 2026-09-03)
+
+# Acme timesheet routine (decision)
+- Timesheets are due every Friday by 15:00. Hours go on the client project, not internal. (m009, 2026-08-26)
+- Reminder from Acme admin (2 Sept): timesheets are due every Friday by 15:00. (m031, 2026-09-02)
+
+# Fjord Bank customer portal feasibility study (project)
+- Siri Dahl (Digital Director, Fjord Bank) asked Acme on 27 Aug 2026 to do the feasibility study (forstudie) for Fjord Bank's new customer portal this autumn. Two options are being considered: build in-house or buy a ready-made platform. Open: it has not been decided whether the mobile app is included in the study. (m012, 2026-08-27)
+- Estimate sent by Ana to Siri Dahl on 28 Aug 2026: 180,000 NOK for the study, over six weeks, starting 21 September 2026 if that suits Fjord Bank. Awaiting their response. The estimate was sent while the mobile app scope was still unresolved. (m012, 2026-08-27; m016, 2026-08-28)
+- Siri Dahl (Fjord Bank) accepted the proposal on 2 Sept: the feasibility study goes ahead as proposed at 180,000 NOK, starting 21 September 2026. (m028, 2026-09-02)
+- OPEN: whether the mobile app is in scope is still undecided; Siri Dahl will come back to it. (m028, 2026-09-02)
+
+# Northwind contacts (person)
+- Gunnar Holm: Head of Marketing at Northwind, approved the relaunch budget. Per Hansen: IT lead (IT-leder) at Northwind, owns hosting and DNS. Lars Moe: contact at Fram (CMS vendor) re API rate limit. (m002, 2026-08-24; m003, 2026-08-24; m005, 2026-08-25)
+- Lise Berg works in Procurement at Northwind. She requires a purchase order (PO) number on every invoice, and Acme must not invoice before getting a PO number from her (reminder 27 Aug 2026). (m013, 2026-08-27)
+- Mona Lie – Legal at Northwind. Decides on analytics (prefers Matomo) and must approve the cookie banner before launch. (m024, 2026-08-31)
+- Lise Berg (Northwind) – issued the purchase order PO-77120 for the relaunch; the contact for PO/invoice questions. (m029, 2026-09-02)
+- Lars Moe – Account Manager at Fram CMS (the CMS vendor); contact for API limits and plans. (m023, 2026-08-31)
+
+# Kitchen renovation (personal)
+- Carpenter Erik Dahl can start on the kitchen Monday 2 November 2026. Quote: 85,000 NOK including materials, excluding electrician (electrician still needs arranging). (m008, 2026-08-26)
