@@ -129,7 +129,9 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 
 **Small items where useful.** Anything that can go out of date, such as a date, an owner, a status, a decision, a commitment or a contact, is its own item with its own sources, so it can be updated alone. Background and reasoning stay as prose. Agents choose sensible boundaries, and ideas are marked as ideas.
 
-**No sections.** A page is its items in order. Headings inside an item give longer prose its structure, and a page that grows too long is split into pages that a collection gathers.
+**No sections.** A page is its items in order. Headings inside an item give longer prose its structure, and a sprawling page is split into pages that a collection gathers. A coherent document isn't split just because it's long.
+
+**Substantial work stays whole.** People and assistants develop long documents, research and analyses over many sessions, often with different assistants. The next session carries the work on without losing its structure, reasoning, references or history. A document kept in Homing stays intact, and can be read, edited and exported as a whole. One whose home is elsewhere, such as a repository or a drive, stays there, and Homing works with it rather than copying it. How this work is kept is decided after benchmark 0. Pages as they are get tested first, and a new building block is added only if the evidence calls for one.
 
 **When a page is created.** When guidance names its type, when a person asks, or when an agent judges that someone would look the subject up by name. A subject coming up again is a signal, not a rule. Someone who only appears in sources doesn't get a page until they matter, so a mailbox with 20,000 contacts doesn't produce 20,000 pages.
 
@@ -169,7 +171,7 @@ Upkeep runs when new evidence arrives, and in a periodic tidy pass per space tha
 - Every revision keeps the visibility of its item.
 - When a source must be deleted, its excerpts go, including from history, along with any item that rests only on it. Prose that depended on it is flagged for regeneration, and text written by people is never silently overwritten.
 
-**What is stored.** Knowledge, not conversation history. By default a source is a reference plus an excerpt, and a full copy is kept only when it is necessary and permitted. Content is Markdown, backed by one transactional store that nobody edits directly. Relationships come from explicit links between pages, not from things appearing together.
+**What is stored.** Knowledge, not conversation history. What an important session worked out can be kept, and its transcript only selectively (§10). By default a source is a reference plus an excerpt, and a full copy is kept only when it is necessary and permitted. Content is Markdown, backed by one transactional store that nobody edits directly. Relationships come from explicit links between pages, not from things appearing together.
 
 **Export.** Anyone who can open a space can export it. The export holds everything they see there and in the spaces below it they can open: the shared side, and their own private side, marked as theirs, never anyone else's. That is its pages with their types, the items on them with their sources' permitted excerpts and history, including superseded items and archived pages, the links between pages, collections, the overview, rules, skills with their files, what each space's guidance includes, and tasks. Sources kept in other spaces, such as another client's, stay there, and what rests on them says so. A space below that the person can't open leaves no trace, not even its name. Items, tasks and spaces keep their dates, but what someone did with a page while it was theirs alone, such as archiving it, stays theirs. Credentials and live external records are never exported. An assistant gives the person the link to download it.
 
@@ -318,6 +320,8 @@ A routine is work that happens on its own. It always acts for a person or a spac
 
 A space routine never reads anyone's private side: if an automation needs your mailbox, it belongs to you. System routines are ordinary routines. Capturing from your mailbox is a routine you own, created when you connect it. Capturing from a bound place through a space connection is owned by the space.
 
+**Learning a source's history.** When someone connects a mailbox or another source, they choose how far back Homing learns from it. The first pass reconstructs how knowledge changed over that time and establishes what holds now, then carries on as ongoing learning from where it stopped. Age alone doesn't decide what matters: an old contract can still apply. Old tasks and events are history, and aren't recreated as current unless evidence says they still are. The person sees how far along the pass is, it resumes if interrupted, and its scope can change without starting over. What it learns is private by default, and nothing is published or acted on outside Homing without authorization (§5).
+
 **Private work is automatic; publishing isn't.** A person routine updates its owner's private knowledge, notes and tasks across all their spaces without asking. Weekly planning across clients is an ordinary person routine, and its results stay private. A routine publishes automatically only when both the action and every input are authorized for the destination. Being scoped to a space isn't enough: a private email about Acme doesn't become shareable because the routine runs in Acme.
 
 **Containment.** A routine that reads untrusted input runs where all its tools come from Homing. A run that holds outside tools falls outside containment, and its output counts as agent-reported.
@@ -384,10 +388,12 @@ More about the tools:
 **Clients.**
 
 - There are three levels of integration: MCP only, which works whenever the client calls the tools; MCP plus one recommended instruction, which says when Homing helps, so the assistant uses it for the person's work and leaves it out of the rest; and native integration, where context loads reliably and sessions are captured through hooks. The recommended instruction is part of Homing's MCP instructions, so clients that show those follow it without setup.
-- With native integration, Homing learns from conversations automatically unless you say "don't keep this". Otherwise it learns through `remember`. It keeps the knowledge, not the transcript, and background learning never depends on the chat client.
+- With native integration, Homing learns from conversations automatically unless you say "don't keep this". Otherwise it learns through `remember`. It keeps knowledge rather than transcripts (below), and background learning never depends on the chat client.
 - Space detection is a suggestion that asks when unsure. Git remotes are hints. There is no hidden "current space".
 - Homing requires no repository structure, local workspace or separate chat app. Prompts and MCP Apps are enhancements.
 - Every assistant connects over OAuth and acts as the person who signed in and allowed it. A person sees their connected assistants and can disconnect any of them, which takes effect at once. Claude.ai and ChatGPT need a public HTTPS address, so an install reachable only locally needs a tunnel to serve them.
+
+**Sessions.** Work often spans many conversations with different assistants. Homing can keep the useful context of a session: what was worked on, what changed, decisions and their reasons, open questions, and links to the pages and documents involved, so the next session, with any assistant, picks up from there. There is no mandatory chat history, and Homing keeps only what it receives. A full transcript is kept only when the client makes it available and the person allows it.
 
 ## 11. Models, distribution and other instances
 
@@ -432,7 +438,7 @@ When instances work together:
 
 To run before building more than is needed.
 
-0. **Small items vs. a plain wiki.** Feed the same sources over simulated weeks into a plain agent-maintained wiki and into pages of small, sourced items kept by the upkeep operations. Compare correctness, staleness, drift, traceability and cost. Add structure only where it wins.
+0. **Small items vs. a plain wiki.** Feed the same sources over simulated weeks, and a piece of work over many sessions, into a plain agent-maintained wiki and into pages of small, sourced items kept by the upkeep operations. Compare correctness, staleness, drift, traceability and cost, and whether reasons, open questions and the work as a whole survive. Add structure only where it wins.
 1. **MCP reliability.** How consistently Claude and ChatGPT call Homing on realistic prompts, and leave it out where it can't help, with MCP only and with one recommended instruction.
 2. **Tool design.** Whether agents build `act` payloads correctly compared with dedicated tools, and whether they choose correctly between `remember` and `act`.
 3. **Context size.** Core only, core plus relevant summaries, and core plus full pages, compared on quality, number of calls, latency and tokens.
@@ -449,12 +455,12 @@ Morning email triage, shared project knowledge and cross-client weekly planning 
 ## Open questions
 
 - **Context.** Should the guidance that applies be precompiled per person and space, and how is it invalidated? What is the default context budget?
-- **Knowledge.** How is it tracked that a source is still available and still permitted? How should active knowledge work: finding gaps, then investigating them on your private side?
+- **Knowledge.** How is it tracked that a source is still available and still permitted? How should active knowledge work: finding gaps, then investigating them on your private side? How is substantial work represented and edited, such as changing part of a long document without resending all of it, and how does upkeep keep it whole?
 - **Sharing.** Audience reporting for systems beyond email, chat and meetings, such as Asana and Drive, which count as unknown until then. If a private source is deleted, does knowledge published from it stay, flagged "source removed"? Leaning towards yes, because a person vouched for it.
-- **Interface.** How should client integrations work, starting with a Claude Code plugin?
+- **Interface.** How should client integrations work, starting with a Claude Code plugin? How is a session's context captured: through client integrations, learning, or both?
 - **Connections.** How does OAuth to external systems work across tenants? Which adapters come first: APIs, MCP clients, local bridges such as iMessage on a Mac, webhooks? Should there be one Connections screen plus status in each space?
 - **Records.** Which write operations come first? Calendars: availability, opt-in "busy" blocks, and what event titles reveal. The planning skill: deadlines, priorities, effort, availability, dependencies and private notes.
-- **Routines.** What is the minimal runner for v1 (scheduling, retries, history), and later the full orchestration engine?
+- **Routines.** What is the minimal runner for v1 (scheduling, retries, history), and later the full orchestration engine? How does a source's first pass weigh and order old material?
 
 ## Deferred
 
