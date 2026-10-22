@@ -1,6 +1,6 @@
 # Benchmarks
 
-Benchmarks 1 to 4 from the [spec](../docs/spec.md#benchmarks): whether models call Homing when they should, whether they build `act`'s payloads as well as they use dedicated tools, how much `context` should give, and how well search finds things. Benchmark 1 also has harder conversations, which ask whether models use Homing when it helps and leave it alone otherwise. In 1 to 3, real models talk to a local Homing through its real MCP tools, and the harness checks what happened. Benchmark 4, [below](#benchmark-4-retrieval), asks Homing's search directly. The results are in [results.md](results.md).
+Benchmarks 0 to 4 from the [spec](../docs/spec.md#benchmarks): how knowledge should be kept as it grows, whether models call Homing when they should, whether they build `act`'s payloads as well as they use dedicated tools, how much `context` should give, and how well search finds things. Benchmark 1 also has harder conversations, which ask whether models use Homing when it helps and leave it alone otherwise. In 1 to 3, real models talk to a local Homing through its real MCP tools, and the harness checks what happened. Benchmark 4, [below](#benchmark-4-retrieval), asks Homing's search directly, and benchmark 0, [further down](#benchmark-0-small-items-or-a-wiki), compares ways of keeping knowledge. The results are in [results.md](results.md).
 
 The models cost money, so CI never runs this.
 
@@ -25,11 +25,11 @@ Each conversation is one line in `results/<phase>.jsonl`: the tools called with 
 
 ### Spending
 
-Every model call passes the guard in `budget.ts` first. It reserves an estimate of the call's worst case: its input, counted high at about two characters a token, at the dearest input price that could apply, cache writes included, and all of `max_tokens` at the output price. The input count is an estimate, not a guarantee; the key's own usage, below, is the check behind it. What's spent is the ledger's total or the key's usage since the first run, whichever is more. If that, plus every call under way, plus this call's worst case would pass USD 50, or the run's `--max-spend`, the call isn't made and the run stops.
+Every model call passes the guard in `budget.ts` first. It reserves an estimate of the call's worst case: its input, counted high at about two characters a token, at the dearest input price that could apply, cache writes included, and all of `max_tokens` at the output price. The input count is an estimate, not a guarantee; the key's own usage, below, is the check behind it. What's spent is the ledger's total or the key's usage since the first run, whichever is more. If that, plus every call under way, plus this call's worst case would pass USD 60, or the run's `--max-spend`, the call isn't made and the run stops.
 
 The ledger is `~/.config/homing/bench-spend.json`, next to the key and outside every checkout, so a new checkout or a rerun adds to the same total. What each call cost, as OpenRouter reports it, goes into it at once. A call whose cost isn't known counts at its worst case: one that failed on the way, a crash interrupted, or that came back without a usable answer or a cost. Only a request OpenRouter refused itself, with a 4xx answer and no cost, counts as free. A run holds a lock on the ledger from before it remakes the database to its end, so a second run is refused instead of spending at the same time or dropping the first one's database.
 
-The key's own usage is read at the start and end of every run and every 50 calls. The run stops if it has grown by more than USD 50 since the first run, or if it can't be read. A model whose prices are missing or negative on OpenRouter's list, such as its routers, isn't called at all, and neither is anything when `--max-spend` isn't a number of zero or more.
+The key's own usage is read at the start and end of every run and every 50 calls. The run stops if it has grown by more than USD 60 since the first run, or if it can't be read. A model whose prices are missing or negative on OpenRouter's list, such as its routers, isn't called at all, and neither is anything when `--max-spend` isn't a number of zero or more.
 
 The key is read from its file when a call is made and only ever sent in the Authorization header. Errors and results pass through a filter that removes it, and anything shaped like a key. The guard's tests, in `budget.test.ts`, run with the other tests: they use made-up prices, made-up keys and a stand-in for OpenRouter, so they spend nothing and never read the real key.
 
@@ -234,3 +234,40 @@ Everything but the MCP tools runs as Ana in her own transaction under row-level 
 **Privacy of statistics** (`retrieval-privacy.ts`). After Ana's results are recorded, Cara writes 200 private items, each with three of the words Ana's queries use, in Polar Freight and on her own side of the relaunch. Ana's first ten results, with their scores, are compared before and after, for `ts_rank`, BM25 over what Ana sees, and BM25 over everyone.
 
 **Scale** (`retrieval-scale.ts`). The big sample, and one synthetic space of 16,000 pages with 176,000 items of about 4 KB and 32,000 sources, a tenth of the items Cara's own. The synthetic words are drawn so a word's share falls with its rank, as in real text, from common English and Norwegian words, a consultant's words, names and 30,000 made-up words for the long tail. Twelve queries, six whole requests and six sets of keywords such as assistants write, are timed as Ana, with a limit per statement, after `ANALYZE`, since a freshly made sample is planned badly until it's analyzed. `search` is also timed without row-level security, with its own access filters, which return the same: that's what it would take if PostgreSQL could use the full-text index under the policies.
+
+## Benchmark 0: small items or a wiki
+
+Which keeps knowledge more useful as it grows from sources and from work over many sessions: Homing's small items with their sources and fixed upkeep operations, or a wiki the model rewrites freely? It measures facts, and also whether the reasons, the alternatives rejected, what's open and a long document survive.
+
+```
+HOMING_BENCH_DB=homing_bench0 npm run bench:upkeep -- pilot --max-spend 3   # two weeks and two sessions of each
+HOMING_BENCH_DB=homing_bench0 npm run bench:upkeep -- run --runs 1 --max-spend 13
+HOMING_BENCH_DB=homing_bench0 npm run bench:upkeep -- run --runs 2 --keepers sonnet --work-approaches wiki,homing --max-spend 10.6
+HOMING_BENCH_DB=homing_bench0 npm run bench:upkeep -- run --runs 2 --keepers haiku --scenarios mail --max-spend 1.7
+npm run bench:upkeep -- judge --phase full --max-spend 0.8                     # grades what code can't check
+npm run bench:upkeep -- report                                                 # the tables, from results/upkeep-*-full.jsonl
+```
+
+`--runs` runs up to that run, skipping what's done; `--keepers`, `--scenarios`, `--approaches` and `--work-approaches` pick some of them. Every paid call goes through the same guard and ledger as the other benchmarks. Each week's store, and each arm's work after its last session, is kept in `results/upkeep-stores/`.
+
+Two scenarios, written with their ground truth before any approach ran, in `upkeep-mail.ts` and `upkeep-work.ts`:
+
+**Learning from email.** Eight weeks of Ana's mail, 157 messages in Norwegian and English, from 24 August to 18 October 2026: Northwind's website relaunch, Fjord Bank's renewal and portal pre-study, Havbris ending its agreement, her kitchen, a half marathon and her mother's birthday, with 63 newsletters, notifications and adverts. Facts change: the go-live moves, the DNS owner leaves, the invoicing is reversed, a colleague writes the wrong date and is corrected, a hinted budget increase isn't the one approved. The mail also carries reasons and open questions. It's learned from twice a week, 16 batches. At the end of each week, 11 to 39 questions with a known answer that week are asked.
+
+**Work over many sessions.** Ana analyzes which commerce platform Northwind should choose for a spare parts shop, in five sessions a week apart. Each session starts fresh, and the model alternates: Claude Sonnet 5.5 in sessions 1, 3 and 5 of odd runs, GPT-6.1 Sol in 2 and 4, and the other way round in even runs. Nineteen findings arrive between sessions, among them a corrected price, a cut budget and an integration estimate that sinks an option. The user asks for a research brief, a comparison, a revisit of option B and a recommendation, and a presentation outline, then edits one slide and one section, and in session 5 asks where things stand. Some things are said only in the conversation: a remark not for the brief, a criterion dropped, and three things to do next time.
+
+**The approaches.** The same model, the same mail or findings and, for the mail, the same instructions about what to keep.
+
+| | Learning from email | Work over sessions |
+|---|---|---|
+| Wiki | Markdown pages the model writes whole or edits in part, with an index and a log, citing emails in footnotes, as in [Karpathy's LLM Wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). It sees every page and the new mail. | Ana's wiki of Markdown files: the world of benchmarks 1 to 3 as files, which the assistant lists, reads, searches, writes whole or edits in part, with each file's earlier versions kept, as git would. Its conventions come in the system prompt, as a schema file would give them. |
+| Items with upkeep | Homing's pages of small items. The model proposes operations from the spec's fixed set, and code applies them: adding, replacing and correcting items, archiving a page and keeping sources through Homing's own functions, and merging, splitting and moving items, marking conflicts uncertain and pages as the same subject in bench code, as spec §3 describes them. It sees every current item and the new mail. | Homing as it is, over MCP, as the assistant Ana connected, Claude or ChatGPT, with Homing's instructions. |
+| Items, added only | The same items, only ever added. It sees the pages' titles and the new mail. | The same Homing, but `remember` can't replace or update. |
+
+Scenario 2 runs each approach with and without a session record: at the end of sessions 1 to 4, the user asks the assistant to save a short record of what was worked on, decided, open and next.
+
+**Checks** are code wherever they can be. For the mail, a week's questions are answered in one call by Claude Sonnet 5.5, the same for every store, from everything the store holds: the wiki's pages, or each page's current items with the emails they cite and their dates, and what's no longer true. Facts are matched by patterns, such as "15 March" written any of the usual ways. An answer is right when it has the current fact, stale when it gives an earlier one instead, and wrong otherwise. Code also checks whether the store still has each current fact, whether the claim that holds it cites an email that supports it, and what share of claims cite any email: a wiki line, or an item. A fact lost is one that was right in a week and wrong in a later week while the answer stood still. For the work, code checks 27 facts in the work after each session, outdated values shown without a word marking them outdated, whether a session read the work before changing it, what it sent to be written and how many lines changed, whether it did what was said only in conversation, and the facts in session 5's answer.
+
+**The judge**, Gemini 4 Argon, a third maker's model, grades only the answers about reasons and what's open, and session 5's answer, against rubrics written before any approach ran. An element counts when the answer says it; some say what a good answer must not say, such as an open question that was settled.
+
+**Added after run 1**, and computed for every run alike from what the results keep. Every store's answers reached the ceiling, so `upkeep-stale.ts` reads each week's kept store: code finds current claims about a fact that changed which hold its old value and not its new one, and the judge decides whether each presents the old value as current. For the work, `upkeep-replay.ts` rebuilds it after each session from the calls the results keep, which matches the work saved after session 5 in every arm, so its checks can be computed again: whether an edit of one slide landed in the outline itself, whether a note on Composa landed with Composa's analysis, and outdated values in the work outside session records, each decided by the judge.
