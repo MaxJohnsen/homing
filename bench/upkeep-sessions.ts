@@ -55,6 +55,11 @@ const tool = (name: string, description: string, properties: Record<string, unkn
 });
 const str = (description: string) => ({ type: 'string', description });
 
+/** The world's pages as Ana's wiki holds them before the first session. */
+export async function wikiSeed(bench: Bench): Promise<Map<string, string>> {
+  return (await new WikiWork().seed(bench, await makeWorld(bench, 'claude'))).seeded;
+}
+
 class WikiWork implements Keeper {
   readonly files = new Map<string, string>();
   readonly seeded = new Map<string, string>();
@@ -391,7 +396,7 @@ export async function runArm(
   phase: string,
   modelFor: (session: number) => Model,
   onSession: (result: SessionResult) => void,
-  options: { sessions?: number } = {},
+  options: { sessions?: number; save?: (session: string, docs: Doc[]) => void } = {},
 ) {
   const keeper: Keeper = arm.approach === 'wiki' ? await new WikiWork().seed(bench, await makeWorld(bench, 'claude')) : await HomingWork.make(bench, arm.approach === 'append');
   const count = options.sessions ?? sessions.length;
@@ -445,6 +450,7 @@ export async function runArm(
           .map((call) => JSON.stringify(call.args))
           .join('\n');
       const number = index + 1;
+      options.save?.(session.id, after);
       onSession({
         ...base,
         turns: turnResults,
@@ -452,7 +458,8 @@ export async function runArm(
         readRecord: trace.calls.some((call) => keeper.reads(call, atStart.filter((doc) => doc.record).map((doc) => ({ ...doc, record: false })))),
         docs: after.map((doc) => ({ title: doc.title, chars: doc.text.length, record: doc.record })),
         facts: Object.fromEntries(workFacts.filter((fact) => fact.from <= number).map((fact) => [fact.id, has(work, fact.all)])),
-        stale: Object.fromEntries(outdated.filter((value) => value.from <= number).map((value) => [value.id, staleMentions(work, value)])),
+        // A session record says what was true that day, so only the work itself is checked for outdated values.
+        stale: Object.fromEntries(outdated.filter((value) => value.from <= number).map((value) => [value.id, staleMentions(notRecords, value)])),
         carried: Object.fromEntries(
           carried.filter((carry) => carry.checked === number).map((carry) => [carry.id, carry.firstTurn ? carry.pattern.test(writtenIn(0)) : carry.pattern.test(`${writtenIn()}\n${said}`)]),
         ),

@@ -8,7 +8,8 @@
 // Every paid call passes the spending guard in budget.ts and its ledger. The mail, the sessions, the
 // questions and what counts as right are in upkeep-mail.ts and upkeep-work.ts.
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import type { Trace } from './agent.ts';
 import { hardCap, Ledger, ledgerPath, OverBudget, usd } from './budget.ts';
@@ -18,7 +19,9 @@ import { report } from './upkeep-report.ts';
 import { approaches, storeFor, type Approach, type Store } from './upkeep-learn.ts';
 import { batches, checkpointDay, idsOf, questions, truthIn, type Question } from './upkeep-mail.ts';
 import { armKey, runArm, workApproaches, type SessionResult, type WorkApproach, type WorkArm } from './upkeep-sessions.ts';
-import { readbackRubric, sessionModel } from './upkeep-work.ts';
+import { candidates, staleQuestion, type Changed, type Claim } from './upkeep-stale.ts';
+import { rebuild } from './upkeep-replay.ts';
+import { outdated, readbackRubric, sessionModel, staleMentions } from './upkeep-work.ts';
 
 const here = new URL('./', import.meta.url);
 export const resultsFile = (name: string) => new URL(`results/${name}.jsonl`, here).pathname;
@@ -40,6 +43,7 @@ const { positionals, values } = parseArgs({
     scenarios: { type: 'string', default: 'mail,work' },
     keepers: { type: 'string', default: 'sonnet,haiku' },
     approaches: { type: 'string' },
+    'work-approaches': { type: 'string' },
     phase: { type: 'string' },
     concurrency: { type: 'string', default: '12' },
     weeks: { type: 'string' },
@@ -114,13 +118,20 @@ async function answerFrom(answerer: Model, rendered: string, asked: Question[], 
     '- A question to answer yes, no or undecided: start with that word.\n' +
     "- A question about reasons or what's open: up to 80 words.\n\n" +
     'Reply with JSON only, in this shape: {"answers": [{"id": "golive", "answer": "..."}]}';
-  const completion = await answerer.complete({ messages: [{ role: 'system', content: system }, { role: 'user', content: user }], tools: [], maxTokens: 8000, label });
-  const parsed = jsonIn(completion.message.content ?? '') as { answers?: { id: string; answer: string }[] } | undefined;
-  if (!parsed?.answers) throw new Error(`The answers weren't JSON: ${redact((completion.message.content ?? '').slice(0, 300))}`);
-  return {
-    answers: new Map(parsed.answers.map((answer) => [answer.id, String(answer.answer ?? '')])),
-    usage: { prompt: completion.usage.promptTokens, completion: completion.usage.completionTokens, cost: completion.usage.cost, ms: Math.round(completion.ms) },
-  };
+  // Asked again once when the reply isn't JSON, as happened once in run 1, and paid for both times.
+  const usage = { prompt: 0, completion: 0, cost: 0, ms: 0 };
+  let reply = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const completion = await answerer.complete({ messages: [{ role: 'system', content: system }, { role: 'user', content: user }], tools: [], maxTokens: 8000, label });
+    usage.prompt += completion.usage.promptTokens;
+    usage.completion += completion.usage.completionTokens;
+    usage.cost += completion.usage.cost;
+    usage.ms += Math.round(completion.ms);
+    reply = completion.message.content ?? '';
+    const parsed = jsonIn(reply) as { answers?: { id: string; answer: string }[] } | undefined;
+    if (parsed?.answers) return { answers: new Map(parsed.answers.map((answer) => [answer.id, String(answer.answer ?? '')])), usage };
+  }
+  throw new Error(`The answers weren't JSON: ${redact(reply.slice(0, 300))}`);
 }
 
 /** The first JSON object in a model's text, fenced or not. */
@@ -217,7 +228,13 @@ async function runWorkArm(bench: Bench, arm: WorkArm, ledgerModels: Map<string, 
         );
       }
     },
-    { sessions: count },
+    {
+      sessions: count,
+      save: (session, docs) => {
+        mkdirSync(storesDir(phase), { recursive: true });
+        writeFileSync(`${storesDir(phase)}work_${armKey(arm).replaceAll('|', '_')}_${session}.md`, docs.map((doc) => `===== ${doc.title}${doc.record ? ' (record)' : ''} =====\n${doc.text}\n`).join('\n'));
+      },
+    },
   );
   const dir = storesDir(phase);
   mkdirSync(dir, { recursive: true });
@@ -293,6 +310,77 @@ async function grade1(judge: Model, items: { key: string; question: string; answ
   });
 }
 
+/** A claim's key for the stale judge: the fact as it changed, and the claim's page and text. */
+export const claimKey = (fact: Changed, claim: Claim) => `${fact.id}|${fact.from}|${createHash('sha1').update(`${claim.page}\n${claim.text}`).digest('hex').slice(0, 16)}`;
+
+/** The weeks' kept stores of a phase, with their arm, approach and week. */
+export function keptStores(phase: string): { file: string; approach: string; week: number }[] {
+  const dir = storesDir(phase);
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((file) => /^mail_.*_w\d\.md$/.test(file))
+    .map((file) => ({ file: `${dir}${file}`, approach: file.split('_')[1], week: Number(/_w(\d)\.md$/.exec(file)![1]) }));
+}
+
+/** Asks the judge about every candidate claim not judged yet: whether it presents a changed fact's earlier value as current. */
+async function judgeStale(judge: Model, phases: string[]) {
+  const graded = new Set(readLines<{ key: string }>('upkeep-stale-judge').map((grade) => grade.key));
+  const open = new Map<string, { fact: Changed; claim: Claim }>();
+  for (const phase of phases) {
+    for (const kept of keptStores(phase)) {
+      for (const { fact, claims } of candidates(readFileSync(kept.file, 'utf8'), kept.approach, kept.week)) {
+        for (const claim of claims) {
+          const key = claimKey(fact, claim);
+          if (!graded.has(key)) open.set(key, { fact, claim });
+        }
+      }
+    }
+  }
+  // The work after session 5: each mention of an outdated value outside the records.
+  for (const phase of phases) {
+    for (const docs of finalWork(phase)) {
+      for (const value of outdated) {
+        for (const doc of docs.filter((candidate) => !candidate.record)) {
+          for (const mention of staleMentions(doc.text, value)) {
+            const fact = { id: `work-${value.id}`, text: value.fact, from: 5 } as Changed;
+            const claim = { page: doc.title, text: mention };
+            const key = claimKey(fact, claim);
+            if (!graded.has(key)) open.set(key, { fact, claim });
+          }
+        }
+      }
+    }
+  }
+  const items = [...open.entries()];
+  console.log(`${items.length} candidate claims to judge.`);
+  for (let index = 0; index < items.length; index += 20) {
+    const batch = items.slice(index, index + 20);
+    const user =
+      `${staleQuestion}\n\n` +
+      batch.map(([, { fact, claim }], at) => `### c${at + 1}\nFact: ${fact.text}\nPage: ${claim.page}\nClaim: ${claim.text}`).join('\n\n') +
+      '\n\nReply with JSON only, in this shape: {"grades": [{"id": "c1", "current": true}]}';
+    const completion = await judge.complete({ messages: [{ role: 'user', content: user }], tools: [], maxTokens: 4000, label: `judge|stale|${index}` });
+    const parsed = jsonIn(completion.message.content ?? '') as { grades?: { id: string; current: boolean }[] } | undefined;
+    for (const [at, [key]] of batch.entries()) {
+      const grade = parsed?.grades?.find((candidate) => candidate.id === `c${at + 1}`);
+      if (grade) append('upkeep-stale-judge', { key, stale: grade.current === true, at: new Date().toISOString() });
+    }
+  }
+}
+
+/** Each work arm's latest complete attempt, rebuilt after session 5. */
+export function finalWork(phase: string) {
+  const rows = readLines<SessionResult & { attempt: string }>(`upkeep-work-${phase}`).filter((row) => !row.error);
+  const attempts = new Map<string, (SessionResult & { attempt: string })[]>();
+  for (const row of rows) {
+    const key = `${row.key.split('|').slice(1, 4).join('|')}#${row.attempt}`;
+    attempts.set(key, [...(attempts.get(key) ?? []), row]);
+  }
+  return [...attempts.values()]
+    .filter((sessions) => sessions.some((session) => session.session === 's5'))
+    .map((sessions) => rebuild(sessions[0].approach, sessions.sort((a, b) => a.session.localeCompare(b.session))).at(-1)!);
+}
+
 // The command.
 
 async function main() {
@@ -316,6 +404,7 @@ async function main() {
     console.log(`Spent so far: ${usd(ledger.spent)} of ${usd(hardCap)} by the ledger, ${usd(since)} by the key's usage. This run may spend ${usd(ledger.runLimit)}.`);
     if (command === 'judge') {
       await judgeAll(model(models.judge), (values.phase ?? 'pilot,full').split(','));
+      await judgeStale(model(models.judge), (values.phase ?? 'full').split(',').filter((phase) => phase !== 'pilot'));
     } else {
       await benchmark(command!, model);
     }
@@ -363,7 +452,7 @@ async function benchmark(command: string, model: (id: string) => Model) {
         }
       }
       if (scenarios.includes('work')) {
-        for (const approach of workApproaches.filter((a) => !values.approaches || values.approaches.split(',').includes(a))) {
+        for (const approach of workApproaches.filter((a) => { const only = values['work-approaches'] ?? values.approaches; return !only || only.split(',').includes(a); })) {
           for (const record of pilot ? [true] : [true, false]) {
             const arm: WorkArm = { approach: approach as WorkApproach, record, run };
             if (doneWork.has(armKey(arm))) continue;

@@ -232,6 +232,8 @@ export const carried: Carry[] = [
 export interface Outdated {
   id: string;
   text: string;
+  /** How it changed, for the judge, which decides whether a mention presents the old value as current. Written after run 1. */
+  fact: string;
   /** From this session on, the value is outdated. */
   from: number;
   pattern: RegExp;
@@ -243,6 +245,7 @@ export const outdated: Outdated[] = [
   {
     id: 'design-flexibility',
     text: 'Design flexibility as a criterion',
+    fact: 'The criteria the platforms are compared on: five at the kickoff, including design flexibility; on 9 November design flexibility was dropped, leaving four.',
     from: 2,
     pattern: /design.flexibility|designfleksibilitet/gi,
     marked: /dropp|remov|no longer|not (a|used|relevant|included|part|considered|scored)|exclud|delet|struck|strike|doesn.t matter|does not matter|irrelevant|was (a|one|originally)|previous|original|initial|~~|fjernet/i,
@@ -250,13 +253,15 @@ export const outdated: Outdated[] = [
   {
     id: 'a-600',
     text: "Butikkskyen's licence as 600,000 NOK",
+    fact: "Butikkskyen's licence: quoted at 600,000 NOK a year on 3 November, corrected on 12 November to 450,000 NOK for one store (600,000 was for two).",
     from: 3,
-    pattern: /\b600[\s,.\u00a0]?000\b|\b600\s?k\b|\b0[.,]60*(?!\d)\s*(million|mill|mnok|m\b)/gi,
+    pattern: /(?<!\d[\s,.\u00a0])\b600[\s,.\u00a0]?000\b|\b600\s?k\b|\b0[.,]60*(?!\d)\s*(million|mill|mnok|m\b)/gi,
     marked: /correct|two stores|2 stores|for two|\bwas\b|previous|earlier|original|initial|instead|replac|supersed|mistak|error|updat|\bold\b|~~|tidligere/i,
   },
   {
     id: 'budget-2-5',
     text: 'The budget as 2.5 million NOK',
+    fact: "Northwind's first-year budget for the shop: 2.5 million NOK at the kickoff, cut to 2.0 million NOK on 20 November.",
     from: 4,
     pattern: /\b2[.,]5\s*(million|mill|m\b|mnok)|\b2[\s,.]?500[\s,.]?000\b/gi,
     marked: /\bcut|reduc|\bwas\b|previous|original|initial|earlier|down|lower|instead|replac|no longer|\bold\b|~~|tidligere|kuttet/i,

@@ -737,9 +737,9 @@ export function day(date: number, month: number): Fact {
   ];
 }
 
-/** An amount in kroner, as "450,000", "450 000", "450.000", "450k", or from 100,000 up also "0.45M" or "0,45 million". */
+/** An amount in kroner, as "450,000", "450 000", "450.000", "450k", or from 100,000 up also "0.45M" or "0,45 million", but not inside "2,450,000". */
 export function kroner(thousands: number): Fact {
-  const patterns = [new RegExp(`\\b${thousands}[\\s,.\\u00a0]?000\\b`), new RegExp(`\\b${thousands}\\s?k\\b`, 'i'), new RegExp(`\\b${thousands}\\s?(thousand|tusen)`, 'i')];
+  const patterns = [new RegExp(`(?<!\\d[\\s,.\\u00a0])\\b${thousands}[\\s,.\\u00a0]?000\\b`), new RegExp(`\\b${thousands}\\s?k\\b`, 'i'), new RegExp(`\\b${thousands}\\s?(thousand|tusen)`, 'i')];
   if (thousands >= 100 && thousands < 1000) {
     const decimals = String(thousands / 1000).slice(2);
     patterns.push(new RegExp(`\\b0[.,]${decimals}0*(?!\\d)\\s*(million|mill|mnok|m\\b)`, 'i'));
