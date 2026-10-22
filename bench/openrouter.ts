@@ -217,3 +217,69 @@ export class Model {
 export class ModelFailed extends Error {
   override name = 'ModelFailed';
 }
+
+/** OpenRouter's public list of embedding models, which needs no key. */
+export async function listedEmbeddingModels(): Promise<ListedModel[]> {
+  const response = await fetch(`${api}/embeddings/models`, { signal: AbortSignal.timeout(30_000) });
+  if (!response.ok) throw new Error(`OpenRouter's list of embedding models answered ${response.status}.`);
+  return ((await response.json()) as { data: ListedModel[] }).data;
+}
+
+/** An embedding model, for benchmark 4. Like a chat model, every call is reserved at its worst case first and settled at what it cost. */
+export class Embedder {
+  readonly id: string;
+  readonly prices: Prices;
+  private readonly ledger: Ledger;
+  private readonly key: KeySource;
+
+  constructor(listed: ListedModel, ledger: Ledger, options: { key: KeySource }) {
+    this.id = listed.id;
+    this.prices = pricesOf(listed);
+    this.ledger = ledger;
+    this.key = options.key;
+  }
+
+  /** Vectors for the texts, in their order. */
+  async embed(inputs: string[], label: string): Promise<{ vectors: number[][]; tokens: number; cost: number }> {
+    const body = { model: this.id, input: inputs, provider: { allow_fallbacks: true } };
+    let lastFailure = '';
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt) await new Promise((resolve) => setTimeout(resolve, 4_000 * 2 ** (attempt - 1)));
+      const reservation = this.ledger.reserve(this.id, worstCase(this.prices, inputTokensOf(body), 0));
+      let response: Response;
+      try {
+        response = await fetch(`${api}/embeddings`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${keyFrom(this.key)}`, 'content-type': 'application/json', 'x-title': 'Homing benchmarks' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120_000),
+        });
+      } catch (error) {
+        this.ledger.settle(reservation, 'unknown', label);
+        lastFailure = redact(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+        continue;
+      }
+      let json: any;
+      try {
+        json = await response.json();
+      } catch {
+        json = undefined;
+      }
+      const reported = json?.usage?.cost;
+      const cost = typeof reported === 'number' && Number.isFinite(reported) && reported >= 0 ? reported : undefined;
+      const data = json?.data as { embedding: number[]; index: number }[] | undefined;
+      if (!response.ok || !Array.isArray(data) || data.length !== inputs.length) {
+        const refused = response.status >= 400 && response.status < 500 && json !== undefined;
+        this.ledger.settle(reservation, cost !== undefined ? { cost } : refused ? 'error' : 'unknown', label);
+        lastFailure = redact(`OpenRouter answered ${response.status}: ${JSON.stringify(json?.error ?? json ?? '').slice(0, 400)}`);
+        if ([400, 401, 402, 403].includes(response.status)) break;
+        continue;
+      }
+      // Without a reported cost it counts at its worst case, which for embeddings is still a fraction of a cent.
+      const charged = this.ledger.settle(reservation, cost !== undefined ? { cost } : 'unknown', label);
+      const vectors = [...data].sort((a, b) => a.index - b.index).map((row) => row.embedding);
+      return { vectors, tokens: json.usage?.prompt_tokens ?? json.usage?.total_tokens ?? 0, cost: charged };
+    }
+    throw new ModelFailed(`${this.id} failed: ${lastFailure}`);
+  }
+}

@@ -1,6 +1,199 @@
 # Benchmark results
 
-Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. The same day, harder conversations for benchmark 1 tested a new recommended instruction, and small reruns tested three changes to Homing's tools that they suggested. How they were run, and every prompt, is in the [README](README.md).
+Benchmarks 1 to 4 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. The same day, harder conversations for benchmark 1 tested a new recommended instruction, and small reruns tested three changes to Homing's tools that they suggested. On 22 October, benchmark 4 measured retrieval: Homing's search against BM25, semantic search and query interpretation. How they were run, and every prompt and query, is in the [README](README.md).
+
+## Retrieval, benchmark 4, 22 October 2026
+
+Benchmark 4 asks Homing's search directly, with no model in between: 126 questions a consultant asks about her own notes, each labeled with what answers it, against `search` and `context` as on main ([15fa432](https://github.com/MaxJohnsen/homing/commit/15fa432)), BM25 over what she can see and over everyone, semantic search, a hybrid of the two, and a small model that writes the search words first. Everything runs as her, with row-level security on. The world, the questions and the scoring are in the [README](README.md#benchmark-4-retrieval), and every query with its labels in [retrieval-set.ts](retrieval-set.ts). Embeddings and search words cost USD 0.03.
+
+### What it means for Homing
+
+**Search finds what's asked in the notes' own words, and that's most of what's asked.** Asked in the language of the note, `search` and `context` had the answer in their first 10 lines for 91 to 100% of the Norwegian and English questions, and for all 20 with identifiers, such as "faktura 2026-0417", "rom 101" or "E42". Nothing came back that Ana mustn't see, from any approach, for any of the 126 questions: no item of Cara's or Ben's, nothing from Polar Freight, and none of the words only they wrote. That holds by construction: every approach runs under row-level security, and the run checks that it hides from Ana exactly what the access rule, written out by hand for this world, says it should. So this confirms row-level security for these cases rather than measuring the approaches; their real privacy test is the statistics, below.
+
+**It misses when the words differ, and mostly across languages.** Ana writes about her own life in Norwegian and often asks in English, and the other way round. Of 19 questions whose words don't match the note, `search` found 10: 8 of the 10 asked in the note's language, and 2 of the 9 asked in the other. For example:
+
+- "When does the new fridge arrive?" The note says "Hvitevarene leveres fra Elkjøp 10. november." Neither `search`, `context` nor BM25 finds it.
+- "Did the guy doing my kitchen say when he starts?" `context` answers "Nothing in Homing matches", while Erik's page says "Erik begynner 3. november." It did the same for "How much will the kitchen cost?"
+- "Who handles legal questions at Northwind?" The note, in English, says Mona Lie is Northwind's lawyer. No word in common.
+
+**BM25 ranks a little better and fixes none of that.** Given the whole request, BM25 over what Ana can see had the answer in the first 10 for 85% of the questions against 80% for `search`, with a mean reciprocal rank of 0.73 against 0.66, in part because short notes of common words, such as "Can we look at the navigation together this week?", no longer come first. On `context`'s telling words it was even: 81% against 83%, 0.72 against 0.69. Across languages it found one question more than `search`, 11 of 12, and where the words differ one more, 11 of 19, but still only 2 of the 9 asked in the other language.
+
+**The stopword and short-number rules still do a job that BM25 doesn't.** Letting `context` drop them was the point of BM25, but with every word some word always matches, so BM25 never says that nothing matches: 0 of the 12 general questions, against 6 for `context` today. A score threshold doesn't separate them either. To say nothing for 7 of the 12, BM25 also had to say it for 24 of the 103 questions that have an answer, 12 of them with the answer in its first 10.
+
+**Per-user statistics cost time on a big Homing, and global ones leak.** BM25 needs to know how many documents the user can see, how long they are, and how many hold each word. Counted over what Ana can see, for every query, that took 268 ms at the median on the big sample, and BM25 as a whole 456 ms, with 1.6 s at p95, against 100 and 296 ms for `search` (below). On a synthetic space of 176,000 long items it took 25 s. Counted once over everyone's documents, as a shared index keeps them, they cost nothing per query, but then what others keep private moves what Ana sees. After Cara wrote 200 private items with words Ana searches for, Ana's first ten changed order for 58 of her 126 questions, and score for 66 more. With `ts_rank`, or BM25 over what Ana can see, not one changed. A word Cara writes about where Ana can't look is enough to flip Ana's two notes for "Bergen Fjordline" (below), which tells her someone has written about Bergen.
+
+**On a very big space, search itself is slow.** In one space of 176,000 items of about 4 KB, `search` took 2.3 s at the median and `context`'s ranking 2.1 s. Part of that is a fault: the full-text index isn't used under row-level security, so every search reads every row, and "E42" took 0.9 s that the index answers in 4 ms. The rest is ranking every note that has any word of a request, which the index doesn't change. On the big sample, which is closer to a heavy real user, `search` took 100 ms at the median.
+
+**Semantic search, or a model writing the words, fixes the misses.** Embeddings from `baai/bge-m3`, an open multilingual model, had the answer in the first 10 for 93% of the questions, including every one asked in the other language or in other words, with a mean reciprocal rank of 0.85. They missed an identifier, "Where is room 214?", which fusing them with `search` or BM25 brings back. Having a small model write the search words first, in both languages, raised `search` to 95% with Claude Haiku 5.5 and to 90% with GPT-6 Luna. Neither helps to say that nothing matches. Part of semantic search's edge may come from how items were embedded: each with its page's title in front, as "Kjøkkenplan: Hvitevarene leveres…", while full-text search matches an item's text alone. Semantic search always finds something close: a similarity threshold of 0.5 happened to separate the general questions here for bge-m3 (8 of 12, with no answer lost), but it wouldn't for OpenAI's model, and would need setting per model and per Homing. The interpretations said nothing as often as `context` does, 6 and 5 of 12.
+
+**Their cost is in the calls, and one of them is already made.** Through OpenRouter, a query's embedding took 0.7 to 1.1 s at the median for the two models, and 0.5 to 2.9 s in all; an interpretation 1.6 to 2.5 s at the median, and 0.9 to 4.9 s in all. Homing's own search took 8 to 30 ms here. Semantic search also needs every item embedded when it's written, a model the operator runs or pays for, and pgvector, which isn't installed here, so similarity was computed over plain arrays and its time says nothing about pgvector. Embedding this world's 2,018 texts cost about a tenth of a cent with both models together. But an assistant calling `search` already writes the query itself, so asking it for the words a note would use, in each of the user's languages, costs nothing more. `context` is different: it takes the user's request as they said it.
+
+**Two smaller faults turned up.**
+
+- `search` lists what's no longer true after everything current, and keeps 20 lines. Once 20 current items match, the old ones never show: "What was the original go-live date for the relaunch, before it moved?" never brings up 1 March, though the spec says what used to be true stays searchable.
+- `search` splits the query into letters and digits, while PostgreSQL splits the notes its own way: "BETA-881" is stored as "beta" and "-881", and "2.4.1" as one word. Splitting the query the same way put the right note first for all 20 identifier questions, a mean reciprocal rank of 1.00 against 0.89, and changed nothing else.
+
+**Recommendation: keep PostgreSQL full-text search with `ts_rank` for v0.1.0.** BM25 isn't worth its cost: a few points of ranking, no fix for the misses that matter, and per-user counting that costs hundreds of milliseconds on a big Homing and seconds on a very big one. What fails is the words, not the ranking, and the cheapest fix for that is the assistant that already writes `search`'s query. v0.1.0 needs none of the changes below.
+
+#### Worth deciding, after v0.1.0
+
+These are suggestions from the results. None is built here.
+
+1. Ask assistants, in `search`'s description, to search with the words a note would use, including synonyms and each language the user writes in. Consider letting `context` take such words beside the request.
+2. Split the query as PostgreSQL splits the notes, so identifiers with dots and dashes are found as written.
+3. Show what's no longer true within the 20 lines when the query is about the past, not only after everything current.
+4. Semantic search, fused with full-text search, as something an operator turns on, as the architecture already allows, measured on a real Homing with pgvector. The core keeps working without it.
+5. Let the full-text index work under row-level security, before Homings get very big: mark the match operator's function leakproof, which needs a superuser and is a security call of its own, or find candidates through a function that applies the access rule itself.
+6. If ranking ever needs word statistics, count them only over what the person can see: the shared items of the spaces they can open and their own private ones, never anyone else's private items, and never over everyone.
+
+### Every approach
+
+126 questions, 103 with an answer and 12 that should match nothing (the other 11, about what only others see, have none Ana may get). Recall is the share of a question's answers in the first 5 or 10 lines, MRR the mean of 1 over the line of the first answer. "Stale" counts questions not about the past with something no longer true, or archived, in the first 10 lines, and of those with an answer, how many had it above the answer. `search` shows such lines marked, as the spec allows; `context` leaves them out. The stale counts depend on how ties are ordered: a rerun gave 15 against 12 for `search` and 31 against 27 for BM25, while recall@10 stayed the same and MRR moved by 0.02 at most. Times are the median over all questions, as Ana, of the median of three runs. `search` and `context` are timed over MCP, with the HTTP round trip; the other rows run in process, so BM25's 15 ms compares with the 8 ms of `search`'s queries alone.
+
+| Approach | Recall@5 | Recall@10 | MRR | Says nothing, of 12 | Privacy failures | Stale in the first 10 | ...above the answer | Median ms |
+|---|---|---|---|---|---|---|---|---|
+| `search`, as on main | 77% | 80% | 0.66 | 0 | 0 | 12 | 3 | 13 |
+| `context` without a space, as on main | 78% | 80% | 0.71 | 6 | 0 | 1 | 0 | 15 |
+| `search`'s queries alone, in process | 77% | 80% | 0.66 | 0 | 0 | 12 | 3 | 8 |
+| context's ranking: telling words, `ts_rank` | 77% | 83% | 0.69 | 6 | 0 | 0 | 0 | 8 |
+| `search`, query split as the notes are | 77% | 80% | 0.68 | 0 | 0 | 11 | 3 | 7 |
+| BM25, Ana's statistics | 81% | 85% | 0.73 | 0 | 0 | 27 | 4 | 15 |
+| BM25, Ana's statistics, common words not candidates | 81% | 85% | 0.73 | 0 | 0 | 28 | 4 | 14 |
+| BM25, Ana's statistics, telling words | 78% | 81% | 0.72 | 6 | 0 | 0 | 0 | 13 |
+| BM25, Ana's statistics, every word, context's filters | 79% | 81% | 0.70 | 0 | 0 | 0 | 0 | 18 |
+| BM25, Ana's statistics, query split as the notes are | 81% | 85% | 0.75 | 0 | 0 | 27 | 4 | 15 |
+| BM25, everyone's statistics | 81% | 85% | 0.74 | 0 | 0 | 27 | 4 | not timed |
+| Semantic, bge-m3 | 91% | 93% | 0.85 | 0 | 0 | 46 | 3 | 163* |
+| `search` + semantic (bge-m3) | 88% | 92% | 0.79 | 0 | 0 | 28 | 3 | 173* |
+| BM25 + semantic (bge-m3) | 92% | 93% | 0.83 | 0 | 0 | 37 | 3 | 183* |
+| Semantic, text-embedding-3-small | 90% | 93% | 0.82 | 0 | 0 | 31 | 5 | 231* |
+| `search` + semantic (3-small) | 85% | 92% | 0.79 | 0 | 0 | 22 | 3 | 237* |
+| BM25 + semantic (3-small) | 88% | 92% | 0.83 | 0 | 0 | 30 | 6 | 245* |
+| `search`, words by Claude Haiku 5.5 | 92% | 95% | 0.81 | 6 | 0 | 18 | 2 | 11 |
+| BM25, words by Claude Haiku 5.5 | 91% | 95% | 0.84 | 6 | 0 | 21 | 3 | 13 |
+| `search`, words by GPT-6 Luna | 87% | 90% | 0.75 | 5 | 0 | 23 | 3 | 11 |
+| BM25, words by GPT-6 Luna | 90% | 91% | 0.85 | 5 | 0 | 25 | 3 | 15 |
+
+\* Over plain arrays in SQL, not pgvector, without embedding the query; its time doesn't compare with the others. BM25 with everyone's statistics wasn't timed: a shared index would keep them.
+
+### By category
+
+Recall@10 and MRR. "Other language" asks in the language the note isn't in; "Words differ" holds 10 questions in the note's language and 9 in the other.
+
+| Approach | Norwegian (17) | English (16) | Other language (12) | Identifiers (20) | Words differ (19) | Vague (12) | The past (6) |
+|---|---|---|---|---|---|---|---|
+| `search`, as on main | 91%, 0.80 | 100%, 0.94 | 83%, 0.32 | 100%, 0.89 | 53%, 0.39 | 50%, 0.45 | 67%, 0.67 |
+| `context` without a space, as on main | 97%, 0.90 | 100%, 0.91 | 83%, 0.62 | 100%, 0.94 | 47%, 0.47 | 67%, 0.42 | 33%, 0.33 |
+| context's ranking: telling words, `ts_rank` | 97%, 0.84 | 100%, 0.94 | 92%, 0.65 | 100%, 0.93 | 63%, 0.40 | 58%, 0.41 | 33%, 0.33 |
+| `search`, query split as the notes are | 91%, 0.80 | 100%, 0.94 | 83%, 0.32 | 100%, 1.00 | 53%, 0.39 | 50%, 0.45 | 67%, 0.67 |
+| BM25, Ana's statistics | 97%, 0.86 | 100%, 1.00 | 92%, 0.56 | 100%, 0.91 | 58%, 0.40 | 67%, 0.60 | 67%, 0.67 |
+| BM25, Ana's statistics, common words not candidates | 97%, 0.86 | 100%, 1.00 | 92%, 0.56 | 100%, 0.91 | 58%, 0.40 | 67%, 0.60 | 67%, 0.67 |
+| BM25, Ana's statistics, telling words | 97%, 0.85 | 100%, 1.00 | 92%, 0.67 | 100%, 0.93 | 53%, 0.38 | 58%, 0.52 | 33%, 0.33 |
+| BM25, Ana's statistics, every word, context's filters | 97%, 0.89 | 100%, 1.00 | 92%, 0.56 | 100%, 0.91 | 58%, 0.40 | 50%, 0.45 | 33%, 0.33 |
+| BM25, Ana's statistics, query split as the notes are | 97%, 0.86 | 100%, 1.00 | 92%, 0.56 | 100%, 1.00 | 58%, 0.40 | 67%, 0.60 | 67%, 0.67 |
+| BM25, everyone's statistics | 97%, 0.89 | 100%, 1.00 | 92%, 0.56 | 100%, 0.91 | 58%, 0.40 | 67%, 0.60 | 67%, 0.67 |
+| Semantic, bge-m3 | 100%, 0.94 | 100%, 0.94 | 100%, 0.86 | 95%, 0.88 | 100%, 0.92 | 67%, 0.51 | 67%, 0.67 |
+| `search` + semantic (bge-m3) | 100%, 0.94 | 100%, 1.00 | 92%, 0.63 | 100%, 0.95 | 95%, 0.59 | 67%, 0.54 | 67%, 0.67 |
+| BM25 + semantic (bge-m3) | 100%, 0.97 | 100%, 1.00 | 92%, 0.82 | 100%, 0.95 | 95%, 0.64 | 75%, 0.62 | 67%, 0.67 |
+| Semantic, text-embedding-3-small | 100%, 0.97 | 100%, 0.94 | 92%, 0.75 | 95%, 0.83 | 100%, 0.79 | 75%, 0.61 | 67%, 0.67 |
+| `search` + semantic (3-small) | 100%, 0.92 | 100%, 1.00 | 92%, 0.63 | 100%, 0.97 | 89%, 0.56 | 75%, 0.57 | 67%, 0.67 |
+| BM25 + semantic (3-small) | 100%, 0.97 | 100%, 1.00 | 92%, 0.80 | 100%, 0.97 | 89%, 0.58 | 75%, 0.64 | 67%, 0.67 |
+| `search`, words by Claude Haiku 5.5 | 100%, 0.91 | 94%, 0.91 | 100%, 0.83 | 100%, 0.91 | 95%, 0.70 | 83%, 0.59 | 83%, 0.70 |
+| BM25, words by Claude Haiku 5.5 | 100%, 1.00 | 94%, 0.88 | 100%, 0.89 | 100%, 0.90 | 95%, 0.76 | 83%, 0.71 | 83%, 0.58 |
+| `search`, words by GPT-6 Luna | 100%, 0.85 | 100%, 0.94 | 100%, 0.85 | 100%, 0.88 | 79%, 0.53 | 67%, 0.42 | 67%, 0.68 |
+| BM25, words by GPT-6 Luna | 100%, 0.97 | 100%, 0.97 | 92%, 0.92 | 100%, 0.96 | 79%, 0.65 | 83%, 0.71 | 67%, 0.59 |
+
+`context` is low for the past by design: it leaves out what's no longer true and archived pages unless the request names the space. It picked the space the answer is in, or one above it, for 47 of the 97 questions with one, listed it among others for 41, didn't list it for 5, and said nothing matches for 4. It never picked a wrong one.
+
+### Saying that nothing matches
+
+`search` given the whole request finds something for every question. `context` says "Nothing in Homing matches" for 6 of the 12 general questions; the other 6 share words with Ana's notes, such as "DNS", "CMS" or "contract". It also said it for 5 questions with an answer: two about the kitchen asked in English, two about archived pages, and "When's the deadline again?", whose answer has a date but not the word. A threshold on the best score, for approaches without telling words:
+
+| Best score below | Says nothing, of 12 general | ...and of 103 with an answer | ...of them with it in the first 10 |
+|---|---|---|---|
+| BM25, every word, 4 | 1 | 3 | 0 |
+| BM25, every word, 6 | 3 | 4 | 0 |
+| BM25, every word, 8 | 7 | 24 | 12 |
+| bge-m3, 0.45 | 4 | 0 | 0 |
+| bge-m3, 0.5 | 8 | 0 | 0 |
+| bge-m3, 0.55 | 12 | 12 | 9 |
+| text-embedding-3-small, 0.3 | 6 | 1 | 0 |
+| text-embedding-3-small, 0.4 | 10 | 16 | 14 |
+
+### Privacy of statistics
+
+Cara wrote 200 private items, each with three of the 266 longer words Ana's questions use: 120 in Polar Freight, which Ana can't open, and 80 on her own side of the relaunch, which Ana is in. Ana's first ten for each of her 126 questions, with their scores, before and after:
+
+| Ranking | Order changed | Only scores changed | Unchanged |
+|---|---|---|---|
+| `ts_rank`, as `search` | 0 | 0 | 126 |
+| BM25, Ana's statistics | 0 | 0 | 126 |
+| BM25, everyone's statistics | 58 | 66 | 2 |
+
+Then Cara wrote 15 items about Bergen in Polar Freight. Ana's search for "Bergen Fjordline" matches two of her notes, one for each word:
+
+| Ranking | Ana's first two before | After |
+|---|---|---|
+| `ts_rank`, as `search` | Content workshop in Bergen; Gunnar joined Northwind in 2023 from Fjordline. | the same |
+| BM25, Ana's statistics | Content workshop in Bergen; Gunnar joined Northwind in 2023 from Fjordline. | the same |
+| BM25, everyone's statistics | Content workshop in Bergen; Gunnar joined Northwind in 2023 from Fjordline. | Gunnar joined Northwind in 2023 from Fjordline.; Content workshop in Bergen |
+
+Semantic search and the fused rankings use no statistics across documents, so they reveal nothing this way.
+
+### Latency at scale
+
+Twelve queries as Ana: six whole requests, as `context` gets them, and six sets of keywords, as assistants write them for `search`. The big sample is the one `npm run sample -- big` makes, where Ana sees 31,712 items and 100,050 sources in 101 spaces, timed three times after a warm-up. The synthetic space has 16,000 pages with 176,012 items of about 4 KB, 758 MB of text, a tenth of them Cara's own, and 32,000 sources, timed once after a warm-up for Homing's search, and once without one for BM25, which runs up to minutes. BM25's times there are cold, and a warm run would be somewhat faster.
+
+| Milliseconds | Big sample, median | p95 | Synthetic, median | p95 |
+|---|---|---|---|---|
+| `search` | 100 | 296 | 2,264 | 2,597 |
+| context's ranking, telling words | 70 | 131 | 2,135 | 2,734 |
+| `context` in a space, whole request | 28 | 54 | 2,606 | 3,916 |
+| BM25, Ana's statistics alone | 268 | 615 | 5,797 | 13,923 |
+| BM25, Ana's statistics | 456 | 1,565 | 24,836 | over 30,000 |
+| BM25, common words not candidates | 442 | 1,000 | | |
+| BM25, telling words | 288 | 545 | 14,466 | 30,053 |
+
+Whole requests cost more than keywords: on the big sample `search` took 288 ms at the median for requests and 59 ms for keywords, BM25 1,115 and 232 ms. A request's "the" or "og" matches nearly every document, and every match is ranked.
+
+**The full-text index isn't used under row-level security.** PostgreSQL won't use an index for a condition that runs before the access policy unless its operator is marked leakproof, and full-text search's `@@` isn't. So every `search` reads every row of the table, the rows Ana can't see too, before the policy filters them. Run without row-level security, with `search`'s own access filters, which return exactly the same for all 12 queries in both databases, a rare word comes back from the index at once:
+
+| Milliseconds, as Ana | Big sample | Synthetic |
+|---|---|---|
+| "E42", as on main | 28 | 922 |
+| "E42", if the index could be used | 3 | 4 |
+| "faktura 2026-0417", as on main | 46 | 1,428 |
+| "faktura 2026-0417", if the index could be used | 26 | 529 |
+| Whole requests, median, as on main | 271 | 2,534 |
+| Whole requests, median, if the index could be used | 230 | 2,429 |
+
+The synthetic space is a worst case for the second point: its words are random, so even "budget" or "Gunnar" is in a quarter to two fifths of its documents, and a request matches most of them. Real notes cluster by subject.
+
+### Changed along the way
+
+BM25 that doesn't let words in more than half of the user's documents make candidates was added after the first run, to give BM25 a fair chance at scale, where "the" makes every document a candidate. It changed nothing in the world, where no word is that common. The big sample's first timing came right after it was made, before PostgreSQL had analyzed its tables, when one query took 9.4 s; the times here are from after `ANALYZE`, which the scale command now runs first. After review, the run also checks row-level security against the access rule written out by hand, and stops if the prototype's `ts_rank` ever differs from `search`; both held. The paid calls were timed again with the run's own prompt, through the new `latency` command.
+
+### Limitations
+
+- **One small world, and its author's questions.** 126 questions over one person's notes, written by the same hand as the world, before any approach ran. A difference of two or three questions is noise. Where scores tie, the order follows storage, so a line can move by one between runs.
+- **A bilingual user.** The worst misses are English questions about Norwegian notes. Someone who writes and asks in one language would see fewer.
+- **Lines, not answers.** An assistant reads every line `search` returns, so an answer on line 15, which recall@10 counts as missed, may still be used. `context` without a space shows only 5.
+- **Filler from templates.** The notes around the answers are tidier than real ones. The synthetic space is the opposite: random words, so every everyday word is in a large share of its documents. That makes it a worst case for latency, and it says nothing about ranking.
+- **One machine.** Times are from one Mac with a local PostgreSQL 18.6, which other work may have shared at times.
+- **Links aren't measured.** The spec's benchmark asks for links plus full-text search, but `search` doesn't use links today, and neither did any approach here.
+- **One interpretation per model and question.** Another run would write other words.
+
+### Spending
+
+| Phase | Calls | USD |
+|---|---|---|
+| Pilot: 109 texts embedded with each model, 18 interpretations | 22 | 0.0018 |
+| Full run: 1,909 texts embedded with each model, 234 interpretations | 274 | 0.0255 |
+| A first timing of the paid calls, with a shorter prompt, not used | 44 | 0.0016 |
+| `latency`: 22 interpretations with the run's prompt and 22 query embeddings | 44 | 0.0021 |
+| **Total** | **384** | **0.031** |
+
+The ledger's total went from USD 34.33 to USD 34.36, under the USD 3 set for this benchmark and the cap of USD 50; the key's own usage since the first run went from USD 34.27 to USD 34.30.
 
 ## Context without a space, and who a share reaches, 21 October 2026
 

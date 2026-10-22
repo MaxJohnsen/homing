@@ -29,8 +29,8 @@ export interface Bench {
   close(): Promise<void>;
 }
 
-/** Makes the database again, applies the migrations and serves Homing on a free local port. */
-export async function startHoming(): Promise<Bench> {
+/** Makes the database again, applies the migrations and serves Homing on a free local port, or the one given. */
+export async function startHoming(options: { port?: number } = {}): Promise<Bench> {
   const server = postgres(adminUrl, { onnotice: () => {} });
   await server.unsafe(`drop database if exists ${database} with (force)`);
   await server.unsafe(`create database ${database}`);
@@ -38,7 +38,7 @@ export async function startHoming(): Promise<Bench> {
   await migrate(inTestDatabase(adminUrl, database), inTestDatabase(databaseUrl, database), inTestDatabase(authDatabaseUrl, database));
   const sql = connect(inTestDatabase(databaseUrl, database));
   const admin = connect(inTestDatabase(adminUrl, database));
-  const homing = await startServer(sql, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl, database), ...testAssistants });
+  const homing = await startServer(sql, { port: options.port ?? 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl, database), ...testAssistants });
   return {
     homing,
     sql,
@@ -51,7 +51,7 @@ export async function startHoming(): Promise<Bench> {
 }
 
 /** Someone joining through an invite with a passkey, signed in to their own browser. */
-async function join(bench: Bench, name: string) {
+export async function join(bench: Bench, name: string) {
   const token = randomBytes(32).toString('base64url');
   const email = `${name.split(' ')[0].toLowerCase()}-${randomBytes(4).toString('hex')}@example.test`;
   await bench.admin`
