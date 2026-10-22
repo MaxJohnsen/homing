@@ -152,7 +152,8 @@ function inWorker(task: object, answer: (message: Message, reply: () => void) =>
       }, (error: Error) => settle(error));
     });
     reading.once('error', (error: Error & { code?: string }) => settle(error.code === 'ERR_WORKER_OUT_OF_MEMORY' ? new ImportRefused(tooLarge) : error));
-    reading.once('exit', () => settle(new Error('The worker reading an export stopped without an answer.')));
+    // Its last messages can arrive in the same turn as its exit, before what they started has settled, so a turn later.
+    reading.once('exit', () => setImmediate(() => settle(new Error('The worker reading an export stopped without an answer.'))));
   });
 }
 
