@@ -69,10 +69,10 @@ const apart = (problem: string) => new ImportRefused(`That export doesn’t hold
 const id = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
 // A time as an export gives it, which Homing keeps as text, such as when something was imported before.
 const time = z.iso.datetime({ offset: true });
-// A time Homing keeps as a moment, as the database takes it: from the start of the year 1, in UTC, and
-// less than 16 hours from UTC, however it's written.
+// A time Homing keeps as a moment, as the database takes it: written in the year 1 or later, from the
+// start of the year 1 in UTC, and less than 16 hours from UTC.
 const yearOne = Date.parse('0001-01-01T00:00:00Z');
-const moment = time.refine((at) => !/[+-](1[6-9]|2\d)/.test(at.slice(19)) && Date.parse(at) >= yearOne, 'is a time that can’t be kept');
+const moment = time.refine((at) => !at.startsWith('0000') && !/[+-](1[6-9]|2\d)/.test(at.slice(19)) && Date.parse(at) >= yearOne, 'is a time that can’t be kept');
 // A day on the calendar, from the year 1.
 const day = z.iso.date().refine((at) => !at.startsWith('0000'), 'is before the year 1');
 // Text as Homing can keep it: without the null character, or half of a pair that makes one character.

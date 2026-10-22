@@ -15,9 +15,9 @@ import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import postgres from 'postgres';
-import { authDatabaseUrl, databaseUrl } from '../src/db.ts';
+import { authDatabaseUrl, databaseUrl, type Session } from '../src/db.ts';
 import { inspect, mentions } from '../src/bundle.ts';
-import { discard, discardStale, receive } from '../src/import.ts';
+import { discard, discardStale, endKept, receive } from '../src/import.ts';
 import { bundleFiles, bundleManifest, rewriteReferences, type Manifest } from '../src/export.ts';
 import { addInclude, addRule, removeRule } from '../src/guidance.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
@@ -411,6 +411,7 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
     ['a page gathered for everyone without a title everyone sees', bundle((m) => { m.gathered.find((gathering) => gathering.visibility === 'private')!.visibility = 'shared'; }), /without a title/],
     ['a time before the year 1', bundle((m) => { m.items[0].createdAt = '0000-12-31T00:00:00Z'; }), /time that can’t be kept/],
     ['a time before the year 1, written in a later one', bundle((m) => { m.items[0].createdAt = '0001-01-01T00:30:00+01:00'; }), /items\.createdAt is a time that can’t be kept/],
+    ['a time in the year 1, written in the year before', bundle((m) => { m.items[0].createdAt = '0000-12-31T23:30:00-01:00'; }), /items\.createdAt is a time that can’t be kept/],
     ['a time too far from UTC', bundle((m) => { m.tasks[0].updatedAt = '2026-01-01T00:00:00+16:00'; }), /tasks\.updatedAt is a time that can’t be kept/],
     ['a day that doesn’t exist', bundle((m) => { m.tasks[0].due = '2026-02-30'; }), /tasks\.due invalid iso date/],
     ['a null character', bundle((m) => { m.items.find((item) => item.kind === 'text')!.body = 'Gunnar\u0000'; }), /character that can’t be kept/],
@@ -956,8 +957,74 @@ test('a preview in another tab leaves an import under way as it is', async () =>
   });
   assert.equal((await second).status, 200);
   assert.equal((await ended(ana)).state, 'done');
-  // How it ended is said once.
-  assert.equal((await ana.browser.json('/api/import')).body.state, 'none');
+  // How it ended is said again for a while after it's first read, as to another tab, and then no more.
+  assert.equal((await ana.browser.json('/api/import')).body.state, 'done');
+  const afterRead = endKept.afterRead;
+  try {
+    endKept.afterRead = 0;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal((await ana.browser.json('/api/import')).body.state, 'none');
+  } finally {
+    endKept.afterRead = afterRead;
+  }
+});
+
+/** Starts an import of one space as Ana, writes a page into it, and says the import and the space. */
+async function underWay(name: string) {
+  const now = new Date().toISOString();
+  const [top, page] = [crypto.randomUUID(), crypto.randomUUID()];
+  const made = await as({ ...ana, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({
+    from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
+    spaces: [{ id: top, name, parent: null, closed: false, archivedAt: null, imported: {} }],
+  })}) as id`)[0].id);
+  const load = (s: Session) => s.tx`select import_load(${made}::uuid, ${s.tx.json({
+    pages: [{ id: crypto.randomUUID(), space: top, type: null, createdAt: now, archivedAt: null, imported: {} }],
+  })})`;
+  await as({ ...ana, direct: true }, load);
+  const finish = (s: Session) => s.tx<{ id: string }[]>`select import_finish(${made}::uuid, ${s.tx.json({ includes: [] })}) as id`;
+  return { made, top, load, finish };
+}
+
+/** Whether a statement calling the function waits for a lock. */
+const waiting = async (call: string) =>
+  (await admin`select count(*)::int as n from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock' and query like ${`%${call}%`}`)[0].n > 0;
+
+test('once taken out as stopped, an import writes nothing more, and all of it goes', async () => {
+  const before = await stored();
+  const { made, load, finish } = await underWay('Swept');
+  await admin`update imports set touched_at = now() - interval '1 hour' where id = ${made}`;
+  assert.equal((await db`select import_discard_stale(${made}::uuid, 1) as done`)[0].done, false);
+  await assert.rejects(as({ ...ana, direct: true }, load), refused);
+  await assert.rejects(as({ ...ana, direct: true }, finish), refused);
+  while (!(await db`select import_discard_stale(${made}::uuid, 5000) as done`)[0].done);
+  assert.deepEqual(await stored(), before);
+});
+
+test('taking out an import that stopped and writing to it never cross, whichever starts first', async () => {
+  // A step of taking one out is under way when Ana's finish arrives, which then finds nothing to finish.
+  const first = await underWay('Crossed');
+  await admin`update imports set touched_at = now() - interval '1 hour' where id = ${first.made}`;
+  const { finishing } = await db.begin(async (sweep) => {
+    assert.equal((await sweep`select import_discard_stale(${first.made}::uuid, 1) as done`)[0].done, false);
+    const finishing = as({ ...ana, direct: true }, first.finish).then(() => 'finished', (error: { code?: string }) => error.code);
+    await waitFor(() => waiting('import_finish'));
+    return { finishing };
+  });
+  assert.equal(await finishing, '42501');
+  while (!(await db`select import_discard_stale(${first.made}::uuid, 5000) as done`)[0].done);
+  assert.equal((await admin`select count(*)::int as n from spaces where id = ${first.top}`)[0].n, 0);
+  // Ana's load is under way when one comes to take it out as stopped, which then finds it written to, and leaves it.
+  const second = await underWay('Uncrossed');
+  await admin`update imports set touched_at = now() - interval '1 hour' where id = ${second.made}`;
+  const { sweeping } = await as({ ...ana, direct: true }, async (s) => {
+    await second.load(s);
+    const sweeping = db`select import_discard_stale(${second.made}::uuid, 5000) as done`.then((rows) => rows[0].done as boolean);
+    await waitFor(() => waiting('import_discard_stale'));
+    return { sweeping };
+  });
+  assert.equal(await sweeping, true);
+  await as({ ...ana, direct: true }, second.load);
+  assert.equal((await as({ ...ana, direct: true }, second.finish))[0].id, second.top);
 });
 
 test('taking out an import finds what points to its rows by key, however much Homing holds', async () => {

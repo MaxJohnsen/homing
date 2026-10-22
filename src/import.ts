@@ -128,7 +128,13 @@ export type ImportProgress =
 
 /** Each person's preview and import, apart, so a preview in another tab never touches an import under way. */
 const previewing = new Map<string, PreviewProgress>();
-const importing = new Map<string, { progress: ImportProgress; at: number }>();
+const importing = new Map<string, { progress: ImportProgress; at: number; read?: number }>();
+
+/**
+ * How long how an import ended is still said after it's first read, so another tab, or a request
+ * sent again, hears it too, and how long at most, read or not.
+ */
+export const endKept = { afterRead: 2 * 60_000, atMost: 60 * 60_000 };
 
 /** How far along the person's preview is, if they have one. */
 export function previewProgressOf(person: string): PreviewProgress | undefined {
@@ -136,14 +142,16 @@ export function previewProgressOf(person: string): PreviewProgress | undefined {
 }
 
 /**
- * How far along the person's import is, if they have one. How it ended is said once, to whoever
- * asks first, and for at most an hour.
+ * How far along the person's import is, if they have one. How it ended is said for a little while
+ * after it's first read, and for at most an hour, so it doesn't show on every visit.
  */
 export function importProgressOf(person: string): ImportProgress | undefined {
   const now = importing.get(person);
   if (!now || now.progress.state === 'importing') return now?.progress;
+  now.read ??= Date.now();
+  if (Date.now() - now.read <= endKept.afterRead && Date.now() - now.at <= endKept.atMost) return now.progress;
   importing.delete(person);
-  return Date.now() - now.at < keptFor ? now.progress : undefined;
+  return undefined;
 }
 
 function importProgress(person: string, progress: ImportProgress) {

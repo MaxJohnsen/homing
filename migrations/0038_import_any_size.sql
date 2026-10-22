@@ -96,10 +96,11 @@ begin
   if current_person_id() is null or not direct_edit() then
     raise exception 'only a person imports a space, directly' using errcode = 'insufficient_privilege';
   end if;
-  if not exists (select from imports i where i.id = import and i.imported_by = current_person_id() and not i.done and not i.swept) then
+  -- Checked as it's held, so taking it out because it stopped and writing to it never cross.
+  update imports set touched_at = clock_timestamp() where id = import and imported_by = current_person_id() and not done and not swept;
+  if not found then
     raise exception 'there''s no import of yours under way there' using errcode = 'insufficient_privilege';
   end if;
-  update imports set touched_at = clock_timestamp() where id = import;
   return array(select space_id from importing where import_id = import);
 end
 $$;
@@ -404,10 +405,12 @@ create function import_discard_stale(import uuid, step integer) returns boolean
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
-  if not exists (select from imports i where i.id = import and not i.done and (i.swept or i.id in (select imports_stale()))) then
+  -- Checked as it's held, so a load or a finish under way meanwhile is seen.
+  update imports set swept = true
+  where id = import and not done and (swept or coalesce(touched_at, imported_at) < clock_timestamp() - interval '10 minutes');
+  if not found then
     return true;
   end if;
-  update imports set swept = true where id = import;
   return import_take_out(import, step);
 end
 $$;
