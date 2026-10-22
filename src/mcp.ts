@@ -348,7 +348,7 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'members.change proposes adding someone to a space, making them an admin or a member, or removing them, which shares or stops sharing the space with them: ' +
         'the user approves it in Homing. Name someone the user shares a space with by name, and anyone else by email. ' +
         "knowledge.publish proposes sharing one of the user's private items with everyone in its space, when they want it shared: " +
-        'they approve exactly what is shared. Everyone who can open its space sees it, which includes the spaces above it unless it is closed, so share an item where it is. ' +
+        'they approve exactly what is shared. Everyone who can open its space sees it, which takes in the spaces above it up to the first closed one, so share an item where it is. ' +
         "task.share proposes sharing one of the user's private tasks with everyone in its space, such as one for the team: keep it with `remember` first. " +
         'space.archive takes a space whose work is done, such as a finished project or a past trip, and the spaces in it out of everyday context; nothing is deleted. ' +
         'Suggest it only when the user says so or it clearly is. A space only the user has is archived, or reopened, as soon as they ask; ' +
@@ -671,8 +671,11 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
   const telling = await tellingWords(s, request);
   // Picking a space rests on what's active there, not on archived pages, and a skill counts as much as knowledge.
   // The rules that apply come with a space's own context, not one by one.
-  const knowledge = telling ? await search(s, telling, { limit: 50, current: true, knowledge: true, active: true }) : [];
-  const skills = telling ? await skillsMatching(s, telling) : [];
+  // What's in an archived space is left out too, unless the request names it.
+  const archivedIds = new Set(spaces.filter((space) => space.archived && !named.includes(space)).map((space) => space.id));
+  const everyday = <T extends { spaceId: string }>(found: T[]) => found.filter((one) => !archivedIds.has(one.spaceId));
+  const knowledge = everyday(telling ? await search(s, telling, { limit: 50, current: true, knowledge: true, active: true }) : []);
+  const skills = everyday(telling ? await skillsMatching(s, telling, 20) : []).slice(0, 3);
   const matched = new Set([...knowledge.map((hit) => hit.spaceId), ...skills.map((skill) => skill.spaceId)]);
   const candidates = named.length ? named : spaces.filter((space) => matched.has(space.id) && !space.archived);
   const archived = spaces.filter((space) => space.archived).length;
@@ -686,11 +689,11 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
   }
   const relevant = [
     ...(await describeHits(s, knowledge.slice(0, shownMatches))),
-    ...(await describeTasks(s, telling ? await searchTasks(s, telling, { limit: shownMatches }) : [])),
-    ...(await describeWaiting(s, telling ? await searchProposals(s, telling, { limit: shownMatches }) : [])),
+    ...(await describeTasks(s, everyday(telling ? await searchTasks(s, telling, { limit: 20 }) : []).slice(0, shownMatches))),
+    ...(await describeWaiting(s, everyday(telling ? await searchProposals(s, telling, { limit: 20 }) : []).slice(0, shownMatches))),
   ];
   const me = (await peopleNames(s, [personOf(s.principal) ?? null])).get(personOf(s.principal)!);
-  const nothing = candidates.length === 0 && relevant.length === 0;
+  const nothing = candidates.length === 0 && relevant.length === 0 && skills.length === 0;
   return [
     nothing
       ? `You are ${me}. Nothing in Homing matches this request. If it isn't about the user's work, answer it without Homing. ` +
@@ -1456,12 +1459,15 @@ async function reach(s: Session, spaceId: string): Promise<string> {
     const parent = spaces.get(below.parentId);
     if (parent) above.push(parent.name);
   }
+  // As the decision page says it: who has it now, the people of a space above the user can't open, and who joins later.
   const people = view.members.length === 1 ? '1 person' : `${view.members.length} people`;
-  const names = [above.slice(0, -1).join(', '), above.at(-1)].filter(Boolean).join(' and ');
-  const from = above.length ? `, including everyone in ${names}, since it isn't closed` : view.reachedFromAbove ? ', including people in a space above' : '';
+  const hidden = view.reachedFromAbove ? (above.length ? ['people in a space above'] : []) : [];
+  const names = [...above.map((name) => `everyone in ${name}`), ...hidden];
+  const including = names.length ? `, including ${[names.slice(0, -1).join(', '), names.at(-1)].filter(Boolean).join(' and ')}, since it isn't closed` : '';
+  const aboveIt = view.reachedFromAbove && !above.length ? ', everyone who can open the space above it' : '';
   const closed = view.closed && view.parentId ? ` It is closed, so people in ${spaces.get(view.parentId)?.name ?? 'the space above'} who weren't added to it don't see it.` : '';
   const here = above.length || view.reachedFromAbove ? ' Shared where it is, it already reaches them: there is no need to copy it to a space above.' : '';
-  return `Once approved, everyone who can open ${view.name} sees it: ${people}${from}.${closed}${here} `;
+  return `Once approved, everyone who can open ${view.name} sees it: ${people} now${including}${aboveIt}, and anyone who joins later.${closed}${here} `;
 }
 
 /** Proposes sharing one of the user's private items with its space, for them to approve. */

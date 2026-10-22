@@ -341,7 +341,7 @@ One `context` call gives an agent what it needs to start: the rules that apply, 
 
 Full details are available on demand.
 
-- **Resolve, then assemble.** `context` takes a free-text request and, optionally, a space. Without a space, Homing works out the people, messages, records and topics involved, using the same matching as routing. If several spaces fit, it returns the candidates with the best matches and the skills that fit, which often answer the request or say which space it is about. If nothing the person can see matches, it says so.
+- **Resolve, then assemble.** `context` takes a free-text request and, optionally, a space. Without a space, Homing works out the people, messages, records and topics involved, using the same matching as routing. If several spaces fit, or one fits only loosely, it returns the candidates with the best matches and the skills that fit, which often answer the request or say which space it is about. If nothing the person can see matches, it says so.
 - **Local assembly never waits on external systems.** Guidance, overviews and indexed knowledge are assembled locally. Live lookups, such as external records or sources not yet indexed, go through `search` and `read`, or run under a strict time limit. The two are measured separately.
 - **Retrieval uses structure but doesn't depend on it.** Candidates come from links and from content search in parallel and are ranked together, so retrieval still works when links are missing or wrong. Access is a filter, never a ranking signal. Relevance ranks first, and relationships, authority, freshness, closeness of the space and recency adjust it. Archived spaces and pages and superseded items are left out unless the request is about them or about the past.
 - **Untrusted content is marked,** for example a client's email.
@@ -374,7 +374,7 @@ More about the tools:
 - Every write can, and should, cite its sources.
 - Every write names its destination: a space, or something already in one, such as an item, a page, a rule or a task, whose reference decides where the write goes. A space given as well must be that space or one whose context shows it, such as a space above it, or nothing changes. A space can also be named by its name when only one space the person can open has it, and where something is read or saved there, by a page in it. None of it reveals anything the person can't see.
 - `search` also finds tasks, and the person's own proposals that are still waiting, with the space each is in.
-- When an agent proposes sharing something, Homing tells it who will see it: everyone who can open its space, which takes in the spaces above unless the space is closed. So the agent shares it where it is, rather than copying it to reach more people.
+- When an agent proposes sharing something, Homing tells it who will see it: everyone who can open its space, which takes in the spaces above it, up to the first closed one. So the agent shares it where it is, rather than copying it to reach more people.
 - A new system adds actions to `act`, never new tools. `act` validates arguments, authorization and approvals.
 - Whether an action publishes depends on its effect, not its name. A draft in a shared mailbox counts as publishing.
 - The identity used for outgoing actions comes from your preference or from asking, never from the space.
