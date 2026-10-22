@@ -737,9 +737,14 @@ export function day(date: number, month: number): Fact {
   ];
 }
 
-/** An amount in kroner, as "450,000", "450 000", "450.000" or "450k". */
+/** An amount in kroner, as "450,000", "450 000", "450.000", "450k", or from 100,000 up also "0.45M" or "0,45 million". */
 export function kroner(thousands: number): Fact {
-  return [new RegExp(`\\b${thousands}[\\s,.\\u00a0]?000\\b`), new RegExp(`\\b${thousands}\\s?k\\b`, 'i'), new RegExp(`\\b${thousands}\\s?(thousand|tusen)`, 'i')];
+  const patterns = [new RegExp(`\\b${thousands}[\\s,.\\u00a0]?000\\b`), new RegExp(`\\b${thousands}\\s?k\\b`, 'i'), new RegExp(`\\b${thousands}\\s?(thousand|tusen)`, 'i')];
+  if (thousands >= 100 && thousands < 1000) {
+    const decimals = String(thousands / 1000).slice(2);
+    patterns.push(new RegExp(`\\b0[.,]${decimals}0*(?!\\d)\\s*(million|mill|mnok|m\\b)`, 'i'));
+  }
+  return patterns;
 }
 
 /** An amount in millions of kroner, as "1.2 million", "1,2 millioner", "1.2M" or "1,200,000". */
@@ -1023,19 +1028,19 @@ export const questions: Question[] = [
   {
     id: 'past-golive',
     kind: 'past',
-    ask: 'What was the go-live date of the Northwind relaunch before it moved?',
+    ask: 'What go-live date did the kickoff in August set for the Northwind relaunch?',
     truths: [{ from: 5, answer: '1 March 2027', expect: [day(1, 3)], sources: ['kickoff', 'golive-moves'] }],
   },
   {
     id: 'past-dns',
     kind: 'past',
-    ask: 'Who was responsible for hosting and DNS at Northwind before Ola Nordmann?',
+    ask: 'Who was responsible for hosting and DNS at Northwind in August?',
     truths: [{ from: 6, answer: 'Per Hansen', expect: [words(/\bper\b|hansen/i)], sources: ['per-leaves', 'ola-dns'] }],
   },
   {
     id: 'past-kitchen',
     kind: 'past',
-    ask: "What was Erik's first price for the kitchen, before the electrician was priced?",
+    ask: 'What price did Erik give for the kitchen in August?',
     truths: [{ from: 4, answer: '85,000 NOK', expect: [kroner(85)], sources: ['erik-kitchen'] }],
   },
 
@@ -1043,7 +1048,7 @@ export const questions: Question[] = [
   {
     id: 'why-azure',
     kind: 'why',
-    ask: 'Why did Northwind choose Azure over AWS to host the new website?',
+    ask: 'Where will the new Northwind site be hosted, and why there rather than the alternative?',
     truths: [
       {
         from: 4,
@@ -1076,7 +1081,7 @@ export const questions: Question[] = [
   {
     id: 'why-golive',
     kind: 'why',
-    ask: 'Why did the go-live of the Northwind relaunch move?',
+    ask: 'Has the go-live date of the Northwind relaunch changed, and if so, why?',
     truths: [
       {
         from: 5,
@@ -1096,7 +1101,7 @@ export const questions: Question[] = [
   {
     id: 'why-quarterly',
     kind: 'why',
-    ask: 'Why will Acme keep invoicing Fjord Bank quarterly?',
+    ask: 'How will Acme invoice Fjord Bank from January 2027, and why?',
     truths: [
       {
         from: 6,
@@ -1115,7 +1120,7 @@ export const questions: Question[] = [
   {
     id: 'why-matomo',
     kind: 'why',
-    ask: 'Why will the new Northwind site use Matomo instead of Google Analytics?',
+    ask: 'Which analytics tool will the new Northwind site use, and why that one?',
     truths: [
       {
         from: 2,
@@ -1133,7 +1138,7 @@ export const questions: Question[] = [
   {
     id: 'why-mobile',
     kind: 'why',
-    ask: "Why was the mobile app left out of Fjord Bank's portal pre-study?",
+    ask: "Is the mobile app part of Fjord Bank's portal pre-study, and why?",
     truths: [
       {
         from: 6,
@@ -1150,7 +1155,7 @@ export const questions: Question[] = [
   {
     id: 'why-budget',
     kind: 'why',
-    ask: 'Why did the budget for the Northwind relaunch change, and by how much?',
+    ask: 'Has the budget for the Northwind relaunch changed, and if so, why and by how much?',
     truths: [
       {
         from: 6,
@@ -1170,7 +1175,7 @@ export const questions: Question[] = [
   {
     id: 'why-renewal',
     kind: 'why',
-    ask: 'How did the renewal of the Fjord Bank agreement come about?',
+    ask: 'Where does the renewal of the Fjord Bank agreement stand, and how did it get there?',
     truths: [
       {
         from: 7,

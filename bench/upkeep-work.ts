@@ -251,7 +251,7 @@ export const outdated: Outdated[] = [
     id: 'a-600',
     text: "Butikkskyen's licence as 600,000 NOK",
     from: 3,
-    pattern: /\b600[\s,.\u00a0]?000\b|\b600\s?k\b/gi,
+    pattern: /\b600[\s,.\u00a0]?000\b|\b600\s?k\b|\b0[.,]60*(?!\d)\s*(million|mill|mnok|m\b)/gi,
     marked: /correct|two stores|2 stores|for two|\bwas\b|previous|earlier|original|initial|instead|replac|supersed|mistak|error|updat|\bold\b|~~|tidligere/i,
   },
   {
