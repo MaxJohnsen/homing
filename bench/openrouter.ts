@@ -140,8 +140,8 @@ export class Model {
     const body = {
       model: this.id,
       messages: request.messages,
-      tools: request.tools,
-      tool_choice: 'auto',
+      // A call without tools, such as a question answered in JSON, sends none.
+      ...(request.tools.length && { tools: request.tools, tool_choice: 'auto' }),
       max_tokens: request.maxTokens,
       usage: { include: true },
       // The model's own maker serves it when it can, for comparable latency.

@@ -15,7 +15,8 @@
     "build:site": "vite build --config web/vite.config.ts --mode site",
     "sample": "node scripts/sample.ts",
     "bench": "node bench/run.ts",
-    "bench:retrieval": "node bench/retrieval.ts"
+    "bench:retrieval": "node bench/retrieval.ts",
+    "bench:upkeep": "node bench/upkeep.ts"
   },
   "dependencies": {
     "@better-auth/cimd": "^1.7.10",

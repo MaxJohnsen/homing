@@ -20,10 +20,10 @@ export interface Setup {
   stubs?: Stub[];
 }
 
-/** A tool that isn't Homing's, answered from canned data. */
+/** A tool that isn't Homing's, answered from canned data, or by the harness itself, such as benchmark 0's wiki. */
 export interface Stub {
   tool: FunctionTool;
-  answer(args: Record<string, unknown>): string;
+  answer(args: Record<string, unknown>): string | Promise<string>;
 }
 
 /** Calls Homing's tools as the person's assistant. */
@@ -90,6 +90,8 @@ export interface Conversation {
   /** Model calls each of the user's turns may take. */
   maxTurns?: number;
   maxTokens?: number;
+  /** Runs when the model has answered one of the user's turns, before the next, such as to look at what changed. */
+  afterTurn?(turn: number, trace: Trace): Promise<void>;
 }
 
 /** Runs one conversation to its end, and says everything that happened in it. */
@@ -154,6 +156,7 @@ export async function converse(conversation: Conversation): Promise<Trace> {
       }
       break;
     }
+    await conversation.afterTurn?.(turn, trace);
   }
   trace.totalMs = performance.now() - started;
   return trace;
@@ -171,7 +174,7 @@ async function forward(setup: Setup, homing: Homing, name: string, rawArgs: stri
   }
   const stub = setup.stubs?.find((candidate) => candidate.tool.function.name === name);
   if (stub) {
-    const text = stub.answer(args);
+    const text = await stub.answer(args);
     return { call: { name, args, failed: false, answer: text.slice(0, 1500), text, turn, ms: 0 }, text };
   }
   const routed = setup.route(name, args);

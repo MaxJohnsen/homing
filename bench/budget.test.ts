@@ -6,7 +6,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, test } from 'node:test';
-import { Ledger, OverBudget, pricesOf, worstCase, type ListedModel } from './budget.ts';
+import { hardCap, Ledger, OverBudget, pricesOf, worstCase, type ListedModel } from './budget.ts';
 import { keyUsage, Model, ModelFailed, redact, type KeySource } from './openrouter.ts';
 
 const ledgerPath = () => join(mkdtempSync(join(tmpdir(), 'homing-bench-')), 'spend.json');
@@ -77,7 +77,7 @@ test('a call that could pass the cap is refused before it reaches OpenRouter', a
 });
 
 test('calls stop once what is spent, plus the next worst case, would pass the cap', async () => {
-  const on = ledger();
+  const on = ledger(ledgerPath(), { cap: 50 });
   // Each call can cost up to about $21 at these prices, and is charged $15.
   const fifteen = model(fake(0.0001, 0.021), on);
   const openRouter = stubOpenRouter(() => answered(15));
@@ -90,7 +90,7 @@ test('calls stop once what is spent, plus the next worst case, would pass the ca
 });
 
 test('calls under way count against the cap and the run’s limit at their worst case', () => {
-  const capped = ledger();
+  const capped = ledger(ledgerPath(), { cap: 50 });
   capped.reserve('test/fake-model', 20);
   capped.reserve('test/fake-model', 20);
   assert.throws(() => capped.reserve('test/fake-model', 15), /Stopped at the cap/);
@@ -103,13 +103,13 @@ test('calls under way count against the cap and the run’s limit at their worst
 
 test('the total survives a restart, and a call a crash interrupted counts at its worst case', () => {
   const path = ledgerPath();
-  const first = ledger(path);
+  const first = ledger(path, { cap: 50 });
   first.settle(first.reserve('test/fake-model', 2), { cost: 1.25 });
   first.reserve('test/fake-model', 3);
   // The process ends here, with the second call under way.
   first.close();
 
-  const second = ledger(path);
+  const second = ledger(path, { cap: 50 });
   assert.equal(second.spent, 4.25);
   assert.throws(() => second.reserve('test/fake-model', 46), OverBudget);
   second.reserve('test/fake-model', 45);
@@ -166,7 +166,7 @@ test("a run's own limit stops it below the cap", () => {
 });
 
 test('the cap can be lowered but never raised, and a limit that is not a number refuses', () => {
-  assert.equal(ledger(ledgerPath(), { cap: 500 }).cap, 50);
+  assert.equal(ledger(ledgerPath(), { cap: 500 }).cap, hardCap);
   assert.equal(ledger(ledgerPath(), { cap: 10 }).cap, 10);
   assert.throws(() => new Ledger(ledgerPath(), { runLimit: Number('three') }), OverBudget);
   assert.throws(() => new Ledger(ledgerPath(), { runLimit: -1 }), OverBudget);
@@ -175,16 +175,16 @@ test('the cap can be lowered but never raised, and a limit that is not a number 
 
 test("calls stop when the key's own usage has grown past the cap since the first run", () => {
   const path = ledgerPath();
-  const first = ledger(path);
+  const first = ledger(path, { cap: 50 });
   first.checkKey(100);
   first.close();
-  const later = ledger(path);
+  const later = ledger(path, { cap: 50 });
   assert.equal(later.checkKey(140), 40);
   assert.throws(() => later.checkKey(150.01), OverBudget);
 });
 
 test("what's spent is the ledger's total or the key's usage since the first run, whichever is more", () => {
-  const on = ledger();
+  const on = ledger(ledgerPath(), { cap: 50 });
   on.checkKey(100);
   on.checkKey(140);
   // The ledger has spent nothing, but the key has used $40.
