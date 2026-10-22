@@ -161,6 +161,8 @@ export async function measureScale(database: string, options: { repeat: number; 
   const admin = connect(inTestDatabase(adminUrl, database));
   const sql = connect(inTestDatabase(databaseUrl, database));
   try {
+    // Right after a big sample or import, PostgreSQL may not have analyzed the tables yet, and plans badly.
+    await admin`analyze`;
     const [ana] = await admin<{ id: string }[]>`select id from people where name = 'Ana Berg'`;
     const principal: Principal = { person: ana.id, agent: 'Claude' };
     const [counts] = await admin<{ items: number; sources: number; pages: number }[]>`

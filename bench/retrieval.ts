@@ -7,6 +7,7 @@
 //   npm run bench:retrieval -- run --approaches bm25  some approaches again, keeping the others' results
 //   npm run bench:retrieval -- report                 the tables, from results/retrieval.jsonl
 //   npm run bench:retrieval -- privacy                whether others' private items change your ranking
+//   npm run bench:retrieval -- latency --max-spend 0.05   how long the paid calls take
 //   npm run bench:retrieval -- synthetic              a database with one space of 176,000 items
 //   npm run bench:retrieval -- scale <database>       latency there or in a sample, as Ana: --timeout, --repeat
 //
@@ -50,15 +51,6 @@ import {
 import { fuse, globalStats, parsedTermsOf, prepareEmbeddings, rankedSearch, semanticTasks, termsOf, userStats, type Filters, type Found, type Term } from './retrieval-search.ts';
 
 const here = new URL('./', import.meta.url);
-const resultsPath = new URL('results/retrieval.jsonl', here).pathname;
-const interpretationsPath = new URL('results/retrieval-interpretations.json', here).pathname;
-const embeddingsCache = new URL('results/retrieval-embeddings.cache.json', here).pathname;
-
-/** Two small multilingual embedding models: an open one anyone could run themselves, and OpenAI's small one. */
-const embeddingModels = ['baai/bge-m3', 'openai/text-embedding-3-small'];
-/** Two cheap chat models that write the search words, one from each maker the other benchmarks use. */
-const interpreters = ['anthropic/claude-haiku-5.5', 'openai/gpt-6-luna'];
-
 const { positionals, values } = parseArgs({
   allowPositionals: true,
   options: {
@@ -67,8 +59,18 @@ const { positionals, values } = parseArgs({
     queries: { type: 'string' },
     approaches: { type: 'string' },
     timeout: { type: 'string', default: '60000' },
+    results: { type: 'string', default: 'retrieval' },
   },
 });
+if (!/^[a-z0-9-]+$/.test(values.results!)) throw new Error('--results takes a name of lowercase letters, digits and dashes.');
+const resultsPath = new URL(`results/${values.results}.jsonl`, here).pathname;
+const interpretationsPath = new URL('results/retrieval-interpretations.json', here).pathname;
+const embeddingsCache = new URL('results/retrieval-embeddings.cache.json', here).pathname;
+
+/** Two small multilingual embedding models: an open one anyone could run themselves, and OpenAI's small one. */
+const embeddingModels = ['baai/bge-m3', 'openai/text-embedding-3-small'];
+/** Two cheap chat models that write the search words, one from each maker the other benchmarks use. */
+const interpreters = ['anthropic/claude-haiku-5.5', 'openai/gpt-6-luna'];
 
 // The MCP client warns on every connection about a callback check the benchmarks don't need.
 const warn = console.warn;
@@ -173,7 +175,11 @@ export async function buildWorld(bench: Bench): Promise<World> {
   const assistant = new Assistant(bench.homing.url, assistants.claude);
   await assistant.connect(people.ana.browser);
   const ana = principal('assistant');
-  return { bench, ana, spaceIds, labeled, ...(await labelsOf(bench, ana, labeled)), assistant };
+  // The spaces Ana can't open, by the access rule: Cara's closed client space and the others' personal spaces.
+  const closedToAna = [...spaces.filter((space) => space.closed && space.by !== 'ana').map((space) => spaceIds[space.key]), people.cara.personalSpaceId, people.ben.personalSpaceId];
+  const labels = await labelsOf(bench, ana, labeled);
+  await checkForbidden(bench, labels.forbidden, labeled, { ana: people.ana.id, closedToAna });
+  return { bench, ana, spaceIds, labeled, ...labels, assistant };
 }
 
 /** Filler pages, items and sources, the same every time. */
@@ -231,6 +237,40 @@ async function labelsOf(bench: Bench, ana: Principal, labeled: Map<string, Label
   `);
   const stale = new Set([...staleRows, ...ownReplaced].map((row) => row.id));
   return { keysOf, pageOf, forbidden, stale };
+}
+
+/**
+ * Row-level security must hide from Ana exactly what the access rule, written out by hand for this
+ * world, says she can't see: everything in the spaces she can't open, and everyone else's private
+ * items, sources and tasks, with the pages nothing she sees is on. Every approach runs under row-level
+ * security, so the leak check on its results can only catch what this agrees with.
+ */
+async function checkForbidden(bench: Bench, forbidden: Set<string>, labeled: Map<string, Labeled>, rule: { ana: string; closedToAna: string[] }) {
+  const hidden = (table: string) => bench.admin`(${bench.admin(table)}.space_id = any(${rule.closedToAna}::uuid[]) or (${bench.admin(table)}.private_to is not null and ${bench.admin(table)}.private_to <> ${rule.ana}::uuid))`;
+  const rows = await bench.admin<{ id: string }[]>`
+    select c.id from content c where ${hidden('c')}
+    union select c.page_id from content c where not exists (select from content v where v.page_id = c.page_id and not ${hidden('v')})
+    union select src.id from sources src where ${hidden('src')}
+    union select t.id from tasks t where ${hidden('t')}
+    union select unnest(${rule.closedToAna}::uuid[])
+  `;
+  const expected = new Set(rows.map((row) => row.id));
+  const missing = [...expected].filter((id) => !forbidden.has(id));
+  const extra = [...forbidden].filter((id) => !expected.has(id));
+  if (missing.length || extra.length) {
+    throw new Error(`Row-level security and the access rule disagree: ${missing.length} ids Ana sees but mustn't, ${extra.length} she can't see but may.`);
+  }
+  // The set's own labels agree: what Cara and Ben keep to themselves, and Polar Freight, is hidden; nothing else is.
+  const theirs = new Set([
+    ...pages.filter((page) => page.space === 'polar' || (!page.shared && (page.by === 'cara' || page.by === 'ben'))).map((page) => page.key),
+    ...pages.flatMap((page) => page.items.flatMap((item) => (typeof item !== 'string' && item.key && (page.space === 'polar' || (item.shared === false && (item.by === 'cara' || item.by === 'ben'))) ? [item.key] : []))),
+    ...sources.filter((source) => source.space === 'polar' || (!source.shared && source.by !== 'ana' && source.by !== 'assistant')).map((source) => source.key),
+    ...tasks.filter((task) => task.space === 'polar' || (!task.shared && task.by !== 'ana' && task.by !== 'assistant')).map((task) => task.key),
+  ]);
+  for (const [key, { id }] of labeled) {
+    if (theirs.has(key) !== forbidden.has(id)) throw new Error(`${key} is ${forbidden.has(id) ? 'hidden from' : 'shown to'} Ana, against the set.`);
+  }
+  console.log(`Row-level security hides from Ana exactly the ${forbidden.size} ids the access rule says it should, ${theirs.size} of them labeled.`);
 }
 
 // Running a query.
@@ -843,6 +883,46 @@ async function run(pilot: boolean) {
   );
 }
 
+/**
+ * How long the paid calls take that semantic search and interpretation add to a query: the
+ * interpretation exactly as the run asks for it, and a query's embedding, for every twelfth query.
+ */
+async function latency() {
+  const texts = queries.filter((_, n) => n % 12 === 0).map((query) => query.text);
+  await withLedger(async (ledger) => {
+    if (!ledger) throw new Error('This makes paid calls: give it --max-spend.');
+    const listed = await listedModels();
+    for (const id of interpreters) {
+      const model = new Model(listed.find((one) => one.id === id) ?? fail(`OpenRouter doesn't list ${id}.`), ledger, { key: fileKey });
+      const ms: number[] = [];
+      for (const text of texts) {
+        const completion = await model.complete({
+          messages: [
+            { role: 'system', content: interpreterPrompt },
+            { role: 'user', content: text },
+          ],
+          tools: [searchTool],
+          maxTokens: 1000,
+          label: `b4|latency|${id}`,
+        });
+        ms.push(completion.ms);
+      }
+      console.log(`${id}, interpretation: median ${Math.round(median(ms))} ms, from ${Math.round(Math.min(...ms))} to ${Math.round(Math.max(...ms))} ms`);
+    }
+    const embedders = await listedEmbeddingModels();
+    for (const id of embeddingModels) {
+      const embedder = new Embedder(embedders.find((one) => one.id === id) ?? fail(`OpenRouter doesn't list ${id}.`), ledger, { key: fileKey });
+      const ms: number[] = [];
+      for (const text of texts) {
+        const started = performance.now();
+        await embedder.embed([text], `b4|latency|${id}`);
+        ms.push(performance.now() - started);
+      }
+      console.log(`${id}, a query's embedding: median ${Math.round(median(ms))} ms, from ${Math.round(Math.min(...ms))} to ${Math.round(Math.max(...ms))} ms`);
+    }
+  });
+}
+
 function readResults(): Scored[] {
   return readFileSync(resultsPath, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as Scored);
 }
@@ -870,7 +950,8 @@ async function checkSameAsSearch(ctx: Ctx, chosen: Query[]) {
       if (ours.map((hit) => hit.id).join() !== theirs.map((hit) => hit.id).join()) differ++;
     }
   });
-  console.log(`The prototype's ts_rank differs from search for ${differ} of ${chosen.length} queries.`);
+  if (differ) throw new Error(`The prototype's ts_rank differs from search for ${differ} of ${chosen.length} queries, so its other rankings can't be compared with search.`);
+  console.log(`The prototype's ts_rank returns what search returns for all ${chosen.length} queries.`);
 }
 
 const median = (numbers: number[]) => {
@@ -964,6 +1045,7 @@ async function main() {
   if (command === 'run' || command === 'pilot') return run(command === 'pilot');
   if (command === 'report') return console.log(report(readResults()));
   if (command === 'privacy') return (await import('./retrieval-privacy.ts')).privacy(withWorld);
+  if (command === 'latency') return latency();
   if (command === 'synthetic') return (await import('./retrieval-scale.ts')).buildSynthetic();
   if (command === 'scale') {
     return (await import('./retrieval-scale.ts')).measureScale(positionals[1] ?? fail('Say which database, such as homing_bench4_scale.'), {
@@ -972,7 +1054,7 @@ async function main() {
       only: values.approaches?.split(','),
     });
   }
-  console.error('Say what to do: npm run bench:retrieval -- run, pilot, privacy, report, synthetic or scale <database>');
+  console.error('Say what to do: npm run bench:retrieval -- run, pilot, report, privacy, latency, synthetic or scale <database>');
   process.exit(1);
 }
 

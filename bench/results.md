@@ -8,7 +8,7 @@ Benchmark 4 asks Homing's search directly, with no model in between: 126 questio
 
 ### What it means for Homing
 
-**Search finds what's asked in the notes' own words, and that's most of what's asked.** Asked in the language of the note, `search` and `context` had the answer in their first 10 lines for 91 to 100% of the Norwegian and English questions, and for all 20 with identifiers, such as "faktura 2026-0417", "rom 101" or "E42". Nothing came back that Ana mustn't see, from any approach, for any of the 126 questions: no item of Cara's or Ben's, nothing from Polar Freight, and none of the words only they wrote.
+**Search finds what's asked in the notes' own words, and that's most of what's asked.** Asked in the language of the note, `search` and `context` had the answer in their first 10 lines for 91 to 100% of the Norwegian and English questions, and for all 20 with identifiers, such as "faktura 2026-0417", "rom 101" or "E42". Nothing came back that Ana mustn't see, from any approach, for any of the 126 questions: no item of Cara's or Ben's, nothing from Polar Freight, and none of the words only they wrote. That holds by construction: every approach runs under row-level security, and the run checks that it hides from Ana exactly what the access rule, written out by hand for this world, says it should. So this confirms row-level security for these cases rather than measuring the approaches; their real privacy test is the statistics, below.
 
 **It misses when the words differ, and mostly across languages.** Ana writes about her own life in Norwegian and often asks in English, and the other way round. Of 19 questions whose words don't match the note, `search` found 10: 8 of the 10 asked in the note's language, and 2 of the 9 asked in the other. For example:
 
@@ -16,7 +16,7 @@ Benchmark 4 asks Homing's search directly, with no model in between: 126 questio
 - "Did the guy doing my kitchen say when he starts?" `context` answers "Nothing in Homing matches", while Erik's page says "Erik begynner 3. november." It did the same for "How much will the kitchen cost?"
 - "Who handles legal questions at Northwind?" The note, in English, says Mona Lie is Northwind's lawyer. No word in common.
 
-**BM25 ranks a little better and fixes none of that.** Given the whole request, BM25 over what Ana can see had the answer in the first 10 for 85% of the questions against 80% for `search`, with a mean reciprocal rank of 0.73 against 0.66, in part because short notes of common words, such as "Can we look at the navigation together this week?", no longer come first. On `context`'s telling words it was even: 81% against 83%, 0.72 against 0.69. Across languages and where the words differ, it found what `search` found.
+**BM25 ranks a little better and fixes none of that.** Given the whole request, BM25 over what Ana can see had the answer in the first 10 for 85% of the questions against 80% for `search`, with a mean reciprocal rank of 0.73 against 0.66, in part because short notes of common words, such as "Can we look at the navigation together this week?", no longer come first. On `context`'s telling words it was even: 81% against 83%, 0.72 against 0.69. Across languages it found one question more than `search`, 11 of 12, and where the words differ one more, 11 of 19, but still only 2 of the 9 asked in the other language.
 
 **The stopword and short-number rules still do a job that BM25 doesn't.** Letting `context` drop them was the point of BM25, but with every word some word always matches, so BM25 never says that nothing matches: 0 of the 12 general questions, against 6 for `context` today. A score threshold doesn't separate them either. To say nothing for 7 of the 12, BM25 also had to say it for 24 of the 103 questions that have an answer, 12 of them with the answer in its first 10.
 
@@ -24,9 +24,9 @@ Benchmark 4 asks Homing's search directly, with no model in between: 126 questio
 
 **On a very big space, search itself is slow.** In one space of 176,000 items of about 4 KB, `search` took 2.3 s at the median and `context`'s ranking 2.1 s. Part of that is a fault: the full-text index isn't used under row-level security, so every search reads every row, and "E42" took 0.9 s that the index answers in 4 ms. The rest is ranking every note that has any word of a request, which the index doesn't change. On the big sample, which is closer to a heavy real user, `search` took 100 ms at the median.
 
-**Semantic search, or a model writing the words, fixes the misses.** Embeddings from `baai/bge-m3`, an open multilingual model, had the answer in the first 10 for 93% of the questions, including every one asked in the other language or in other words, with a mean reciprocal rank of 0.85. They missed an identifier, "Where is room 214?", which fusing them with `search` or BM25 brings back. Having a small model write the search words first, in both languages, raised `search` to 95% with Claude Haiku 5.5 and to 90% with GPT-6 Luna. Neither helps to say that nothing matches. Semantic search always finds something close: a similarity threshold of 0.5 happened to separate the general questions here for bge-m3 (8 of 12, with no answer lost), but it wouldn't for OpenAI's model, and would need setting per model and per Homing. The interpretations said nothing as often as `context` does, 6 and 5 of 12.
+**Semantic search, or a model writing the words, fixes the misses.** Embeddings from `baai/bge-m3`, an open multilingual model, had the answer in the first 10 for 93% of the questions, including every one asked in the other language or in other words, with a mean reciprocal rank of 0.85. They missed an identifier, "Where is room 214?", which fusing them with `search` or BM25 brings back. Having a small model write the search words first, in both languages, raised `search` to 95% with Claude Haiku 5.5 and to 90% with GPT-6 Luna. Neither helps to say that nothing matches. Part of semantic search's edge may come from how items were embedded: each with its page's title in front, as "Kjøkkenplan: Hvitevarene leveres…", while full-text search matches an item's text alone. Semantic search always finds something close: a similarity threshold of 0.5 happened to separate the general questions here for bge-m3 (8 of 12, with no answer lost), but it wouldn't for OpenAI's model, and would need setting per model and per Homing. The interpretations said nothing as often as `context` does, 6 and 5 of 12.
 
-**Their cost is in the calls, and one of them is already made.** A query's embedding took 0.5 to 0.7 s through OpenRouter, an interpretation 1.0 to 2.3 s, against 10 to 30 ms for Homing's own search here. Semantic search also needs every item embedded when it's written, a model the operator runs or pays for, and pgvector, which isn't installed here, so similarity was computed over plain arrays and its time says nothing about pgvector. Embedding this world's 2,018 texts cost about a tenth of a cent with both models together. But an assistant calling `search` already writes the query itself, so asking it for the words a note would use, in each of the user's languages, costs nothing more. `context` is different: it takes the user's request as they said it.
+**Their cost is in the calls, and one of them is already made.** Through OpenRouter, a query's embedding took 0.7 to 1.1 s at the median for the two models, and 0.5 to 2.9 s in all; an interpretation 1.6 to 2.5 s at the median, and 0.9 to 4.9 s in all. Homing's own search took 8 to 30 ms here. Semantic search also needs every item embedded when it's written, a model the operator runs or pays for, and pgvector, which isn't installed here, so similarity was computed over plain arrays and its time says nothing about pgvector. Embedding this world's 2,018 texts cost about a tenth of a cent with both models together. But an assistant calling `search` already writes the query itself, so asking it for the words a note would use, in each of the user's languages, costs nothing more. `context` is different: it takes the user's request as they said it.
 
 **Two smaller faults turned up.**
 
@@ -44,16 +44,17 @@ These are suggestions from the results. None is built here.
 3. Show what's no longer true within the 20 lines when the query is about the past, not only after everything current.
 4. Semantic search, fused with full-text search, as something an operator turns on, as the architecture already allows, measured on a real Homing with pgvector. The core keeps working without it.
 5. Let the full-text index work under row-level security, before Homings get very big: mark the match operator's function leakproof, which needs a superuser and is a security call of its own, or find candidates through a function that applies the access rule itself.
-6. If ranking ever needs word statistics, count them per space and add them up over the spaces a person can open, never over everyone.
+6. If ranking ever needs word statistics, count them only over what the person can see: the shared items of the spaces they can open and their own private ones, never anyone else's private items, and never over everyone.
 
 ### Every approach
 
-126 questions, 103 with an answer and 12 that should match nothing (the other 11, about what only others see, have none Ana may get). Recall is the share of a question's answers in the first 5 or 10 lines, MRR the mean of 1 over the line of the first answer. "Stale" counts questions not about the past with something no longer true, or archived, in the first 10 lines, and of those with an answer, how many had it above the answer. `search` shows such lines marked, as the spec allows; `context` leaves them out. Times are the median over all questions, as Ana, of the median of three runs.
+126 questions, 103 with an answer and 12 that should match nothing (the other 11, about what only others see, have none Ana may get). Recall is the share of a question's answers in the first 5 or 10 lines, MRR the mean of 1 over the line of the first answer. "Stale" counts questions not about the past with something no longer true, or archived, in the first 10 lines, and of those with an answer, how many had it above the answer. `search` shows such lines marked, as the spec allows; `context` leaves them out. The stale counts depend on how ties are ordered: a rerun gave 15 against 12 for `search` and 31 against 27 for BM25, while recall@10 stayed the same and MRR moved by 0.02 at most. Times are the median over all questions, as Ana, of the median of three runs. `search` and `context` are timed over MCP, with the HTTP round trip; the other rows run in process, so BM25's 15 ms compares with the 8 ms of `search`'s queries alone.
 
 | Approach | Recall@5 | Recall@10 | MRR | Says nothing, of 12 | Privacy failures | Stale in the first 10 | ...above the answer | Median ms |
 |---|---|---|---|---|---|---|---|---|
 | `search`, as on main | 77% | 80% | 0.66 | 0 | 0 | 12 | 3 | 13 |
 | `context` without a space, as on main | 78% | 80% | 0.71 | 6 | 0 | 1 | 0 | 15 |
+| `search`'s queries alone, in process | 77% | 80% | 0.66 | 0 | 0 | 12 | 3 | 8 |
 | context's ranking: telling words, `ts_rank` | 77% | 83% | 0.69 | 6 | 0 | 0 | 0 | 8 |
 | `search`, query split as the notes are | 77% | 80% | 0.68 | 0 | 0 | 11 | 3 | 7 |
 | BM25, Ana's statistics | 81% | 85% | 0.73 | 0 | 0 | 27 | 4 | 15 |
@@ -141,7 +142,7 @@ Semantic search and the fused rankings use no statistics across documents, so th
 
 ### Latency at scale
 
-Twelve queries as Ana: six whole requests, as `context` gets them, and six sets of keywords, as assistants write them for `search`. The big sample is the one `npm run sample -- big` makes, where Ana sees 31,712 items and 100,050 sources in 101 spaces, timed three times after a warm-up. The synthetic space has 16,000 pages with 176,012 items of about 4 KB, 758 MB of text, a tenth of them Cara's own, and 32,000 sources, timed once after a warm-up for Homing's search and once for BM25, which runs up to minutes.
+Twelve queries as Ana: six whole requests, as `context` gets them, and six sets of keywords, as assistants write them for `search`. The big sample is the one `npm run sample -- big` makes, where Ana sees 31,712 items and 100,050 sources in 101 spaces, timed three times after a warm-up. The synthetic space has 16,000 pages with 176,012 items of about 4 KB, 758 MB of text, a tenth of them Cara's own, and 32,000 sources, timed once after a warm-up for Homing's search, and once without one for BM25, which runs up to minutes. BM25's times there are cold, and a warm run would be somewhat faster.
 
 | Milliseconds | Big sample, median | p95 | Synthetic, median | p95 |
 |---|---|---|---|---|
@@ -170,7 +171,7 @@ The synthetic space is a worst case for the second point: its words are random, 
 
 ### Changed along the way
 
-BM25 that doesn't let words in more than half of the user's documents make candidates was added after the first run, to give BM25 a fair chance at scale, where "the" makes every document a candidate. It changed nothing in the world, where no word is that common. The big sample's first timing came right after it was made, before PostgreSQL had analyzed its tables, when one query took 9.4 s; the times here are from after `ANALYZE`.
+BM25 that doesn't let words in more than half of the user's documents make candidates was added after the first run, to give BM25 a fair chance at scale, where "the" makes every document a candidate. It changed nothing in the world, where no word is that common. The big sample's first timing came right after it was made, before PostgreSQL had analyzed its tables, when one query took 9.4 s; the times here are from after `ANALYZE`, which the scale command now runs first. After review, the run also checks row-level security against the access rule written out by hand, and stops if the prototype's `ts_rank` ever differs from `search`; both held. The paid calls were timed again with the run's own prompt, through the new `latency` command.
 
 ### Limitations
 
@@ -188,10 +189,11 @@ BM25 that doesn't let words in more than half of the user's documents make candi
 |---|---|---|
 | Pilot: 109 texts embedded with each model, 18 interpretations | 22 | 0.0018 |
 | Full run: 1,909 texts embedded with each model, 234 interpretations | 274 | 0.0255 |
-| Latency of 22 interpretations and 22 query embeddings | 44 | 0.0016 |
-| **Total** | **340** | **0.029** |
+| A first timing of the paid calls, with a shorter prompt, not used | 44 | 0.0016 |
+| `latency`: 22 interpretations with the run's prompt and 22 query embeddings | 44 | 0.0021 |
+| **Total** | **384** | **0.031** |
 
-The ledger's total went from USD 34.33 to USD 34.35, under the USD 3 set for this benchmark and the cap of USD 50; the key's own usage since the first run went from USD 34.27 to USD 34.29.
+The ledger's total went from USD 34.33 to USD 34.36, under the USD 3 set for this benchmark and the cap of USD 50; the key's own usage since the first run went from USD 34.27 to USD 34.30.
 
 ## Context without a space, and who a share reaches, 21 October 2026
 
