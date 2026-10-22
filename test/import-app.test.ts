@@ -6,12 +6,18 @@
 // damaged, changed or too big is refused, with nothing created.
 
 import assert from 'node:assert/strict';
-import { request } from 'node:http';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { request, type IncomingMessage } from 'node:http';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { Readable } from 'node:stream';
 import { after, before, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
-import { authDatabaseUrl } from '../src/db.ts';
-import { mentions } from '../src/bundle.ts';
+import postgres from 'postgres';
+import { authDatabaseUrl, databaseUrl } from '../src/db.ts';
+import { inspect, mentions } from '../src/bundle.ts';
+import { discard, discardStale, receive } from '../src/import.ts';
 import { bundleFiles, bundleManifest, rewriteReferences, type Manifest } from '../src/export.ts';
 import { addInclude, addRule, removeRule } from '../src/guidance.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
@@ -376,7 +382,8 @@ test('nobody else sees anything of an import', async () => {
 test('an export that’s damaged, changed or too big is refused, with nothing created', async () => {
   const { manifest } = await exported(ana, acme);
   const spaces = await spacesOf(ana);
-  const [{ n: imports }] = await admin`select count(*)::int as n from imports`;
+  const anasImports = async () => (await admin`select count(*)::int as n from imports where imported_by = ${ana.id}`)[0].n as number;
+  const imports = await anasImports();
   const bundle = (change: (m: Manifest) => void, files: [string, string][] = []) => {
     const copy = structuredClone(manifest);
     change(copy);
@@ -395,6 +402,17 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
     ['a removal that reaches elsewhere than its rule', bundle((m) => { const removal = m.items.find((item) => item.kind === 'removed')!; removal.reachesDown = !removal.reachesDown; }), /reaches further or less far/],
     ['a wrong type', bundle((m) => Object.assign(m.items[0], { body: 42 })), /changed or damaged/],
     ['a name nobody can see', bundle((m) => { m.spaces[1].name = 'Web\u202esite'; }), /name Homing doesn’t take/],
+    // What the database would refuse as it's written, found before anything is.
+    ['a source it doesn’t hold', bundle((m) => { m.items.find((item) => item.sources.length)!.sources = [crypto.randomUUID()]; }), /cites a source that isn’t in the export/],
+    ['a source twice', bundle((m) => { m.sources.push({ ...m.sources[0] }); }), /appears twice/],
+    ['a task twice', bundle((m) => { m.tasks.push({ ...m.tasks[0] }); }), /appears twice/],
+    ['two titles on one side of a page', bundle((m) => { const title = m.items.find((item) => item.kind === 'title' && item.body === 'Launch plan')!; m.items.push({ ...title, id: crypto.randomUUID(), body: 'Launch' }); }), /two titles/],
+    ['a page gathered twice', bundle((m) => { m.gathered.push({ ...m.gathered[0] }); }), /gathers .* twice/],
+    ['a page gathered for everyone without a title everyone sees', bundle((m) => { m.gathered.find((gathering) => gathering.visibility === 'private')!.visibility = 'shared'; }), /without a title/],
+    ['a time before the year 1', bundle((m) => { m.items[0].createdAt = '0000-12-31T00:00:00Z'; }), /before the year 1/],
+    ['a day that doesn’t exist', bundle((m) => { m.tasks[0].due = '2026-02-30'; }), /tasks\.due invalid iso date/],
+    ['a null character', bundle((m) => { m.items.find((item) => item.kind === 'text')!.body = 'Gunnar\u0000'; }), /character that can’t be kept/],
+    ['half a character', bundle((m) => { m.sources[0].excerpt = 'Gunnar \ud83d'; }), /character that can’t be kept/],
     ['too much unpacked', zip([['homing.json', ' '.repeat(33 * 1024 * 1024)]]), /larger than Homing imports at once/],
     ['too much unpacked, though it says otherwise', zip([['homing.json', ' '.repeat(33 * 1024 * 1024)]]).then(understated), /larger than Homing imports at once/],
     ['a damaged zip', damaged(), /damaged/],
@@ -419,7 +437,7 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
   assert.equal(huge, 413);
   // Nothing was created by any of them.
   assert.equal(await spacesOf(ana), spaces);
-  assert.equal((await admin`select count(*)::int as n from imports`)[0].n, imports);
+  assert.equal(await anasImports(), imports);
   // Nobody signed out imports anything.
   const stranger = new Browser(homing.url);
   assert.equal((await stranger.fetch('/api/import?name=Acme', { method: 'POST' })).status, 401);
@@ -449,6 +467,19 @@ test('an export is held to what Homing keeps, and to rules that hide nothing', a
   for (const type of ['constructor', 'toString', '__proto__']) {
     const answer = await upload(ana, await bundle((m) => { m.pages.find((page) => page.type === 'person')!.type = type; }));
     assert.equal(answer.status, 200, type);
+  }
+  // What a rule said before, or a rule that's gone, is history nobody follows, so it may hold what
+  // a rule now can't, as it may in Homing, and once retyped a rule exports and imports again.
+  for (const [what, change] of [
+    ['a rule that’s gone', (m: Manifest) => { item(m, 'Use the old logo.').body = 'Use the old​ logo.'; }],
+    ['what a rule said before', (m: Manifest) => {
+      const rule = item(m, 'Write dates as YYYY-MM-DD.');
+      m.revisions.push({ item: rule.id, visibility: 'shared', body: 'Write dates as ‮DD-MM-YYYY.', author: rule.author, writtenAt: rule.createdAt, replacedAt: rule.writtenAt });
+    }],
+  ] as const) {
+    const answer = await upload(ana, await bundle(change));
+    assert.equal(answer.status, 200, what);
+    assert.ok(!JSON.stringify(answer.body.rules).includes('​') && !JSON.stringify(answer.body.rules).includes('‮'), what);
   }
   const refusals: [string, (m: Manifest) => void, RegExp][] = [
     ['knowledge too long', (m) => { item(m, 'Prefers calls before nine.').body = 'x'.repeat(20_001); }, /longer than Homing keeps/],
@@ -546,6 +577,56 @@ test('references are found in time in step with the text, whatever it holds', as
   assert.ok(performance.now() - start < 100, `${Math.round(performance.now() - start)} ms`);
 });
 
+test('reading an export says how far it’s got after each file, and names what rules refer to in time in step with it', async () => {
+  const { manifest } = await exported(ana, acme);
+  const m = structuredClone(manifest);
+  // Forty thousand items, then rules that refer to a thousand things outside the export, and to an item before them.
+  const page = m.items.find((entry) => entry.kind === 'title' && entry.body === 'Launch plan')!.page;
+  const model = m.items.find((entry) => entry.page === page && entry.kind === 'text' && entry.visibility === 'shared')!;
+  for (let n = 0; n < 40_000; n++) m.items.push({ ...model, id: crypto.randomUUID(), body: `Launch note ${n}.`, supersedes: null, publishedFrom: null, published: null, sources: [], imported: undefined });
+  const rule = m.items.find((entry) => entry.body === 'Write dates as YYYY-MM-DD.')!;
+  for (let n = 0; n < 12; n++) {
+    const elsewhere = Array.from({ length: 90 }, () => `page:${crypto.randomUUID()}`).join(' ');
+    m.items.push({ ...rule, id: crypto.randomUUID(), body: `Check ${elsewhere} and item:${model.id}.` });
+  }
+  const folder = await mkdtemp(join(tmpdir(), 'homing-inspect-'));
+  try {
+    const path = join(folder, 'export.zip');
+    const { zipped, files } = await inFiles(m, 10_000);
+    await writeFile(path, zipped);
+    const calls: { done: number; total: number; at: number }[] = [];
+    const started = performance.now();
+    const { preview } = await inspect(path, '', (done, total) => calls.push({ done, total, at: performance.now() }));
+    const ended = performance.now();
+    // Once it's open, and then after each file it reads.
+    const read = calls.findIndex((call) => call.done === call.total);
+    assert.equal(read, files);
+    // What the rules refer to in the export is named, found by reading again only what holds it, in less time than reading it all.
+    assert.match(preview, /and item “\[Gunnar\]\(page:[^)]+\) signs off the launch\.”/);
+    assert.ok(ended - calls[read].at < calls[read].at - started, `${Math.round(ended - calls[read].at)} ms naming, ${Math.round(calls[read].at - started)} ms reading`);
+  } finally {
+    await rm(folder, { recursive: true });
+  }
+});
+
+/** A manifest as a zip whose long lists come in files of at most so many lines, and how many files an import reads. */
+async function inFiles(m: Manifest, lines: number) {
+  const one = new Map(bundleFiles(m));
+  const header = JSON.parse(one.get('homing.json')!) as { files: Record<string, string[]> };
+  const files: [string, string][] = [];
+  for (const list of Object.keys(header.files)) {
+    const all = header.files[list].flatMap((file) => one.get(file)!.split('\n').filter(Boolean));
+    header.files[list] = [];
+    for (let at = 0; at < all.length; at += lines) {
+      const name = `homing/${list}-${String(header.files[list].length + 1).padStart(5, '0')}.jsonl`;
+      header.files[list].push(name);
+      files.push([name, `${all.slice(at, at + lines).join('\n')}\n`]);
+    }
+  }
+  const read = Object.entries(header.files).filter(([list]) => list !== 'links').reduce((sum, [, names]) => sum + names.length, 0);
+  return { zipped: await zip([['homing.json', JSON.stringify(header)], ...files]), files: read };
+}
+
 test('an export still on its way holds up nobody else’s', async () => {
   const { bytes } = await exported(ana, acme);
   // Cara starts sending one, and her connection stalls.
@@ -594,11 +675,11 @@ test('an export made to be heavy is refused, and Homing keeps answering meanwhil
   assert.ok(heavy.length < 1024 * 1024);
   const delay = monitorEventLoopDelay({ resolution: 10 });
   delay.enable();
-  // Read one at a time: another at the same moment waits its turn.
+  // Read one at a time: another at the same moment waits its turn, and is read then.
   const answers = await Promise.all([upload(ana, heavy), upload(cara, heavy)]);
   delay.disable();
-  assert.deepEqual(answers.map((answer) => answer.status).sort(), [400, 429]);
-  assert.match(answers.find((answer) => answer.status === 400)!.body.message, /larger than Homing imports at once/);
+  assert.deepEqual(answers.map((answer) => answer.status), [400, 400]);
+  for (const answer of answers) assert.match(answer.body.message, /larger than Homing imports at once/);
   // Homing's own work never waited more than a moment at a time.
   assert.ok(delay.max < 1e9, `${Math.round(delay.max / 1e6)} ms`);
   assert.equal((await ana.browser.json('/api/spaces')).status, 200);
@@ -631,21 +712,44 @@ async function stored() {
   return { ...row };
 }
 
+/** Waits until the condition holds, as long as an import may take to get going. */
+async function waitFor(condition: () => Promise<boolean>) {
+  for (const started = Date.now(); !(await condition()); ) {
+    if (Date.now() - started > 20_000) throw new Error('timed out');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** Holds up every import as it writes its first part, while what's given runs. */
+function holdingImports<T>(meanwhile: () => Promise<T>): Promise<T> {
+  return admin.begin(async (hold) => {
+    await hold`lock table page_archives in exclusive mode`;
+    return meanwhile();
+  }) as Promise<T>;
+}
+
+/** Whether the person has an import under way: its spaces are made, and hidden. */
+const begun = async (who: Member) => (await admin`select count(*)::int as n from imports where imported_by = ${who.id} and not done`)[0].n > 0;
+
 test('an import that fails late leaves nothing behind, and nothing of it ever shows', async () => {
   const { manifest } = await exported(ana, acme);
   const m = structuredClone(manifest);
-  // Twelve thousand more items, read in several batches, the last of which cites a source the export doesn't hold.
+  // Twelve thousand more items, written in several batches.
   const page = m.items.find((entry) => entry.kind === 'title' && entry.body === 'Launch plan')!.page;
   const model = m.items.find((entry) => entry.page === page && entry.kind === 'text' && entry.visibility === 'shared')!;
   for (let n = 0; n < 12_000; n++) m.items.push({ ...model, id: crypto.randomUUID(), body: `Launch note ${n}.`, supersedes: null, publishedFrom: null, published: null, sources: [], imported: undefined });
-  m.items.at(-1)!.sources = [crypto.randomUUID()];
   const before = await stored();
   const preview = await upload(ana, await exportOf(m));
   assert.equal(preview.status, 200, JSON.stringify(preview.body));
-  assert.equal((await start(ana, 'Acme, late', preview.body.hash)).status, 202);
+  // While it's written, Ana gives another space its name, so it fails only at the end, as it would show.
+  await holdingImports(async () => {
+    assert.equal((await start(ana, 'Acme, late', preview.body.hash)).status, 202);
+    await waitFor(() => begun(ana));
+    await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Acme, late' }));
+  });
   const end = await ended(ana);
   assert.equal(end.state, 'failed');
-  assert.match(end.message, /doesn’t hold together/);
+  assert.match(end.message, /already a space called Acme, late/);
   assert.deepEqual(await stored(), before);
 });
 
@@ -681,8 +785,116 @@ test('an import that stops on the way is never seen, and is taken out', async ()
   await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`insert into content (page_id, space_id, kind, body) values (${page}, ${top}, 'text', 'Sneaked in')`), refused);
   // Taken out when Homing starts again, once nothing has written to it for a while.
   await admin`update imports set touched_at = now() - interval '1 hour' where id = ${made}`;
-  assert.ok((await admin`select imports_discard_stale(interval '10 minutes') as n`)[0].n >= 1);
+  await discardStale(db);
   assert.deepEqual(await stored(), before);
+});
+
+test('taking out what stopped on the way leaves alone an import still under way, whoever’s it is', async () => {
+  const now = new Date().toISOString();
+  const [top, page] = [crypto.randomUUID(), crypto.randomUUID()];
+  const made = await as({ ...ana, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({
+    from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
+    spaces: [{ id: top, name: 'Still coming', parent: null, closed: false, archivedAt: null, imported: {} }],
+  })}) as id`)[0].id);
+  await as({ ...ana, direct: true }, (s) => s.tx`select import_load(${made}::uuid, ${s.tx.json({
+    pages: [{ id: page, space: top, type: null, createdAt: now, archivedAt: null, imported: {} }],
+    items: [{ id: crypto.randomUUID(), page, space: top, kind: 'title', path: null, body: 'Coming notes', private: false, supersedes: null, reachesDown: false, publishedFrom: null, publishedAt: null, createdAt: now, writtenAt: now, imported: {} }],
+  })})`);
+  // Homing tidies up, as when it starts, and its own role asks to take this one out as if it had stopped.
+  await discardStale(db);
+  assert.equal((await db`select import_discard_stale(${made}::uuid, 5000) as done`)[0].done, true);
+  // It's all still there, and finishes.
+  assert.equal((await as({ ...ana, direct: true }, (s) => s.tx<{ id: string }[]>`select import_finish(${made}::uuid, ${s.tx.json({ includes: [] })}) as id`))[0].id, top);
+  assert.ok(((await ana.browser.json('/api/spaces')).body.spaces as { id: string }[]).some((space) => space.id === top));
+  assert.equal((await admin`select count(*)::int as n from content where space_id = ${top}`)[0].n, 1);
+});
+
+test('an import too big to take out in one statement is taken out a step at a time', async () => {
+  const before = await stored();
+  const now = new Date().toISOString();
+  const spaces = [crypto.randomUUID(), crypto.randomUUID()];
+  const made = await as({ ...ana, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({
+    from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
+    spaces: [{ id: spaces[0], name: 'Too big at once', parent: null, closed: false, archivedAt: null, imported: {} }, { id: spaces[1], name: 'Below', parent: spaces[0], closed: false, archivedAt: null, imported: {} }],
+  })}) as id`)[0].id);
+  // Thirty thousand items, with sources, citations, earlier versions and tasks, written a thousand at a time, as loading does.
+  for (let part = 0; part < 30; part++) {
+    await admin.begin(async (s) => {
+      await s`select set_config('homing.person_id', ${ana.id}, true), set_config('homing.direct', 'true', true)`;
+      await s`create temp table part on commit drop as select gen_random_uuid() as id, (${s.array(spaces)}::uuid[])[1 + n % 2] as space_id from generate_series(1, 100) n`;
+      await s`insert into pages (id, space_id, imported) select id, space_id, '{}' from part`;
+      await s`insert into content (page_id, space_id, kind, body, imported) select id, space_id, 'title', 'Page ' || id, '{}' from part`;
+      await s`insert into content (page_id, space_id, kind, body, imported) select id, space_id, 'text', 'Note ' || n || ' on ' || id, '{}' from part, generate_series(1, 9) n`;
+      await s`create temp table cited on commit drop as select gen_random_uuid() as id, n from generate_series(1, 250) n`;
+      await s`insert into sources (id, space_id, excerpt, imported) select id, ${spaces[0]}::uuid, 'Email ' || n, '{}' from cited`;
+      await s`
+        insert into citations (content_id, source_id)
+        select c.id, cited.id from (select id, row_number() over () as n from content where page_id in (select id from part) and kind = 'text') c
+        join cited on cited.n = c.n
+      `;
+      await s`insert into revisions (content_id, space_id, body, written_at, replaced_at, imported) select id, space_id, 'Before', now(), now(), '{}' from content where page_id in (select id from part) and kind = 'text' limit 250`;
+      await s`insert into tasks (space_id, title, imported) select ${spaces[0]}::uuid, 'Follow up ' || n, '{}' from generate_series(1, 100) n`;
+    });
+  }
+  // A statement may take a fraction of a second here, too little to take it all out at once.
+  const timeout = 400;
+  await assert.rejects(admin.begin(async (s) => {
+    await s.unsafe(`set local statement_timeout = ${timeout}`);
+    await s.unsafe(`do $$ declare made uuid[] := '{${spaces.join(',')}}'; begin
+      delete from tasks where space_id = any (made);
+      delete from revisions where space_id = any (made);
+      delete from citations ci using content c where c.id = ci.content_id and c.space_id = any (made);
+      delete from content where space_id = any (made);
+      delete from sources where space_id = any (made);
+      delete from pages where space_id = any (made);
+    end $$`);
+  }), { code: '57014' });
+  const slow = postgres(inTestDatabase(databaseUrl), { connection: { statement_timeout: timeout }, transform: postgres.camel, onnotice: () => {} });
+  try {
+    assert.equal((await slow`show statement_timeout`)[0].statementTimeout, `${timeout}ms`);
+    await discard(slow, ana.id, made, 250);
+  } finally {
+    await slow.end();
+  }
+  assert.deepEqual(await stored(), before);
+});
+
+test('one person can’t import what another looked at, by its fingerprint', async () => {
+  const { bytes } = await exported(ana, acme);
+  const preview = await upload(ana, bytes);
+  const bens = await spacesOf(ben);
+  const taken = await start(ben, 'Acme, Ben’s', preview.body.hash);
+  assert.equal(taken.status, 400);
+  assert.match(taken.body.message, /isn’t the export you looked at/);
+  assert.equal(await spacesOf(ben), bens);
+  // Ana still can.
+  assert.equal((await start(ana, 'Acme, Ana’s', preview.body.hash)).status, 202);
+  assert.equal((await ended(ana)).state, 'done');
+});
+
+test('an export sent while another is read waits its turn, and is read', async () => {
+  const { bytes } = await exported(ana, acme);
+  const preview = await upload(ana, bytes);
+  const { read } = await holdingImports(async () => {
+    // Ana's import has the turn to read, and is held up as it writes.
+    assert.equal((await start(ana, 'Acme, first', preview.body.hash)).status, 202);
+    await waitFor(() => begun(ana));
+    // Cara's export arrives meanwhile, and waits, saying so.
+    const read = upload(cara, bytes);
+    await waitFor(async () => (await cara.browser.json('/api/import')).body.state === 'waiting');
+    return { read };
+  });
+  assert.equal((await read).status, 200);
+  assert.equal((await ended(ana)).state, 'done');
+});
+
+test('an upload the disk can’t keep is refused, with nothing kept', async () => {
+  // Where the folder should be, there's a file, so nothing can be written in it.
+  const where = join(await mkdtemp(join(tmpdir(), 'homing-upload-')), 'not-a-folder');
+  await writeFile(where, '');
+  const sent = Object.assign(Readable.from([Buffer.from('PK\x03\x04 an export')]), { headers: {} }) as unknown as IncomingMessage;
+  assert.equal(await receive(sent, where), 'not kept');
+  await rm(dirname(where), { recursive: true });
 });
 
 test('a big space comes back whole, a part at a time', async () => {

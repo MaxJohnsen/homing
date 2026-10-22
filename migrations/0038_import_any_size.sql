@@ -38,15 +38,22 @@ as $$
 $$;
 
 -- Taking an import out goes through what points to its rows, so what points
--- there is found by key, not by reading every row.
+-- there is found by key, not by reading every row. Its spaces go last, with
+-- the lock that changing who is in a space takes, so what points to a space
+-- is found by key too, however much the rest of Homing holds.
 create index proposals_item on proposals (item_id) where item_id is not null;
 create index proposals_page on proposals (page_id) where page_id is not null;
 create index proposals_task on proposals (task_id) where task_id is not null;
+create index proposals_include on proposals (include_id) where include_id is not null;
+create index proposals_space_created on proposals (space_created) where space_created is not null;
 create index includes_skill on includes (skill_included) where skill_included is not null;
 create index proposal_includes_skill on proposal_includes (skill_included) where skill_included is not null;
 create index proposal_includes_space on proposal_includes (space_included) where space_included is not null;
 create index revisions_space on revisions (space_id);
 create index gathered_space on gathered (space_id);
+create index pages_space on pages (space_id);
+create index tasks_space on tasks (space_id);
+create index space_access_space on space_access (space_id);
 
 -- An export reads a space's sources a thousand at a time, in the order they
 -- were kept, each thousand after the last.
@@ -285,60 +292,94 @@ begin
 end
 $$;
 
--- Takes out everything an unfinished import put in: only its own rows, all
--- of them in the spaces it made, which nobody else could see or write in.
-create function import_take_out(import uuid) returns void
-language plpgsql security definer set search_path = public, pg_temp
+-- Takes out a step of what an unfinished import put in, and says whether it's
+-- all out: at most so many rows of one kind, or the items one load wrote. Each
+-- step is a transaction of its own, so taking out a big import never comes
+-- near the database's limit for a statement. What points to something goes
+-- before it does, and items go in the reverse of the order they came in, a
+-- load at a time: each load was a transaction of its own, and what an item
+-- replaced or was shared from came in before it or with it. Only the
+-- import's own rows, all in the spaces it made, which nobody else could see
+-- or write in, and which stay hidden until the last step takes them out, in a
+-- moment, with the lock that changing who is in a space takes. The checks on
+-- what points to each row keep their plans, and read by key.
+create function import_take_out(import uuid, step integer) returns boolean
+language plpgsql security definer set search_path = public, pg_temp set plan_cache_mode = auto set enable_seqscan = off
 as $$
 declare
   made uuid[] := array(select space_id from importing where import_id = import);
 begin
   if not exists (select from imports i where i.id = import and not i.done) then
-    return;
+    return true;
   end if;
-  delete from includes where space_id = any (made);
-  delete from citations ci using content c where c.id = ci.content_id and c.space_id = any (made);
-  delete from revisions where space_id = any (made);
-  delete from gathered where space_id = any (made);
-  delete from page_archives a using pages p where p.id = a.page_id and p.space_id = any (made);
-  delete from content where space_id = any (made);
-  delete from sources where space_id = any (made);
-  delete from tasks where space_id = any (made);
-  delete from pages where space_id = any (made);
+  step := greatest(step, 1);
+  delete from includes where id = any (array(select id from includes where space_id = any (made) limit step));
+  if found then return false; end if;
+  delete from tasks where id = any (array(select id from tasks where space_id = any (made) limit step));
+  if found then return false; end if;
+  delete from page_archives where ctid = any (array(
+    select a.ctid from page_archives a join pages p on p.id = a.page_id where p.space_id = any (made) limit step
+  ));
+  if found then return false; end if;
+  delete from gathered where ctid = any (array(select ctid from gathered where space_id = any (made) limit step));
+  if found then return false; end if;
+  delete from revisions where ctid = any (array(select ctid from revisions where space_id = any (made) limit step));
+  if found then return false; end if;
+  -- An import cites only sources it brings.
+  delete from citations where ctid = any (array(
+    select ci.ctid from sources s join citations ci on ci.source_id = s.id where s.space_id = any (made) limit step
+  ));
+  if found then return false; end if;
+  delete from content
+  where space_id = any (made)
+    and xmin = (select c.xmin from content c where c.space_id = any (made) order by age(c.xmin) limit 1);
+  if found then return false; end if;
+  delete from sources where id = any (array(select id from sources where space_id = any (made) limit step));
+  if found then return false; end if;
+  delete from pages where id = any (array(select id from pages where space_id = any (made) limit step));
+  if found then return false; end if;
+
   delete from importing where import_id = import;
   delete from memberships where space_id = any (made);
   delete from space_access where space_id = any (made);
   delete from imports where id = import;
   delete from spaces where id = any (made);
+  return true;
 end
 $$;
 
--- Takes out the person's own import under way, as when it fails.
-create function import_discard(import uuid) returns void
+-- Takes out a step of the person's own import under way, as when it fails,
+-- and says whether it's all out.
+create function import_discard(import uuid, step integer) returns boolean
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 begin
   if not exists (select from imports i where i.id = import and i.imported_by = current_person_id() and not i.done) then
     raise exception 'there''s no import of yours under way there' using errcode = 'insufficient_privilege';
   end if;
-  perform import_take_out(import);
+  return import_take_out(import, step);
 end
 $$;
 
--- Takes out every import that stopped on the way, which nothing has written
--- to for a while, as when Homing stopped. They were never shown.
-create function imports_discard_stale(quiet interval) returns integer
+-- The imports that stopped on the way, as when Homing stopped: unfinished,
+-- and nothing has written to them for 10 minutes, while one under way writes
+-- at least every minute or so. They were never shown.
+create function imports_stale() returns setof uuid
+language sql stable security definer set search_path = public, pg_temp
+as $$
+  select id from imports where not done and coalesce(touched_at, imported_at) < clock_timestamp() - interval '10 minutes' order by imported_at
+$$;
+
+-- Takes out a step of an import that stopped on the way, and says whether
+-- it's all out. One still under way, anyone's, is left as it is.
+create function import_discard_stale(import uuid, step integer) returns boolean
 language plpgsql security definer set search_path = public, pg_temp
 as $$
-declare
-  stale uuid;
-  n integer := 0;
 begin
-  for stale in select id from imports where not done and coalesce(touched_at, imported_at) < clock_timestamp() - quiet loop
-    perform import_take_out(stale);
-    n := n + 1;
-  end loop;
-  return n;
+  if not exists (select from imports_stale() id where id = import) then
+    return true;
+  end if;
+  return import_take_out(import, step);
 end
 $$;
 
@@ -357,5 +398,5 @@ $$;
 -- wrote it all at once goes.
 drop function import_bundle(jsonb);
 
-revoke execute on function import_under_way, import_begin, import_load, import_finish, import_take_out, import_discard, imports_discard_stale, import_settle from public;
-grant execute on function import_begin, import_load, import_finish, import_discard, imports_discard_stale, import_settle to homing_app;
+revoke execute on function import_under_way, import_begin, import_load, import_finish, import_take_out, import_discard, imports_stale, import_discard_stale, import_settle from public;
+grant execute on function import_begin, import_load, import_finish, import_discard, imports_stale, import_discard_stale, import_settle to homing_app;

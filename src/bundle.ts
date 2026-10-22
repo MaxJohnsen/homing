@@ -22,10 +22,13 @@ const longest = { knowledge: 20_000, overview: 2_000, title: 200, rule: 4_000, f
 export class ImportRefused extends Error {
   /** The form field it's about, if any. */
   field?: string;
+  /** The reason in words for whoever is exporting, when what keeps it from importing is something they can change. */
+  exporter?: string;
 
-  constructor(message: string, field?: string) {
+  constructor(message: string, field?: string, exporter?: string) {
     super(message);
     this.field = field;
+    this.exporter = exporter;
   }
 }
 
@@ -39,8 +42,11 @@ export const sizeRefusals = new Set([tooLarge, tooManyRules, tooMuchToShow, tooM
 const apart = (problem: string) => new ImportRefused(`That export doesn’t hold together, so Homing won’t import it: ${problem}.`);
 
 const id = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-const time = z.iso.datetime({ offset: true });
-const text = (max: number) => z.string().max(max);
+// A day on the calendar, from the year 1, as Homing keeps them.
+const time = z.iso.datetime({ offset: true }).refine((at) => !at.startsWith('0000'), 'is before the year 1');
+const day = z.iso.date().refine((at) => !at.startsWith('0000'), 'is before the year 1');
+// Text as Homing can keep it: without the null character, or half of a pair that makes one character.
+const text = (max: number) => z.string().max(max).refine((value) => value.isWellFormed() && !value.includes('\0'), 'has a character that can’t be kept');
 const name = text(longest.name).nullable();
 const key = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
 const authorSchema = z.strictObject({ by: z.enum(['person', 'agent', 'routine']), person: key.nullable(), agent: name });
@@ -90,7 +96,7 @@ const lineSchemas = {
   pageArchives: z.strictObject({ page: id, archived: z.boolean(), author: authorSchema, at: time }),
   tasks: z.strictObject({
     id, space: id, visibility: side, title: text(longest.task), description: text(longest.description).nullable(),
-    due: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable(), assignee: key.nullable(),
+    due: day.nullable(), assignee: key.nullable(),
     done: z.strictObject({ at: time, by: key.nullable() }).nullable(), author: authorSchema, createdAt: time, updatedAt: time, imported,
   }),
 };
@@ -135,6 +141,8 @@ export class Bundle {
   /** How much there is to read, and how much has been, unpacked. */
   readonly total: number;
   done = 0;
+  /** Told after each file of a long list is read, so whoever waits knows it's still going. */
+  onFile: () => void = () => {};
   private readonly zip: ZipReader;
 
   private constructor(zip: ZipReader, header: Header, total: number) {
@@ -152,6 +160,8 @@ export class Bundle {
       zipRefusal(error);
     }
     try {
+      // As an upload is.
+      if (zip.size > importLimits.upload) throw new ImportRefused(tooLarge);
       let raw: Buffer;
       try {
         raw = zip.read('homing.json', importLimits.header);
@@ -192,8 +202,8 @@ export class Bundle {
     }
   }
 
-  /** A long list's lines, as text, a file at a time. */
-  *raw(list: ListName): Generator<string> {
+  /** A long list's lines, as text, a file at a time, counting what's read unless it's read again. */
+  *raw(list: ListName, again = false): Generator<string> {
     for (const file of this.header.files[list]) {
       let chunk: Buffer;
       try {
@@ -205,8 +215,9 @@ export class Bundle {
       let objects = 0;
       for (const byte of chunk) if (byte === 0x7b || byte === 0x5b) objects++;
       if (objects > importLimits.objects) throw new ImportRefused(tooLarge);
-      this.done += chunk.length;
+      if (!again) this.done += chunk.length;
       for (const line of chunk.toString('utf8').split('\n')) if (line) yield line;
+      this.onFile();
     }
   }
 
@@ -248,6 +259,14 @@ function hiddenIn(body: string, kind: string): boolean {
   return controls.test(body) || /\p{Cf}/u.test((kind === 'file' ? body.replace(/^\ufeff/, '') : body).replace(new RegExp(kept, 'g'), ''));
 }
 
+/** A text's first few words, on one line, without what hides in it, to say which one it is. */
+function firstWords(body: string): string {
+  const words = plainName(body);
+  if (words.length <= 60) return words;
+  const cut = words.slice(0, 60);
+  return `${cut.slice(0, cut.lastIndexOf(' ') > 30 ? cut.lastIndexOf(' ') : 60)}…`;
+}
+
 /** Names in an order where the same name, as Homing compares names, comes together. */
 const byName = new Intl.Collator('en', { sensitivity: 'accent' }).compare;
 
@@ -266,6 +285,15 @@ const itemPrivate = (packed: number) => Math.floor(packed / 8) % 2 === 1;
 const itemReaches = (packed: number) => Math.floor(packed / 16) % 2 === 1;
 const itemReplaced = (packed: number) => Math.floor(packed / 32) % 2 === 1;
 const itemPage = (packed: number) => Math.floor(packed / (64 * 2 ** 20));
+
+/** A rule or a skill's file with characters that hide what it says, until something replaces it. */
+interface Hiding {
+  kind: Kind;
+  space: number;
+  page: string;
+  /** Its first words, or the file's path, to say which it is. */
+  what: string;
+}
 
 /** A skill page's parts as they come, to check once all of it has. */
 interface SkillParts {
@@ -290,11 +318,16 @@ export class Reader {
   private readonly pages = new Map<string, number>();
   private pageSpace = new Int32Array(1024);
   private pageSort = new Uint8Array(1024);
+  /** Which sides each page has a title on: 1 for the exporter's own, 2 for the shared side. */
   private pageTitled = new Uint8Array(1024);
   private readonly titles = new Map<string, string>();
   private readonly items = new Map<string, number>();
+  private readonly sourceIds = new Set<string>();
+  private readonly taskIds = new Set<string>();
+  private readonly gatherings = new Set<string>();
   private readonly skills = new Map<string, SkillParts>();
   private readonly once = new Set<string>();
+  private readonly hiding = new Map<string, Hiding>();
   /** For the preview: what's in each space, what's counted on each side, the rules and what they refer to. */
   private readonly sources: number[];
   private readonly tasks: number[];
@@ -472,6 +505,8 @@ export class Reader {
         return this.item(line as Line<'items'>, add);
       case 'sources': {
         const source = line as Line<'sources'>;
+        if (this.sourceIds.has(source.id)) throw apart(`${source.id} appears twice`);
+        this.sourceIds.add(source.id);
         this.sources[this.space(source.space, source.id)]++;
         this.author(source.author);
         if (this.mentioned.has(source.id)) this.found(source.id, oneLineTitle(source.reference ?? source.excerpt));
@@ -488,8 +523,8 @@ export class Reader {
         const packed = this.items.get(revision.item);
         if (packed === undefined) throw apart('an earlier version belongs to an item that isn’t in the export');
         const kind = itemKind(packed);
+        // What it said before is history, which nobody follows, so it may hold what a rule now can't.
         if (this.tooLong(kind, this.pageSort[itemPage(packed)], revision.body)) throw apart(`an earlier version of item ${revision.item} is longer than Homing keeps`);
-        if ((kind === 'requirement' || kind === 'preference' || kind === 'file') && hiddenIn(revision.body, kind)) throw apart(`an earlier version of item ${revision.item} has characters that hide what it says`);
         this.author(revision.author);
         if (to) {
           add('revisions', {
@@ -506,6 +541,12 @@ export class Reader {
         const page = this.pages.get(gathering.page);
         if (collection === undefined || page === undefined || collection === page || this.pageSpace[collection] !== this.pageSpace[page]
           || this.pageSort[collection] !== Sort.knowledge || this.pageSort[page] !== Sort.knowledge) throw apart('a collection gathers a page it can’t');
+        // Both have a title on its side, which for everyone is the shared side.
+        const titled = gathering.visibility === 'private' ? 3 : 2;
+        if (!(this.pageTitled[collection] & titled) || !(this.pageTitled[page] & titled)) throw apart('a collection gathers a page without a title');
+        const gathered = `${gathering.collection} ${gathering.page} ${gathering.visibility}`;
+        if (this.gatherings.has(gathered)) throw apart(`a collection gathers ${gathering.page} twice`);
+        this.gatherings.add(gathered);
         this.author(gathering.author);
         if (to) {
           add('gathered', {
@@ -525,9 +566,10 @@ export class Reader {
       }
       case 'tasks': {
         const task = line as Line<'tasks'>;
+        if (this.taskIds.has(task.id)) throw apart(`${task.id} appears twice`);
+        this.taskIds.add(task.id);
         this.tasks[this.space(task.space, task.id)]++;
         if (!task.title.trim()) throw apart(`task ${task.id} has no title`);
-        if (task.due && Number.isNaN(Date.parse(`${task.due}T00:00:00Z`))) throw apart(`task ${task.id} is due on a day that doesn’t exist`);
         this.person(task.assignee);
         this.person(task.done?.by ?? null);
         this.author(task.author);
@@ -594,12 +636,18 @@ export class Reader {
     if (!holds[sort].includes(item.kind)) throw apart(`item ${item.id} doesn’t belong on its page`);
     if (this.tooLong(item.kind, sort, item.body)) throw apart(`item ${item.id} is longer than Homing keeps`);
     if (item.kind === 'removed' && item.body !== '') throw apart(`item ${item.id} removes something, and says something too`);
-    // Rules and skills are what assistants follow, so nothing in them may be hidden.
-    if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(item.body, item.kind)) throw apart(`item ${item.id} has characters that hide what it says`);
     if ((item.kind === 'file') !== (item.path !== null)) throw apart(`item ${item.id} has a path only a skill’s file has`);
     if (item.path !== null && !safePath(item.path)) throw apart(`item ${item.id} has a path outside its skill`);
     if (item.sources.length && item.kind !== 'text') throw apart(`item ${item.id} cites sources, which only knowledge does`);
     if (new Set(item.sources).size !== item.sources.length) throw apart(`item ${item.id} cites a source twice`);
+    if (item.sources.some((source) => !this.sourceIds.has(source))) throw apart(`item ${item.id} cites a source that isn’t in the export`);
+    // A page has one title on each side.
+    const side = item.visibility === 'private' ? 1 : 2;
+    if (item.kind === 'title' && this.pageTitled[pageAt] & side) throw apart(`page ${item.page} has two titles`);
+    // Rules and skills are what assistants follow, so nothing in them may be hidden, unless something replaces it.
+    if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(item.body, item.kind)) {
+      this.hiding.set(item.id, { kind: item.kind, space, page: item.page, what: item.kind === 'file' ? item.path!.slice(0, 200) : firstWords(item.body) });
+    }
     this.author(item.author);
     this.person(item.published?.by ?? null);
     // What an item replaced, or was shared from, is on its page, and comes before it.
@@ -630,9 +678,10 @@ export class Reader {
       }
       this.items.set(item.supersedes!, replaced + 32);
       if (kind === 'requirement' || kind === 'preference') this.replacedRules.add(item.supersedes!);
+      this.hiding.delete(item.supersedes!);
     }
     if (item.kind === 'title') {
-      this.pageTitled[pageAt] = 1;
+      this.pageTitled[pageAt] |= side;
       this.titles.set(item.page, oneLineTitle(item.body));
     }
     if (item.kind === 'requirement' || item.kind === 'preference') {
@@ -675,6 +724,8 @@ export class Reader {
 
   /** What can only be checked once everything is read: each skill, and what the spaces include. */
   finish(): void {
+    const [hiding] = this.hiding;
+    if (hiding) throw this.hidden(...hiding);
     // A skill is named as its SKILL.md says, in lowercase words, and holds one file at each place.
     for (const parts of this.skills.values()) {
       const paths = parts.files.map((file) => `${file.private} ${file.path}`);
@@ -686,6 +737,23 @@ export class Reader {
       }
     }
     this.checkIncludes();
+  }
+
+  /**
+   * A rule or a skill's file that hides what it says. Homing keeps one when it's written, so when
+   * Homing checks its own export, whoever exports it is told which it is, and what to do.
+   */
+  private hidden(id: string, hiding: Hiding): ImportRefused {
+    const space = this.header.spaces[hiding.space].name;
+    const what = hiding.kind === 'file'
+      ? `The file ${hiding.what} of the skill ${this.titles.get(hiding.page) ?? 'without a name'} in ${space}`
+      : `The rule “${hiding.what}” in ${space}`;
+    const change = hiding.kind === 'file' ? 'Save the skill again without it' : 'Retype the rule';
+    return new ImportRefused(
+      `That export doesn’t hold together, so Homing won’t import it: item ${id} has characters that hide what it says.`,
+      undefined,
+      `${what} has a character nobody sees, such as one copied from a web page, so the export wouldn’t import again. ${change}, then export again.`,
+    );
   }
 
   /**
@@ -748,14 +816,18 @@ export class Reader {
       else if (this.titles.has(ref)) this.found(ref, this.titles.get(ref)!);
       else if (this.pages.has(ref)) this.found(ref, 'Untitled');
     }
-    const pending = [...this.mentioned].filter((ref) => !this.labels.has(ref));
-    if (!pending.length) return;
-    for (const list of ['sources', 'items', 'tasks'] as const) {
-      for (const line of this.bundle.raw(list)) {
-        const hit = pending.find((ref) => line.includes(ref));
-        if (!hit) continue;
+    // What's left is a source, an item or a task that came before what refers to it, found by
+    // reading again only the lists that hold one. A reference to anything else isn't in the export.
+    const pending = new Set([...this.mentioned].filter((ref) => !this.labels.has(ref) && (this.sourceIds.has(ref) || this.items.has(ref) || this.taskIds.has(ref))));
+    for (const [list, holds] of [['sources', this.sourceIds], ['items', this.items], ['tasks', this.taskIds]] as const) {
+      if (![...pending].some((ref) => holds.has(ref))) continue;
+      for (const line of this.bundle.raw(list, true)) {
+        if (!pending.size) return;
+        if (!idsIn(line).some((id) => pending.has(id))) continue;
         const entry = parse(line) as { id?: string; reference?: string | null; excerpt?: string; body?: string; title?: string };
-        if (entry.id === hit) this.found(hit, oneLineTitle(entry.title ?? entry.reference ?? entry.excerpt ?? entry.body ?? ''));
+        if (entry.id === undefined || !pending.has(entry.id)) continue;
+        this.found(entry.id, oneLineTitle(entry.title ?? entry.reference ?? entry.excerpt ?? entry.body ?? ''));
+        pending.delete(entry.id);
       }
     }
   }
@@ -850,20 +922,28 @@ const uuid = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 /** A reference in text, as a Markdown link or on its own, as an export writes them. */
 const references = new RegExp(`\\[([^\\[\\]\\n]*)\\]\\((page|item|source|space|task):(${uuid})\\)|\\b(page|item|source|space|task):(${uuid})`, 'gi');
 
+/** The ids in a line of a long list, in time in step with the line. */
+const ids = new RegExp(uuid, 'g');
+function idsIn(line: string): string[] {
+  return line.match(ids) ?? [];
+}
+
 /** What a text refers to in Homing, by id. Links' words hold no brackets, so it takes time in step with the text. */
 export function mentions(body: string): string[] {
   return [...body.matchAll(references)].map((match) => (match[3] ?? match[5]).toLowerCase());
 }
 
-/** Reads an export through, to show what it would bring, telling how far it's got after each file. Nothing is created. */
+/**
+ * Reads an export through, to show what it would bring, telling how far it's got once it's open
+ * and after each file it reads, again too. Nothing is created.
+ */
 export async function inspect(path: string, hash: string, progress: (done: number, total: number) => void): Promise<{ preview: string; inside: string[] }> {
   const bundle = Bundle.open(path);
   try {
     const reader = new Reader(bundle);
-    for (const list of reads) {
-      await reader.readList(list, async () => {});
-      progress(bundle.done, bundle.total);
-    }
+    bundle.onFile = () => progress(bundle.done, bundle.total);
+    bundle.onFile();
+    for (const list of reads) await reader.readList(list, async () => {});
     reader.finish();
     reader.resolve();
     return { preview: reader.preview(hash), inside: [...reader.inside] };

@@ -5,7 +5,10 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { followImport, unsendable, type ImportProgress } from '@/lib/imports';
 import { cn } from 'cn';
+
+export type { ImportProgress };
 
 /** What an export would bring, before anything is created. */
 export interface ImportPreviewData {
@@ -25,20 +28,16 @@ export interface ImportPreviewData {
   hash: string;
 }
 
-/** How far along a preview being read, or an import, is, as Homing says. */
-export type ImportProgress =
-  | { state: 'reading' | 'importing'; done: number; total: number }
-  | { state: 'done'; id: string }
-  | { state: 'failed'; message: string }
-  | { state: 'none' };
-
 export interface ImportActions {
   /** Sends the file to be read, saying how much of it is sent as it goes. */
   preview: (file: File, sent: (fraction: number) => void) => Promise<{ preview: ImportPreviewData } | { problem: string }>;
   /** Starts importing what was previewed, under a name. */
   import: (name: string, hash: string) => Promise<{ started: true } | { problem: string; field?: string }>;
+  /** How far along the person's preview or import is, failing when Homing can't be reached. */
   progress: () => Promise<ImportProgress>;
 }
+
+type Doing = 'sending' | 'waiting' | 'reading' | 'importing';
 
 /**
  * Importing a space from an export (spec §3): choose the zip, see what it brings, its rules word
@@ -50,39 +49,43 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
   onCancel: () => void;
   /** A preview to start from, and what's under way, for the screens' samples. */
   shown?: ImportPreviewData;
-  underWay?: { doing: 'sending' | 'reading' | 'importing'; fraction: number; file?: File };
+  underWay?: { doing: Doing; fraction: number; file?: File };
 }) {
   const [file, setFile] = useState<File | undefined>(underWay?.file);
   const [preview, setPreview] = useState<ImportPreviewData | undefined>(shown);
   const [name, setName] = useState(shown?.name ?? '');
   const [problem, setProblem] = useState<{ field?: string; message: string }>();
-  // What's under way: sending the file, Homing reading it, or importing it, and how far along.
-  const [step, setStep] = useState<{ doing: 'sending' | 'reading' | 'importing'; fraction: number } | undefined>(underWay);
+  // What's under way: sending the file, waiting for Homing to read it, reading it, or importing it, and how far along.
+  const [step, setStep] = useState<{ doing: Doing; fraction: number } | undefined>(underWay);
   const picker = useRef<HTMLInputElement>(null);
   const busy = step !== undefined;
+  // Whether the person is still on this screen, so nothing is followed, or opened, once they've left.
+  const onScreen = useRef(true);
 
-  // An import that's still going, as when the person comes back to this screen, carries on here.
+  // An import that's still going, as when the person comes back to this screen, carries on here,
+  // and one that failed while they were away says why.
   useEffect(() => {
-    if (shown) return;
-    void actions.progress().then((now) => {
-      if (now.state === 'importing') void follow();
-    });
+    onScreen.current = true;
+    if (!shown) {
+      actions.progress().then((now) => {
+        if (!onScreen.current) return;
+        if (now.state === 'importing') void follow();
+        if (now.state === 'failed') setProblem({ message: now.message });
+      }, () => {});
+    }
+    return () => {
+      onScreen.current = false;
+    };
   }, []);
 
-  /** Follows an import until it's done, then opens the new space. */
+  /** Follows an import while the person is here, until it's done, then opens the new space. */
   const follow = async () => {
     setStep({ doing: 'importing', fraction: 0 });
-    for (;;) {
-      const now = await actions.progress();
-      if (now.state === 'done') return onImported(now.id);
-      if (now.state === 'failed') {
-        setStep(undefined);
-        setProblem({ message: now.message });
-        return;
-      }
-      if (now.state === 'importing') setStep({ doing: 'importing', fraction: now.total ? now.done / now.total : 0 });
-      await new Promise((resolve) => setTimeout(resolve, 700));
-    }
+    const end = await followImport(actions.progress, () => onScreen.current, (fraction) => setStep({ doing: 'importing', fraction }));
+    if ('left' in end) return;
+    if ('done' in end) return onImported(end.done);
+    setStep(undefined);
+    setProblem({ message: end.failed });
   };
 
   const choose = async (chosen: File | undefined) => {
@@ -90,18 +93,24 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
     setFile(chosen);
     setPreview(undefined);
     setProblem(undefined);
+    const why = unsendable(chosen);
+    if (why) {
+      setProblem({ message: why });
+      return;
+    }
     setStep({ doing: 'sending', fraction: 0 });
     let reading = false;
     const answer = actions.preview(chosen, (fraction) => {
-      // Once it's all sent, Homing reads it, and says how far it's got.
+      // Once it's all sent, Homing reads it, after any other export it's reading, and says how far it's got.
       if (fraction >= 1 && !reading) {
         reading = true;
+        setStep({ doing: 'reading', fraction: 0 });
         void (async () => {
-          while (reading) {
-            setStep((last) => (last && last.doing !== 'importing' ? { doing: 'reading', fraction: last.doing === 'reading' ? last.fraction : 0 } : last));
-            const now = await actions.progress();
-            if (!reading) break;
-            if (now.state === 'reading') setStep({ doing: 'reading', fraction: now.total ? now.done / now.total : 0 });
+          while (reading && onScreen.current) {
+            const now = await actions.progress().catch(() => undefined);
+            if (!reading || !onScreen.current) break;
+            if (now?.state === 'waiting') setStep({ doing: 'waiting', fraction: 0 });
+            if (now?.state === 'reading') setStep({ doing: 'reading', fraction: now.total ? now.done / now.total : 0 });
             await new Promise((resolve) => setTimeout(resolve, 700));
           }
         })();
@@ -109,6 +118,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
     });
     const result = await answer;
     reading = false;
+    if (!onScreen.current) return;
     setStep(undefined);
     if ('problem' in result) setProblem({ message: result.problem });
     else {
@@ -176,7 +186,8 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
               </Button>
               <span className="text-sm text-muted-foreground break-all">{file ? `${file.name}, ${sizeOf(file.size)}` : 'No file chosen yet'}</span>
             </div>
-            {step && step.doing !== 'importing' && (
+            {step?.doing === 'waiting' && <p role="status" className="text-sm text-muted-foreground">Homing reads one export at a time, so yours waits its turn.</p>}
+            {step && (step.doing === 'sending' || step.doing === 'reading') && (
               <UnderWay label={step.doing === 'sending' ? `Sending ${file?.name ?? 'the export'}` : 'Reading the export'} fraction={step.fraction} />
             )}
             {problem && !preview && <FieldError id="import-problem">{problem.message}</FieldError>}

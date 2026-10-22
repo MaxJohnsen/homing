@@ -1,10 +1,11 @@
 import { createReadStream } from 'node:fs';
 import { mkdir, rm } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { pipeline } from 'node:stream/promises';
 import postgres from 'postgres';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
-import { ImportRefused, importsAgain, importSpace, preview as previewUpload, previewed, progressOf, receive, workFolder } from './import.ts';
+import { ImportRefused, importsAgain, importSpace, preview as previewUpload, previewed, progressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
@@ -17,16 +18,16 @@ import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 /**
- * Who is exporting a space right now, until it has been sent, who is sending an export to import,
- * and who is having one read or imported, one at a time.
+ * Who is exporting a space right now, until it has been made, checked and sent, or given up on,
+ * and who is sending an export to import.
  */
 const exporting = new Set<string>();
 const uploading = new Set<string>();
-let importing: string | undefined;
 
 /** How long an export may take to make and send before it's given up on. */
 const exportTimeout = 30 * 60_000;
 const tooBig = 'That space holds more than one export can, so Homing didn’t make it. Export the spaces in it one at a time.';
+const tooSlowToCheck = 'Homing took too long to check that the export imports again, so it didn’t hand it out. Try again in a quiet moment.';
 const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
@@ -217,43 +218,46 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'export': {
-        // One at a time for each person, and only a few at once, until it has been sent, or given up on.
+        // One at a time for each person, and only a few at once, until the work is done, whether the person waits for it or not.
         if (exporting.has(person) || exporting.size >= 2) return answer(res, 429, { message: 'Homing is making another export right now. Try again in a moment.' });
         exporting.add(person);
         const timeout = setTimeout(() => res.destroy(), exportTimeout);
         let file: string | undefined;
-        res.once('close', () => {
+        try {
+          await mkdir(workFolder, { recursive: true });
+          // Everything the person sees in the space, read in one snapshot as them, into a file, a space at a time, while they wait for it.
+          const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url, workFolder, { gone: () => res.destroyed }), { snapshot: true });
+          if (exported === 'gone') break;
+          if (exported === 'too large') return answer(res, 413, { message: tooBig });
+          if (!exported) return answer(res, 404, noSpace);
+          file = exported.path;
+          if (res.destroyed) break;
+          // Read as an import would, so it's handed out only when it imports again.
+          let again: Awaited<ReturnType<typeof importsAgain>>;
+          try {
+            again = await importsAgain(file);
+          } catch (error) {
+            if (!(error instanceof ImportRefused)) throw error;
+            // Something Homing holds that an import refuses, which only says what's in their own export: said to them, never handed out.
+            console.error('An export that wouldn’t import again:', error.message);
+            return answer(res, 422, { message: error.exporter ?? `Something in that space keeps it from importing again, so Homing didn’t make the export. Importing it would say: ${error.message}` });
+          }
+          if (again === 'too large') return answer(res, 413, { message: tooBig });
+          if (again === 'too slow') return answer(res, 503, { message: tooSlowToCheck });
+          if (res.destroyed) break;
+          res.writeHead(200, {
+            'content-type': 'application/zip',
+            'content-length': exported.size,
+            'content-disposition': `attachment; filename="${exported.filename}"`,
+            'cache-control': 'no-store',
+          });
+          // Sent until it's all there, or the person goes away.
+          await pipeline(createReadStream(exported.path), res).catch(() => {});
+        } finally {
           clearTimeout(timeout);
           exporting.delete(person);
-          if (file) void rm(file, { force: true });
-        });
-        await mkdir(workFolder, { recursive: true });
-        // Everything the person sees in the space, read in one snapshot as them, into a file, a space at a time.
-        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url, workFolder), { snapshot: true });
-        if (exported === 'too large') return answer(res, 413, { message: tooBig });
-        if (!exported) return answer(res, 404, noSpace);
-        file = exported.path;
-        // Read as an import would, so it's handed out only when it imports again.
-        let again: Awaited<ReturnType<typeof importsAgain>>;
-        try {
-          again = await importsAgain(file);
-        } catch (error) {
-          // Something Homing holds that an import refuses: said, never handed out.
-          console.error('An export that wouldn’t import again:', error);
-          return answer(res, 500, { message: 'Something in that space keeps it from importing again, so Homing didn’t make the export. Whoever looks after this Homing can see what in its log.' });
+          if (file) await rm(file, { force: true });
         }
-        if (again === 'too large') return answer(res, 413, { message: tooBig });
-        if (res.destroyed) {
-          void rm(file, { force: true });
-          break;
-        }
-        res.writeHead(200, {
-          'content-type': 'application/zip',
-          'content-length': exported.size,
-          'content-disposition': `attachment; filename="${exported.filename}"`,
-          'cache-control': 'no-store',
-        });
-        createReadStream(exported.path).pipe(res);
         break;
       }
 
@@ -261,6 +265,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         // An export from Homing, as the zip itself, onto disk. Each person sends one at a time, and a few people at once.
         if (uploading.has(person) || uploading.size >= 4) return answer(res, 429, { message: 'Homing is receiving other exports right now. Try again in a moment.' });
         uploading.add(person);
+        const started = Date.now();
         let upload: Awaited<ReturnType<typeof receive>>;
         try {
           upload = await receive(req);
@@ -271,23 +276,21 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         if (upload === 'gone') return true;
         if (typeof upload === 'string') {
           res.setHeader('connection', 'close');
-          return upload === 'too large'
-            ? answer(res, 413, { message: 'That file is larger than Homing imports, 2 GB. Exports from Homing never are.' })
-            : answer(res, 408, { message: 'That file took too long to arrive. Try again on a steadier connection.' });
+          if (upload === 'too large') return answer(res, 413, { message: 'That file is larger than Homing imports, 2 GB. Exports from Homing never are.' });
+          if (upload === 'not kept') return answer(res, 507, { message: 'Homing couldn’t keep that file on its disk, so it can’t import it. Whoever looks after this Homing can see why in its log.' });
+          return answer(res, 408, { message: 'That file took too long to arrive. Try again on a steadier connection.' });
         }
-        // Read one at a time on the whole instance, since reading a big export takes a lot of memory.
-        if (importing) {
-          await rm(upload.path, { force: true });
-          return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
+        // Read one at a time on the whole instance, since reading a big export takes a lot of memory:
+        // it waits its turn, within the time an upload has, unless the person goes away.
+        const left = new AbortController();
+        res.once('close', () => left.abort());
+        // As the worker wrote it, so nothing large is built here.
+        const shown = await previewUpload(person, upload, started + uploadTime, left.signal);
+        if (shown === undefined) {
+          if (res.destroyed) return true;
+          return answer(res, 429, { message: 'Homing was reading other exports the whole time, so it didn’t read yours. Try again later.' });
         }
-        importing = person;
-        try {
-          // As the worker wrote it, so nothing large is built here.
-          const shown = await previewUpload(person, upload);
-          res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(shown);
-        } finally {
-          importing = undefined;
-        }
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(shown);
         break;
       }
 
@@ -297,12 +300,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const hash = params.get('hash') ?? '';
         if (!previewed(person, hash)) return answer(res, 400, { message: 'That isn’t the export you looked at. Choose it again to see what it brings.' });
         const { name } = await write((s) => placeSpace(s, { name: params.get('name') ?? '', who: 'with others' }));
-        if (importing) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
         // Imported in the background, one at a time on the whole instance, while the app shows how far it's got.
-        importing = person;
-        importSpace(app.sql, person, hash, name).catch(() => {}).finally(() => {
-          importing = undefined;
-        });
+        const giveBack = turnNow();
+        if (!giveBack) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
+        importSpace(app.sql, person, hash, name).catch(() => {}).finally(giveBack);
         json(res, 202, { importing: true });
         break;
       }

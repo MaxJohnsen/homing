@@ -206,9 +206,16 @@ export interface Exported {
 /**
  * A space as the person sees it, with the spaces below it they can open, as a zip written in the
  * folder given, or 'too large' when it holds more than an import takes, or undefined when they
- * can't open it. Read in one snapshot, so it holds together, and written a space at a time.
+ * can't open it. Read in one snapshot, so it holds together, and written a space at a time. It
+ * stops, with nothing left, as soon as `gone` says nobody waits for it any more.
  */
-export async function exportSpace(s: Session, spaceId: string, instance: URL, folder: string, now = new Date()): Promise<Exported | 'too large' | undefined> {
+export async function exportSpace(
+  s: Session,
+  spaceId: string,
+  instance: URL,
+  folder: string,
+  { now = new Date(), gone = () => false }: { now?: Date; gone?: () => boolean } = {},
+): Promise<Exported | 'too large' | 'gone' | undefined> {
   const path = joinPath(folder, `homing-export-${randomUUID()}.zip`);
   const writer = await ZipWriter.create(path, now);
   try {
@@ -216,9 +223,10 @@ export async function exportSpace(s: Session, spaceId: string, instance: URL, fo
     // Each long list as JSON Lines, a few megabytes a file, so nothing reads it whole.
     const pending = new Map<ListName, { lines: string[]; size: number; objects: number }>();
     let unpacked = 0;
-    // Stopped as soon as it holds more than an import takes.
+    // Stopped as soon as it holds more than an import takes, or nobody waits for it.
     const fits = () => {
       if (writer.size > importLimits.upload || unpacked > importLimits.unpacked) throw tooLarge;
+      if (gone()) throw stopped;
     };
     const flush = async (list: ListName) => {
       const chunk = pending.get(list);
@@ -255,17 +263,21 @@ export async function exportSpace(s: Session, spaceId: string, instance: URL, fo
     const json = `${JSON.stringify({ ...header, files })}\n`;
     if (Buffer.byteLength(json) > importLimits.header || objectsIn(json) > importLimits.objects) throw tooLarge;
     await writer.add('homing.json', json);
+    // As a whole, with homing.json and the zip's own records, no larger than an upload.
     const size = await writer.end();
+    if (size > importLimits.upload) throw tooLarge;
     return { filename: `${slug(header.spaces[0].name, 'space')}-${header.exportedAt.slice(0, 10)}.zip`, path, size };
   } catch (error) {
     await writer.abort();
     if (error === tooLarge) return 'too large';
+    if (error === stopped) return 'gone';
     throw error;
   }
 }
 
-/** Thrown to stop an export that holds more than an import takes. */
+/** Thrown to stop an export that holds more than an import takes, or that nobody waits for any more. */
 const tooLarge = new Error('That export holds more than an import takes.');
+const stopped = new Error('Nobody waits for that export any more.');
 
 /** How many objects and lists a JSON text holds at most, as an import counts them: by their opening brackets. */
 function objectsIn(text: string): number {

@@ -178,12 +178,11 @@ function ImportSpacePage() {
             return unreachable;
           }
         },
+        // Fails when Homing can't be reached, so a moment without it isn't taken for the import stopping.
         progress: async () => {
-          try {
-            return await (await fetch('/api/import')).json();
-          } catch {
-            return { state: 'none' };
-          }
+          const response = await fetch('/api/import');
+          if (!response.ok) throw new Error(`Homing answered ${response.status}.`);
+          return response.json();
         },
       }}
       onImported={async (id) => {

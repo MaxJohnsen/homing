@@ -425,11 +425,17 @@ describe('straight against the database', () => {
       for (const call of [
         (s: Session) => s.tx`select import_load(${theirs_}::uuid, ${s.tx.json({ pages: [] })})`,
         (s: Session) => s.tx`select import_finish(${theirs_}::uuid, ${s.tx.json({ includes: [] })})`,
-        (s: Session) => s.tx`select import_discard(${theirs_}::uuid)`,
+        (s: Session) => s.tx`select import_discard(${theirs_}::uuid, 5000)`,
       ]) {
         await assert.rejects(as({ ...me, direct: true }, call), refused);
       }
-      await as({ ...target.person, direct: true }, (s) => s.tx`select import_discard(${theirs_}::uuid)`);
+      // Nor see that it's under way, though they do, nor take it out as if it had stopped.
+      const under = (who: Person) => as(who, async (s) => (await s.tx<{ n: number }[]>`select count(*)::int as n from importing`)[0].n);
+      assert.equal(await under(me), 0);
+      assert.equal(await under(target.person), 1);
+      assert.equal((await as({ ...me, direct: true }, (s) => s.tx<{ done: boolean }[]>`select import_discard_stale(${theirs_}::uuid, 5000) as done`))[0].done, true);
+      assert.equal(await under(target.person), 1);
+      while (!(await as({ ...target.person, direct: true }, (s) => s.tx<{ done: boolean }[]>`select import_discard(${theirs_}::uuid, 5000) as done`))[0].done);
       // Nor on pages of theirs that anyone may write on, as far as the page goes: a page with
       // nothing on it yet, their overview, and two pages with titles, for a collection.
       const [empty, overview, first, second] = await admin<{ id: string }[]>`
@@ -949,11 +955,22 @@ describe('through an include', () => {
       const manifest = (await as(who, (s) => manifestOf(s, space, homing.url), sql))!;
       await mkdir(workFolder, { recursive: true });
       const exported = await as(who, (s) => exportSpace(s, space, homing.url, workFolder), sql);
-      assert.ok(exported && exported !== 'too large');
+      assert.ok(exported && typeof exported === 'object');
       const zip = await readFile(exported.path);
       await rm(exported.path);
       return { manifest, text: Object.values(unzipSync(zip)).map((file) => strFromU8(file)).join('\n') };
     };
+    // Ana's own in the office she shares with Cara: an item, a source, a task, and what she wrote
+    // before she shared something, which stays hers.
+    await as({ person: ana.id, direct: true }, async (s) => {
+      const page = await createPage(s, { spaceId: office, title: 'Office plan', shared: true });
+      await writeItem(s, { pageId: page, body: 'Ana’s own office note' });
+      await addSource(s, { spaceId: office, excerpt: 'Ana’s own office source', reference: 'Ana’s own reference' });
+      await addTask(s, { spaceId: office, title: 'Ana’s own office task' });
+      const draft = await writeItem(s, { pageId: page, body: 'Ana’s own first draft' });
+      await updateItem(s, draft.id, { body: 'The office opens in May.' });
+      await publishItem(s, draft.id, 'The office opens in May.');
+    });
     for (const sql of [db, admin]) {
       // Ben's export of the lounge holds nothing of Acme, nor that the lounge includes it.
       const lounged = await holds(ben, lounge, sql);
@@ -963,6 +980,9 @@ describe('through an include', () => {
       const officed = await holds(cara, office, sql);
       assert.deepEqual(officed.manifest.includes, []);
       assert.doesNotMatch(officed.text, /Studio/);
+      // Nor is anything else of Ana's own there, with the database's own checks or without them.
+      assert.match(officed.text, /The office opens in May/);
+      assert.doesNotMatch(officed.text, /Ana’s own/);
       // Ana's own export has it, as hers.
       assert.deepEqual((await holds(ana, office, sql)).manifest.includes.map((include) => [include.visibility, include.elsewhere?.space]), [['private', 'Studio']]);
     }

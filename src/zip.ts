@@ -224,6 +224,11 @@ export class ZipReader {
     this.entries = entries;
   }
 
+  /** How large the zip is. */
+  get size(): number {
+    return this.bytes.size;
+  }
+
   /** A zip in a file, keeping the entries of the files wanted, as long as it lists at most so many files. */
   static file(path: string, want: (name: string) => boolean, limits: { files: number }): ZipReader {
     const fd = openSync(path, 'r');
@@ -267,6 +272,10 @@ export class ZipReader {
     const found = this.entries.get(name);
     if (!found) throw new ZipRefused('missing');
     if (found.size > limit) throw new ZipRefused('too large');
+    // What it takes up in the zip is bounded too, before any of it is read: stored, it's what it
+    // holds, and deflated, never much more than the most it may hold.
+    if (found.method === 0 ? found.packed !== found.size : found.method !== 8) throw new ZipRefused('damaged');
+    if (found.packed > limit + Math.floor(limit / 1000) + 1024) throw new ZipRefused('too large');
     try {
       const local = this.bytes.read(found.local, 30);
       if (local.readUInt32LE(0) !== 0x04034b50) throw new ZipRefused('damaged');
@@ -274,14 +283,14 @@ export class ZipReader {
       const data = this.bytes.read(start, found.packed);
       let file: Buffer;
       if (found.method === 0) file = data;
-      else if (found.method === 8) {
+      else {
         try {
           // However large it says it is, it's never unpacked past the limit.
           file = inflateRawSync(data, { maxOutputLength: Math.max(limit, 1) });
         } catch (error) {
           throw new ZipRefused(error instanceof RangeError ? 'too large' : 'damaged');
         }
-      } else throw new ZipRefused('damaged');
+      }
       if (file.length !== found.size || crc32(file) !== found.crc) throw new ZipRefused('damaged');
       return file;
     } catch (error) {
