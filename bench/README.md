@@ -1,6 +1,6 @@
 # Benchmarks
 
-Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks): whether models call Homing when they should, whether they build `act`'s payloads as well as they use dedicated tools, and how much `context` should give. Benchmark 1 also has harder conversations, which ask whether models use Homing when it helps and leave it alone otherwise. Real models talk to a local Homing through its real MCP tools, and the harness checks what happened. The results are in [results.md](results.md).
+Benchmarks 1 to 4 from the [spec](../docs/spec.md#benchmarks): whether models call Homing when they should, whether they build `act`'s payloads as well as they use dedicated tools, how much `context` should give, and how well search finds things. Benchmark 1 also has harder conversations, which ask whether models use Homing when it helps and leave it alone otherwise. In 1 to 3, real models talk to a local Homing through its real MCP tools, and the harness checks what happened. Benchmark 4, [below](#benchmark-4-retrieval), asks Homing's search directly. The results are in [results.md](results.md).
 
 The models cost money, so CI never runs this.
 
@@ -187,3 +187,49 @@ The four conversations of together, in order, with what the harness does between
 | kitchen | When does Erik start on the kitchen, and what did he quote? |
 | sign-off | Who has to sign off on a 250,000 NOK change order at Fjord Bank? |
 | who-to-ask | Who at Northwind should I talk to about the cookie banner, and who about DNS? |
+
+## Benchmark 4: retrieval
+
+Whether `search` and `context` find what a person asks about, and nothing they mustn't see, compared with BM25, semantic search, a hybrid of the two, and a model that writes the search words. Every approach runs as the person, with row-level security on.
+
+```
+npm run bench:retrieval -- run                    # every approach that needs no model
+npm run bench:retrieval -- pilot --max-spend 0.2  # embeddings and interpretation for a few queries, and the projected cost
+npm run bench:retrieval -- run --max-spend 3      # everything, paying only for what isn't cached
+npm run bench:retrieval -- run --approaches bm25  # some approaches again, keeping the others' results
+npm run bench:retrieval -- report                 # the tables, from results/retrieval.jsonl
+npm run bench:retrieval -- privacy                # whether others' private items change the ranking a person sees
+npm run bench:retrieval -- synthetic              # a database with one space of 176,000 items, for timing
+npm run bench:retrieval -- scale homing_bench4_scale --repeat 1 --timeout 30000   # latency there, or in a big sample's database
+```
+
+It uses the database `HOMING_BENCH_DB` names, `homing_bench4` by default, and serves Homing on `HOMING_BENCH_PORT`, 4431 by default. Paid calls go through the same guard and ledger as the other benchmarks. Embeddings are cached in `results/retrieval-embeddings.cache.json`, which git ignores, and the search words each model wrote are kept in `results/retrieval-interpretations.json`, so a rerun pays for nothing twice.
+
+**The world** (`retrieval-set.ts`) is a consultant's working life after a few months, made through Homing's own operations. Ana Berg runs Acme with her colleague Cara Lund. Acme's client Northwind has two projects, a website relaunch and a data platform, as spaces below it. Fjord Bank is a closed client space only Ana is in, written in Norwegian, and Polar Freight a closed one only Cara is in. Havbris is a finished client, archived. Ben Dahl at Beta added Ana to Beta's own space. Ana's personal space holds her taxes, insurance and doctor, with spaces for a kitchen renovation, her running and her apartment. About 50 pages hold the facts the questions ask about, with sources, tasks, rules and two skills. Some facts were replaced, such as the relaunch's go-live date and the carpenter's quote, and two pages are archived. Cara and Ben keep private items on pages Ana can see, and private pages of their own. Around them are about 480 pages and 300 sources of everyday notes in both languages, from templates with a fixed seed, which never answer a question: 537 pages, 1,805 items with their titles, and 312 sources in all.
+
+**The queries** are 126, written with their labels before any approach ran: 17 in Norwegian, 16 in English, 12 asked in the other language than the answer, 20 with exact identifiers (invoice and ticket numbers, error codes, versions, room numbers, a policy number), 19 whose words don't match the notes (a deadline that is only a date, synonyms, paraphrase), 12 vague ones, 12 that should match nothing of Ana's, 12 about what only Cara or Ben sees or what's in Polar Freight, and 6 about the past. Each names the pages, items, sources, tasks or skills that answer it, and some accept any one of several. A line found counts for an expected page when it is on that page; an expected item counts only itself, or its page's title while it is current.
+
+**The approaches** all answer the same queries, given as the user asked them:
+
+| Approach | What it is |
+|---|---|
+| search | Homing's `search` tool, over MCP |
+| context | Homing's `context` tool without a space, over MCP: its telling words, its choice of space, and the lines it shows as matching |
+| telling | the ranking `context` uses, read deeper: `search` on the telling words, without what's archived or no longer true |
+| tokens | `search` with the query split by PostgreSQL's parser, as the notes are, instead of by letters and digits |
+| bm25 | BM25 instead of `ts_rank`, with document frequencies, the number of documents and their average length counted over only what the user can see, in SQL, without an extension |
+| bm25-pruned | the same, but a word in more than half of the user's documents doesn't make a document a candidate, though it still counts in the score |
+| bm25-telling, bm25-all-words | the same, ranking for `context`: on its telling words, and on every word, without the stopword and short-number rules |
+| bm25-tokens | BM25 with the query split as in tokens |
+| bm25-global | BM25 with the statistics over every row, whoever can see it, as a shared index would keep them |
+| semantic | embeddings by `baai/bge-m3` or `openai/text-embedding-3-small`, compared in SQL with a dot product over arrays, since pgvector isn't installed here |
+| hybrid | search or BM25 fused with semantic by Reciprocal Rank Fusion |
+| interpreted | one call to Claude Haiku 5.5 or GPT-6 Luna per query, which writes the search words in both languages, then `search` or BM25 with them |
+
+Everything but the MCP tools runs as Ana in her own transaction under row-level security, the way Homing's own queries run, and keeps `search`'s rules: pages found once, and items no longer true last. The prototype ranking with `ts_rank` returns exactly what `search` returns for all 126 queries, which the run checks.
+
+**Scoring.** Recall at 5 and 10 and the mean reciprocal rank are over the lines each approach returns, in order. A question that should match nothing counts as right when the approach says nothing matches. A privacy failure is any line Ana can't see, or any word only others have written, such as "Lindqvist", in what the tools answered; the run first checks that this check catches Cara's items in Cara's own search. Stale lines are superseded items and what's on archived pages or in archived spaces, counted in the first 10 for questions that aren't about the past. Latency is the median of three runs after a warm-up. For `context`, the run also records whether it picked the space the answer is in, or one above it, or listed it among others.
+
+**Privacy of statistics** (`retrieval-privacy.ts`). After Ana's results are recorded, Cara writes 200 private items, each with three of the words Ana's queries use, in Polar Freight and on her own side of the relaunch. Ana's first ten results, with their scores, are compared before and after, for `ts_rank`, BM25 over what Ana sees, and BM25 over everyone.
+
+**Scale** (`retrieval-scale.ts`). The big sample, and one synthetic space of 16,000 pages with 176,000 items of about 4 KB and 32,000 sources, a tenth of the items Cara's own. The synthetic words are drawn so a word's share falls with its rank, as in real text, from common English and Norwegian words, a consultant's words, names and 30,000 made-up words for the long tail. Twelve queries, six whole requests and six sets of keywords such as assistants write, are timed as Ana, with a limit per statement. `search` is also timed without row-level security, with its own access filters, which return the same: that's what it would take if PostgreSQL could use the full-text index under the policies.
