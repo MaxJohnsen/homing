@@ -10,30 +10,29 @@ Benchmark 0 asks how knowledge should be kept as it grows: as Homing's small ite
 
 **For facts learned from email, every way of keeping them worked here, because the reader saw everything.** Over 157 messages and 8 weeks, each store answered 97 to 100% of the week's factual questions right, with no answer giving an outdated value and no fact lost from a store, for both keepers and in both runs. Every question was right at week 8 in every run. The answerer read the whole store, and with the date of each claim's email beside it, it did the upkeep itself as it read: even the store that only adds, holding "Go-live date: 1 March 2027" beside a later item saying the go-live moved to 15 March, was answered right. The few misses are answers to yes-or-no questions that didn't start with yes or no, such as "Not yet", and two that called Havbris a former client a week too early.
 
-**What differs is what a store presents as current, which is what search hands an assistant.** Read as stored, the store that only adds showed 77% of the facts that had changed in their old value, in a claim with nothing marking it as old, for both keepers. Items with upkeep showed 20% (Sonnet) and 28% (Haiku), the wiki 22% and 14%. Upkeep removes most of it, and so does rewriting. What both leave is the same fact said again on another page: with items, the relaunch's page had the cookie banner approved, while Mona Lie's page still said she "must approve the cookie banner before launch"; in Sonnet's wiki, the relaunch page still said "Content migration from the old Fram CMS is owned by Cara Lund" at week 8, beside Jonas's page saying he took it over. The spec's "the agent finds them; there is no automatic dependency chain" shows here: what's repeated elsewhere isn't found.
+**What differs is what a store presents as current, which is what search hands an assistant.** Read as stored, the store that only adds showed 77% of the facts that had changed in their old value, in a claim with nothing marking it as old, for both keepers. Items with upkeep showed 20% (Sonnet) and 28% (Haiku), the wiki 22% and 14%. Upkeep removes most of it, and so does rewriting. What both leave is mostly the same fact said again elsewhere, usually on another page: with items, the relaunch's page had the cookie banner approved, while Mona Lie's page still said she "must approve the cookie banner before launch"; in Sonnet's wiki, the relaunch page still said "Content migration from the old Fram CMS is owned by Cara Lund" at week 8, beside Jonas's page saying he took it over. Some sit on the same page as the new value, such as an item on the relaunch's page announcing the 14 September steering group meeting. The spec's "the agent finds them; there is no automatic dependency chain" shows here: what's said again elsewhere isn't found.
 
-**Reasons, rejected alternatives and open questions survived in every structure.** The judge found 86 to 89% of the rubrics' reasons and open questions in the answers from every store except Haiku's wiki, 82%, or 85% counting six answers the judge marked down for saying "Northwind legal" instead of naming Mona Lie. None showed a settled question as open. Once found, a reason stayed: none was lost later with Sonnet in the wiki or items, against 2% with items only added. With Haiku, 3 of 120 were lost with items, 7 of 122 added only and 11 of 120 with the wiki, which is the drift Karpathy's critics expect, small here and only with the cheaper model. What answers left out came from the answerer's 80 words more than the stores: no answer explained the go-live move past "the bulk export only runs in January", though every store held the API limit and the declined Enterprise plan behind it.
+**Reasons, rejected alternatives and open questions survived in every structure.** The judge found 86 to 89% of the rubrics' reasons and open questions in the answers from every store except Haiku's wiki, 82%, or 85% counting six answers the judge marked down for saying "Northwind legal" instead of naming Mona Lie. None showed a settled question as open. Answers that once gave a reason seldom left it out later: never with Sonnet in the wiki or items, and in 2 of 120 answer-weeks with items only added; with Haiku, in 3, 7 and 11 of about 120 answer-weeks (items, added only, wiki), or 3, 5 and 6 distinct reasons. Answers had 80 words, and nothing here checks the stores for the reasons, so this can't tell an answer leaving a reason out from a store losing it: Haiku's wiki, with the most, is at most a weak hint of the drift Karpathy's critics expect. Some of what answers left out was in the stores: no answer explained the go-live move past "the bulk export only runs in January", though every store held the API limit and the declined Enterprise plan behind it.
 
 **Upkeep is cheaper than rewriting, and a cheap model does it about as well.** Learning eight weeks of mail with Sonnet cost USD 1.32 as a wiki, 0.82 as items with upkeep and 0.45 added only; with Haiku, 0.13, 0.06 and 0.03, about a tenth, with the same facts right and a little less understanding. Of the upkeep operations, only replacing an item was used much, 31 to 44 times a run; there were a few archives, one correction and one conflict marked uncertain, and no merges, splits or moves at all. Items cite their emails by construction; 91% of the Sonnet wiki's lines and 94% of Haiku's did, and wherever a fact was held, the claim holding it cited an email that supports it, 99 to 100% for every approach.
 
-**For a long piece of work, the wiki held up better than Homing's pages, because it can change part of a document.** Over five sessions, each fresh and alternating between Claude and GPT, every approach kept the facts (25 to 27 of 27) and answered the final readback well (11.5 to 12 of 12 judged elements, no settled question shown as open). The difference was in changing what was there. Asked to add one risk to the outline's risks slide only, the wiki edited that slide in place in 4 of 4 sessions, sending about 500 characters. In Homing, each outline was one item of 2,800 to 5,300 characters, and an item can only be replaced whole: one session resent all 4,291 characters, and the other three appended a separate note instead, an item headed "Slide 8 amendment" saying to add a bullet to slide 8, or a bare line on the brief's page, so the outline itself never changed. The same happened to values: after session 5, the wiki showed none of the three outdated values as current, Homing 1 to 1.5 of 3, typically the brief's "Budget for year 1: 2.5 million NOK" item left beside the cut to 2.0, and items only added all 3.
+**For a long piece of work, the wiki held up better than Homing's pages, because it can change part of a document.** Over five sessions, each fresh and alternating between Claude and GPT, every approach kept the facts (25 to 27 of 27) and answered the final readback well (11.5 to 12 of 12 judged elements, no settled question shown as open). The difference was in changing what was there. Asked to add one risk to the outline's risks slide only, the wiki edited that slide in place in 4 of 4 sessions, sending about 500 characters. In Homing, each outline was one item of 2,800 to 5,300 characters, and an item can only be replaced whole: one session resent all 4,291 characters, and the other three appended a separate note instead, an item headed "Slide 8 amendment" saying to add a bullet to slide 8, or a bare line on the brief's page, so the outline itself never changed. The same happened to values: after session 5, the wiki showed none of the three outdated values as current, Homing 1 to 1.5 of 3, typically the brief's "Budget for year 1: 2.5 million NOK" item left beside the cut to 2.0, and items only added all 3. The wiki's prompt also asked it to keep its files accurate and current, which Homing's instructions don't, so part of that difference may be the instructions.
 
-**A fresh session found the work in both, but read Homing's less.** Wiki sessions read the files they changed every time, 16 of 16. In Homing, Claude read the pages or items before changing them in all 8 of its later sessions, while GPT did in 5 of 8 and otherwise wrote from what `context` and `search` showed, one line per item. `read` shows a page that way too: each item, however long, on one line.
+**Every fresh session met the work before changing it.** In every arm, each later session either opened what it was about to change with `read` or saw its items in a `search` or `context` answer before its first write. The wiki's sessions always opened the files: its prompt said to read a file before changing it, and its edit tool needs the exact text it replaces. Homing's instructions say neither, and there Claude opened pages or items in all 8 of its later sessions and GPT in 5 of 8; in the other three, `search` had already shown the work's items, each on one line. `read` of a page shows its items that way too, however long.
 
-**A session record didn't help, because something else carried the session.** What was said only in conversation, such as "next time, add a section for customer service first", reached the next session as often with the record turn as without it: 6 of 6 either way in the wiki, 5 of 6 either way in Homing, and 1 of 3 either way with items only added. The other numbers differ between the two by no more than a run's noise. The wiki read its log in every session after the first, and the notes it kept, asked for or not. In Homing, no session ever opened a saved record: the next steps travelled as tasks, which `context` lists.
+**This test couldn't separate the effect of a session record.** Each thing said only in conversation, to be done next time, was saved in the session it was said in, as a task, a note or part of the work: the reminder to ask Composa for a second reference in session 1 and the April go-live in session 3 in all ten arms, and the customer-service section in session 2 in eight. So the next session could find them with or without the record turn, and the check for the customer-service section passes on any first-turn write that mentions customer service. Two observations hold: the wiki read its log, which its prompt asks it to keep, in every later session; and in Homing no session ever opened a saved record page, while next steps travelled as tasks, which `context` lists. The data neither supports nor argues against keeping session context.
 
-**Recommendation: keep pages of small, sourced items for knowledge from sources, and let an item be edited in part for substantial work.** The evidence supports items with supersede: they keep provenance by construction, cost less than a rewritten wiki, and take out most of what's outdated, which matters as soon as an assistant reads through search rather than everything. The page model holds up for long documents too, with no new object type, but only if a section can be changed without resending it: today that's the one place the wiki clearly wins.
+**Recommendation: keep pages of small, sourced items for knowledge from sources, and let an item be edited in part for substantial work.** The evidence supports items with supersede: they keep provenance by construction, cost less than a rewritten wiki, and take out most of what's outdated, which matters as soon as an assistant reads through search rather than everything. The page model held up for long documents too, with no new object type, but that is a moderate finding: it was tested on items of up to about 5,000 characters over five sessions, and it holds only if a section can be changed without resending it, which today is the one place the wiki clearly wins.
 
 #### Worth deciding
 
 These are suggestions from the results. None is built here.
 
 1. Let `remember` change part of an item: replace an exact piece of its text, kept in history like any update, so a slide or a section changes without resending a 5,000-character item.
-2. Have `read` show an item's Markdown as written, with its headings, lists and line breaks, at least for long items, instead of one line.
-3. When an item is superseded, have upkeep look for the same fact on other pages, such as a person's or a decision's, and supersede or mark those too.
+2. Have `read` of a page show each item's Markdown as written, with its headings, lists and line breaks, at least for long items, instead of one line. Reading a single item already does.
+3. When an item is superseded, have upkeep look for the same fact on other pages, such as a person's or a decision's, and supersede or mark those too. This is a design change: spec §3 says there is no automatic dependency chain, and the agent finds what new evidence affects.
 4. Let an assistant place an item before or after another, so a document's sections stay in order when one is added later.
-5. Leave session records out for now. Tasks carried next steps; if records are kept, `context` should point to the latest one, since no session here opened one.
-6. Run this again with the reader going through `search` and `context` instead of the whole store, and at a larger scale, where outdated claims would reach the answers.
+5. Run this again with the reader going through `search` and `context` instead of the whole store, and at a larger scale, where outdated claims would reach the answers. It needs a budget of its own.
 
 ### Learning from email
 
@@ -59,12 +58,16 @@ Right answers to the current facts, week by week:
 | Haiku | Items with upkeep | 100% | 100% | 97% | 100% | 100% | 100% | 100% | 100% |
 | Haiku | Items, added only | 100% | 100% | 97% | 100% | 98% | 100% | 100% | 100% |
 
-Reasons found once and missing in a later week, with the reason unchanged, judged:
+Reasons an answer gave once and left out in a later week, with the rubric unchanged, as the judge graded them. Per answer-week: of the weeks after a reason was first found, how many lacked it. Per reason: of the reasons found at least once, how many were missing in some later week. Answers had 80 words and the stores aren't checked for the reasons here, so this mixes what an answer chose to say with what a store lost.
 
-| Kept by | Wiki | Items with upkeep | Items, added only |
+| Kept by | Approach | Answer-weeks missing a reason found before | Reasons missing in some later week |
 |---|---|---|---|
-| Sonnet | 0 of 122 | 0 of 121 | 2 of 120 |
-| Haiku | 11 of 120 | 3 of 120 | 7 of 122 |
+| Sonnet | Wiki | 0 of 122 | 0 of 76 |
+| Sonnet | Items with upkeep | 0 of 121 | 0 of 76 |
+| Sonnet | Items, added only | 2 of 120 | 2 of 75 |
+| Haiku | Wiki | 11 of 120 | 6 of 73 |
+| Haiku | Items with upkeep | 3 of 120 | 3 of 75 |
+| Haiku | Items, added only | 7 of 122 | 5 of 78 |
 
 Learning, per run of eight weeks, and answering the 222 questions of the eight weeks:
 
@@ -79,16 +82,18 @@ Learning, per run of eight weeks, and answering the 222 questions of the eight w
 
 ### Work over five sessions
 
-Two runs of the wiki and Homing, with and without a session record, and one run of Homing that only adds. Counts are over sessions or runs, and means are per run. Facts and outdated values are checked in the work rebuilt after each session from the calls the results keep, which matches the work saved after session 5 in every arm.
+Two runs of the wiki and Homing, with and without a session record, and one run of Homing that only adds. Counts are over sessions or runs, and means are per run. Facts and outdated values are checked in the work rebuilt after each session from the calls the results keep, which matches all 128 pages and files saved, after each session of run 2 and after session 5 of run 1 (`npm run bench:upkeep -- verify`). A session counts as having opened the work when it read a page, an item or a file of it before its first write, and as having seen it when a `search` or `context` answer before then showed one of its items.
 
-| Approach | Session record | Facts after session 5 | Outdated values still current after session 5 | Read the work before changing it | Said only in conversation, done | Risks-slide change in the outline itself | Characters sent for it | Readback, judged | Cost a session |
-|---|---|---|---|---|---|---|---|---|---|
-| Wiki | yes | 27 of 27 | 0 of 3 | 8 of 8 | 6 of 6 | 2 of 2 | 611 | 12 of 12 | $0.26 |
-| Wiki | no | 27 of 27 | 0 of 3 | 8 of 8 | 6 of 6 | 2 of 2 | 473 | 11.5 of 12 | $0.21 |
-| Homing pages | yes | 26.5 of 27 | 1 of 3 | 6 of 8 | 5 of 6 | 1 of 2 | 2,368 | 12 of 12 | $0.23 |
-| Homing pages | no | 26 of 27 | 1.5 of 3 | 7 of 8 | 5 of 6 | 0 of 2 | 139 | 12 of 12 | $0.19 |
-| Items, added only | yes | 25 of 27 | 3 of 3 | 3 of 4 | 1 of 3 | 0 of 1 | 418 | 12 of 12 | $0.19 |
-| Items, added only | no | 27 of 27 | 3 of 3 | 2 of 4 | 1 of 3 | 0 of 1 | 499 | 12 of 12 | $0.17 |
+| Approach | Session record | Facts after session 5 | Outdated values still current after session 5 | Opened the work with read before changing it | Opened it, or saw it in search or context | Said only in conversation, done next session | Risks-slide change in the outline itself | Characters sent for it | Readback, judged | Cost a session |
+|---|---|---|---|---|---|---|---|---|---|---|
+| Wiki | yes | 27 of 27 | 0 of 3 | 8 of 8 | 8 of 8 | 6 of 6 | 2 of 2 | 611 | 12 of 12 | $0.26 |
+| Wiki | no | 27 of 27 | 0 of 3 | 8 of 8 | 8 of 8 | 6 of 6 | 2 of 2 | 473 | 11.5 of 12 | $0.21 |
+| Homing pages | yes | 26.5 of 27 | 1 of 3 | 6 of 8 | 8 of 8 | 5 of 6 | 1 of 2 | 2,368 | 12 of 12 | $0.23 |
+| Homing pages | no | 26 of 27 | 1.5 of 3 | 7 of 8 | 8 of 8 | 5 of 6 | 0 of 2 | 139 | 12 of 12 | $0.19 |
+| Items, added only | yes | 25 of 27 | 3 of 3 | 3 of 4 | 4 of 4 | 1 of 3 | 0 of 1 | 418 | 12 of 12 | $0.19 |
+| Items, added only | no | 27 of 27 | 3 of 3 | 2 of 4 | 4 of 4 | 1 of 3 | 0 of 1 | 499 | 12 of 12 | $0.17 |
+
+What was said only in conversation had been saved when it was said, so that column doesn't measure the session record.
 
 Every arm kept Ana's remark, "between us and not for the brief", out of the brief, and put the note on a nightly import for Composa with Composa's analysis. Each session-5 answer had all five facts code looks for, and none showed a settled question as open. The facts Homing missed are the names of the two reference customers, kept as "Composa's reference took nine months", and Fram's costs, which one session's replaced comparison item kept only in its history.
 
@@ -105,14 +110,14 @@ How the work was kept, after session 5:
 
 By the model that ran the session:
 
-| Approach | Model | Sessions | Read the work first | Characters written a session | Whole files or items rewritten, all sessions | Model calls a session | Cost a session | Minutes a session |
-|---|---|---|---|---|---|---|---|---|
-| Wiki | Claude Sonnet 5.5 | 10 | 8 of 8 | 24,971 | 19 | 10.9 | $0.30 | 2.2 |
-| Wiki | GPT-6.1 Sol | 10 | 8 of 8 | 24,298 | 9 | 18.8 | $0.17 | 2.9 |
-| Homing pages | Claude Sonnet 5.5 | 10 | 8 of 8 | 12,317 | 31 | 9.5 | $0.23 | 1.6 |
-| Homing pages | GPT-6.1 Sol | 10 | 5 of 8 | 13,977 | 31 | 12.8 | $0.18 | 2.2 |
-| Items, added only | Claude Sonnet 5.5 | 6 | 4 of 4 | 6,787 | 0 | 7.8 | $0.16 | 1.1 |
-| Items, added only | GPT-6.1 Sol | 4 | 1 of 4 | 12,244 | 0 | 13.5 | $0.21 | 2.5 |
+| Approach | Model | Sessions | Opened the work first | Opened or saw it first | Characters written a session | Whole files or items rewritten, all sessions | Model calls a session | Cost a session | Minutes a session |
+|---|---|---|---|---|---|---|---|---|---|
+| Wiki | Claude Sonnet 5.5 | 10 | 8 of 8 | 8 of 8 | 24,971 | 19 | 10.9 | $0.30 | 2.2 |
+| Wiki | GPT-6.1 Sol | 10 | 8 of 8 | 8 of 8 | 24,298 | 9 | 18.8 | $0.17 | 2.9 |
+| Homing pages | Claude Sonnet 5.5 | 10 | 8 of 8 | 8 of 8 | 12,317 | 31 | 9.5 | $0.23 | 1.6 |
+| Homing pages | GPT-6.1 Sol | 10 | 5 of 8 | 8 of 8 | 13,977 | 31 | 12.8 | $0.18 | 2.2 |
+| Items, added only | Claude Sonnet 5.5 | 6 | 4 of 4 | 4 of 4 | 6,787 | 0 | 7.8 | $0.16 | 1.1 |
+| Items, added only | GPT-6.1 Sol | 4 | 1 of 4 | 4 of 4 | 12,244 | 0 | 13.5 | $0.21 | 2.5 |
 
 ### Examples
 
@@ -124,13 +129,15 @@ By the model that ran the session:
 
 ### Agreement with the judge
 
-I graded a fixed sample by hand before looking at the judge's grades. On the answers about reasons and what's open, we agreed on all 26 elements of 12 answers drawn at random, and on all 60 elements of 8 harder answers: three session-5 readbacks of 14 elements each and five long answers about reasons. In the pilot, we disagreed on 1 of 18: "Northwind's legal team prefers it" without Mona Lie's name, which the judge marked as missing. That reading of the rubric recurs: six of Haiku's wiki answers lost a point to it. On whether a stored claim presents an old value as current, we agreed on 23 of 25 sampled claims; the two others were dated lines such as "Mona will review it the week of 28 September", which the judge counted as current and I didn't. On the outdated values left in the work after session 5, we agreed on all 18 that code flagged, of which 11 were outdated; the others were differences such as "0.6m cheaper" or marked as old, such as "2.0m, not 2.5m".
+The authoring agent, Claude Opus 5.5, graded a fixed sample before looking at the judge's grades: one model checked against another, not a person. The sample, with its keys and both verdicts, is in [results/upkeep-hand-check.json](results/upkeep-hand-check.json). On the answers about reasons and what's open, they agreed on all 26 elements of 12 answers drawn at random, all 60 elements of 8 harder answers (three session-5 readbacks of 14 elements each and five long answers about reasons), and 41 of the 42 elements of the pilot's 18 answers. The one difference was "Northwind's legal team prefers it" without Mona Lie's name, which the judge marked as missing; that reading recurs, and six of Haiku's wiki answers lost a point to it. On whether a stored claim presents an old value as current, they agreed on 23 of 25 claims sampled from the 141 candidates there were before Haiku's second run; the two others were dated lines such as "Mona will review it the week of 28 September", which the judge counted as current and the agent didn't. In the work after session 5, code flagged 38 mentions of an outdated value, 18 values across the arms; the judge counted 27 of the mentions as outdated, which makes 11 values, and the agent agreed on all 18 values. The rest were differences, such as "0.6m cheaper", or marked as old, such as "2.0m, not 2.5m". Both values the judge counted for Homing with a record in run 2 are borderline: there, "design flexibility" is in a list of things to validate, not among the criteria, and the 2.5 million budget is in a cost note on Composa written before the cut.
 
 ### Changed along the way
 
 The pilot, two weeks of mail and two sessions of each approach, found four things, fixed before the runs: the shared instruction for keeping mail now says Ana's personal life counts, after Haiku's wiki skipped her kitchen as "not Acme work"; a week's questions are answered in one call, and some gave another's answer away, such as "who owned DNS before Ola Nordmann?", so ten about the past and about reasons were reworded without changing their answers or rubrics ([3fa7812](https://github.com/MaxJohnsen/homing/commit/3fa7812)); amounts written in millions, such as "0.9M", now count; and answers that aren't JSON are asked for again, after one in run 1 lost an arm in week 7, which was run again from the start.
 
 After run 1, four checks were added and computed for every run alike, from what the results keep. Since every store's answers reached the ceiling, a store check reads each week's store for current claims holding a changed fact's old value, and the judge decides whether each presents it as current. Amounts no longer match inside larger ones, such as "800,000" in "1,800,000", and session records aren't checked for outdated values, since they say what was true that day; the judge decides for each value code flags. Two checks see where an edit landed: the risks-slide change in the outline itself, and the Composa note with Composa's analysis. And the remark "not for the brief" counts only when it's in the brief; every session that kept it put it on a page or in a file of its own.
+
+After review, with no new calls: the claim that a session record didn't help was withdrawn, since the test couldn't separate it; a session also counts as having seen the work when a `search` or `context` answer before its first write showed one of its items; reasons left out in a later week are counted by the report, per answer-week and per reason; the hand-check sample is committed; the budget test pins the cap at USD 60; and `verify` compares the rebuilt work with every page and file saved.
 
 ### Limitations
 
@@ -141,17 +148,20 @@ After run 1, four checks were added and computed for every run alike, from what 
 - **A generous wiki.** It could edit parts of pages, kept every earlier version, and had its conventions in its prompt. A wiki without an edit tool would rewrite whole pages, which is where Karpathy's critics expect drift. Its seed held the world's pages but not its rules or tasks.
 - **Homing as it is.** Scenario 2 used Homing's tools as on main at [c47a44b](https://github.com/MaxJohnsen/homing/commit/c47a44b). Scenario 1's items used Homing's own functions to write, replace, correct, archive and cite, and bench code for merging, splitting, moving and marking, which the keepers barely used.
 - **The answerer's words.** Answers about reasons had 80 words, so the understanding scores show which reasons the answerer chose as much as what the stores held.
+- **Different instructions for the work.** The wiki's prompt said to read a file before changing it and to keep files accurate and current, and its edit tool needs the exact text it replaces. Homing's instructions say neither. That bears on reading before writing and on the outdated values left in the work.
+- **Session records not measured.** What was to be done next time was saved when it was said, so the record turn had nothing left to carry.
+- **No traceability for the work.** Whether the work's claims cite the findings they rest on wasn't measured in scenario 2, though #111 lists traceability.
 
 ### Spending
 
 | Phase | Calls | USD |
 |---|---|---|
-| Pilot: two weeks of mail for the six keeper arms, two sessions for the three work arms, and the judge | 163 | 1.67 |
+| Pilot: two weeks of mail for the six keeper arms, two sessions for the three work arms, and the judge | 141 | 1.67 |
 | Run 1: every arm, with one mail arm lost in week 7 (USD 1.26 of it) | 580 | 10.70 |
 | Run 2: Sonnet's mail arms, the lost arm again, and the work's wiki and Homing arms | 441 | 9.56 |
 | Run 2 of Haiku's mail arms | 121 | 1.18 |
 | The judge: 525 answers and 224 stored claims or mentions | 105 | 0.48 |
-| **Total** | **1,410** | **23.60** |
+| **Total** | **1,388** | **23.60** |
 
 The projection after the pilot was about USD 12 a run for everything, so three runs, about 36, wouldn't fit in 25. The main arms ran twice, and Homing that only adds, in the work scenario, once. The cap rose from USD 50 to 60 for this benchmark (Max, 22 October). The ledger's total went from USD 34.36 to 57.96, and the key's own usage since the first run from USD 34.30 to 57.88.
 

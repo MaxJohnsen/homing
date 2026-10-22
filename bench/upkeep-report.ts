@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import type { SessionResult } from './upkeep-sessions.ts';
 import type { Answered, WeekResult } from './upkeep.ts';
 import { questions, truthIn } from './upkeep-mail.ts';
-import { checkWork, rebuild } from './upkeep-replay.ts';
+import { checkWork, metWork, rebuild } from './upkeep-replay.ts';
 import { candidates } from './upkeep-stale.ts';
 import { outdated, readbackFacts, readbackRubric, staleMentions, workFacts } from './upkeep-work.ts';
 
@@ -138,6 +138,32 @@ function storeStale(phase: string, arm: MailArm, week: number, judged: Map<strin
   return { stale: stale.map(({ fact }) => fact.id), of: found.length, unjudged };
 }
 
+/** Reasons an arm's answers had once and lacked in a later week while the rubric stood still, counted per answer-week and per element. */
+function reasonsLost(grades: Map<string, Record<string, boolean>>, phase: string, arm: MailArm) {
+  const foundAt = new Map<string, number>();
+  const lostOnce = new Set<string>();
+  let weeks = 0;
+  let weekChances = 0;
+  for (const week of arm.weeks) {
+    for (const answer of week.answers!.filter((candidate) => candidate.kind === 'why' || candidate.kind === 'open')) {
+      const grade = grades.get(`${phase}|${week.key}|${week.attempt}|w${week.week}|${answer.id}`);
+      if (!grade) continue;
+      for (const element of truthIn(questions.find((question) => question.id === answer.id)!, week.week)!.rubric ?? []) {
+        if (element.negative) continue;
+        const key = `${answer.id}|${answer.truthFrom}|${element.id}`;
+        if (foundAt.has(key)) {
+          weekChances++;
+          if (!grade[element.id]) {
+            weeks++;
+            lostOnce.add(key);
+          }
+        } else if (grade[element.id]) foundAt.set(key, week.week);
+      }
+    }
+  }
+  return { weeks, weekChances, elements: lostOnce.size, found: foundAt.size };
+}
+
 function mailSection(phase: string, grades: Map<string, Record<string, boolean>>): string[] {
   const staleJudged = new Map(lines<{ key: string; stale: boolean }>('upkeep-stale-judge').map((grade) => [grade.key, grade.stale]));
   const arms = mailArms(phase, 8);
@@ -220,6 +246,23 @@ function mailSection(phase: string, grades: Map<string, Record<string, boolean>>
     out.push(table(['Approach', ...[1, 2, 3, 4, 5, 6, 7, 8].map((week) => `Week ${week}`)], weekRows));
   }
 
+  // Reasons found once and missing in a later week, with the rubric unchanged, as the judge graded the answers.
+  out.push('\n#### Reasons found once and missing later\n');
+  out.push(
+    'Per answer-week: of the weeks after a reason was first found in an answer, with the same answer due, how many lacked it. Per element: of the reasons found at least once, how many were missing in some later week. Answers had 80 words, and the stores themselves are not checked here, so this mixes what an answer chose to say with what a store lost.\n',
+  );
+  const lostRows: string[][] = [];
+  for (const keeper of keepers) {
+    for (const approach of ['wiki', 'items', 'append']) {
+      const group = arms.filter((arm) => arm.keeper === keeper && arm.approach === approach);
+      if (!group.length) continue;
+      const counted = group.map((arm) => reasonsLost(grades, phase, arm));
+      const sum = (pick: (c: ReturnType<typeof reasonsLost>) => number) => counted.reduce((total, c) => total + pick(c), 0);
+      lostRows.push([modelName(keeper), approachName[approach], `${sum((c) => c.weeks)} of ${sum((c) => c.weekChances)}`, `${sum((c) => c.elements)} of ${sum((c) => c.found)}`]);
+    }
+  }
+  out.push(table(['Kept by', 'Approach', 'Answer-weeks missing a reason found before', 'Reasons missing in some later week'], lostRows));
+
   // Cost.
   out.push('\n#### Cost and time of learning\n');
   const costRows: string[][] = [];
@@ -260,6 +303,8 @@ interface WorkRow extends SessionResult {
 /** What the rebuilt work adds to a session's result. */
 interface Checked {
   remarkInBrief: boolean;
+  /** Before its first write, whether a later session opened the work with read, and whether search or context showed it. */
+  met?: { opened: boolean; shown: boolean };
   judgedStale?: string[];
   inOutline?: boolean;
   withComposa?: boolean;
@@ -279,7 +324,10 @@ function workSection(phase: string, grades: Map<string, Record<string, boolean>>
   const staleJudged = new Map(lines<{ key: string; stale: boolean }>('upkeep-stale-judge').map((grade) => [grade.key, grade.stale]));
   for (const sessions of arms.values()) {
     const states = rebuild(sessions[0].approach, sessions);
-    for (const [index, session] of sessions.entries()) Object.assign(session, checkWork(states[index], index + 1));
+    for (const [index, session] of sessions.entries()) {
+      Object.assign(session, checkWork(states[index], index + 1));
+      if (index > 0) Object.assign(session, { met: metWork(session.calls ?? [], states[index - 1]) });
+    }
     const last = states.at(-1)!;
     const judgedValues = outdated.filter((value) =>
       last.filter((doc) => !doc.record).some((doc) => staleMentions(doc.text, value).some((mention) => staleJudged.get(claimKey({ id: `work-${value.id}`, from: 5 }, { page: doc.title, text: mention })) === true)),
@@ -294,7 +342,8 @@ function workSection(phase: string, grades: Map<string, Record<string, boolean>>
     'Facts in the work after session 5',
     'Facts lost on the way',
     'Outdated values still shown as current after session 5',
-    'Read the work in full before changing it',
+    'Opened the work with read before changing it',
+    'Opened it, or saw its items in search or context',
     'Did what was said only in conversation',
     'Remark kept out of the brief',
     'Risks-slide change in the outline itself',
@@ -329,7 +378,7 @@ function workSection(phase: string, grades: Map<string, Record<string, boolean>>
         return events;
       });
       const stale = last.map((session) => (session as WorkRow & Checked).judgedStale?.length ?? 0);
-      const readFirst = group.flatMap((sessions) => sessions.filter((session) => session.readFirst !== undefined).map((session) => session.readFirst));
+      const met = group.flatMap((sessions) => sessions.map((session) => (session as WorkRow & Checked).met).filter(Boolean)) as { opened: boolean; shown: boolean }[];
       const carriedAll = group.flatMap((sessions) => sessions.flatMap((session) => Object.values(session.carried ?? {})));
       const remark = group.flatMap((sessions) => sessions.map((session) => !(session as WorkRow & Checked).remarkInBrief));
       const risks = group.map((sessions) => sessions.find((session) => session.session === 's4')!.turns![2]);
@@ -343,7 +392,8 @@ function workSection(phase: string, grades: Map<string, Record<string, boolean>>
         `${one(mean(factsAfter))} of ${workFacts.length}`,
         one(mean(lost)),
         `${one(mean(stale))} of 3`,
-        `${readFirst.filter(Boolean).length} of ${readFirst.length}`,
+        `${met.filter((m) => m.opened).length} of ${met.length}`,
+        `${met.filter((m) => m.opened || m.shown).length} of ${met.length}`,
         `${carriedAll.filter(Boolean).length} of ${carriedAll.length}`,
         `${remark.filter(Boolean).length} of ${remark.length}`,
         `${s4.filter((session) => session.inOutline).length} of ${s4.length}`,
@@ -375,13 +425,14 @@ function workSection(phase: string, grades: Map<string, Record<string, boolean>>
     for (const model of ['anthropic/claude-sonnet-5.5', 'openai/gpt-6.1-sol']) {
       const sessions = kept.filter((row) => row.approach === approach && row.model === model);
       if (!sessions.length) continue;
-      const later = sessions.filter((session) => session.readFirst !== undefined);
+      const later = sessions.map((session) => (session as WorkRow & Checked).met).filter(Boolean) as { opened: boolean; shown: boolean }[];
       const writes = sessions.flatMap((session) => session.turns!);
       byModel.push([
         approachName[approach],
         modelName(model),
         String(sessions.length),
-        `${later.filter((session) => session.readFirst).length} of ${later.length}`,
+        `${later.filter((m) => m.opened).length} of ${later.length}`,
+        `${later.filter((m) => m.opened || m.shown).length} of ${later.length}`,
         one(mean(sessions.map((session) => session.turns!.reduce((sum, turn) => sum + turn.writes, 0)))),
         Math.round(mean(sessions.map((session) => session.turns!.reduce((sum, turn) => sum + turn.chars, 0)))).toLocaleString('en-US'),
         `${writes.reduce((sum, turn) => sum + turn.rewrites, 0)}`,
@@ -391,7 +442,7 @@ function workSection(phase: string, grades: Map<string, Record<string, boolean>>
       ]);
     }
   }
-  out.push(table(['Approach', 'Model', 'Sessions', 'Read the work first', 'Writes a session', 'Characters written a session', 'Whole rewrites, all sessions', 'Model calls a session', 'Cost a session', 'Minutes a session'], byModel));
+  out.push(table(['Approach', 'Model', 'Sessions', 'Opened the work first', 'Opened or saw it first', 'Writes a session', 'Characters written a session', 'Whole rewrites, all sessions', 'Model calls a session', 'Cost a session', 'Minutes a session'], byModel));
 
   // Session by session.
   out.push('\n#### Facts in the work after each session\n');

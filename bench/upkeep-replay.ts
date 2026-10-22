@@ -15,6 +15,8 @@ export interface Rebuilt {
   record: boolean;
   /** Its items, for a Homing page, or the whole file. */
   parts: string[];
+  /** The ids of its items, for a Homing page. */
+  items: string[];
 }
 
 interface Call {
@@ -52,7 +54,7 @@ function rebuildWiki(sessions: { calls?: Call[] }[]): Rebuilt[][] {
       if (call.name === 'wiki_edit' && /^Edited/.test(call.answer)) files.set(path, files.get(path)!.replace(String(args.old_text), () => String(args.new_text)));
       if (call.name === 'wiki_delete' && /^Deleted/.test(call.answer)) files.delete(path);
     }
-    return [...files.entries()].filter(([path, text]) => seed.get(path) !== text && path !== 'index.md').map(([path, text]) => ({ id: path, title: path, text, record: isRecord(path), parts: [text] }));
+    return [...files.entries()].filter(([path, text]) => seed.get(path) !== text && path !== 'index.md').map(([path, text]) => ({ id: path, title: path, text, record: isRecord(path), parts: [text], items: [] }));
   });
 }
 
@@ -96,9 +98,9 @@ function rebuildHoming(sessions: { calls?: Call[] }[]): Rebuilt[][] {
     }
     const docs = [...pages.entries()].map(([id, page]) => {
       const parts = page.items.map((item) => bodies.get(item)!);
-      return { id, title: page.title, text: `# ${page.title}\n\n${parts.join('\n\n')}`, record: isRecord(page.title), parts };
+      return { id, title: page.title, text: `# ${page.title}\n\n${parts.join('\n\n')}`, record: isRecord(page.title), parts, items: [...page.items] };
     });
-    return overview === undefined ? docs : [...docs, { id: 'overview', title: 'Overview', text: overview, record: false, parts: [overview] }];
+    return overview === undefined ? docs : [...docs, { id: 'overview', title: 'Overview', text: overview, record: false, parts: [overview], items: [] }];
   });
 }
 
@@ -141,4 +143,77 @@ export function checkWork(docs: Rebuilt[], n: number) {
       .filter((doc) => !doc.record)
       .map((doc) => ({ title: doc.title, chars: doc.text.length, parts: doc.parts.length, largest: Math.max(0, ...doc.parts.map((part) => part.length)) })),
   };
+}
+
+interface StoredCall extends Call {
+  turn?: number;
+}
+
+const flat = (text: string) => text.replace(/\s+/g, ' ').trim();
+const writes = (call: StoredCall) =>
+  ['wiki_write', 'wiki_edit', 'wiki_delete'].includes(call.name) || (call.name === 'remember' && !call.failed && typeof call.args === 'object' && (call.args as Record<string, unknown>).task === undefined);
+
+/**
+ * How a session met the work before its first write: whether it opened a page, an item or a file of
+ * it with read, and whether a search or context answer showed one of its items or files. Answers are
+ * kept to their first 400 characters, so an item counts as shown when its first 40 characters, or a
+ * file's path, are in that part: a lower bound.
+ */
+export function metWork(calls: StoredCall[], before: Rebuilt[]) {
+  const work = before.filter((doc) => !doc.record);
+  const ids = new Set(work.flatMap((doc) => [doc.id, ...doc.items]));
+  const starts = work.flatMap((doc) => doc.parts).map((part) => flat(part).slice(0, 40)).filter((start) => start.length >= 20);
+  const first = calls.findIndex(writes);
+  const prior = calls.slice(0, first < 0 ? undefined : first);
+  const args = (call: StoredCall) => (typeof call.args === 'object' && call.args ? call.args : {}) as Record<string, unknown>;
+  const opened = prior.some(
+    (call) => (call.name === 'read' && ids.has(String(args(call).ref ?? '').replace(/^(page|item):/i, ''))) || (call.name === 'wiki_read' && ids.has(String(args(call).path ?? ''))),
+  );
+  const shown = prior.some(
+    (call) =>
+      ['search', 'context', 'wiki_search'].includes(call.name) &&
+      (work.some((doc) => call.name === 'wiki_search' && call.answer.includes(`${doc.id}:`)) || starts.some((start) => flat(call.answer).includes(start))),
+  );
+  return { opened, shown };
+}
+
+/** Each work arm's rebuilt work, compared with the work saved after each session: how many pages or files match. */
+export function compareSaved(
+  rows: { key: string; session: string; attempt: string; approach: string; calls?: StoredCall[] }[],
+  saved: (arm: string, session: string, last: boolean) => string | undefined,
+) {
+  const arms = new Map<string, typeof rows>();
+  for (const row of rows) {
+    const arm = `${row.key.split('|').slice(1, 4).join('|')}#${row.attempt}`;
+    arms.set(arm, [...(arms.get(arm) ?? []), row]);
+  }
+  let same = 0;
+  let compared = 0;
+  const differ: string[] = [];
+  for (const [key, sessions] of arms) {
+    if (sessions.length < 5) continue;
+    sessions.sort((a, b) => a.session.localeCompare(b.session));
+    const states = rebuild(sessions[0].approach, sessions);
+    for (const [index, session] of sessions.entries()) {
+      const text = saved(key.split('#')[0], session.session, index === 4);
+      if (text === undefined) continue;
+      const blocks = new Map(
+        text
+          .split(/^===== /m)
+          .filter(Boolean)
+          .map((block) => {
+            const [head, ...rest] = block.split('\n');
+            return [head.replace(/ =====$/, '').replace(/ \(record\)$/, ''), rest.join('\n').trim()] as const;
+          }),
+      );
+      for (const doc of states[index]) {
+        compared++;
+        const want = blocks.get(doc.title);
+        // A Homing page saved with items from before the sessions ends with the items they wrote.
+        if (want !== undefined && (want === doc.text.trim() || want.endsWith(doc.text.replace(/^# .*\n\n/, '').trim()))) same++;
+        else differ.push(`${key.split('#')[0]} ${session.session} ${doc.title}`);
+      }
+    }
+  }
+  return { same, compared, differ };
 }

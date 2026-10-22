@@ -1,0 +1,1265 @@
+{
+ "grader": "Claude Opus 5.5, the agent that wrote this benchmark, grading before it looked at the judge’s verdicts. Not a person: this is one model checked against another.",
+ "answers": {
+  "random": "26 of 26",
+  "harder": "60 of 60",
+  "pilot": "41 of 42",
+  "elements": [
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w5|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|why-mobile",
+    "element": "budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|why-mobile",
+    "element": "later",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|open-prestudy",
+    "element": "data-control",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|open-prestudy",
+    "element": "workshop",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|open-prestudy",
+    "element": "not-mobile",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w5|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w5|open-relaunch",
+    "element": "not-export",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w5|open-relaunch",
+    "element": "not-hosting",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w4|why-azure",
+    "element": "runs-azure",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w4|why-azure",
+    "element": "norway",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w4|why-azure",
+    "element": "aws-cheaper",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w4|why-azure",
+    "element": "new-agreement",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w3|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|wiki|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w8|why-mobile",
+    "element": "budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|wiki|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w8|why-mobile",
+    "element": "later",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w6|why-mobile",
+    "element": "budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w6|why-mobile",
+    "element": "later",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "random",
+    "key": "full|mail|items|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w7|open-prestudy",
+    "element": "not-mobile",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "recommends-a",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "fits-budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "connector",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "price-lists",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "reject-b",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "reject-c",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "gunnar-c",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "changed-licence",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "changed-budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "changed-b",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "open-deadline",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "open-dependency",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "not-lists-open",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|1|s5|2026-10-22T20:12:43.456Z",
+    "element": "not-flexibility",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "recommends-a",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "fits-budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "connector",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "price-lists",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "reject-b",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "reject-c",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "gunnar-c",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "changed-licence",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "changed-budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "changed-b",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "open-deadline",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "open-dependency",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "not-lists-open",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|record|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "not-flexibility",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "recommends-a",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "fits-budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "connector",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "price-lists",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "reject-b",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "reject-c",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "gunnar-c",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "changed-licence",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "changed-budget",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "changed-b",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "open-deadline",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "open-dependency",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "not-lists-open",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|work|wiki|none|2|s5|2026-10-22T20:31:41.603Z",
+    "element": "not-flexibility",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|why-quarterly",
+    "element": "asked-monthly",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|why-quarterly",
+    "element": "system-delayed",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w8|why-quarterly",
+    "element": "auditor",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "pilot",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "amount",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "covers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "hint",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w8|why-quarterly",
+    "element": "asked-monthly",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w8|why-quarterly",
+    "element": "system-delayed",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|append|anthropic/claude-sonnet-5.5|2|2026-10-22T20:31:41.603Z|w8|why-quarterly",
+    "element": "auditor",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w7|why-golive",
+    "element": "api-limit",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w7|why-golive",
+    "element": "no-enterprise",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w7|why-golive",
+    "element": "bulk-january",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:12:43.456Z|w7|why-golive",
+    "element": "dates",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "pilot",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "amount",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "covers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "harder",
+    "key": "full|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:12:43.456Z|w6|why-budget",
+    "element": "hint",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|append|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|items|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": false
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-sonnet-5.5|1|2026-10-22T20:05:59.669Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "own-servers",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "no-us",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|why-matomo",
+    "element": "legal",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "api",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "hosting",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-relaunch",
+    "element": "cookie",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "sample": "pilot",
+    "key": "pilot|mail|wiki|anthropic/claude-haiku-5.5|1|2026-10-22T20:05:59.669Z|w2|open-prestudy",
+    "element": "mobile",
+    "hand": true,
+    "judge": true
+   }
+  ]
+ },
+ "storedClaims": {
+  "agree": "23 of 25",
+  "from": "141 candidates before Haiku's second run",
+  "claims": [
+   {
+    "key": "migration-status|8|87d46cfe519dc308",
+    "fact": "migration-status",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Migration status on 2 Oct 2026: 40% of the content is migrated, and the pilot's product pages are live on staging. Jonas Vik reports this.",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "golive|5|2921c5142283d459",
+    "fact": "golive",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Steering group 14 September 2026 kept 1 March 2027 as the go-live date \"for now\". Next steering group meeting is on 12 October 2026.",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "hosting-decided|4|113bdfb4aab7b02e",
+    "fact": "hosting-decided",
+    "page": "Northwind website hosting: Azure or AWS (decision)",
+    "claim": "New offer (30 Sep 2026, Erlend Strand of CloudPartner, on behalf of AWS): 25% off the first year if the new website is hosted on AWS. This is an offer from a reseller, not a decision. The choice between Azure and AWS is still open, and the offer needs to be weighed against the other factors. Erlend has proposed a call.",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "migration-status|8|1e97538f47c4f48e",
+    "fact": "migration-status",
+    "page": "acme/team.md",
+    "claim": "- 25 Sept: Jonas reports 25% of the Northwind content migrated, with the pilot product pages on track for 5 October.[^m096]",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "budget|6|f7a54257ade145e3",
+    "fact": "budget",
+    "page": "people/gunnar-holm.md",
+    "claim": "- Approved the 450,000 NOK budget on 24 August 2026 [^m002].",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "migration-owner|4|672508f4432f8bc4",
+    "fact": "migration-owner",
+    "page": "Jonas Vik (person)",
+    "claim": "Started at Acme on 14 September 2026. Owns the content migration for the Northwind relaunch from then on, taking over from Cara Lund.",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "budget|6|84f1666c06fb1d78",
+    "fact": "budget",
+    "page": "northwind/website-relaunch.md",
+    "claim": "- Budget (confidential, \"between us\"): if the October product-page pilot goes well, Gunnar may add about 100,000 NOK to the 450,000 NOK budget. Nothing decided.[^m066]",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "budget|6|abcafa59392dcfe7",
+    "fact": "budget",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Budget: 450,000 NOK, approved by Gunnar Holm on 24 Aug 2026.",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "migration-status|8|462922d93c12530d",
+    "fact": "migration-status",
+    "page": "people/jonas-vik.md",
+    "claim": "- On 2 October 2026 he reported that about 40 percent of the content is migrated, and the pilot's product pages are live on staging [^m115].",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "cookie|6|7cff8b2911566deb",
+    "fact": "cookie",
+    "page": "northwind/website-relaunch.md",
+    "claim": "- Mona Lie: Legal, Northwind. Wants Matomo for analytics and must approve the cookie banner.[^m024]",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "cookie|6|186978344b2e0c38",
+    "fact": "cookie",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Cookie banner: Mona Lie received the revised banner from Cara (24 Sep) and will review it the following week (week of 28 Sep).",
+    "hand": false,
+    "judge": true
+   },
+   {
+    "key": "prestudy-mobile|6|dd15da0d82e307f3",
+    "fact": "prestudy-mobile",
+    "page": "Fjord Bank (client)",
+    "claim": "Siri Dahl (Digitaldirektør) asked Acme on 27 Aug 2026 to do a pre-study (forstudie) for Fjord Bank's new customer portal this autumn. Two options are being considered: build in-house or buy a ready-made platform. Whether the mobile app is in scope is not yet decided.",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "migration-status|8|3116ad7608cf5a6f",
+    "fact": "migration-status",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Migration status 25 Sep (Jonas Vik): 25% of the content is migrated. Product pages for the pilot are on track for 5 October.",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "kitchen-price|4|86d07a89e36a6b5f",
+    "fact": "kitchen-price",
+    "page": "Kitchen renovation (personal)",
+    "claim": "Carpenter Erik Dahl can start on the kitchen Monday 2 November 2026. Quote: 85,000 NOK including materials, excluding electrician (electrician still needs arranging).",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "cookie|6|9bbf5e4f2fbcebf5",
+    "fact": "cookie",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Cookie banner: Mona Lie can approve the draft on one condition — the 'Reject all' button must be as visible as 'Accept all' (same size and color). Ana is to send her the revised design when ready.",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "next-steering|7|c3fd471d9f10f2e5",
+    "fact": "next-steering",
+    "page": "people/gunnar-holm.md",
+    "claim": "- Chairs the steering group, which meets every four weeks. Met on 14 September 2026; next meeting 12 October 2026 [^m002][^m063].",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "golive|5|e1737d9a51f33667",
+    "fact": "golive",
+    "page": "northwind/fram-migration.md",
+    "claim": "- Ana put the choice (pay 20,000 NOK/month vs about three weeks' delay, risking the 1 March 2027 go-live) to Gunnar on 2026-09-01.[^m026]",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "cookie|6|fa1fd4566dd638a5",
+    "fact": "cookie",
+    "page": "Northwind website relaunch (project)",
+    "claim": "The cookie banner needs Mona Lie's (Northwind legal) approval before launch.",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "cookie|6|c2edf54e9c0c9f61",
+    "fact": "cookie",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Cookie banner: Mona Lie (Northwind) has received the revised banner from Cara and will review it the week of 28 Sep.",
+    "hand": false,
+    "judge": true
+   },
+   {
+    "key": "migration-status|8|478d5a875404abb1",
+    "fact": "migration-status",
+    "page": "northwind/fram-migration.md",
+    "claim": "- 2 October 2026: about 40 percent of the content is migrated, and the pilot's product pages are live on staging [^m115].",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "migration-status|6|1e97538f47c4f48e",
+    "fact": "migration-status",
+    "page": "acme/team.md",
+    "claim": "- 25 Sept: Jonas reports 25% of the Northwind content migrated, with the pilot product pages on track for 5 October.[^m096]",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "migration-status|6|3116ad7608cf5a6f",
+    "fact": "migration-status",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Migration status 25 Sep (Jonas Vik): 25% of the content is migrated. Product pages for the pilot are on track for 5 October.",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "migration-status|8|cb65a942c1b1f266",
+    "fact": "migration-status",
+    "page": "northwind/fram-migration.md",
+    "claim": "- Status 2026-09-25 (Jonas): 25% of the content is migrated; the product pages for the pilot are on track for **5 October 2026**.[^m096] Ana told Gunnar on 2026-09-24 that the plan is updated and the product pages will be ready for the October pilot.[^m091]",
+    "hand": false,
+    "judge": false
+   },
+   {
+    "key": "golive|5|41aa7996cbb226be",
+    "fact": "golive",
+    "page": "Northwind website relaunch (project)",
+    "claim": "Go-live date: 1 March 2027 (agreed at kickoff on 24 Aug 2026).",
+    "hand": true,
+    "judge": true
+   },
+   {
+    "key": "dns-owner|6|3c6cabbbaf9802b7",
+    "fact": "dns-owner",
+    "page": "Ola Nordmann (person)",
+    "claim": "Northwind. Takes over hosting and DNS for the Northwind website relaunch from Per Hansen on 1 October 2026 (Per Hansen, 22 Sept 2026).",
+    "hand": false,
+    "judge": false
+   }
+  ]
+ },
+ "workValues": {
+  "agree": "18 of 18",
+  "flaggedValues": 18,
+  "outdatedByHand": 11,
+  "mentions": 38,
+  "judgedOutdatedMentions": 27,
+  "values": [
+   {
+    "arm": "append|none|1",
+    "value": "design-flexibility",
+    "mentions": 3,
+    "judgedOutdated": 3,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "append|none|1",
+    "value": "a-600",
+    "mentions": 2,
+    "judgedOutdated": 2,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "append|none|1",
+    "value": "budget-2-5",
+    "mentions": 6,
+    "judgedOutdated": 5,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "homing|none|1",
+    "value": "budget-2-5",
+    "mentions": 5,
+    "judgedOutdated": 4,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "wiki|none|1",
+    "value": "a-600",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "append|record|1",
+    "value": "design-flexibility",
+    "mentions": 3,
+    "judgedOutdated": 2,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "append|record|1",
+    "value": "a-600",
+    "mentions": 1,
+    "judgedOutdated": 1,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "append|record|1",
+    "value": "budget-2-5",
+    "mentions": 6,
+    "judgedOutdated": 5,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "homing|record|1",
+    "value": "budget-2-5",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "wiki|record|1",
+    "value": "budget-2-5",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "wiki|none|2",
+    "value": "a-600",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "homing|none|2",
+    "value": "design-flexibility",
+    "mentions": 1,
+    "judgedOutdated": 1,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "homing|none|2",
+    "value": "a-600",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "homing|none|2",
+    "value": "budget-2-5",
+    "mentions": 1,
+    "judgedOutdated": 1,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "wiki|record|2",
+    "value": "design-flexibility",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "homing|record|2",
+    "value": "design-flexibility",
+    "mentions": 2,
+    "judgedOutdated": 2,
+    "hand": true,
+    "judge": true
+   },
+   {
+    "arm": "homing|record|2",
+    "value": "a-600",
+    "mentions": 1,
+    "judgedOutdated": 0,
+    "hand": false,
+    "judge": false
+   },
+   {
+    "arm": "homing|record|2",
+    "value": "budget-2-5",
+    "mentions": 1,
+    "judgedOutdated": 1,
+    "hand": true,
+    "judge": true
+   }
+  ]
+ }
+}

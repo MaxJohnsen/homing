@@ -166,7 +166,9 @@ test("a run's own limit stops it below the cap", () => {
 });
 
 test('the cap can be lowered but never raised, and a limit that is not a number refuses', () => {
-  assert.equal(ledger(ledgerPath(), { cap: 500 }).cap, hardCap);
+  // USD 60 since benchmark 0, as Max approved on 22 October 2026. Raising it takes changing this test too.
+  assert.equal(hardCap, 60);
+  assert.equal(ledger(ledgerPath(), { cap: 500 }).cap, 60);
   assert.equal(ledger(ledgerPath(), { cap: 10 }).cap, 10);
   assert.throws(() => new Ledger(ledgerPath(), { runLimit: Number('three') }), OverBudget);
   assert.throws(() => new Ledger(ledgerPath(), { runLimit: -1 }), OverBudget);

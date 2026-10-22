@@ -4,6 +4,7 @@
 //   HOMING_BENCH_DB=homing_bench0 npm run bench:upkeep -- run --max-spend 20      everything not yet done, three runs
 //   npm run bench:upkeep -- judge --max-spend 1                                   grades what code can't check
 //   npm run bench:upkeep -- report                                                the tables in results.md
+//   npm run bench:upkeep -- verify                                                the rebuilt work against the work saved
 //
 // Every paid call passes the spending guard in budget.ts and its ledger. The mail, the sessions, the
 // questions and what counts as right are in upkeep-mail.ts and upkeep-work.ts.
@@ -20,7 +21,7 @@ import { approaches, storeFor, type Approach, type Store } from './upkeep-learn.
 import { batches, checkpointDay, idsOf, questions, truthIn, type Question } from './upkeep-mail.ts';
 import { armKey, runArm, workApproaches, type SessionResult, type WorkApproach, type WorkArm } from './upkeep-sessions.ts';
 import { candidates, staleQuestion, type Changed, type Claim } from './upkeep-stale.ts';
-import { rebuild } from './upkeep-replay.ts';
+import { compareSaved, rebuild } from './upkeep-replay.ts';
 import { outdated, readbackRubric, sessionModel, staleMentions } from './upkeep-work.ts';
 
 const here = new URL('./', import.meta.url);
@@ -388,8 +389,17 @@ async function main() {
     process.stdout.write(report(positionals.slice(1).length ? positionals.slice(1) : ['full']));
     return;
   }
+  if (command === 'verify') {
+    // The work rebuilt from the calls, which the report's checks read, against the work saved after each session.
+    const phase = positionals[1] ?? 'full';
+    const rows = readLines<SessionResult & { attempt: string }>(`upkeep-work-${phase}`).filter((row) => !row.error);
+    const file = (name: string) => (existsSync(`${storesDir(phase)}${name}`) ? readFileSync(`${storesDir(phase)}${name}`, 'utf8') : undefined);
+    const { same, compared, differ } = compareSaved(rows, (arm, session, last) => file(`work_${arm.replaceAll('|', '_')}_${session}.md`) ?? (last ? file(`work_${arm.replaceAll('|', '_')}.md`) : undefined));
+    console.log(`${same} of ${compared} pages or files rebuilt match the work saved.${differ.length ? `\n${differ.join('\n')}` : ''}`);
+    return;
+  }
   if (!['pilot', 'run', 'judge'].includes(command ?? '')) {
-    console.error('Say what to do: npm run bench:upkeep -- pilot, run, judge or report');
+    console.error('Say what to do: npm run bench:upkeep -- pilot, run, judge, report or verify');
     process.exit(1);
   }
   const ledger = new Ledger(ledgerPath, { runLimit: values['max-spend'] === undefined ? undefined : Number(values['max-spend']) });
