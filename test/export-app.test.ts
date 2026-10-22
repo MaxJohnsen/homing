@@ -6,18 +6,23 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import { parse } from 'yaml';
-import { authDatabaseUrl } from '../src/db.ts';
-import type { Author, Manifest } from '../src/export.ts';
-import { addRule, removeRule } from '../src/guidance.ts';
+import { inspect } from '../src/bundle.ts';
+import { authDatabaseUrl, withPrincipal } from '../src/db.ts';
+import { bundleManifest, exportSpace, importLimits, type Author, type Manifest } from '../src/export.ts';
+import { addRule, editRule, removeRule } from '../src/guidance.ts';
+import { workerLimits, workFolder } from '../src/import.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
 import { addMember, archiveSpace, createSpace, removeMember } from '../src/spaces.ts';
 import { addTask, changeTask } from '../src/tasks.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, until, type Member } from './helpers.ts';
+import { admin, as, db, importAgain, member, until, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -189,7 +194,7 @@ async function download(who: Member, spaceId: string) {
   const response = await who.browser.fetch(`/api/spaces/${spaceId}/export`);
   const zip = new Uint8Array(await response.arrayBuffer());
   const files = response.status === 200 ? new Map(Object.entries(unzipSync(zip)).map(([path, bytes]) => [path, strFromU8(bytes)])) : new Map<string, string>();
-  return { response, zip, files, manifest: (files.has('homing.json') ? JSON.parse(files.get('homing.json')!) : undefined) as Manifest };
+  return { response, zip, files, manifest: (files.has('homing.json') ? bundleManifest((path) => files.get(path)!) : undefined) as Manifest };
 }
 
 test('a member downloads everything they see in a space, readable and ready to import', async () => {
@@ -200,7 +205,7 @@ test('a member downloads everything they see in a space, readable and ready to i
 
   // The manifest says what it is, where it came from, and who exported it, by name.
   assert.equal(manifest.format, 'homing-export');
-  assert.equal(manifest.version, 1);
+  assert.equal(manifest.version, 2);
   assert.equal(manifest.instance, homing.url.origin);
   assert.equal(manifest.exportedBy.name, 'Ana');
   assert.deepEqual(manifest.spaces.map((space) => [space.name, space.parent && 'in Acme', space.folder]), [['Acme', null, ''], ['Website', 'in Acme', 'website']]);
@@ -212,7 +217,10 @@ test('a member downloads everything they see in a space, readable and ready to i
   const visibleToAna = async (table: string) =>
     (await admin.unsafe(`select id from ${table} where space_id in (select space_subtree($1)) and space_id not in (select space_subtree($2)) and (private_to is null or private_to = $3) order by id`, [acme, boardId, ana.id])).map((row) => row.id);
   const ids = (things: { id: string }[]) => things.map((thing) => thing.id).sort();
-  assert.deepEqual(ids(manifest.items), await visibleToAna('content'));
+  // All but a skill's files that would land outside its folder, which an import refuses.
+  const unplaced = new Set((await admin`select id from content where space_id = ${acme} and kind = 'file' and body = 'Out!'`).map((row) => row.id));
+  assert.equal(unplaced.size, 3);
+  assert.deepEqual(ids(manifest.items), (await visibleToAna('content')).filter((id) => !unplaced.has(id)));
   assert.deepEqual(ids(manifest.sources), await visibleToAna('sources'));
   assert.deepEqual(ids(manifest.tasks), await visibleToAna('tasks'));
 
@@ -400,8 +408,9 @@ test('a skill’s files stay in its folder, and guidance comes out word for word
   // Every file in the zip is where it says, on any system.
   for (const path of files.keys()) assert.doesNotMatch(path, /\\|:|(^|\/)\.{1,2}(\/|$)/, path);
   assert.deepEqual([...files.keys()].filter((path) => path.startsWith('guidance/skills/odd/')), ['guidance/skills/odd/SKILL.md']);
-  // Homing still holds them all, and the bundle says so.
-  assert.deepEqual(manifest.items.filter((item) => item.kind === 'file' && item.body === 'Out!').map((item) => item.path).sort(), ['C:/evil.md', 'refs/./evil.md', 'refs\\..\\..\\evil.md']);
+  // Homing still holds them, but an export leaves them out, as an import refuses them.
+  assert.deepEqual(manifest.items.filter((item) => item.kind === 'file' && item.body === 'Out!'), []);
+  assert.equal((await admin`select count(*)::int as n from content where space_id = ${acme} and kind = 'file' and body = 'Out!'`)[0].n, 3);
   // A rule and a skill keep their words, references and all.
   assert.equal(files.get('guidance/skills/odd/SKILL.md'), oddSkill);
   assert.ok(manifest.items.some((item) => item.body === houseStyle));
@@ -431,7 +440,7 @@ test('a person makes one export at a time, until it has been sent', async () => 
   // A space too big to send at once: what doesn't compress, megabytes of it.
   const scans = await as({ ...ana, direct: true }, async (s) => {
     const scans = await createSpace(s, { name: 'Scans' });
-    for (let n = 0; n < 8; n++) await addSource(s, { spaceId: scans, excerpt: randomBytes(400_000).toString('base64'), reference: `Scan ${n}`, shared: true });
+    for (let n = 0; n < 160; n++) await addSource(s, { spaceId: scans, excerpt: randomBytes(15_000).toString('base64'), reference: `Scan ${n}`, shared: true });
     return scans;
   });
   const first = await ana.browser.fetch(`/api/spaces/${scans}/export`);
@@ -447,6 +456,156 @@ test('a person makes one export at a time, until it has been sent', async () => 
     return again.status === 200;
   });
 });
+
+test('an export holds no more than an import takes, and is refused, with nothing left behind, when it would', async () => {
+  // Items full of braces: each file of a long list stays well within the objects an import reads in one.
+  const braces = await as({ ...ana, direct: true }, async (s) => {
+    const space = await createSpace(s, { name: 'Braces' });
+    const page = await createPage(s, { spaceId: space, title: 'Config', shared: true });
+    for (let n = 0; n < 60; n++) await writeItem(s, { pageId: page, body: `Setting ${n}: ${'{'.repeat(100)}`, shared: true });
+    return space;
+  });
+  const limits = { ...importLimits };
+  const folder = await mkdtemp(join(tmpdir(), 'homing-export-test-'));
+  try {
+    importLimits.objects = 2_000;
+    const { response, files } = await download(ana, braces);
+    assert.equal(response.status, 200);
+    const chunks = [...files.keys()].filter((path) => path.startsWith('homing/items-'));
+    assert.ok(chunks.length >= 3, `${chunks.length} files of items`);
+    for (const path of chunks) assert.ok([...files.get(path)!].filter((char) => char === '{' || char === '[').length <= 2_000, path);
+    // Larger than an import takes: stopped as soon as it is, and nothing of it stays on disk.
+    importLimits.upload = 2_000;
+    assert.equal(await withPrincipal(db, { person: ana.id }, (s) => exportSpace(s, acme, homing.url, folder), { snapshot: true }), 'too large');
+    assert.deepEqual(await readdir(folder), []);
+    const refused = await ana.browser.fetch(`/api/spaces/${acme}/export`);
+    assert.equal(refused.status, 413);
+    assert.equal((await refused.json()).message, 'That space holds more than one export can, so Homing didn’t make it. Export the spaces in it one at a time.');
+  } finally {
+    Object.assign(importLimits, limits);
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('an export that wouldn’t import again isn’t handed out, and says why, until what keeps it is written again', async () => {
+  // A rule and a skill's file with a character nobody sees, which Homing keeps when they're written, but an import refuses.
+  const { hidden, rule, skilled } = await as({ ...ana, direct: true }, async (s) => {
+    const hidden = await createSpace(s, { name: 'Hidden' });
+    const rule = await addRule(s, { spaceId: hidden, kind: 'requirement', body: `Answer in Norwegian.${String.fromCodePoint(0x200b)}`, shared: true });
+    const skilled = await createSpace(s, { name: 'Skilled' });
+    await saveSkill(s, { spaceId: skilled, shared: true, files: [{ path: 'SKILL.md', body: `---\nname: hiding\ndescription: Hides a word.\n---\n\nSay it${String.fromCodePoint(0x2060)}.\n` }] });
+    return { hidden, rule: rule.id, skilled };
+  });
+  const refused = async (space: string) => {
+    const response = await ana.browser.fetch(`/api/spaces/${space}/export`);
+    assert.equal(response.status, 422);
+    return (await response.json()).message;
+  };
+  assert.equal(await refused(hidden), 'The rule “Answer in Norwegian.” in Hidden has a character nobody sees, such as one copied from a web page, so the export wouldn’t import again. Retype the rule, then export again.');
+  assert.equal(await refused(skilled), 'The file SKILL.md of the skill hiding in Skilled has a character nobody sees, such as one copied from a web page, so the export wouldn’t import again. Save the skill again without it, then export again.');
+  // Retyped, it exports, and imports again, with what it said before in its history.
+  await as({ ...ana, direct: true }, (s) => editRule(s, rule, 'Answer in Norwegian.'));
+  const retyped = await ana.browser.fetch(`/api/spaces/${hidden}/export`);
+  assert.equal(retyped.status, 200);
+  const copy = await importAgain(ana, new Uint8Array(await retyped.arrayBuffer()), 'Hidden, again');
+  assert.equal((await admin`select count(*)::int as n from revisions where space_id = ${copy} and body like '%' || chr(8203)`)[0].n, 1);
+});
+
+test('a member is told to ask an admin about what’s shared, and changes what’s theirs', async () => {
+  const hide = (text: string) => `${text}${String.fromCodePoint(0x200b)}`;
+  // In a space Ana looks after and Cara is a member of: a shared rule, a shared skill, and a rule of Cara's own.
+  const [rules, skilled, notes] = await as({ ...ana, direct: true }, async (s) => {
+    const made: string[] = [];
+    for (const name of ['Team rules', 'Team skills', 'Team notes']) {
+      const space = await createSpace(s, { name });
+      await addMember(s, space, cara.id);
+      made.push(space);
+    }
+    await addRule(s, { spaceId: made[0], kind: 'requirement', body: hide('Answer in Norwegian.'), shared: true });
+    await saveSkill(s, { spaceId: made[1], shared: true, files: [{ path: 'SKILL.md', body: hide('---\nname: team-skill\ndescription: Helps the team.\n---\n\nGo.') }] });
+    return made;
+  });
+  await as({ ...cara, direct: true }, (s) => addRule(s, { spaceId: notes, kind: 'preference', body: hide('Cara writes short notes.') }));
+  const refusal = async (who: Member, space: string) => {
+    const response = await who.browser.fetch(`/api/spaces/${space}/export`);
+    assert.equal(response.status, 422);
+    return (await response.json()).message as string;
+  };
+  assert.match(await refusal(cara, rules), /in Team rules has a character nobody sees, .* Ask an admin of Team rules to retype the rule, then export again\.$/);
+  assert.match(await refusal(cara, skilled), /The file SKILL\.md of the skill team-skill in Team skills .* Ask an admin of Team skills to save the skill again without it, then export again\.$/);
+  assert.match(await refusal(ana, rules), /\. Retype the rule, then export again\.$/);
+  assert.match(await refusal(cara, notes), /^The rule “Cara writes short notes\.” in Team notes .* Retype the rule, then export again\.$/);
+});
+
+test('an export is no larger than an upload takes, homing.json and all', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'homing-export-test-'));
+  const upload = importLimits.upload;
+  const now = new Date();
+  const exported = (gone?: () => boolean) => withPrincipal(db, { person: ana.id }, (s) => exportSpace(s, acme, homing.url, folder, { now, gone }), { snapshot: true });
+  try {
+    const whole = await exported();
+    assert.ok(whole && typeof whole === 'object');
+    // Just larger than an upload, though only once homing.json and the zip's own records are in.
+    importLimits.upload = whole.size - 10;
+    assert.equal(await exported(), 'too large');
+    // Nor read for an import.
+    await assert.rejects(inspect(whole.path, '', () => {}), /larger than Homing imports at once/);
+    importLimits.upload = upload;
+    // Stopped as soon as nobody waits for it.
+    assert.equal(await exported(() => true), 'gone');
+    await rm(whole.path);
+    assert.deepEqual(await readdir(folder), []);
+  } finally {
+    importLimits.upload = upload;
+    await rm(folder, { recursive: true, force: true });
+  }
+});
+
+test('an export keeps its place until its work is done, even after the person stops waiting for it', async () => {
+  const before = new Set(await readdir(workFolder).catch(() => []));
+  await admin.begin(async (hold) => {
+    // Ana's export is held up as it reads, and she stops waiting for it.
+    await hold`lock table page_archives in access exclusive mode`;
+    const waiting = new AbortController();
+    const first = ana.browser.fetch(`/api/spaces/${acme}/export`, { signal: waiting.signal }).catch(() => undefined);
+    await until(async () => (await admin`select count(*)::int as n from pg_locks where relation = 'page_archives'::regclass and not granted`)[0].n > 0);
+    waiting.abort();
+    await first;
+    // Asking again doesn't start another while that one still runs.
+    const again = await ana.browser.fetch(`/api/spaces/${acme}/export`);
+    assert.equal(again.status, 429);
+  });
+  // Once it's done, nothing of it is left on disk, and she exports again.
+  await waitFor(async () => (await readdir(workFolder)).every((name) => before.has(name) || !name.startsWith('homing-export-')));
+  await waitFor(async () => {
+    const again = await ana.browser.fetch(`/api/spaces/${website}/export`);
+    await again.arrayBuffer();
+    return again.status === 200;
+  });
+});
+
+test('an export whose check takes too long isn’t handed out, and isn’t said to be too big', async () => {
+  // The check has less memory and time than an import, so what passes it imports here, and on a Homing a little slower.
+  const { check, import: reading } = workerLimits;
+  assert.ok(check.memory < reading.memory && check.time < reading.time);
+  const time = check.time;
+  try {
+    check.time = 1;
+    const response = await ana.browser.fetch(`/api/spaces/${website}/export`);
+    assert.equal(response.status, 503);
+    assert.match((await response.json()).message, /took too long to check that the export imports again/);
+  } finally {
+    check.time = time;
+  }
+});
+
+/** Waits until the condition holds, as long as other exports may take to be sent. */
+async function waitFor(condition: () => Promise<boolean>) {
+  for (const started = Date.now(); !(await condition()); ) {
+    if (Date.now() - started > 20_000) throw new Error('timed out');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
 
 test('a title written with extra spaces or on several lines names the same page', async () => {
   const claude = await anasClaude();

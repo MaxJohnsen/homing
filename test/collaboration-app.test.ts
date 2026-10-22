@@ -11,7 +11,7 @@ import { after, before, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { authDatabaseUrl } from '../src/db.ts';
 import type { Email } from '../src/email.ts';
-import type { Manifest } from '../src/export.ts';
+import { bundleManifest } from '../src/export.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { Browser } from './browser.ts';
@@ -339,7 +339,7 @@ test('Cara’s export of the space holds Ana’s shared items and her own, and n
   assert.equal(response.status, 200);
   const files = Object.fromEntries(Object.entries(unzipSync(new Uint8Array(await response.arrayBuffer()))).map(([path, bytes]) => [path, strFromU8(bytes)]));
   const all = Object.values(files).join('\n');
-  const manifest = JSON.parse(files['homing.json']) as Manifest;
+  const manifest = bundleManifest((path) => files[path]);
 
   for (const text of ['Gunnar Holm leads the launch at Northwind.', 'Gunnar signs off the launch plan.', 'Show Northwind every design before the demo.', carasSecret]) {
     assert.ok(all.includes(text), text);

@@ -9,7 +9,7 @@ import { authDatabaseUrl } from '../src/db.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, changeMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { as, db, member, refused, type Member } from './helpers.ts';
+import { as, db, importAgain, member, refused, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -123,9 +123,7 @@ test('a task an assistant kept, imported, says whose assistant kept it, marked i
   const trip = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Trip' }));
   assert.ok(!(await claude.call('remember', { space: `space:${trip}`, task: { title: 'Book the ferry' } })).failed);
   const zip = new Uint8Array(await (await ana.browser.fetch(`/api/spaces/${trip}/export`)).arrayBuffer());
-  const upload = (path: string) => ana.browser.fetch(path, { method: 'POST', body: zip, headers: { 'content-type': 'application/zip' } }).then((response) => response.json());
-  const { hash } = await upload('/api/import/preview');
-  const { id: copy } = await upload(`/api/import?${new URLSearchParams({ name: 'Trip, again', hash })}`);
+  const copy = await importAgain(ana, zip, 'Trip, again');
   // Nobody here kept it, Ana included: it says she did, before it was imported.
   const [kept] = (await ana.browser.json(`/api/spaces/${copy}/tasks`)).body.open as TaskRow[];
   assert.deepEqual([kept.title, kept.agent, kept.by], ['Book the ferry', 'Claude', { name: 'Ana', you: false, imported: true }]);

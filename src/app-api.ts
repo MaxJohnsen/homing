@@ -1,8 +1,12 @@
+import { createReadStream } from 'node:fs';
+import { mkdir, rm } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { pipeline } from 'node:stream/promises';
 import postgres from 'postgres';
+import { hiddenMessage } from './bundle.ts';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
-import { ImportRefused, importLimits, importSpace, previewExport, readForImport } from './import.ts';
+import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
@@ -11,21 +15,20 @@ import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { addTask, changeTask, searchTasks, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { archiveSpace, changeMember, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, SpaceRefused, spaceView, type Space } from './spaces.ts';
-import { json, readJson, readUpload, type App } from './web.ts';
+import { json, readJson, type App } from './web.ts';
 
 const uuid = '([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})';
 /**
- * Who is exporting a space right now, until it has been sent, who is sending an export to import,
- * and who is having one read or imported, one at a time.
+ * Who is exporting a space right now, until it has been made, checked and sent, or given up on,
+ * and who is sending an export to import.
  */
 const exporting = new Set<string>();
 const uploading = new Set<string>();
-let importing: string | undefined;
 
-/** How long an export to import may take to arrive. */
-const uploadTime = 2 * 60_000;
 /** How long an export may take to make and send before it's given up on. */
-const exportTimeout = 5 * 60_000;
+const exportTimeout = 30 * 60_000;
+const tooBig = 'That space holds more than one export can, so Homing didn’t make it. Export the spaces in it one at a time.';
+const tooSlowToCheck = 'Homing took too long to check that the export imports again, so it didn’t hand it out. Try again in a quiet moment.';
 const kinds: RuleKind[] = ['requirement', 'preference'];
 const orders: PageOrder[] = ['recent', 'name', 'match'];
 
@@ -216,70 +219,107 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'export': {
-        // One at a time for each person, and only a few at once, since a big space takes a lot of memory,
-        // until it has been sent, or given up on after a few minutes.
+        // One at a time for each person, and only a few at once, until the work is done, whether the person waits for it or not.
         if (exporting.has(person) || exporting.size >= 2) return answer(res, 429, { message: 'Homing is making another export right now. Try again in a moment.' });
         exporting.add(person);
         const timeout = setTimeout(() => res.destroy(), exportTimeout);
-        res.once('close', () => {
+        let file: string | undefined;
+        try {
+          await mkdir(workFolder, { recursive: true });
+          // Everything the person sees in the space, read in one snapshot as them, into a file, a space at a time, while they wait for it.
+          const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url, workFolder, { gone: () => res.destroyed }), { snapshot: true });
+          if (exported === 'gone') break;
+          if (exported === 'too large') return answer(res, 413, { message: tooBig });
+          if (!exported) return answer(res, 404, noSpace);
+          file = exported.path;
+          if (res.destroyed) break;
+          // Read as an import would, so it's handed out only when it imports again.
+          let again: Awaited<ReturnType<typeof importsAgain>>;
+          try {
+            again = await importsAgain(file);
+          } catch (error) {
+            if (!(error instanceof ImportRefused)) throw error;
+            // Something Homing holds that an import refuses, which only says what's in their own export: said to them, never handed out.
+            console.error('An export that wouldn’t import again:', error.message);
+            const { hidden } = error;
+            if (!hidden) return answer(res, 422, { message: `Something in that space keeps it from importing again, so Homing didn’t make the export. Importing it would say: ${error.message}` });
+            // Their own they write again themselves, and what's shared only an admin of its space does.
+            const theirs = !hidden.shared || (await read((s) => spaceView(s, hidden.space.id)))?.admin === true;
+            return answer(res, 422, { message: hiddenMessage(hidden, theirs) });
+          }
+          if (again === 'too large') return answer(res, 413, { message: tooBig });
+          if (again === 'too slow') return answer(res, 503, { message: tooSlowToCheck });
+          if (res.destroyed) break;
+          res.writeHead(200, {
+            'content-type': 'application/zip',
+            'content-length': exported.size,
+            'content-disposition': `attachment; filename="${exported.filename}"`,
+            'cache-control': 'no-store',
+          });
+          // Sent until it's all there, or the person goes away.
+          await pipeline(createReadStream(exported.path), res).catch(() => {});
+        } finally {
           clearTimeout(timeout);
           exporting.delete(person);
-        });
-        // Everything the person sees in the space, read in one snapshot as them.
-        const exported = await withPrincipal(app.sql, { person }, (s) => exportSpace(s, route.id, app.url), { snapshot: true });
-        if (res.destroyed) break;
-        if (!exported) return answer(res, 404, noSpace);
-        res.writeHead(200, {
-          'content-type': 'application/zip',
-          'content-disposition': `attachment; filename="${exported.filename}"`,
-          'cache-control': 'no-store',
-        });
-        res.end(exported.zip);
+          if (file) await rm(file, { force: true });
+        }
         break;
       }
 
-      case 'import preview':
-      case 'import': {
-        // An export from Homing, as the zip itself, which is read here and never kept. Each person
-        // sends one at a time, and a few people at once, each within a couple of minutes.
+      case 'import preview': {
+        // An export from Homing, as the zip itself, onto disk. Each person sends one at a time, and a few people at once.
         if (uploading.has(person) || uploading.size >= 4) return answer(res, 429, { message: 'Homing is receiving other exports right now. Try again in a moment.' });
         uploading.add(person);
-        let zip: Awaited<ReturnType<typeof readUpload>>;
+        const started = Date.now();
+        let upload: Awaited<ReturnType<typeof receive>>;
         try {
-          zip = await readUpload(req, importLimits.upload, uploadTime);
+          upload = await receive(req);
         } finally {
           uploading.delete(person);
         }
         // Nobody to answer.
-        if (zip === 'gone') return true;
-        if (typeof zip === 'string') {
+        if (upload === 'gone') return true;
+        if (typeof upload === 'string') {
           res.setHeader('connection', 'close');
-          return zip === 'too large'
-            ? answer(res, 413, { message: `That file is larger than Homing imports at once, ${importLimits.upload / 1024 / 1024} MB.` })
-            : answer(res, 408, { message: 'That file took too long to arrive. Try again on a steadier connection.' });
+          if (upload === 'too large') return answer(res, 413, { message: 'That file is larger than Homing imports, 2 GB. Exports from Homing never are.' });
+          if (upload === 'not kept') return answer(res, 507, { message: 'Homing couldn’t keep that file on its disk, so it can’t import it. Whoever looks after this Homing can see why in its log.' });
+          return answer(res, 408, { message: 'That file took too long to arrive. Try again on a steadier connection.' });
         }
-        const params = new URL(req.url ?? '', app.url).searchParams;
-        // Whether the name is free, before the export is read, and again as it's imported.
-        const name = route.name === 'import' ? (await write((s) => placeSpace(s, { name: params.get('name') ?? '', who: 'with others' }))).name : undefined;
-        // Read and written one at a time on the whole instance: reading a big export takes a lot of
-        // memory, and an import holds up creating spaces for everyone while it's written.
-        if (importing) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
-        importing = person;
-        try {
-          if (name === undefined) {
-            // As the worker wrote it, so nothing large is built here.
-            const preview = await previewExport(zip);
-            res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(preview);
-            break;
-          }
-          const payload = await readForImport(zip, name, params.get('hash') ?? '');
-          const id = await write((s) => importSpace(s, name, payload));
-          json(res, 200, { id });
-        } finally {
-          importing = undefined;
+        // Read one at a time on the whole instance, since reading a big export takes a lot of memory:
+        // it waits its turn, within the time an upload has, unless the person goes away.
+        const left = new AbortController();
+        res.once('close', () => left.abort());
+        // As the worker wrote it, so nothing large is built here.
+        const shown = await previewUpload(person, upload, started + uploadTime, left.signal);
+        if (shown === undefined) {
+          if (res.destroyed) return true;
+          return answer(res, 429, { message: 'Homing was reading other exports the whole time, so it didn’t read yours. Try again later.' });
         }
+        res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }).end(shown);
         break;
       }
+
+      case 'import': {
+        // Of what the person previewed, as that file: it's never sent twice.
+        const params = new URL(req.url ?? '', app.url).searchParams;
+        const hash = params.get('hash') ?? '';
+        if (!previewed(person, hash)) return answer(res, 400, { message: 'That isn’t the export you looked at. Choose it again to see what it brings.' });
+        const { name } = await write((s) => placeSpace(s, { name: params.get('name') ?? '', who: 'with others' }));
+        // Imported in the background, one at a time on the whole instance, while the app shows how far it's got.
+        const giveBack = turnNow();
+        if (!giveBack) return answer(res, 429, { message: 'Homing is reading another export right now. Try again in a moment.' });
+        importSpace(app.sql, person, hash, name).catch(() => {}).finally(giveBack);
+        json(res, 202, { importing: true });
+        break;
+      }
+
+      case 'import progress':
+        json(res, 200, importProgressOf(person) ?? { state: 'none' });
+        break;
+
+      case 'preview progress':
+        json(res, 200, previewProgressOf(person) ?? { state: 'none' });
+        break;
 
       case 'space': {
         const found = await read(async (s) => {
@@ -940,7 +980,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include'; id: string };
 
@@ -953,6 +993,8 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/requests') return { name: 'requests' };
     if (path === '/api/search') return { name: 'search' };
     if (path === '/api/changes') return { name: 'changes' };
+    if (path === '/api/import') return { name: 'import progress' };
+    if (path === '/api/import/preview') return { name: 'preview progress' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],

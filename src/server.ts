@@ -8,6 +8,7 @@ import { tokenVerifier, type AgentPrincipal } from './assistants.ts';
 import { authEndpoints, clientAddressHeader, createAuth, type Auth, type AuthSettings } from './auth.ts';
 import { authDatabaseUrl, connect, type Sql } from './db.ts';
 import { smtpMailer, type Mailer } from './email.ts';
+import { keepTidy } from './import.ts';
 import { setupLink } from './invites.ts';
 import { mcpServer } from './mcp.ts';
 import { handleApi, serveApp, type App } from './web.ts';
@@ -129,12 +130,15 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
   app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true };
+  // What imports left on the way, when Homing stopped during one, goes, and keeps going.
+  const stopTidying = keepTidy(sql);
 
   return {
     url,
     auth: homingAuth,
     server,
     close: async () => {
+      stopTidying();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       await pool.end();

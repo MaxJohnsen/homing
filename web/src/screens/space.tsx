@@ -253,9 +253,9 @@ function Export({ space }: { space: SpaceData }) {
     <Section
       title="Export"
       className="max-w-2xl"
-      description={space.private
+      description={`${space.private
         ? `A zip of everything in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it.`
-        : `A zip of everything you see in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it you can open. What’s only yours comes along, marked as yours. Nobody else’s does.`}
+        : `A zip of everything you see in ${name}: its knowledge with its sources and history, its rules, skills and tasks, and the spaces in it you can open. What’s only yours comes along, marked as yours. Nobody else’s does.`} It imports into this Homing or a newer one, up to 2 GB at a time.`}
     >
       <div>
         <Button variant="outline" size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy} onClick={download}>Download {name}</Button>

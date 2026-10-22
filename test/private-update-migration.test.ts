@@ -56,6 +56,10 @@ before(async () => {
   urls = await freshDatabase('private_updates', { before: next });
   app = connect(urls.app);
   admin = connect(urls.admin);
+  // Homing's code today leaves out spaces an import is still filling, which a later migration
+  // records: an empty stand-in, until the migrations run.
+  await admin`create table importing (space_id uuid, import_id uuid)`;
+  await admin`grant select on importing to homing_app`;
   [ana, cara, ben] = [(await createPerson(admin, 'Ana')).id, (await createPerson(admin, 'Cara')).id, (await createPerson(admin, 'Ben')).id];
   acme = await as({ person: ana, direct: true }, async (s) => {
     const acme = await createSpace(s, { name: 'Acme' });
@@ -116,6 +120,7 @@ after(async () => {
 
 test('nothing anyone saw goes out of sight, and earlier updates take the shape they’d have now', async () => {
   const before = new Set((await admin<{ id: string }[]>`select id from content`).map((row) => row.id));
+  await admin`drop table importing`;
   await migrate(urls.admin, urls.app, urls.auth);
 
   // Ana's changes where nobody else touched the copy are her updates of it, in its place, saying what the others see.
