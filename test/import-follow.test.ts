@@ -35,13 +35,13 @@ test('once the person leaves the screen, it isn’t followed, nor opened', async
 });
 
 test('an import Homing knows of no more stopped, and nothing of it was kept', async () => {
-  const { progress } = answers({ state: 'importing', done: 1, total: 4 }, { state: 'none' });
-  assert.deepEqual(await followImport(progress, () => true, () => {}, 0), { failed: stopped });
+  const { asked, progress } = answers({ state: 'importing', done: 1, total: 4 }, { state: 'none' });
+  assert.deepEqual(await followImport(progress, () => asked.times < 100, () => {}, 0), { failed: stopped });
 });
 
 test('one that failed says why, and a moment without Homing doesn’t end it', async () => {
-  const { progress } = answers(new Error('Homing can’t be reached.'), { state: 'importing', done: 1, total: 2 }, { state: 'failed', message: 'That export doesn’t hold together.' });
-  assert.deepEqual(await followImport(progress, () => true, () => {}, 0), { failed: 'That export doesn’t hold together.' });
+  const { asked, progress } = answers(new Error('Homing can’t be reached.'), { state: 'importing', done: 1, total: 2 }, { state: 'failed', message: 'That export doesn’t hold together.' });
+  assert.deepEqual(await followImport(progress, () => asked.times < 100, () => {}, 0), { failed: 'That export doesn’t hold together.' });
 });
 
 test('a file larger than Homing imports is refused before any of it is sent', () => {

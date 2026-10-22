@@ -45,8 +45,12 @@ create index proposals_item on proposals (item_id) where item_id is not null;
 create index proposals_page on proposals (page_id) where page_id is not null;
 create index proposals_task on proposals (task_id) where task_id is not null;
 create index proposals_include on proposals (include_id) where include_id is not null;
+create index proposals_space on proposals (space_id);
 create index proposals_space_created on proposals (space_created) where space_created is not null;
 create index includes_skill on includes (skill_included) where skill_included is not null;
+drop index includes_space, includes_space_included;
+create index includes_space on includes (space_id);
+create index includes_space_included on includes (space_included) where space_included is not null;
 create index proposal_includes_skill on proposal_includes (skill_included) where skill_included is not null;
 create index proposal_includes_space on proposal_includes (space_included) where space_included is not null;
 create index revisions_space on revisions (space_id);
@@ -54,6 +58,8 @@ create index gathered_space on gathered (space_id);
 create index pages_space on pages (space_id);
 create index tasks_space on tasks (space_id);
 create index space_access_space on space_access (space_id);
+create index space_moves_space on space_moves (space_id);
+create index space_moves_from on space_moves (moved_from) where moved_from is not null;
 
 -- An export reads a space's sources a thousand at a time, in the order they
 -- were kept, each thousand after the last.

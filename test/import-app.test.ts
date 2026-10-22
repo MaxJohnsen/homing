@@ -859,6 +859,23 @@ test('an import too big to take out in one statement is taken out a step at a ti
   assert.deepEqual(await stored(), before);
 });
 
+test('taking out an import finds what points to its rows by key, however much Homing holds', async () => {
+  // Whatever points to a space, page, item, source, task, include or import, each looked up as the database does before it deletes one.
+  const keys = await admin<{ table: string; columns: string[] }[]>`
+    select c.conrelid::regclass::text as table, array(select a.attname::text from unnest(c.conkey) with ordinality k(n, at) join pg_attribute a on a.attrelid = c.conrelid and a.attnum = k.n order by k.at) as columns
+    from pg_constraint c
+    where c.contype = 'f' and c.confrelid::regclass::text in ('spaces', 'pages', 'content', 'sources', 'tasks', 'includes', 'imports')
+  `;
+  assert.ok(keys.length > 20);
+  await admin.begin(async (s) => {
+    await s`set local enable_seqscan = off`;
+    for (const { table, columns } of keys) {
+      const plan = await s.unsafe(`explain select 1 from only ${table} x where ${columns.map((column, at) => `${column} = $${at + 1}`).join(' and ')} for key share of x`, columns.map(() => crypto.randomUUID()));
+      assert.doesNotMatch(plan.map((row) => row['QUERY PLAN']).join('\n'), /Seq Scan/, `${table} (${columns.join(', ')})`);
+    }
+  });
+});
+
 test('one person can’t import what another looked at, by its fingerprint', async () => {
   const { bytes } = await exported(ana, acme);
   const preview = await upload(ana, bytes);
