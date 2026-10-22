@@ -184,6 +184,11 @@ function ImportSpacePage() {
           if (!response.ok) throw new Error(`Homing answered ${response.status}.`);
           return response.json();
         },
+        reading: async () => {
+          const response = await fetch('/api/import/preview');
+          if (!response.ok) throw new Error(`Homing answered ${response.status}.`);
+          return response.json();
+        },
       }}
       onImported={async (id) => {
         await reload('/api/spaces');

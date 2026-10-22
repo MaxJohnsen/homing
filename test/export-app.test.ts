@@ -511,6 +511,32 @@ test('an export that wouldn’t import again isn’t handed out, and says why, u
   assert.equal((await admin`select count(*)::int as n from revisions where space_id = ${copy} and body like '%' || chr(8203)`)[0].n, 1);
 });
 
+test('a member is told to ask an admin about what’s shared, and changes what’s theirs', async () => {
+  const hide = (text: string) => `${text}${String.fromCodePoint(0x200b)}`;
+  // In a space Ana looks after and Cara is a member of: a shared rule, a shared skill, and a rule of Cara's own.
+  const [rules, skilled, notes] = await as({ ...ana, direct: true }, async (s) => {
+    const made: string[] = [];
+    for (const name of ['Team rules', 'Team skills', 'Team notes']) {
+      const space = await createSpace(s, { name });
+      await addMember(s, space, cara.id);
+      made.push(space);
+    }
+    await addRule(s, { spaceId: made[0], kind: 'requirement', body: hide('Answer in Norwegian.'), shared: true });
+    await saveSkill(s, { spaceId: made[1], shared: true, files: [{ path: 'SKILL.md', body: hide('---\nname: team-skill\ndescription: Helps the team.\n---\n\nGo.') }] });
+    return made;
+  });
+  await as({ ...cara, direct: true }, (s) => addRule(s, { spaceId: notes, kind: 'preference', body: hide('Cara writes short notes.') }));
+  const refusal = async (who: Member, space: string) => {
+    const response = await who.browser.fetch(`/api/spaces/${space}/export`);
+    assert.equal(response.status, 422);
+    return (await response.json()).message as string;
+  };
+  assert.match(await refusal(cara, rules), /in Team rules has a character nobody sees, .* Ask an admin of Team rules to retype the rule, then export again\.$/);
+  assert.match(await refusal(cara, skilled), /The file SKILL\.md of the skill team-skill in Team skills .* Ask an admin of Team skills to save the skill again without it, then export again\.$/);
+  assert.match(await refusal(ana, rules), /\. Retype the rule, then export again\.$/);
+  assert.match(await refusal(cara, notes), /^The rule “Cara writes short notes\.” in Team notes .* Retype the rule, then export again\.$/);
+});
+
 test('an export is no larger than an upload takes, homing.json and all', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'homing-export-test-'));
   const upload = importLimits.upload;

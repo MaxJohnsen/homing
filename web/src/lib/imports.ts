@@ -1,7 +1,9 @@
-/** How far along a preview being read, or an import, is, as Homing says. */
+/** How far along the person's preview is, as Homing says: waiting its turn, or being read. */
+export type PreviewProgress = { state: 'waiting' } | { state: 'reading'; done: number; total: number } | { state: 'none' };
+
+/** How far along the person's import is, under the name it was given, or how it ended, as Homing says. */
 export type ImportProgress =
-  | { state: 'waiting' }
-  | { state: 'reading' | 'importing'; done: number; total: number }
+  | { state: 'importing'; name: string; done: number; total: number }
   | { state: 'done'; id: string }
   | { state: 'failed'; message: string }
   | { state: 'none' };
@@ -21,14 +23,14 @@ export const stopped = 'The import stopped before it was done, so nothing of it 
  * Homing knows of no import any more, as when it restarted on the way, the import stopped, and
  * nothing of it was kept. While Homing can't be reached, it keeps trying.
  */
-export async function followImport(progress: () => Promise<ImportProgress>, looking: () => boolean, step: (fraction: number) => void, every = 700): Promise<Followed> {
+export async function followImport(progress: () => Promise<ImportProgress>, looking: () => boolean, step: (fraction: number, name: string) => void, every = 700): Promise<Followed> {
   while (looking()) {
     const now = await progress().catch(() => undefined);
     if (!looking()) break;
     if (now?.state === 'done') return { done: now.id };
     if (now?.state === 'failed') return { failed: now.message };
     if (now?.state === 'none') return { failed: stopped };
-    if (now?.state === 'importing') step(now.total ? now.done / now.total : 0);
+    if (now?.state === 'importing') step(now.total ? now.done / now.total : 0, now.name);
     await new Promise((resolve) => setTimeout(resolve, every));
   }
   return { left: true };

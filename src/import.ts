@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import postgres from 'postgres';
-import { ImportRefused, importLimits, sizeRefusals, tooLarge } from './bundle.ts';
+import { ImportRefused, importLimits, sizeRefusals, tooLarge, type Hidden } from './bundle.ts';
 import { withPrincipal, type Session, type Sql } from './db.ts';
 import { placeSpace, SpaceRefused } from './spaces.ts';
 
@@ -117,18 +117,37 @@ interface Pending extends Upload {
 
 const pending = new Map<string, Pending>();
 
-/** How far along someone's preview or import is, for the app to show. */
-export type Progress =
-  | { state: 'waiting' }
-  | { state: 'reading' | 'importing'; done: number; total: number }
+/** How far along someone's preview is, for the app to show: waiting its turn, or being read. */
+export type PreviewProgress = { state: 'waiting' } | { state: 'reading'; done: number; total: number };
+
+/** How far along someone's import is, under the name it was given, or how it ended. */
+export type ImportProgress =
+  | { state: 'importing'; name: string; done: number; total: number }
   | { state: 'done'; id: string }
   | { state: 'failed'; message: string };
 
-const progress = new Map<string, Progress>();
+/** Each person's preview and import, apart, so a preview in another tab never touches an import under way. */
+const previewing = new Map<string, PreviewProgress>();
+const importing = new Map<string, { progress: ImportProgress; at: number }>();
 
-/** How far along the person's preview or import is, if they have one. */
-export function progressOf(person: string): Progress | undefined {
-  return progress.get(person);
+/** How far along the person's preview is, if they have one. */
+export function previewProgressOf(person: string): PreviewProgress | undefined {
+  return previewing.get(person);
+}
+
+/**
+ * How far along the person's import is, if they have one. How it ended is said once, to whoever
+ * asks first, and for at most an hour.
+ */
+export function importProgressOf(person: string): ImportProgress | undefined {
+  const now = importing.get(person);
+  if (!now || now.progress.state === 'importing') return now?.progress;
+  importing.delete(person);
+  return Date.now() - now.at < keptFor ? now.progress : undefined;
+}
+
+function importProgress(person: string, progress: ImportProgress) {
+  importing.set(person, { progress, at: Date.now() });
 }
 
 /**
@@ -160,7 +179,7 @@ function handBack(): () => void {
 
 /** Waits for the turn to read an export, saying the person waits, until it comes, the time is up, or they leave. */
 function turnFor(person: string, until: number, left?: AbortSignal): Promise<(() => void) | undefined> {
-  progress.set(person, { state: 'waiting' });
+  previewing.set(person, { state: 'waiting' });
   return new Promise((resolve) => {
     const stop = () => {
       clearTimeout(timer);
@@ -211,7 +230,7 @@ function inWorker(task: object, answer: (message: Message, reply: () => void) =>
     };
     wait();
     reading.on('message', (message: Message) => {
-      if (message.type === 'refused') return settle(new ImportRefused(message.message as string, undefined, message.exporter as string | undefined));
+      if (message.type === 'refused') return settle(new ImportRefused(message.message as string, undefined, message.hidden as Hidden | undefined));
       // Writing a part has as long again of its own, from when the worker hands it over.
       clearTimeout(timer);
       answer(message, () => {
@@ -238,16 +257,16 @@ export async function preview(person: string, upload: Upload, until = Date.now()
   forget(person);
   const giveBack = turnNow() ?? (await turnFor(person, until, left));
   if (!giveBack) {
-    progress.delete(person);
+    previewing.delete(person);
     await rm(upload.path, { force: true });
     return undefined;
   }
-  progress.set(person, { state: 'reading', done: 0, total: 1 });
+  previewing.set(person, { state: 'reading', done: 0, total: 1 });
   let json = '';
   try {
     await inWorker({ path: upload.path, hash: upload.hash }, async (message) => {
       if (message.type === 'progress') {
-        progress.set(person, { state: 'reading', done: message.done as number, total: message.total as number });
+        previewing.set(person, { state: 'reading', done: message.done as number, total: message.total as number });
         return false;
       }
       json = message.preview as string;
@@ -260,7 +279,7 @@ export async function preview(person: string, upload: Upload, until = Date.now()
     throw error;
   } finally {
     giveBack();
-    progress.delete(person);
+    previewing.delete(person);
   }
 }
 
@@ -307,7 +326,7 @@ export async function importSpace(sql: Sql, person: string, hash: string, name: 
   const upload = pending.get(person);
   if (!upload || upload.hash !== hash) throw new ImportRefused('That isn’t the export you looked at. Choose it again to see what it brings.');
   pending.delete(person);
-  progress.set(person, { state: 'importing', done: 0, total: 1 });
+  importProgress(person, { state: 'importing', name, done: 0, total: 1 });
   const as = <T>(fn: (s: Session) => Promise<T>) => withPrincipal(sql, { person, direct: true }, fn);
   let made: string | undefined;
   let space = '';
@@ -324,7 +343,7 @@ export async function importSpace(sql: Sql, person: string, hash: string, name: 
           break;
         case 'batch':
           await as((s) => written(s, () => s.tx`select import_load(${made!}::uuid, ${message.payload as string}::text::jsonb)`));
-          progress.set(person, { state: 'importing', done: message.done as number, total: message.total as number });
+          importProgress(person, { state: 'importing', name, done: message.done as number, total: message.total as number });
           break;
         case 'finish':
           // Shown, as long as nobody took the name meanwhile.
@@ -341,14 +360,14 @@ export async function importSpace(sql: Sql, person: string, hash: string, name: 
       reply();
       return false;
     });
-    progress.set(person, { state: 'done', id: space });
+    importProgress(person, { state: 'done', id: space });
     // After a big one, what's read next is planned for how much is there now.
     if (upload.size > settleAfter) await sql`select import_settle()`.catch((failure) => console.error('Settling an import:', failure));
     return space;
   } catch (error) {
     // Taken out before the person hears it failed, so nothing of it is left when they look.
     if (made) await discard(sql, person, made).catch((failure) => console.error('Taking out an import that failed:', failure));
-    progress.set(person, { state: 'failed', message: error instanceof ImportRefused || error instanceof SpaceRefused ? error.message : 'Something went wrong, and Homing didn’t import any of it. Try again.' });
+    importProgress(person, { state: 'failed', message: error instanceof ImportRefused || error instanceof SpaceRefused ? error.message : 'Something went wrong, and Homing didn’t import any of it. Try again.' });
     throw error;
   } finally {
     await rm(upload.path, { force: true });

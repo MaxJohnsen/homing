@@ -29,5 +29,5 @@ try {
   }
 } catch (error) {
   if (!(error instanceof ImportRefused)) throw error;
-  port.postMessage({ type: 'refused', message: error.message, exporter: error.exporter });
+  port.postMessage({ type: 'refused', message: error.message, hidden: error.hidden });
 }

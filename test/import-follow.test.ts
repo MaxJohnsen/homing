@@ -19,15 +19,15 @@ function answers(...said: (ImportProgress | Error)[]) {
 }
 
 test('an import is followed until it’s done, showing how far it’s got', async () => {
-  const { progress } = answers({ state: 'importing', done: 1, total: 4 }, { state: 'importing', done: 3, total: 4 }, { state: 'done', id: 'acme' });
-  const shown: number[] = [];
-  assert.deepEqual(await followImport(progress, () => true, (fraction) => shown.push(fraction), 0), { done: 'acme' });
-  assert.deepEqual(shown, [0.25, 0.75]);
+  const { progress } = answers({ state: 'importing', name: 'Acme', done: 1, total: 4 }, { state: 'importing', name: 'Acme', done: 3, total: 4 }, { state: 'done', id: 'acme' });
+  const shown: [number, string][] = [];
+  assert.deepEqual(await followImport(progress, () => true, (fraction, name) => shown.push([fraction, name]), 0), { done: 'acme' });
+  assert.deepEqual(shown, [[0.25, 'Acme'], [0.75, 'Acme']]);
 });
 
 test('once the person leaves the screen, it isn’t followed, nor opened', async () => {
   let looking = true;
-  const { asked, progress } = answers({ state: 'importing', done: 1, total: 4 }, { state: 'done', id: 'acme' });
+  const { asked, progress } = answers({ state: 'importing', name: 'Acme', done: 1, total: 4 }, { state: 'done', id: 'acme' });
   const followed = followImport(progress, () => looking, () => {}, 0);
   looking = false;
   assert.deepEqual(await followed, { left: true });
@@ -35,12 +35,12 @@ test('once the person leaves the screen, it isn’t followed, nor opened', async
 });
 
 test('an import Homing knows of no more stopped, and nothing of it was kept', async () => {
-  const { asked, progress } = answers({ state: 'importing', done: 1, total: 4 }, { state: 'none' });
+  const { asked, progress } = answers({ state: 'importing', name: 'Acme', done: 1, total: 4 }, { state: 'none' });
   assert.deepEqual(await followImport(progress, () => asked.times < 100, () => {}, 0), { failed: stopped });
 });
 
 test('one that failed says why, and a moment without Homing doesn’t end it', async () => {
-  const { asked, progress } = answers(new Error('Homing can’t be reached.'), { state: 'importing', done: 1, total: 2 }, { state: 'failed', message: 'That export doesn’t hold together.' });
+  const { asked, progress } = answers(new Error('Homing can’t be reached.'), { state: 'importing', name: 'Acme', done: 1, total: 2 }, { state: 'failed', message: 'That export doesn’t hold together.' });
   assert.deepEqual(await followImport(progress, () => asked.times < 100, () => {}, 0), { failed: 'That export doesn’t hold together.' });
 });
 

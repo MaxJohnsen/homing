@@ -22,14 +22,39 @@ const longest = { knowledge: 20_000, overview: 2_000, title: 200, rule: 4_000, f
 export class ImportRefused extends Error {
   /** The form field it's about, if any. */
   field?: string;
-  /** The reason in words for whoever is exporting, when what keeps it from importing is something they can change. */
-  exporter?: string;
+  /** A rule or a skill's file that keeps it from importing, which someone can write again. */
+  hidden?: Hidden;
 
-  constructor(message: string, field?: string, exporter?: string) {
+  constructor(message: string, field?: string, hidden?: Hidden) {
     super(message);
     this.field = field;
-    this.exporter = exporter;
+    this.hidden = hidden;
   }
+}
+
+/** A rule or a skill's file with a character nobody sees, as the person exporting it knows it. */
+export interface Hidden {
+  kind: 'rule' | 'file';
+  /** Whether it's on its space's shared side, which only the space's admins change. */
+  shared: boolean;
+  /** Its space, by its id in Homing and its name. */
+  space: { id: string; name: string };
+  /** The rule's first words, or the file's path. */
+  what: string;
+  /** The skill a file is in. */
+  skill?: string;
+}
+
+/**
+ * What the person exporting is told about a rule or a skill's file that keeps their export from
+ * importing, and what to do: write it again themselves, when they can change it, or ask an admin of
+ * its space to.
+ */
+export function hiddenMessage(hidden: Hidden, theirs: boolean): string {
+  const what = hidden.kind === 'file' ? `The file ${hidden.what} of the skill ${hidden.skill ?? 'without a name'} in ${hidden.space.name}` : `The rule “${hidden.what}” in ${hidden.space.name}`;
+  const change = hidden.kind === 'file' ? 'save the skill again without it' : 'retype the rule';
+  const todo = theirs ? `${change[0].toUpperCase()}${change.slice(1)}` : `Ask an admin of ${hidden.space.name} to ${change}`;
+  return `${what} has a character nobody sees, such as one copied from a web page, so the export wouldn’t import again. ${todo}, then export again.`;
 }
 
 export const tooLarge = 'That export is larger than Homing imports at once. Exports from Homing never are.';
@@ -42,8 +67,13 @@ export const sizeRefusals = new Set([tooLarge, tooManyRules, tooMuchToShow, tooM
 const apart = (problem: string) => new ImportRefused(`That export doesn’t hold together, so Homing won’t import it: ${problem}.`);
 
 const id = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-// A day on the calendar, from the year 1, as Homing keeps them.
-const time = z.iso.datetime({ offset: true }).refine((at) => !at.startsWith('0000'), 'is before the year 1');
+// A time as an export gives it, which Homing keeps as text, such as when something was imported before.
+const time = z.iso.datetime({ offset: true });
+// A time Homing keeps as a moment, as the database takes it: from the start of the year 1, in UTC, and
+// less than 16 hours from UTC, however it's written.
+const yearOne = Date.parse('0001-01-01T00:00:00Z');
+const moment = time.refine((at) => !/[+-](1[6-9]|2\d)/.test(at.slice(19)) && Date.parse(at) >= yearOne, 'is a time that can’t be kept');
+// A day on the calendar, from the year 1.
 const day = z.iso.date().refine((at) => !at.startsWith('0000'), 'is before the year 1');
 // Text as Homing can keep it: without the null character, or half of a pair that makes one character.
 const text = (max: number) => z.string().max(max).refine((value) => value.isWellFormed() && !value.includes('\0'), 'has a character that can’t be kept');
@@ -59,45 +89,45 @@ const headerSchema = z.strictObject({
   format: z.literal('homing-export'),
   version: z.literal(2),
   instance: text(2000),
-  exportedAt: time,
+  exportedAt: moment,
   exportedBy: z.strictObject({ person: key, name: text(longest.name) }),
   space: id,
   people: z.array(z.strictObject({ key, name })),
   spaces: z.array(z.strictObject({
     id, name: text(200), parent: id.nullable(), closed: z.boolean(), private: z.boolean(), creator: authorSchema.nullable(),
-    archived: z.strictObject({ at: time, by: key.nullable() }).nullable(), createdAt: time, folder: text(10_000), imported,
+    archived: z.strictObject({ at: moment, by: key.nullable() }).nullable(), createdAt: moment, folder: text(10_000), imported,
   })).min(1),
   spaceArchives: z.array(z.strictObject({ space: id, archived: z.boolean(), author: authorSchema, at: time })),
   includes: z.array(z.strictObject({
     id, space: id, visibility: side, waiting: z.boolean(), rules: id.nullable(), skill: id.nullable(),
-    elsewhere: z.strictObject({ space: text(longest.name), skill: text(longest.name).nullable() }).nullable(), author: authorSchema, addedAt: time, imported,
+    elsewhere: z.strictObject({ space: text(longest.name), skill: text(longest.name).nullable() }).nullable(), author: authorSchema, addedAt: moment, imported,
   })),
   files: z.strictObject(Object.fromEntries(lists.map((list) => [list, z.array(z.string().regex(new RegExp(`^homing/${list}-\\d{5}\\.jsonl$`))).max(10_000)])) as Record<ListName, z.ZodArray<z.ZodString>>),
 });
 
 const lineSchemas = {
   pages: z.strictObject({
-    id, space: id, type: text(longest.type).nullable(), createdAt: time,
-    archived: z.strictObject({ at: time, by: key.nullable() }).nullable(), file: text(10_000).nullable(), imported,
+    id, space: id, type: text(longest.type).nullable(), createdAt: moment,
+    archived: z.strictObject({ at: moment, by: key.nullable() }).nullable(), file: text(10_000).nullable(), imported,
   }),
   sources: z.strictObject({
-    id, space: id, visibility: side, reference: text(longest.excerpt).nullable(), excerpt: text(longest.excerpt), author: authorSchema, createdAt: time, imported,
+    id, space: id, visibility: side, reference: text(longest.excerpt).nullable(), excerpt: text(longest.excerpt), author: authorSchema, createdAt: moment, imported,
   }),
   items: z.strictObject({
     id, page: id, space: id, kind: z.enum(['title', 'text', 'requirement', 'preference', 'file', 'removed']),
-    path: text(1000).nullable(), body: text(longest.file), visibility: side, author: authorSchema, createdAt: time, writtenAt: time,
+    path: text(1000).nullable(), body: text(longest.file), visibility: side, author: authorSchema, createdAt: moment, writtenAt: moment,
     supersedes: id.nullable(), onlyHere: z.boolean().optional(), reachesDown: z.boolean().optional(), publishedFrom: id.nullable(),
-    published: z.strictObject({ by: key.nullable(), at: time }).nullable(), sources: z.array(id).max(10_000), sourcesElsewhere: z.number().int().min(0).max(1_000_000), imported,
+    published: z.strictObject({ by: key.nullable(), at: moment }).nullable(), sources: z.array(id).max(10_000), sourcesElsewhere: z.number().int().min(0).max(1_000_000), imported,
   }),
   revisions: z.strictObject({
-    item: id, visibility: side, body: text(longest.file), author: authorSchema, writtenAt: time, replacedAt: time, imported,
+    item: id, visibility: side, body: text(longest.file), author: authorSchema, writtenAt: moment, replacedAt: moment, imported,
   }),
-  gathered: z.strictObject({ collection: id, page: id, visibility: side, author: authorSchema, createdAt: time }),
-  pageArchives: z.strictObject({ page: id, archived: z.boolean(), author: authorSchema, at: time }),
+  gathered: z.strictObject({ collection: id, page: id, visibility: side, author: authorSchema, createdAt: moment }),
+  pageArchives: z.strictObject({ page: id, archived: z.boolean(), author: authorSchema, at: moment }),
   tasks: z.strictObject({
     id, space: id, visibility: side, title: text(longest.task), description: text(longest.description).nullable(),
     due: day.nullable(), assignee: key.nullable(),
-    done: z.strictObject({ at: time, by: key.nullable() }).nullable(), author: authorSchema, createdAt: time, updatedAt: time, imported,
+    done: z.strictObject({ at: moment, by: key.nullable() }).nullable(), author: authorSchema, createdAt: moment, updatedAt: moment, imported,
   }),
 };
 
@@ -289,6 +319,7 @@ const itemPage = (packed: number) => Math.floor(packed / (64 * 2 ** 20));
 /** A rule or a skill's file with characters that hide what it says, until something replaces it. */
 interface Hiding {
   kind: Kind;
+  shared: boolean;
   space: number;
   page: string;
   /** Its first words, or the file's path, to say which it is. */
@@ -646,7 +677,7 @@ export class Reader {
     if (item.kind === 'title' && this.pageTitled[pageAt] & side) throw apart(`page ${item.page} has two titles`);
     // Rules and skills are what assistants follow, so nothing in them may be hidden, unless something replaces it.
     if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(item.body, item.kind)) {
-      this.hiding.set(item.id, { kind: item.kind, space, page: item.page, what: item.kind === 'file' ? item.path!.slice(0, 200) : firstWords(item.body) });
+      this.hiding.set(item.id, { kind: item.kind, shared: item.visibility === 'shared', space, page: item.page, what: item.kind === 'file' ? item.path!.slice(0, 200) : firstWords(item.body) });
     }
     this.author(item.author);
     this.person(item.published?.by ?? null);
@@ -744,16 +775,14 @@ export class Reader {
    * Homing checks its own export, whoever exports it is told which it is, and what to do.
    */
   private hidden(id: string, hiding: Hiding): ImportRefused {
-    const space = this.header.spaces[hiding.space].name;
-    const what = hiding.kind === 'file'
-      ? `The file ${hiding.what} of the skill ${this.titles.get(hiding.page) ?? 'without a name'} in ${space}`
-      : `The rule “${hiding.what}” in ${space}`;
-    const change = hiding.kind === 'file' ? 'Save the skill again without it' : 'Retype the rule';
-    return new ImportRefused(
-      `That export doesn’t hold together, so Homing won’t import it: item ${id} has characters that hide what it says.`,
-      undefined,
-      `${what} has a character nobody sees, such as one copied from a web page, so the export wouldn’t import again. ${change}, then export again.`,
-    );
+    const space = this.header.spaces[hiding.space];
+    return new ImportRefused(`That export doesn’t hold together, so Homing won’t import it: item ${id} has characters that hide what it says.`, undefined, {
+      kind: hiding.kind === 'file' ? 'file' : 'rule',
+      shared: hiding.shared,
+      space: { id: space.id, name: space.name },
+      what: hiding.what,
+      ...(hiding.kind === 'file' && { skill: this.titles.get(hiding.page) ?? undefined }),
+    });
   }
 
   /**

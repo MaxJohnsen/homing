@@ -3,9 +3,10 @@ import { mkdir, rm } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import postgres from 'postgres';
+import { hiddenMessage } from './bundle.ts';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
-import { ImportRefused, importsAgain, importSpace, preview as previewUpload, previewed, progressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
+import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
@@ -240,7 +241,11 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             if (!(error instanceof ImportRefused)) throw error;
             // Something Homing holds that an import refuses, which only says what's in their own export: said to them, never handed out.
             console.error('An export that wouldn’t import again:', error.message);
-            return answer(res, 422, { message: error.exporter ?? `Something in that space keeps it from importing again, so Homing didn’t make the export. Importing it would say: ${error.message}` });
+            const { hidden } = error;
+            if (!hidden) return answer(res, 422, { message: `Something in that space keeps it from importing again, so Homing didn’t make the export. Importing it would say: ${error.message}` });
+            // Their own they write again themselves, and what's shared only an admin of its space does.
+            const theirs = !hidden.shared || (await read((s) => spaceView(s, hidden.space.id)))?.admin === true;
+            return answer(res, 422, { message: hiddenMessage(hidden, theirs) });
           }
           if (again === 'too large') return answer(res, 413, { message: tooBig });
           if (again === 'too slow') return answer(res, 503, { message: tooSlowToCheck });
@@ -309,7 +314,11 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'import progress':
-        json(res, 200, progressOf(person) ?? { state: 'none' });
+        json(res, 200, importProgressOf(person) ?? { state: 'none' });
+        break;
+
+      case 'preview progress':
+        json(res, 200, previewProgressOf(person) ?? { state: 'none' });
         break;
 
       case 'space': {
@@ -971,7 +980,7 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include'; id: string };
 
@@ -985,6 +994,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/search') return { name: 'search' };
     if (path === '/api/changes') return { name: 'changes' };
     if (path === '/api/import') return { name: 'import progress' };
+    if (path === '/api/import/preview') return { name: 'preview progress' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],

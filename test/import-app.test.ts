@@ -23,7 +23,7 @@ import { addInclude, addRule, removeRule } from '../src/guidance.ts';
 import { addSource, archivePage, createPage, gather, publishItem, supersedeItem, updateItem, writeItem, writeOverview } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
-import { addMember, archiveSpace, createSpace } from '../src/spaces.ts';
+import { addMember, archiveSpace, createSpace, listSpaces } from '../src/spaces.ts';
 import { addTask, changeTask } from '../src/tasks.ts';
 import { zip } from '../src/zip.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -409,7 +409,9 @@ test('an export that’s damaged, changed or too big is refused, with nothing cr
     ['two titles on one side of a page', bundle((m) => { const title = m.items.find((item) => item.kind === 'title' && item.body === 'Launch plan')!; m.items.push({ ...title, id: crypto.randomUUID(), body: 'Launch' }); }), /two titles/],
     ['a page gathered twice', bundle((m) => { m.gathered.push({ ...m.gathered[0] }); }), /gathers .* twice/],
     ['a page gathered for everyone without a title everyone sees', bundle((m) => { m.gathered.find((gathering) => gathering.visibility === 'private')!.visibility = 'shared'; }), /without a title/],
-    ['a time before the year 1', bundle((m) => { m.items[0].createdAt = '0000-12-31T00:00:00Z'; }), /before the year 1/],
+    ['a time before the year 1', bundle((m) => { m.items[0].createdAt = '0000-12-31T00:00:00Z'; }), /time that can’t be kept/],
+    ['a time before the year 1, written in a later one', bundle((m) => { m.items[0].createdAt = '0001-01-01T00:30:00+01:00'; }), /items\.createdAt is a time that can’t be kept/],
+    ['a time too far from UTC', bundle((m) => { m.tasks[0].updatedAt = '2026-01-01T00:00:00+16:00'; }), /tasks\.updatedAt is a time that can’t be kept/],
     ['a day that doesn’t exist', bundle((m) => { m.tasks[0].due = '2026-02-30'; }), /tasks\.due invalid iso date/],
     ['a null character', bundle((m) => { m.items.find((item) => item.kind === 'text')!.body = 'Gunnar\u0000'; }), /character that can’t be kept/],
     ['half a character', bundle((m) => { m.sources[0].excerpt = 'Gunnar \ud83d'; }), /character that can’t be kept/],
@@ -781,6 +783,8 @@ test('an import that stops on the way is never seen, and is taken out', async ()
     `);
     assert.equal(seen[0].n, 0, who.name);
   }
+  // Nor through Homing's own filters, without the database's checks.
+  assert.ok(!(await as(ana, (s) => listSpaces(s), admin)).some((space) => space.id === top || space.id === below));
   // Nor can anything be added to it the usual way.
   await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`insert into content (page_id, space_id, kind, body) values (${page}, ${top}, 'text', 'Sneaked in')`), refused);
   // Taken out when Homing starts again, once nothing has written to it for a while.
@@ -817,14 +821,16 @@ test('an import too big to take out in one statement is taken out a step at a ti
     from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
     spaces: [{ id: spaces[0], name: 'Too big at once', parent: null, closed: false, archivedAt: null, imported: {} }, { id: spaces[1], name: 'Below', parent: spaces[0], closed: false, archivedAt: null, imported: {} }],
   })}) as id`)[0].id);
-  // Thirty thousand items, with sources, citations, earlier versions and tasks, written a thousand at a time, as loading does.
+  // Thirty thousand items, with sources, citations, earlier versions and tasks, written a thousand
+  // at a time, each part a load of its own with its number, as loading does.
   for (let part = 0; part < 30; part++) {
     await admin.begin(async (s) => {
       await s`select set_config('homing.person_id', ${ana.id}, true), set_config('homing.direct', 'true', true)`;
+      const [{ load }] = await s<{ load: number }[]>`update imports set loaded = loaded + 1 where id = ${made} returning loaded as load`;
       await s`create temp table part on commit drop as select gen_random_uuid() as id, (${s.array(spaces)}::uuid[])[1 + n % 2] as space_id from generate_series(1, 100) n`;
       await s`insert into pages (id, space_id, imported) select id, space_id, '{}' from part`;
-      await s`insert into content (page_id, space_id, kind, body, imported) select id, space_id, 'title', 'Page ' || id, '{}' from part`;
-      await s`insert into content (page_id, space_id, kind, body, imported) select id, space_id, 'text', 'Note ' || n || ' on ' || id, '{}' from part, generate_series(1, 9) n`;
+      await s`insert into content (page_id, space_id, kind, body, imported, import_load) select id, space_id, 'title', 'Page ' || id, '{}', ${load} from part`;
+      await s`insert into content (page_id, space_id, kind, body, imported, import_load) select id, space_id, 'text', 'Note ' || n || ' on ' || id, '{}', ${load} from part, generate_series(1, 9) n`;
       await s`create temp table cited on commit drop as select gen_random_uuid() as id, n from generate_series(1, 250) n`;
       await s`insert into sources (id, space_id, excerpt, imported) select id, ${spaces[0]}::uuid, 'Email ' || n, '{}' from cited`;
       await s`
@@ -849,14 +855,109 @@ test('an import too big to take out in one statement is taken out a step at a ti
       delete from pages where space_id = any (made);
     end $$`);
   }), { code: '57014' });
+  // Each step takes out at most 250 rows of one kind, or the items one load brought, a thousand.
+  const left = async () => (await admin<Record<string, number>[]>`
+    select (select count(*) from tasks where space_id = any (${admin.array(spaces)}::uuid[]))::int as tasks,
+           (select count(*) from revisions where space_id = any (${admin.array(spaces)}::uuid[]))::int as revisions,
+           (select count(*) from citations ci join sources s on s.id = ci.source_id where s.space_id = any (${admin.array(spaces)}::uuid[]))::int as citations,
+           (select count(*) from content where space_id = any (${admin.array(spaces)}::uuid[]))::int as items,
+           (select count(*) from sources where space_id = any (${admin.array(spaces)}::uuid[]))::int as sources,
+           (select count(*) from pages where space_id = any (${admin.array(spaces)}::uuid[]))::int as pages
+  `)[0];
+  const steps: Record<string, number> = {};
   const slow = postgres(inTestDatabase(databaseUrl), { connection: { statement_timeout: timeout }, transform: postgres.camel, onnotice: () => {} });
   try {
     assert.equal((await slow`show statement_timeout`)[0].statementTimeout, `${timeout}ms`);
-    await discard(slow, ana.id, made, 250);
+    let was = await left();
+    for (let done = false; !done; ) {
+      [{ done }] = await as({ ...ana, direct: true }, (s) => s.tx<{ done: boolean }[]>`select import_discard(${made}::uuid, 250) as done`, slow);
+      const now = await left();
+      const changed = Object.keys(now).filter((kind) => now[kind] !== was[kind]);
+      assert.ok(changed.length <= 1, `${changed.join(', ')} in one step`);
+      for (const kind of changed) {
+        assert.ok(was[kind] - now[kind] <= (kind === 'items' ? 1000 : 250), `${was[kind] - now[kind]} ${kind} in one step`);
+        steps[kind] = (steps[kind] ?? 0) + 1;
+      }
+      was = now;
+    }
   } finally {
     await slow.end();
   }
+  assert.ok(steps.revisions >= 30 && steps.items >= 30 && steps.citations >= 30, JSON.stringify(steps));
   assert.deepEqual(await stored(), before);
+});
+
+test('an import is taken out the last load first, whatever changed in it since', async () => {
+  const before = await stored();
+  const now = new Date().toISOString();
+  const [top, page] = [crypto.randomUUID(), crypto.randomUUID()];
+  const [shared, own, update, copy] = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+  const item = (id: string, body: string, more: Record<string, unknown> = {}) => ({
+    id, page, space: top, kind: 'text', path: null, body, private: false, supersedes: null, reachesDown: false, publishedFrom: null, publishedAt: null, createdAt: now, writtenAt: now, imported: {}, ...more,
+  });
+  const made = await as({ ...ana, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({
+    from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
+    spaces: [{ id: top, name: 'Two loads', parent: null, closed: false, archivedAt: null, imported: {} }],
+  })}) as id`)[0].id);
+  // The first load, then a second that replaces something of the first for Ana, and shares a copy of her own.
+  await as({ ...ana, direct: true }, (s) => s.tx`select import_load(${made}::uuid, ${s.tx.json({
+    pages: [{ id: page, space: top, type: null, createdAt: now, archivedAt: null, imported: {} }],
+    items: [item(crypto.randomUUID(), 'Two loads', { kind: 'title' }), item(shared, 'The venue is booked.'), item(own, 'The venue costs 40,000.', { private: true })],
+  })})`);
+  await as({ ...ana, direct: true }, (s) => s.tx`select import_load(${made}::uuid, ${s.tx.json({
+    items: [item(update, 'The venue is booked for May.', { private: true, supersedes: shared }), item(copy, 'The venue costs 40,000.', { publishedFrom: own, publishedAt: now })],
+  })})`);
+  // Then something changes a row of the first load, as a migration might while Homing restarts.
+  await admin`update content set updated_at = updated_at where id in (${shared}, ${own})`;
+  // Each step says it's being worked on, so however long it takes, it isn't taken for one that stopped.
+  await admin`update imports set touched_at = now() - interval '1 hour' where id = ${made}`;
+  await as({ ...ana, direct: true }, (s) => s.tx`select import_discard(${made}::uuid, 1)`);
+  assert.ok(!(await db<{ id: string }[]>`select imports_stale() as id`).some((row) => row.id === made));
+  await discard(db, ana.id, made);
+  assert.deepEqual(await stored(), before);
+});
+
+test('taking out what stopped on the way carries on past one it can’t take out', async () => {
+  const now = new Date().toISOString();
+  const begun = async (name: string) => {
+    const top = crypto.randomUUID();
+    const made = await as({ ...ana, direct: true }, async (s) => (await s.tx<{ id: string }[]>`select import_begin(${s.tx.json({
+      from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
+      spaces: [{ id: top, name, parent: null, closed: false, archivedAt: null, imported: {} }],
+    })}) as id`)[0].id);
+    return { top, made };
+  };
+  // Two that stopped: the first held in place by something outside it that points to its space.
+  const stuck = await begun('Stuck');
+  const free = await begun('Free');
+  await admin`insert into space_archives (space_id, archived, person_id) values (${stuck.top}, true, ${ana.id})`;
+  await admin`update imports set touched_at = now() - interval '1 hour' where id in (${stuck.made}, ${free.made})`;
+  await discardStale(db);
+  const still = async (made: string) => (await admin`select count(*)::int as n from imports where id = ${made}`)[0].n === 1;
+  assert.equal(await still(stuck.made), true);
+  assert.equal(await still(free.made), false);
+  // Next time, once nothing holds it, it goes too.
+  await admin`delete from space_archives where space_id = ${stuck.top}`;
+  await discardStale(db);
+  assert.equal(await still(stuck.made), false);
+});
+
+test('a preview in another tab leaves an import under way as it is', async () => {
+  const { bytes } = await exported(ana, acme);
+  const preview = await upload(ana, bytes);
+  const { second } = await holdingImports(async () => {
+    assert.equal((await start(ana, 'Acme, in one tab', preview.body.hash)).status, 202);
+    await waitFor(() => begun(ana));
+    // In another tab, Ana sends another export, which waits for her import to be read.
+    const second = upload(ana, bytes);
+    await waitFor(async () => (await ana.browser.json('/api/import/preview')).body.state === 'waiting');
+    assert.equal((await ana.browser.json('/api/import')).body.state, 'importing');
+    return { second };
+  });
+  assert.equal((await second).status, 200);
+  assert.equal((await ended(ana)).state, 'done');
+  // How it ended is said once.
+  assert.equal((await ana.browser.json('/api/import')).body.state, 'none');
 });
 
 test('taking out an import finds what points to its rows by key, however much Homing holds', async () => {
@@ -898,7 +999,7 @@ test('an export sent while another is read waits its turn, and is read', async (
     await waitFor(() => begun(ana));
     // Cara's export arrives meanwhile, and waits, saying so.
     const read = upload(cara, bytes);
-    await waitFor(async () => (await cara.browser.json('/api/import')).body.state === 'waiting');
+    await waitFor(async () => (await cara.browser.json('/api/import/preview')).body.state === 'waiting');
     return { read };
   });
   assert.equal((await read).status, 200);

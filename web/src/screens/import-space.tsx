@@ -5,10 +5,10 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { followImport, unsendable, type ImportProgress } from '@/lib/imports';
+import { followImport, unsendable, type ImportProgress, type PreviewProgress } from '@/lib/imports';
 import { cn } from 'cn';
 
-export type { ImportProgress };
+export type { ImportProgress, PreviewProgress };
 
 /** What an export would bring, before anything is created. */
 export interface ImportPreviewData {
@@ -33,8 +33,10 @@ export interface ImportActions {
   preview: (file: File, sent: (fraction: number) => void) => Promise<{ preview: ImportPreviewData } | { problem: string }>;
   /** Starts importing what was previewed, under a name. */
   import: (name: string, hash: string) => Promise<{ started: true } | { problem: string; field?: string }>;
-  /** How far along the person's preview or import is, failing when Homing can't be reached. */
+  /** How far along the person's import is, failing when Homing can't be reached. */
   progress: () => Promise<ImportProgress>;
+  /** How far along reading what they sent is. */
+  reading: () => Promise<PreviewProgress>;
 }
 
 type Doing = 'sending' | 'waiting' | 'reading' | 'importing';
@@ -56,7 +58,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
   const [name, setName] = useState(shown?.name ?? '');
   const [problem, setProblem] = useState<{ field?: string; message: string }>();
   // What's under way: sending the file, waiting for Homing to read it, reading it, or importing it, and how far along.
-  const [step, setStep] = useState<{ doing: Doing; fraction: number } | undefined>(underWay);
+  const [step, setStep] = useState<{ doing: Doing; fraction: number; name?: string } | undefined>(underWay);
   const picker = useRef<HTMLInputElement>(null);
   const busy = step !== undefined;
   // Whether the person is still on this screen, so nothing is followed, or opened, once they've left.
@@ -69,7 +71,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
     if (!shown) {
       actions.progress().then((now) => {
         if (!onScreen.current) return;
-        if (now.state === 'importing') void follow();
+        if (now.state === 'importing') void follow(now.name);
         if (now.state === 'failed') setProblem({ message: now.message });
       }, () => {});
     }
@@ -79,9 +81,9 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
   }, []);
 
   /** Follows an import while the person is here, until it's done, then opens the new space. */
-  const follow = async () => {
-    setStep({ doing: 'importing', fraction: 0 });
-    const end = await followImport(actions.progress, () => onScreen.current, (fraction) => setStep({ doing: 'importing', fraction }));
+  const follow = async (named?: string) => {
+    setStep({ doing: 'importing', fraction: 0, name: named });
+    const end = await followImport(actions.progress, () => onScreen.current, (fraction, name) => setStep({ doing: 'importing', fraction, name }));
     if ('left' in end) return;
     if ('done' in end) return onImported(end.done);
     setStep(undefined);
@@ -107,7 +109,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
         setStep({ doing: 'reading', fraction: 0 });
         void (async () => {
           while (reading && onScreen.current) {
-            const now = await actions.progress().catch(() => undefined);
+            const now = await actions.reading().catch(() => undefined);
             if (!reading || !onScreen.current) break;
             if (now?.state === 'waiting') setStep({ doing: 'waiting', fraction: 0 });
             if (now?.state === 'reading') setStep({ doing: 'reading', fraction: now.total ? now.done / now.total : 0 });
@@ -137,7 +139,7 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
       setProblem({ field: answer.field, message: answer.problem });
       return;
     }
-    await follow();
+    await follow(name.trim());
   };
 
   const exporter = preview?.from.exportedBy || 'whoever exported it';
@@ -156,42 +158,47 @@ export function ImportSpace({ actions, onImported, onCancel, shown, underWay }: 
         }}
       >
         <Section tone="raised">
-          <div className="flex flex-col gap-2">
-            <Label htmlFor="import-file">The export, a zip file</Label>
-            <input
-              ref={picker}
-              id="import-file"
-              type="file"
-              accept=".zip,application/zip"
-              className="sr-only"
-              tabIndex={-1}
-              disabled={busy}
-              onChange={(event) => {
-                void choose(event.target.files?.[0]);
-                event.target.value = '';
-              }}
-            />
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-              <Button
-                type="button"
-                variant="outline"
-                size="lg"
-                className="min-h-11 text-base sm:px-5"
+          {/* Back on the page while an import runs, with nothing chosen here: it shows how far it's got. */}
+          {step?.doing === 'importing' && !preview ? (
+            <UnderWay label={`Importing ${step.name || 'the export'}`} note="You can leave this page, and it carries on." fraction={step.fraction} />
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="import-file">The export, a zip file</Label>
+              <input
+                ref={picker}
+                id="import-file"
+                type="file"
+                accept=".zip,application/zip"
+                className="sr-only"
+                tabIndex={-1}
                 disabled={busy}
-                onClick={() => picker.current?.click()}
-                aria-invalid={Boolean(problem && !preview) || undefined}
-                aria-describedby={problem && !preview ? 'import-problem' : undefined}
-              >
-                {file ? 'Choose another file' : 'Choose the zip'}
-              </Button>
-              <span className="text-sm text-muted-foreground break-all">{file ? `${file.name}, ${sizeOf(file.size)}` : 'No file chosen yet'}</span>
+                onChange={(event) => {
+                  void choose(event.target.files?.[0]);
+                  event.target.value = '';
+                }}
+              />
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="lg"
+                  className="min-h-11 text-base sm:px-5"
+                  disabled={busy}
+                  onClick={() => picker.current?.click()}
+                  aria-invalid={Boolean(problem && !preview) || undefined}
+                  aria-describedby={problem && !preview ? 'import-problem' : undefined}
+                >
+                  {file ? 'Choose another file' : 'Choose the zip'}
+                </Button>
+                <span className="text-sm text-muted-foreground break-all">{file ? `${file.name}, ${sizeOf(file.size)}` : 'No file chosen yet'}</span>
+              </div>
+              {step?.doing === 'waiting' && <p role="status" className="text-sm text-muted-foreground">Homing reads one export at a time, so yours waits its turn.</p>}
+              {step && (step.doing === 'sending' || step.doing === 'reading') && (
+                <UnderWay label={step.doing === 'sending' ? `Sending ${file?.name ?? 'the export'}` : 'Reading the export'} fraction={step.fraction} />
+              )}
+              {problem && !preview && <FieldError id="import-problem">{problem.message}</FieldError>}
             </div>
-            {step?.doing === 'waiting' && <p role="status" className="text-sm text-muted-foreground">Homing reads one export at a time, so yours waits its turn.</p>}
-            {step && (step.doing === 'sending' || step.doing === 'reading') && (
-              <UnderWay label={step.doing === 'sending' ? `Sending ${file?.name ?? 'the export'}` : 'Reading the export'} fraction={step.fraction} />
-            )}
-            {problem && !preview && <FieldError id="import-problem">{problem.message}</FieldError>}
-          </div>
+          )}
           {preview && (
             <>
               <p className="text-base">
