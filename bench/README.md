@@ -19,7 +19,7 @@ npm run bench -- report rerun           # its tables
 npm run bench -- compare full rerun     # the first run's failures beside the rerun's
 ```
 
-`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs, `--variants` some of the variants, `--concurrency` how many conversations run at once and `--phase` the name of a run whose results are kept apart, in `results/<phase>.jsonl`. Benchmark 1's harder conversations are `--only b1-hard`. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
+`--models` takes other models from [OpenRouter's list](https://openrouter.ai/api/v1/models), `--only b1,b3` some of the benchmarks, `--runs` the number of runs, `--variants` some of the variants, `--tasks` some of the tasks, `--concurrency` how many conversations run at once and `--phase` the name of a run whose results are kept apart, in `results/<phase>.jsonl`. Benchmark 1's harder conversations are `--only b1-hard`. Every run drops and remakes the database `homing_bench`, or the one `HOMING_BENCH_DB` names, which must start with `homing_bench`. Run the tests with a database of their own, such as `HOMING_TEST_DB=homing_test_bench`, since they drop theirs too.
 
 Each conversation is one line in `results/<phase>.jsonl`: the tools called with their arguments, Homing's answers (shortened), the model's answer, tokens, time and cost. A run skips what already has a result there, so a stopped run continues without paying for anything twice.
 

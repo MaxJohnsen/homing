@@ -37,6 +37,7 @@ const { positionals, values } = parseArgs({
     concurrency: { type: 'string', default: '4' },
     phase: { type: 'string' },
     variants: { type: 'string' },
+    tasks: { type: 'string' },
   },
 });
 const command = positionals[0];
@@ -281,7 +282,7 @@ async function benchmark(ledger: Ledger, command: string) {
     // Run by run, so that stopping early still leaves every task, variant and model covered.
     for (let run = 1; run <= (picked ? 1 : runs); run++) {
       for (const benchmark of all.filter((b) => !only || only.includes(b.id))) {
-        for (const task of benchmark.tasks.filter((t) => !picked || picked[benchmark.id]?.includes(t.id))) {
+        for (const task of benchmark.tasks.filter((t) => (!picked || picked[benchmark.id]?.includes(t.id)) && (!values.tasks || values.tasks.split(',').includes(t.id)))) {
           for (const variant of benchmark.variants.filter((v) => !values.variants || values.variants.split(',').includes(v))) {
             for (const model of models) {
               const job = { benchmark, variant, task, model, run, phase };

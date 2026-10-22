@@ -10,7 +10,8 @@ import { authDatabaseUrl } from '../src/db.ts';
 import { addRule } from '../src/guidance.ts';
 import { createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
-import { addMember, createSpace } from '../src/spaces.ts';
+import { saveSkill } from '../src/skills.ts';
+import { addMember, archiveSpace, createSpace } from '../src/spaces.ts';
 import { addTask } from '../src/tasks.ts';
 import { Assistant, testAssistants } from './assistant.ts';
 import { admin, as, db, member, type Member } from './helpers.ts';
@@ -377,5 +378,135 @@ test('a page says who wrote each item, so an assistant can tell what a person wr
   const attempt = await claude.call('remember', { replaces: `item:${typed.id}`, text: 'Ola Nordmann owns hosting and DNS' });
   assert.equal(attempt.failed, true);
   assert.match(attempt.text, /Agents never change what people wrote/);
+  await claude.close();
+});
+
+test('context without a space shows what matched, with its space, and the skills that fit', async () => {
+  const { ana, ben, northwind, fjord, beta, claude } = await world();
+  await as({ ...ana, direct: true }, async (s) => {
+    const skill = '---\nname: status-report\ndescription: The status report a client gets every other Friday.\n---\nSay where the work stands, then what is next.';
+    await saveSkill(s, { spaceId: northwind, shared: true, files: [{ path: 'SKILL.md', body: skill }] });
+    const page = await createPage(s, { spaceId: fjord, title: 'Contract', shared: true });
+    await writeItem(s, { pageId: page, body: 'Fjord Bank wants a status report every month', shared: true });
+  });
+  await as({ ...ben, direct: true }, (s) =>
+    saveSkill(s, { spaceId: beta.space, shared: true, files: [{ path: 'SKILL.md', body: '---\nname: beta-report\ndescription: The status report Beta sends.\n---\nFor Beta.' }] }),
+  );
+
+  const text = (await claude.call('context', { request: 'What should a status report look like?' })).text;
+  // It points to each space's own context for the rules, which a match alone doesn't give.
+  assert.match(text, /^You are Ana\. Choose the space this is about, or ask the user, and call `context` again with it for the rules that apply there\./);
+  assert.match(text, new RegExp(`## Spaces that fit\\n(- .*\\n)*- Northwind \\(space:${northwind}\\)`));
+  assert.match(text, new RegExp(`## Spaces that fit\\n(- .*\\n)*- Fjord Bank \\(space:${fjord}\\)`));
+  assert.match(text, /## Relevant to the request\n- Contract: Fjord Bank wants a status report every month \(item:[0-9a-f-]+, in Fjord Bank, written by Ana\)/);
+  assert.match(text, /## Skills that fit\n.+\n- status-report: The status report a client gets every other Friday\. \(page:[0-9a-f-]+, in Northwind\)/);
+  // Ben's skill and space never show, though they match too.
+  assert.doesNotMatch(text, /Beta|beta-report/);
+  // A skill's files hold many common words, so a match there alone doesn't make it fit.
+  assert.doesNotMatch((await claude.call('context', { request: 'Where does the work stand?' })).text, /Skills that fit|status-report/);
+  await claude.close();
+});
+
+test('context without a space says so when nothing of the user’s matches, and picks a space only on more than a word in common', async () => {
+  const { relaunch, golive, claude } = await world();
+  for (const request of ['Why is the sky blue?', "What's 15% of 2,400?"]) {
+    const text = (await claude.call('context', { request })).text;
+    assert.match(text, /^You are Ana\. Nothing in Homing matches this request\. If it isn't about the user's work, answer it without Homing\./);
+    assert.doesNotMatch(text, /Spaces that fit|Relevant to the request/);
+  }
+  // Of "website" and "live", only "live" is in the relaunch's knowledge: too little to pick it. With "relaunch" as well, it's picked.
+  const one = (await claude.call('context', { request: 'Is the website live?' })).text;
+  assert.match(one, new RegExp(`## Spaces that fit\\n- Website relaunch \\(space:${relaunch}\\)\\n\\n## Relevant to the request\\n(- .*\\n)*- Go-live: The relaunch goes live on 1 March 2027 \\(item:${golive.id}, in Website relaunch, private\\)`));
+  assert.match((await claude.call('context', { request: 'When does the relaunch go live?' })).text, /^Picked Website relaunch, because it is the only space with matching knowledge or skills\./);
+  await claude.close();
+});
+
+test('proposing to share an item says who it would reach, so an assistant shares it where it is', async () => {
+  const { ana, northwind, golive, claude } = await world();
+  const act = (await claude.client.listTools()).tools.find((tool) => tool.name === 'act')!;
+  assert.match(act.description!, /Everyone who can open its space sees it, which takes in the spaces above it up to the first closed one, so share an item where it is\./);
+
+  const open = await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${golive.id}` } });
+  assert.match(
+    open.text,
+    /Once approved, everyone who can open Website relaunch sees it: 2 people now, including everyone in Northwind, since it isn't closed, and anyone who joins later\. Shared where it is, it already reaches them: there is no need to copy it to a space above\./,
+  );
+
+  // In a closed space, only the people added to it.
+  const board = await as({ ...ana, direct: true }, (s) => createSpace(s, { name: 'Board', parentId: northwind, closed: true }));
+  const note = await as({ ...ana, agent: 'Claude' }, async (s) => writeItem(s, { pageId: await createPage(s, { spaceId: board, title: 'Board' }), body: 'The board meets in May' }));
+  const closed = await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${note.id}` } });
+  assert.match(closed.text, /Once approved, everyone who can open Board sees it: 1 person now, and anyone who joins later\. It is closed, so people in Northwind who weren't added to it don't see it\./);
+  assert.doesNotMatch(closed.text, /copy it/);
+  await claude.close();
+});
+
+test('who a share reaches counts only the people the user can see, and says when a space above they can’t open has more', async () => {
+  const { ana, ben } = await world();
+  // Ana's Holding has Client in it, and Project in that. Ben is in Client, so he can't open Holding.
+  const { client, project } = await as({ ...ana, direct: true }, async (s) => {
+    const holding = await createSpace(s, { name: 'Holding' });
+    const client = await createSpace(s, { name: 'Client', parentId: holding });
+    await addMember(s, client, ben.id);
+    return { client, project: await createSpace(s, { name: 'Project', parentId: client }) };
+  });
+  const bens = await assistantOf(ben);
+  const note = async (spaceId: string) => (await as({ ...ben, agent: 'Claude' }, async (s) => writeItem(s, { pageId: await createPage(s, { spaceId, title: 'Notes' }), body: 'Kickoff is on Monday' }))).id;
+
+  const inProject = await bens.call('act', { action: 'knowledge.publish', input: { item: `item:${await note(project)}` } });
+  assert.match(inProject.text, /everyone who can open Project sees it: 2 people now, including everyone in Client and people in a space above, since it isn't closed, and anyone who joins later\./);
+  const inClient = await bens.call('act', { action: 'knowledge.publish', input: { item: `item:${await note(client)}` } });
+  assert.match(inClient.text, /everyone who can open Client sees it: 2 people now, everyone who can open the space above it, and anyone who joins later\./);
+  await bens.close();
+});
+
+test('context without a space leaves out what’s in an archived space, unless the request names it', async () => {
+  const { ana, claude } = await world();
+  const old = await as({ ...ana, direct: true }, async (s) => {
+    const old = await createSpace(s, { name: 'Old client' });
+    await writeItem(s, { pageId: await createPage(s, { spaceId: old, title: 'Budget', shared: true }), body: 'The zeppelin budget is 40,000 NOK', shared: true });
+    await addTask(s, { spaceId: old, title: 'Pay the zeppelin invoice' });
+    await saveSkill(s, { spaceId: old, shared: true, files: [{ path: 'SKILL.md', body: '---\nname: zeppelin-brief\ndescription: The zeppelin brief.\n---\nWrite it.' }] });
+    await archiveSpace(s, old, true);
+    return old;
+  });
+  const text = (await claude.call('context', { request: 'What about the zeppelin budget?' })).text;
+  assert.match(text, /^You are Ana\. Nothing in Homing matches this request\./);
+  assert.doesNotMatch(text, /zeppelin/i);
+  assert.match((await claude.call('context', { request: 'What about the zeppelin budget in Old client?' })).text, new RegExp(`^Picked Old client, because the request names it\\.[\\s\\S]*\\(space:${old}\\)[\\s\\S]*40,000 NOK`));
+  await claude.close();
+});
+
+test('context without a space never says nothing matches beside a skill that fits, even one from a space above the user can’t open', async () => {
+  const { ana, ben } = await world();
+  await as({ ...ana, direct: true }, async (s) => {
+    const agency = await createSpace(s, { name: 'Agency' });
+    await saveSkill(s, { spaceId: agency, shared: true, files: [{ path: 'SKILL.md', body: '---\nname: pitch-deck\ndescription: How we make a pitch deck.\n---\nTen slides.' }] });
+    await addMember(s, await createSpace(s, { name: 'Campaign', parentId: agency }), ben.id);
+  });
+  const bens = await assistantOf(ben);
+  const text = (await bens.call('context', { request: 'Make a pitch deck' })).text;
+  assert.doesNotMatch(text, /Nothing in Homing matches/);
+  assert.match(text, /## Skills that fit\n.+\n- pitch-deck: How we make a pitch deck\. \(page:[0-9a-f-]+, in a space above\)/);
+  await bens.close();
+});
+
+test('the telling words of a request leave out common English and Norwegian words and short numbers, and keep longer ones', async () => {
+  const { ana, fjord, claude } = await world();
+  await as({ ...ana, direct: true }, async (s) => {
+    const page = await createPage(s, { spaceId: fjord, title: 'Kontrakt', shared: true });
+    await writeItem(s, { pageId: page, body: 'Kontrakten fornyes 1. januar 2027.', shared: true });
+    await writeItem(s, { pageId: page, body: 'Det er Kari som signerer kontrakten.', shared: true });
+    await writeItem(s, { pageId: page, body: 'Invoice 20231 was paid on 3 October.', shared: true });
+  });
+  // "Hva", "er" and "det" are common Norwegian words, which would match Kari's item.
+  assert.match((await claude.call('context', { request: 'Hva er det beste været i Bergen?' })).text, /^You are Ana\. Nothing in Homing matches this request\./);
+  assert.match((await claude.call('context', { request: 'Når fornyes kontrakten?' })).text, /^Picked Fjord Bank, because it is the only space with matching knowledge or skills\./);
+  // Common words are left out before the request is cut at 32 words, so a long one still finds what it's about.
+  const long = `Is it true that ${'it is the one that '.repeat(8)}kontrakten fornyes?`;
+  assert.match((await claude.call('context', { request: long })).text, /^Picked Fjord Bank, because it is the only space with matching knowledge or skills\./);
+  // An invoice number counts; numbers of up to three digits, such as 3 in "3 October", don't.
+  assert.match((await claude.call('context', { request: 'What about 20231?' })).text, /Invoice 20231 was paid on 3 October/);
+  assert.match((await claude.call('context', { request: 'What about 3 or 202?' })).text, /^You are Ana\. Nothing in Homing matches this request\./);
   await claude.close();
 });

@@ -1,6 +1,65 @@
 # Benchmark results
 
-Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. The same day, harder conversations for benchmark 1 tested a new recommended instruction. How they were run, and every prompt, is in the [README](README.md).
+Benchmarks 1 to 3 from the [spec](../docs/spec.md#benchmarks). The first run, on 20 October 2026, found where assistants stumble; [#95](https://github.com/MaxJohnsen/homing/pull/95) fixed what it found, and a rerun of benchmarks 1 and 2 on 21 October checked the fixes. The same day, harder conversations for benchmark 1 tested a new recommended instruction, and small reruns tested three changes to Homing's tools that they suggested. How they were run, and every prompt, is in the [README](README.md).
+
+## Context without a space, and who a share reaches, 21 October 2026
+
+The harder conversations suggested three changes to Homing's tools, and all three are built:
+
+- `context` without a space now matches only a request's telling words, leaving out words such as "what" or "the" and numbers on their own. When nothing of the user's matches, it says so plainly. Otherwise it lists the spaces that fit with the best matches, each with its space, and the skills whose name or description fits. It picks a space only when the request names it, or when it alone matches and a match there has two of the request's telling words. Its description says so, and its answer points to `context` with a space for the rules that apply there.
+- Proposing to share an item answers who will see it: everyone who can open its space, which takes in the spaces above unless it is closed. `act`'s description of knowledge.publish says to share an item where it is.
+
+Each change was measured with a small rerun of the conversations it is for, with the same models and settings, three runs: 198 harder conversations, the 22 tasks of benchmark 1 with the instruction, and the publish task of benchmark 2, for USD 4.87, after a first try of USD 3.59 (below).
+
+### What it means for Homing
+
+**A vague request now finds its answer.** "Should we go with Azure or AWS?" was answered from Northwind's decision in all 9 of GPT's conversations, against none before, when it asked which project. In the scenario of two people, GPT with the new instruction found the relaunch and its new rule 3 times of 3, against 1, and every scenario did every step, with no leaks.
+
+**Skills are found when Homing is asked.** "What's a good structure for a status report?" now leads to Acme's skill: every conversation that called `context` read it and answered with it, 13 of 13, against 3 of 13 before. But the new instruction still keeps Homing out of that question in 5 of 6 conversations, as before, so with it the task was done once.
+
+**Saying that nothing matches costs little, and saves a little.** For 6 of the 14 unrelated questions Homing now answers that nothing matches, and for the others it shows what it found, which models read as unrelated. Only a model that calls Homing for everything still calls it: GPT with the old instruction did for all 42, as before, but stopped after one call. With the new instruction or the tools alone, no model called Homing for them, before or after. The one cost: "When's the deadline again?" matches nothing, since Homing has dates but not the word. With the tools alone, GPT then asked which deadline in all 3 conversations, against 2 of 3 before, and Claude in 1. With the new instruction, GPT answered it 3 times of 3, against 2.
+
+**Matches draw a little more on general questions that share words with Ana's work.** With the tools alone, Claude checked Homing for a typical notice period twice and GPT for a headless CMS once, which they hadn't before. Overall the ambiguous requests were done more often: 27 of 30 against 23 for GPT with the new instruction, and 27 against 22 with the tools alone.
+
+**Shares stay where they are.** Asked to share Gunnar's hint "with everyone on the Northwind team", GPT shared the original 6 times of 6, against 2 of 6 before, when it copied the hint up to Northwind. It copies before it calls `act`, so `act`'s description, not the answer, is what changed this.
+
+**Benchmark 1 is as before, with fewer calls.** With the new `context`, the 20 tasks about Ana's work were done 60 of 60 by both models, and Homing was called for none of the control questions. Claude made 2.4 calls to Homing per conversation instead of 2.8, and GPT 3.0 instead of 3.3, and GPT took 9.5 seconds instead of 12.4.
+
+| Slice | Model | Before | After |
+|---|---|---|---|
+| azure-or-aws, done, all variants | GPT | 0 of 9 | 9 of 9 |
+| report-structure, skill read when Homing was asked | both | 3 of 13 | 13 of 13 |
+| report-structure, done, new instruction | Claude, GPT | 0 of 3, 0 of 3 | 1 of 3, 0 of 3 |
+| together, Ana's assistant got the new rule, new instruction | GPT | 1 of 3 | 3 of 3 |
+| together, every step, all variants | both | 16 of 18 | 18 of 18 |
+| together, leaks | both | 0 | 0 |
+| Ambiguous requests done, new instruction | Claude, GPT | 27, 23 of 30 | 28, 27 of 30 |
+| Ambiguous requests done, tools alone | Claude, GPT | 27, 22 of 30 | 29, 27 of 30 |
+| Left alone when it can't help, ambiguous, tools alone | Claude, GPT | 12, 6 of 12 | 10, 5 of 12 |
+| deadline, done, tools alone | Claude, GPT | 3, 1 of 3 | 2, 0 of 3 |
+| Unrelated questions, Homing called, old instruction | Claude, GPT | 6, 42 of 42 | 9, 42 of 42 |
+| …calls to Homing | Claude, GPT | 6, 44 | 9, 42 |
+| Benchmark 1, tasks done, new instruction | Claude, GPT | 100%, 98% | 100%, 100% |
+| …calls to Homing per conversation | Claude, GPT | 2.8, 3.3 | 2.4, 3.0 |
+| publish (benchmark 2), done | GPT | 2 of 6 | 6 of 6 |
+| …copies of the hint | GPT | 4 | 0 |
+
+### Changed along the way
+
+The first try showed the matches the same way, but its answer didn't point to `context` with a space for the rules. In the scenario of two people, Claude with the tools alone then answered Ana from a matching page, without the relaunch's context, and missed the new rule 2 times of 3. The answer now says to call `context` with the space for the rules that apply there, and the slices that depend on it, the ambiguous requests and the scenario, were run again. The unrelated questions come from the first try: for 6 of them the answer is the same, and for the others it differs only by those words. Showing the rules that match beside the knowledge was tried and dropped: they matched unrelated questions too, such as "Keep answers short" for undoing a git commit. A run limit set too low for six conversations at once stopped two runs early, and they were finished one or two at a time. After these runs, a review changed a few things models could see, which no prompt here touches, so the numbers stand: Norwegian stopwords are left out as well as English ones, numbers of four digits or more, such as an invoice number or a year, count again, what's in an archived space is left out unless the request names it, a skill that fits is never next to "Nothing in Homing matches", and who a share reaches is worded as the decision page words it.
+
+### Spending
+
+| Phase | Conversations | USD |
+|---|---|---|
+| First try: ambiguous, unrelated and together | 450 | 3.59 |
+| Ambiguous and together, final | 198 | 3.07 |
+| Unrelated, final, with the old instruction, stopped early | 12 | 0.05 |
+| Benchmark 1 with the new instruction | 132 | 1.53 |
+| publish, benchmark 2 | 12 | 0.22 |
+| **Total** | | **8.46** |
+
+The ledger's total is now USD 34.33, under the USD 35 set for this phase and the cap of USD 50; the key's own usage since the first run is USD 34.25.
 
 ## Harder conversations and a new instruction, 21 October 2026
 
@@ -40,7 +99,7 @@ The rest of Homing's MCP instructions is unchanged. Benchmark 1's harder convers
 
 #### Worth deciding
 
-Suggestions for Homing's tools, from these results and the rerun's. None is built here.
+Suggestions for Homing's tools, from these results and the rerun's. All three were built since, and measured above.
 
 1. `context` without a space could show the few best matches, with their spaces, as `search` does, so a model answers "Should we go with Azure or AWS?" instead of asking which project; and say so when nothing matches, instead of listing spaces that fit.
 2. `context` without a space could also list the skills that match the request, as `search` does, so "a good structure for a status report" leads to Acme's.

@@ -913,6 +913,34 @@ export function termsOf(query: string): string | undefined {
 }
 
 /**
+ * The words of a request that tell it apart, at most 32, without the common ones that match nearly
+ * anything, such as "what" or "hva", and without numbers of one to three digits. Longer numbers,
+ * such as an invoice number or a year, count. Common words are PostgreSQL's English and Norwegian
+ * stopwords, so English words that are common in Norwegian, such as "men" or "bare", don't count
+ * either. Empty when nothing is left.
+ */
+export async function tellingWords(s: Session, text: string): Promise<string> {
+  const words = text.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 1000) ?? [];
+  if (!words.length) return '';
+  const [{ telling }] = await s.tx<{ telling: string | null }[]>`
+    select string_agg(word, ' ' order by n) as telling from (
+      select word, n from unnest(${words}::text[]) with ordinality as w (word, n)
+      where word !~ '^[0-9]{1,3}$' and length(to_tsvector('english', word)) > 0 and length(to_tsvector('norwegian', word)) > 0
+      order by n
+      limit 32
+    ) kept
+  `;
+  return telling ?? '';
+}
+
+/** How many of the words a text has, matched as search matches them: longer words by how they start. */
+export function wordsIn(text: string, words: string): number {
+  const have = text.toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
+  const wanted = [...new Set(words.toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [])];
+  return wanted.filter((want) => have.some((word) => (want.length >= 4 ? word.startsWith(want) : word === want))).length;
+}
+
+/**
  * Searches items and sources the viewer can see, optionally within a space
  * and the spaces below it, and optionally only knowledge, without guidance.
  * Longer words match by how they start, so "launch" finds "launches"; short

@@ -4,7 +4,7 @@ import { join, relative, sep } from 'node:path';
 import { parse } from 'yaml';
 import type { Session } from './db.ts';
 import { applying, applyingAlready, inclusionColumns, inclusionJoin, withInclusion, type Inclusion } from './guidance.ts';
-import { checkSpace, current, insertItem, itemColumns, sideOf, visible, visibleContent, type Item } from './knowledge.ts';
+import { checkSpace, current, insertItem, itemColumns, sideOf, termsOf, visible, visibleContent, wordsIn, type Item } from './knowledge.ts';
 import { accessibleSpaces, listSpaces } from './spaces.ts';
 
 /** A file in a skill's folder, such as SKILL.md or references/tone.md. */
@@ -199,6 +199,30 @@ async function applyingSkills(s: Session, spaceId: string): Promise<Skill[]> {
   return rows
     .filter((row) => !seen.has(row.pageId) && seen.add(row.pageId))
     .map(({ skillMd, ...skill }) => ({ ...withInclusion(skill), description: frontmatter(skillMd ?? '').description ?? '' }));
+}
+
+/**
+ * The skills the person can see whose name or description has one of the words, matched the way
+ * search matches them: longer words by how they start. A skill's other text holds many common
+ * words, so a match there alone doesn't count. In the order search ranks them.
+ */
+export async function skillsMatching(s: Session, words: string, limit = 3): Promise<{ pageId: string; spaceId: string; name: string; description: string }[]> {
+  const terms = termsOf(words);
+  if (!terms) return [];
+  const rows = await s.tx<{ pageId: string; spaceId: string; name: string; skillMd: string }[]>`
+    select t.page_id, t.space_id, t.body as name, f.body as skill_md
+    from content f
+    join pages p on p.id = f.page_id and p.type = 'skill' and not p.archived
+    join content t on t.page_id = f.page_id and t.kind = 'title' and t.private_to is not distinct from f.private_to
+    where f.kind = 'file' and f.path = 'SKILL.md' and f.search @@ to_tsquery('simple', ${terms})
+      and ${visibleContent(s, 'f')} and ${current(s, 'f')} and ${visibleContent(s, 't')} and ${current(s, 't')}
+    order by ts_rank(f.search, to_tsquery('simple', ${terms}), 1) desc
+    limit 20
+  `;
+  return rows
+    .map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd).description ?? '' }))
+    .filter((skill) => wordsIn(`${skill.name} ${skill.description}`, words) > 0)
+    .slice(0, limit);
 }
 
 /**
