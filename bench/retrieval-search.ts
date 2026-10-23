@@ -37,7 +37,7 @@ export interface Filters {
   prune?: number;
 }
 
-/** The words of a query by letters and digits, as Homing's search split them until #115, the longer ones by how they start. */
+/** The words of a query the way Homing's search splits them: letters and digits, the longer ones by how they start. */
 export function termsOf(query: string): Term[] {
   const words = query.normalize('NFC').toLowerCase().match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32) ?? [];
   return [...new Set(words)].map((term) => ({ term, prefix: term.length >= 4 }));
