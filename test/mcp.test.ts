@@ -13,7 +13,7 @@ import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { authDatabaseUrl } from '../src/db.ts';
 import { Assistant, testAssistants } from './assistant.ts';
-import { as, db, member, type Member } from './helpers.ts';
+import { as, db, member, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -119,10 +119,12 @@ test('small things without a subject go on the space’s notes, and evidence can
 
 test('replacing shared knowledge updates only your own view, and keeps the earlier version', async () => {
   const { ana, acme, acmeRef, assistants } = await clients();
+  // Ana's assistant wrote it, and she shared it.
   const launch = await as({ ...ana, agent: 'Claude Code' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Launch', shared: true });
-    return writeItem(s, { pageId: page, body: 'Acme launches on 1 March', shared: true });
+    const page = await createPage(s, { spaceId: acme, title: 'Launch' });
+    return writeItem(s, { pageId: page, body: 'Acme launches on 1 March' });
   });
+  await share(ana, launch.id);
 
   const anas = await session(assistants.ana);
   const replaced = await anas.call('remember', { space: acmeRef, text: 'Acme launches on 1 April', replaces: `item:${launch.id}` });
@@ -141,10 +143,12 @@ test('replacing shared knowledge updates only your own view, and keeps the earli
 
 test('remember never rewrites shared knowledge', async () => {
   const { ana, acme, acmeRef, assistants } = await clients();
+  // Ana's assistant wrote it, and she shared it.
   const launch = await as({ ...ana, agent: 'Claude Code' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Launch', shared: true });
-    return writeItem(s, { pageId: page, body: 'Acme launches on 1 March', shared: true });
+    const page = await createPage(s, { spaceId: acme, title: 'Launch' });
+    return writeItem(s, { pageId: page, body: 'Acme launches on 1 March' });
   });
+  await share(ana, launch.id);
 
   const anas = await session(assistants.ana);
   const attempt = await anas.call('remember', { space: acmeRef, text: 'Acme launches in April', updates: `item:${launch.id}` });

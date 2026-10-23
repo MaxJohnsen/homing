@@ -305,6 +305,9 @@ test('who wrote imported knowledge comes along by name, credited to nobody here'
     as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`insert into content (page_id, space_id, kind, body, supersedes, private_to) select page_id, space_id, 'text', 'Replaced', id, ${cara.id} from content where id = ${written}`),
     refused,
   );
+  // Nor on the person's own side, where their assistant otherwise keeps things up to date.
+  const [{ item: calls }] = await admin`select id as item from content where space_id = ${copy} and body = 'Prefers calls before nine.'`;
+  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${calls}`), refused);
   // A task a person wrote stays theirs too: Ana's assistant can mark it done, but not reword it.
   const [{ task: venue }] = await admin`select id as task from tasks where space_id = ${copy} and title = 'Book a bigger venue'`;
   const forAna = new Assistant(homing.url, assistants.claude);
@@ -344,11 +347,14 @@ test('sharing an imported item keeps who wrote it, as the one person they were',
   await as({ ...ana, direct: true }, (s) => publishItem(s, item, 'Prefers calls before nine.'));
   const [shared] = await admin`select id, written_by, imported from content where published_from = ${item}`;
   assert.equal(shared.writtenBy, null);
-  // The app says who wrote it, imported, and an assistant can't rewrite it.
+  // The app says who wrote it, imported, and an assistant can't replace it, even for its own person.
   await as({ ...ana, direct: true }, (s) => addMember(s, copy, cara.id));
   const seen = (await cara.browser.json(`/api/pages/${page}`)).body;
   assert.deepEqual(seen.items.find((entry: { id: string }) => entry.id === shared.id).by, { name: 'Ana', you: false, imported: true });
-  await assert.rejects(as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${shared.id}`), refused);
+  await assert.rejects(
+    as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`insert into content (page_id, space_id, kind, body, supersedes, private_to) select page_id, space_id, 'text', 'Replaced', id, ${cara.id} from content where id = ${shared.id}`),
+    refused,
+  );
   // Exported again, the copy and what it was shared from are by the same Ana, and the copy says it came in the import.
   const again = (await exported(ana, copy)).manifest;
   const original = again.items.find((entry) => entry.body === 'Prefers calls before nine.' && entry.visibility === 'private')!;

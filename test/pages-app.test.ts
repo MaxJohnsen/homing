@@ -10,7 +10,7 @@ import { addSource, createPage, supersedeItem, updateItem, writeItem } from '../
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
-import { admin, as, db, member, type Member } from './helpers.ts';
+import { admin, as, db, member, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -28,13 +28,14 @@ before(async () => {
     return { acme, northwind: await createSpace(s, { name: 'Northwind', parentId: acme, closed: true }) };
   }));
 
-  // Acme's launch page: a shared date from an email that Claude saved for Cara, and a budget Cara wrote and later corrected.
+  // Acme's launch page: a date that Claude saved for Cara from an email she kept for everyone, which she shared, and a budget Cara wrote and later corrected.
+  const email = await as(cara, (s) => addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true }));
   ({ launch, launchDate, budget } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const launch = await createPage(s, { spaceId: acme, title: 'Website launch', type: 'project', shared: true });
-    const email = await addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true });
-    const launchDate = (await writeItem(s, { pageId: launch, body: 'The launch is on **14 November**.', sources: [email.id], shared: true })).id;
+    const launch = await createPage(s, { spaceId: acme, title: 'Website launch', type: 'project' });
+    const launchDate = (await writeItem(s, { pageId: launch, body: 'The launch is on **14 November**.', sources: [email.id] })).id;
     return { launch, launchDate, budget: '' };
   }));
+  await share(cara, launchDate);
   budget = await as({ person: cara.id }, async (s) => {
     const item = await writeItem(s, { pageId: launch, body: 'The budget is 400,000 NOK.', shared: true });
     await updateItem(s, item.id, { body: 'The budget is 450,000 NOK.' });

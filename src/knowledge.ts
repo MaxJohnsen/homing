@@ -259,7 +259,9 @@ export class TooLong extends Error {}
 /**
  * Rewrites an item. What it said before stays in its history. Something of yours that you shared
  * as a copy is the copy from then on, so rewriting it is your own update of the copy, resting on
- * what yours did, which others don't see until you share it (spec §5).
+ * what yours did, which others don't see until you share it (spec §5). An assistant never rewrites
+ * what everyone sees: its change to something shared is the person's own update of it, as
+ * replacing it is.
  */
 export async function updateItem(
   s: Session,
@@ -268,10 +270,13 @@ export async function updateItem(
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
+  const me = personOf(s.principal);
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
-  if (shared === itemId) {
-    // Shared meanwhile by moving it: everyone sees it now, so yours is an update of it.
-    const kept = await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid`;
+  if (shared === itemId || (original.privateTo === null && s.principal.agent !== undefined && me)) {
+    // Everyone sees it, so yours is an update of it. Something you shared by moving it, meanwhile
+    // or before, still rests on what it did, and so does your update.
+    const moved = shared === itemId || (original.publishedFrom === null && original.publishedBy === me);
+    const kept = moved ? await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid` : [];
     return supersedeItem(s, itemId, { body: input.body, sources: [...new Set([...kept.map((row) => row.sourceId), ...(input.sources ?? [])])] });
   }
   if (shared) {

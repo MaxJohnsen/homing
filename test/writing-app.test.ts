@@ -10,7 +10,7 @@ import { createPage, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, refused, type Member } from './helpers.ts';
+import { admin, as, db, member, refused, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -88,7 +88,9 @@ test('what you write says what it needs, and goes only where you can write', asy
 
 test('a shared item is corrected for everyone, and the assistant reads it next as yours', async () => {
   const launch = await as(cara, (s) => createPage(s, { spaceId: acme, title: 'Website relaunch', shared: true }));
-  const date = await as({ person: cara.id, agent: 'Claude' }, (s) => writeItem(s, { pageId: launch, body: 'The launch is on 14 November.', shared: true }));
+  // Cara's assistant wrote the date, and she shared it.
+  const date = await as({ person: cara.id, agent: 'Claude' }, (s) => writeItem(s, { pageId: launch, body: 'The launch is on 14 November.' }));
+  await share(cara, date.id);
   assert.equal((await post(ana, `/api/items/${date.id}`, { text: 'The launch is on 20 November.', shared: true })).status, 200);
 
   // Cara sees Ana's correction where the date was, with what it said before.
@@ -137,11 +139,12 @@ test('rules and skills aren’t corrected as knowledge', async () => {
 });
 
 test('a private update of a private update still says what others see, in the app and to the assistant', async () => {
-  // Written by Cara's assistant, so Ana's may replace it for her.
+  // Written by Cara's assistant and shared by Cara, so Ana's may replace it for her.
   const roadmap = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Roadmap', shared: true });
-    return { page, item: (await writeItem(s, { pageId: page, body: 'Version 2 ships in March.', shared: true })).id };
+    const page = await createPage(s, { spaceId: acme, title: 'Roadmap' });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'Version 2 ships in March.' })).id };
   });
+  await share(cara, roadmap.item);
   const chat = await claudeForAna();
   const first = await chat.call('remember', { space: `space:${acme}`, text: 'Version 2 ships in April.', replaces: `item:${roadmap.item}` });
   const mine = /Saved as item:([0-9a-f-]{36})/.exec(first.text)![1];

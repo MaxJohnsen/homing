@@ -258,37 +258,47 @@ async function knowledge(writer: { id: string; name: string }, space: { id: stri
   const excerpts = references.map((reference) => `${reference} from ${pick(people)}: ${pick([`the ${pick(topics)} is on track`, `we need a decision on the ${pick(topics)}`, `the ${pick(topics)} slips a week`, `budget for the ${pick(topics)} is approved`])}.`);
   // In a shared space, one page in ten is the writer's own, and so is everything on it.
   const ownPages = new Set(ids.filter(() => personalTree || random() < 0.1));
-  const sides = ids.map((id) => (ownPages.has(id) ? writer.id : null));
-  const itemSides = itemPages.map((id) => (ownPages.has(id) ? writer.id : null));
   const side = personalTree ? writer.id : null;
+  // What's on the shared side the writer wrote and shared themselves, and their assistant keeps their own pages.
+  const direct = { person: writer.id, direct: true as const };
+  const claude = { person: writer.id, agent: 'Claude' };
 
-  const made = await as({ person: writer.id, agent: 'Claude' }, async (s) => {
-    await s.tx`insert into pages (id, space_id, type) select unnest(${ids}::uuid[]), ${space.id}::uuid, unnest(${types}::text[])`;
-    await s.tx`insert into content (page_id, space_id, private_to, kind, body) select unnest(${ids}::uuid[]), ${space.id}::uuid, unnest(${sides}::uuid[]), 'title', unnest(${titles}::text[])`;
-    const items = await s.tx<{ id: string; pageId: string; privateTo: string | null }[]>`
-      insert into content (page_id, space_id, private_to, kind, body)
-      select unnest(${itemPages}::uuid[]), ${space.id}::uuid, unnest(${itemSides}::uuid[]), 'text', unnest(${bodies}::text[]) returning id, page_id, private_to
-    `;
-    // Now and then the writer knows something newer than the space does, and keeps it to themselves for now.
-    const updated = personalTree ? [] : items.filter((item) => item.privateTo === null && random() < 0.05);
-    if (updated.length) {
+  const added = await as(side ? claude : direct, (s) => s.tx<{ id: string }[]>`
+    insert into sources (space_id, private_to, reference, excerpt)
+    select ${space.id}::uuid, ${side}::uuid, unnest(${references}::text[]), unnest(${excerpts}::text[]) returning id
+  `);
+  // Most items rest on a source or two. The other sources haven't become knowledge yet.
+  const sourcesOf = (index: number) => (index % 4 === 3 ? [] : [added[index * 2].id, added[index * 2 + 1].id]);
+  for (const own of [false, true]) {
+    const pageAt = ids.flatMap((id, index) => (ownPages.has(id) === own ? [index] : []));
+    const itemAt = itemPages.flatMap((id, index) => (ownPages.has(id) === own ? [index] : []));
+    const privateTo = own ? writer.id : null;
+    await as(own ? claude : direct, async (s) => {
+      if (!own) await s.tx`insert into pages (id, space_id, type) select unnest(${ids}::uuid[]), ${space.id}::uuid, unnest(${types}::text[])`;
       await s.tx`
-        insert into content (page_id, space_id, private_to, kind, body, supersedes)
-        select unnest(${updated.map((item) => item.pageId)}::uuid[]), ${space.id}::uuid, ${writer.id}::uuid, 'text',
-               unnest(${updated.map(() => `Update: ${pick(['it moved two weeks', 'it’s on hold until the budget is settled', 'it’s cancelled', `${pick(people)} takes it over`])}.`)}::text[]),
-               unnest(${updated.map((item) => item.id)}::uuid[])
+        insert into content (page_id, space_id, private_to, kind, body)
+        select unnest(${pageAt.map((index) => ids[index])}::uuid[]), ${space.id}::uuid, ${privateTo}::uuid, 'title', unnest(${pageAt.map((index) => titles[index])}::text[])
       `;
-    }
-    const added = await s.tx<{ id: string }[]>`
-      insert into sources (space_id, private_to, reference, excerpt)
-      select ${space.id}::uuid, ${side}::uuid, unnest(${references}::text[]), unnest(${excerpts}::text[]) returning id
-    `;
-    // Most items rest on a source or two. The other sources haven't become knowledge yet.
-    const cited = items.flatMap((item, index) => (index % 4 === 3 ? [] : [[item.id, added[index * 2].id], [item.id, added[index * 2 + 1].id]]));
-    await s.tx`insert into citations (content_id, source_id) select unnest(${cited.map((pair) => pair[0])}::uuid[]), unnest(${cited.map((pair) => pair[1])}::uuid[])`;
-    return { pages: ids.length, sources: added.length };
-  });
-  return made;
+      const items = await s.tx<{ id: string; pageId: string }[]>`
+        insert into content (page_id, space_id, private_to, kind, body)
+        select unnest(${itemAt.map((index) => itemPages[index])}::uuid[]), ${space.id}::uuid, ${privateTo}::uuid, 'text', unnest(${itemAt.map((index) => bodies[index])}::text[])
+        returning id, page_id
+      `;
+      // Now and then the writer knows something newer than the space does, and keeps it to themselves for now.
+      const updated = own ? [] : items.filter(() => random() < 0.05);
+      if (updated.length) {
+        await s.tx`
+          insert into content (page_id, space_id, private_to, kind, body, supersedes)
+          select unnest(${updated.map((item) => item.pageId)}::uuid[]), ${space.id}::uuid, ${writer.id}::uuid, 'text',
+                 unnest(${updated.map(() => `Update: ${pick(['it moved two weeks', 'it’s on hold until the budget is settled', 'it’s cancelled', `${pick(people)} takes it over`])}.`)}::text[]),
+                 unnest(${updated.map((item) => item.id)}::uuid[])
+        `;
+      }
+      const cited = items.flatMap((item, at) => sourcesOf(itemAt[at]).map((source) => [item.id, source]));
+      await s.tx`insert into citations (content_id, source_id) select unnest(${cited.map((pair) => pair[0])}::uuid[]), unnest(${cited.map((pair) => pair[1])}::uuid[])`;
+    });
+  }
+  return { pages: ids.length, sources: added.length };
 }
 
 function capital(text: string) {

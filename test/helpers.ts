@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
 import { after } from 'node:test';
 import { adminUrl, authDatabaseUrl, connect, databaseUrl, withPrincipal, type Principal, type Session } from '../src/db.ts';
+import { publishItem } from '../src/knowledge.ts';
 import { createPerson } from '../src/spaces.ts';
 import { Browser } from './browser.ts';
 import { inTestDatabase } from './reset.ts';
@@ -77,6 +78,20 @@ export async function importAgain(who: Member, zip: Uint8Array<ArrayBuffer>, nam
     if (body.state === 'done') return body.id as string;
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/**
+ * Shares one of the person's own items as they do in Homing: directly, exactly as it is, with its
+ * page's title if the page has none for everyone yet. So what their assistant wrote is shared the
+ * only way it can be, still written by the assistant. Returns what everyone sees.
+ */
+export async function share(who: { id: string }, itemId: string): Promise<string> {
+  return as({ person: who.id, direct: true }, async (s) => {
+    const [{ body }] = await s.tx<{ body: string }[]>`select body from content where id = ${itemId}::uuid`;
+    const shared = await publishItem(s, itemId, body);
+    assert.ok(shared, 'it was shared');
+    return shared;
+  });
 }
 
 /** Waits until the condition holds, such as another request waiting on a lock. */

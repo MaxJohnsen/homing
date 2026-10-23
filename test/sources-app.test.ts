@@ -8,7 +8,7 @@ import { authDatabaseUrl } from '../src/db.ts';
 import { addSource, createPage, supersedeItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
-import { as, db, member, type Member } from './helpers.ts';
+import { as, db, member, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -24,19 +24,20 @@ before(async () => {
     await addMember(s, acme, cara.id);
     return acme;
   });
-  // Claude keeps Gunnar's email for Cara and builds the launch page from it. Meeting notes stay a source on their own.
-  ({ email, notes, launch } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const email = (await addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true })).id;
-    const notes = (await addSource(s, { spaceId: acme, reference: 'Meeting notes, 9 October', excerpt: 'Content is late. Design is signed off.', shared: true })).id;
-    const launch = await createPage(s, { spaceId: acme, title: 'Website launch', shared: true });
-    await writeItem(s, { pageId: launch, body: 'The launch is on 14 November.', sources: [email], shared: true });
-    return { email, notes, launch };
-  }));
-  // Ana heard otherwise on a call, which only she has, and keeps her own version of the date.
-  call = await as(ana, async (s) => {
+  // Cara keeps Gunnar's email and the meeting notes for everyone in Acme. Claude builds the launch page from the email for her, and she shares it. The meeting notes stay a source on their own.
+  ({ email, notes } = await as(cara, async (s) => ({
+    email: (await addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true })).id,
+    notes: (await addSource(s, { spaceId: acme, reference: 'Meeting notes, 9 October', excerpt: 'Content is late. Design is signed off.', shared: true })).id,
+  })));
+  const date = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
+    launch = await createPage(s, { spaceId: acme, title: 'Website launch' });
+    return (await writeItem(s, { pageId: launch, body: 'The launch is on 14 November.', sources: [email] })).id;
+  });
+  await share(cara, date);
+  // Ana heard otherwise on a call, which only she has. Her Claude keeps it, and her own version of the date.
+  call = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
     const call = (await addSource(s, { spaceId: acme, reference: 'Call with Gunnar', excerpt: 'New launch date is 20 November, but don’t tell the team yet.' })).id;
-    const [date] = await s.tx`select id from content where page_id = ${launch} and kind = 'text'`;
-    await supersedeItem(s, date.id, { body: 'The launch is on 20 November.', sources: [call, email] });
+    await supersedeItem(s, date, { body: 'The launch is on 20 November.', sources: [call, email] });
     return call;
   });
 });
@@ -90,7 +91,7 @@ type SourceBody = {
 
 test('a source shows what was kept of it, who kept it, and what rests on it as each person sees it', async () => {
   const forCara = (await cara.browser.json(`/api/sources/${email}`)).body as SourceBody;
-  assert.deepEqual([forCara.reference, forCara.excerpt, forCara.shared, forCara.agent], ['Email from Gunnar, 2 October', 'We go live on 14 November.', true, 'Claude']);
+  assert.deepEqual([forCara.reference, forCara.excerpt, forCara.shared, forCara.agent], ['Email from Gunnar, 2 October', 'We go live on 14 November.', true, null]);
   assert.deepEqual(forCara.by, { name: 'Cara', you: true });
   assert.deepEqual(forCara.pages.map((page) => [page.title, page.items.map((item) => item.text)]), [['Website launch', ['The launch is on 14 November.']]]);
 
@@ -101,9 +102,11 @@ test('a source shows what was kept of it, who kept it, and what rests on it as e
 
   const unused = (await cara.browser.json(`/api/sources/${notes}`)).body as SourceBody;
   assert.deepEqual(unused.pages, []);
-  // Ana's call is hers alone.
+  // Ana's call is hers alone, kept by her assistant.
   assert.equal((await cara.browser.json(`/api/sources/${call}`)).status, 404);
-  assert.equal((await ana.browser.json(`/api/sources/${call}`)).status, 200);
+  const own = await ana.browser.json(`/api/sources/${call}`);
+  assert.equal(own.status, 200);
+  assert.deepEqual([own.body.shared, own.body.by, own.body.agent], [false, { name: 'Ana', you: true }, 'Claude']);
 });
 
 test('a page’s item links to its sources, each only for whoever has it', async () => {
