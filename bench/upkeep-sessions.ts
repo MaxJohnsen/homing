@@ -290,6 +290,9 @@ class HomingWork implements Keeper {
   written(call: Trace['calls'][number]) {
     const args = typeof call.args === 'object' ? call.args : {};
     if (call.tool !== 'remember' || args.task !== undefined || call.failed) return { write: false, chars: 0, rewrite: false };
+    // Edits send only what a passage becomes, as the wiki's edits do, and rewrite nothing whole.
+    const edits = Array.isArray(args.edits) ? (args.edits as { new?: unknown }[]) : undefined;
+    if (edits) return { write: true, chars: edits.reduce((sum, edit) => sum + String(edit.new ?? '').length, 0), rewrite: false };
     return { write: true, chars: String(args.text ?? '').length, rewrite: args.updates !== undefined || args.replaces !== undefined };
   }
 
@@ -301,14 +304,16 @@ class HomingWork implements Keeper {
   }
 }
 
-/** remember without replaces and updates, for Homing that only adds. */
+/** remember without replaces, updates and edits, for Homing that only adds. */
 function addingOnly(tool: { name: string; description?: string; inputSchema: unknown }) {
   if (tool.name !== 'remember') return tool as never;
   const schema = structuredClone(tool.inputSchema) as { properties: Record<string, unknown> };
   delete schema.properties.replaces;
   delete schema.properties.updates;
+  delete schema.properties.edits;
   const description = (tool.description ?? '')
     .replace(/replaces and updates are for what assistants wrote:[^.]*\. /, '')
+    .replace(/To change part of a long item[^.]*\. /, '')
     .concat(' Items are only added here: what changed is saved as a new item.');
   return { ...tool, description, inputSchema: schema } as never;
 }
