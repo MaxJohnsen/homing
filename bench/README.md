@@ -217,7 +217,7 @@ It uses the database `HOMING_BENCH_DB` names, `homing_bench4` by default, and se
 | search | Homing's `search` tool, over MCP |
 | context | Homing's `context` tool without a space, over MCP: its telling words, its choice of space, and the lines it shows as matching |
 | telling | the ranking `context` uses, read deeper: `search` on the telling words, without what's archived or no longer true |
-| tokens | `search` with the query split by PostgreSQL's parser, as the notes are, instead of by letters and digits |
+| tokens | `search` with the query split by PostgreSQL's parser, as the notes are, instead of by letters and digits. Since #115, `search` looks for what this split keeps whole besides its own words |
 | bm25 | BM25 instead of `ts_rank`, with document frequencies, the number of documents and their average length counted over only what the user can see, in SQL, without an extension |
 | bm25-pruned | the same, but a word in more than half of the user's documents doesn't make a document a candidate, though it still counts in the score |
 | bm25-telling, bm25-all-words | the same, ranking for `context`: on its telling words, and on every word, without the stopword and short-number rules |

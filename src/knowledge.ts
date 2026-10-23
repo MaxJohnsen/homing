@@ -590,7 +590,7 @@ export async function pagesIn(
     countArchived?: boolean;
   } = {},
 ): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[]; archived: number }> {
-  const terms = termsOf(options.query ?? '');
+  const terms = await termsOf(s, options.query ?? '');
   const limit = options.limit ?? 50;
   const order = options.order === 'match' && !terms ? 'recent' : (options.order ?? (terms ? 'match' : 'recent'));
   // Archived pages show only on request, except in a collection, which lists what it gathers.
@@ -898,7 +898,7 @@ export async function sourcesIn(
   spaceId: string,
   options: { query?: string; offset?: number; limit?: number } = {},
 ): Promise<{ sources: SourceSummary[]; total: number; all: number }> {
-  const terms = termsOf(options.query ?? '');
+  const terms = await termsOf(s, options.query ?? '');
   const limit = options.limit ?? 50;
   const matching = terms ? s.tx`and src.search @@ to_tsquery('simple', ${terms})` : s.tx``;
   const order = terms ? s.tx`ts_rank(src.search, to_tsquery('simple', ${terms}), 1) desc, src.created_at desc` : s.tx`src.created_at desc`;
@@ -969,11 +969,56 @@ export async function historyOf(s: Session, itemIds: string[]): Promise<(Revisio
   `;
 }
 
-/** Search terms for full-text search: longer words match by how they start, so "launch" finds "launches". */
-export function termsOf(query: string): string | undefined {
+/**
+ * What a query holds that PostgreSQL keeps as one word in a note, though search splits it by
+ * letters and digits: a number with a sign, such as the "-881" of "BETA-881", a version such as
+ * "2.4.1", a decimal, an address, a host or a path. At most 32, each one a search keeps whole.
+ */
+async function writtenWhole(s: Session, query: string): Promise<string[]> {
+  // Only a query with something besides letters, digits and spaces has one.
+  if (!/[^\p{L}\p{M}\p{N}\s]/u.test(query)) return [];
+  // The parser to_tsvector('simple', …) uses, without the kinds that are only letters and digits.
+  // A text can't hold the null character.
+  const rows = await s.tx<{ token: string }[]>`
+    select p.token
+    from ts_parse('default', ${query.replaceAll('\0', ' ')}) with ordinality as p (tokid, token, n)
+    join ts_token_type('default') as t on t.tokid = p.tokid
+    where t.alias not in ('blank', 'asciiword', 'word', 'numword', 'uint', 'hword_asciipart', 'hword_part', 'hword_numpart')
+      and (select count(*) from unnest(to_tsvector('simple', p.token)) as v, unnest(v.positions)) = 1
+    order by p.n
+    limit 1000
+  `;
+  const seen = new Set<string>();
+  return rows
+    .map(({ token }) => token)
+    .filter((token) => /[^\p{L}\p{M}\p{N}]/u.test(token) && /[\p{L}\p{N}]/u.test(token) && !seen.has(token.toLowerCase()) && seen.add(token.toLowerCase()))
+    .slice(0, 32);
+}
+
+/**
+ * The words search looks for in a query: its first 32 words by letters and digits, longer ones by
+ * how they start, so "launch" finds "launches", and besides them what the query holds that a note
+ * keeps whole, only as written. "BETA-881" is "BETA", "881" and "-881", so it finds what it always
+ * found, and first the note that has it written the same way.
+ */
+export async function queryTerms(s: Session, query: string): Promise<{ word: string; prefix: boolean; whole: boolean }[]> {
+  const text = query.normalize('NFC');
   // Letters with their accents and marks, as one word, and at most 32 words.
-  const words = query.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32);
-  return words ? words.map((word) => (word.length >= 4 ? `${word}:*` : word)).join(' | ') : undefined;
+  const words = text.match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32) ?? [];
+  return [
+    ...words.map((word) => ({ word, prefix: word.length >= 4, whole: false })),
+    ...(await writtenWhole(s, text)).map((word) => ({ word, prefix: false, whole: true })),
+  ];
+}
+
+/**
+ * Search terms for full-text search. What a note keeps whole is quoted, so nothing in it, such as
+ * "!" or ":*" in a link, is read as an operator; the other words are only letters and digits.
+ */
+export async function termsOf(s: Session, query: string): Promise<string | undefined> {
+  const quoted = (word: string) => `'${word.replaceAll('\\', '\\\\').replaceAll("'", "''")}'`;
+  const terms = (await queryTerms(s, query)).map(({ word, prefix, whole }) => (whole ? quoted(word) : prefix ? `${word}:*` : word));
+  return terms.length ? terms.join(' | ') : undefined;
 }
 
 /**
@@ -1017,7 +1062,7 @@ export async function search(
   query: string,
   options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources'; active?: boolean } = {},
 ): Promise<Hit[]> {
-  const terms = termsOf(query);
+  const terms = await termsOf(s, query);
   if (!terms) return [];
   const within = (table: string) =>
     options.spaceId

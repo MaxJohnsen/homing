@@ -19,7 +19,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { withPrincipal, type Principal, type Session } from '../src/db.ts';
 import { addRule } from '../src/guidance.ts';
-import { addSource, archivePage, createPage, search, supersedeItem, tellingWords, writeItem } from '../src/knowledge.ts';
+import { addSource, archivePage, createPage, queryTerms, search, supersedeItem, tellingWords, writeItem } from '../src/knowledge.ts';
 import { searchProposals } from '../src/proposals.ts';
 import { saveSkill, skillsMatching } from '../src/skills.ts';
 import { addMember, archiveSpace, createSpace, listSpaces } from '../src/spaces.ts';
@@ -945,7 +945,8 @@ async function checkSameAsSearch(ctx: Ctx, chosen: Query[]) {
   let differ = 0;
   await asAna(ctx, async (s) => {
     for (const query of chosen) {
-      const ours = await rankedSearch(s, termsOf(query.text), { by: 'ts_rank' });
+      const terms = await queryTerms(s, query.text);
+      const ours = await rankedSearch(s, terms.map(({ word, prefix }) => ({ term: word, prefix })), { by: 'ts_rank' });
       const theirs = await search(s, query.text);
       if (ours.map((hit) => hit.id).join() !== theirs.map((hit) => hit.id).join()) differ++;
     }
