@@ -207,7 +207,7 @@ async function applyingSkills(s: Session, spaceId: string): Promise<Skill[]> {
  * words, so a match there alone doesn't count. In the order search ranks them.
  */
 export async function skillsMatching(s: Session, words: string, limit = 3): Promise<{ pageId: string; spaceId: string; name: string; description: string }[]> {
-  const terms = termsOf(words);
+  const terms = await termsOf(s, words);
   if (!terms) return [];
   const rows = await s.tx<{ pageId: string; spaceId: string; name: string; skillMd: string }[]>`
     select t.page_id, t.space_id, t.body as name, f.body as skill_md

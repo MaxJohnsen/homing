@@ -590,7 +590,7 @@ export async function pagesIn(
     countArchived?: boolean;
   } = {},
 ): Promise<{ pages: PageSummary[]; total: number; all: number; types: { type: string; count: number }[]; archived: number }> {
-  const terms = termsOf(options.query ?? '');
+  const terms = await termsOf(s, options.query ?? '');
   const limit = options.limit ?? 50;
   const order = options.order === 'match' && !terms ? 'recent' : (options.order ?? (terms ? 'match' : 'recent'));
   // Archived pages show only on request, except in a collection, which lists what it gathers.
@@ -898,7 +898,7 @@ export async function sourcesIn(
   spaceId: string,
   options: { query?: string; offset?: number; limit?: number } = {},
 ): Promise<{ sources: SourceSummary[]; total: number; all: number }> {
-  const terms = termsOf(options.query ?? '');
+  const terms = await termsOf(s, options.query ?? '');
   const limit = options.limit ?? 50;
   const matching = terms ? s.tx`and src.search @@ to_tsquery('simple', ${terms})` : s.tx``;
   const order = terms ? s.tx`ts_rank(src.search, to_tsquery('simple', ${terms}), 1) desc, src.created_at desc` : s.tx`src.created_at desc`;
@@ -969,26 +969,53 @@ export async function historyOf(s: Session, itemIds: string[]): Promise<(Revisio
   `;
 }
 
-/** Search terms for full-text search: longer words match by how they start, so "launch" finds "launches". */
-export function termsOf(query: string): string | undefined {
-  // Letters with their accents and marks, as one word, and at most 32 words.
-  const words = query.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 32);
-  return words ? words.map((word) => (word.length >= 4 ? `${word}:*` : word)).join(' | ') : undefined;
+/**
+ * The first words of a text, as written and in order, split the way PostgreSQL splits a note to
+ * search it, so a query matches what notes have: "BETA-881" is "BETA" and "-881", "2026-0417" is
+ * "2026" and "-0417", and "2.4.1" is one word. A hyphenated word or a link counts by its parts,
+ * which notes have too, so "e-post" is "e" and "post".
+ */
+function wordsOf(s: Session, text: string, limit: number) {
+  // The parser to_tsvector('simple', …) uses, and only the words it keeps. A text can't hold the null character.
+  return s.tx<{ word: string }[]>`
+    select p.token as word, p.n
+    from ts_parse('default', ${text.normalize('NFC').replaceAll('\0', ' ')}) with ordinality as p (tokid, token, n)
+    join ts_token_type('default') as t on t.tokid = p.tokid
+    where t.alias not in ('asciihword', 'hword', 'numhword', 'url') and length(to_tsvector('simple', p.token)) > 0
+    order by p.n
+    limit ${limit}
+  `;
+}
+
+/** The words search looks for in a query: at most 32, split as notes are. */
+export async function queryWords(s: Session, query: string): Promise<string[]> {
+  if (!query.trim()) return [];
+  return (await wordsOf(s, query, 32)).map(({ word }) => word);
 }
 
 /**
- * The words of a request that tell it apart, at most 32, without the common ones that match nearly
- * anything, such as "what" or "hva", and without numbers of one to three digits. Longer numbers,
- * such as an invoice number or a year, count. Common words are PostgreSQL's English and Norwegian
- * stopwords, so English words that are common in Norwegian, such as "men" or "bare", don't count
- * either. Empty when nothing is left.
+ * Search terms for full-text search: longer words match by how they start, so "launch" finds
+ * "launches". Each word is quoted, so nothing in a query, such as "&", "!" or ":*", is read as
+ * an operator.
+ */
+export async function termsOf(s: Session, query: string): Promise<string | undefined> {
+  const words = await queryWords(s, query);
+  const quoted = (word: string) => `'${word.replaceAll('\\', '\\\\').replaceAll("'", "''")}'`;
+  return words.length ? words.map((word) => (word.length >= 4 ? `${quoted(word)}:*` : quoted(word))).join(' | ') : undefined;
+}
+
+/**
+ * The words of a request that tell it apart, at most 32, split as search splits them, without the
+ * common ones that match nearly anything, such as "what" or "hva", and without numbers of one to
+ * three digits. Longer numbers, such as an invoice number or a year, count, and so does a number
+ * written onto something else, such as the "-881" of "BETA-881". Common words are PostgreSQL's
+ * English and Norwegian stopwords, so English words that are common in Norwegian, such as "men" or
+ * "bare", don't count either. Empty when nothing is left.
  */
 export async function tellingWords(s: Session, text: string): Promise<string> {
-  const words = text.normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu)?.slice(0, 1000) ?? [];
-  if (!words.length) return '';
   const [{ telling }] = await s.tx<{ telling: string | null }[]>`
     select string_agg(word, ' ' order by n) as telling from (
-      select word, n from unnest(${words}::text[]) with ordinality as w (word, n)
+      select word, n from (${wordsOf(s, text, 1000)}) w
       where word !~ '^[0-9]{1,3}$' and length(to_tsvector('english', word)) > 0 and length(to_tsvector('norwegian', word)) > 0
       order by n
       limit 32
@@ -1017,7 +1044,7 @@ export async function search(
   query: string,
   options: { spaceId?: string; limit?: number; current?: boolean; knowledge?: boolean; only?: 'content' | 'sources'; active?: boolean } = {},
 ): Promise<Hit[]> {
-  const terms = termsOf(query);
+  const terms = await termsOf(s, query);
   if (!terms) return [];
   const within = (table: string) =>
     options.spaceId

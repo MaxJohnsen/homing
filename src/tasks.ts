@@ -144,7 +144,7 @@ export async function tasksIn(s: Session, spaceId: string): Promise<{ open: Task
  * within a space and the spaces below it.
  */
 export async function searchTasks(s: Session, query: string, options: { spaceId?: string; limit?: number } = {}): Promise<Task[]> {
-  const terms = termsOf(query);
+  const terms = await termsOf(s, query);
   if (!terms) return [];
   const within = options.spaceId ? s.tx`and space_id in (select space_subtree(${options.spaceId}::uuid))` : s.tx``;
   return s.tx<Task[]>`

@@ -1292,7 +1292,7 @@ export async function openProposals(s: Session, spaceId: string): Promise<Propos
  * item, task or page they're about, and why. Optionally within a space and the spaces below it.
  */
 export async function searchProposals(s: Session, query: string, options: { spaceId?: string; limit?: number } = {}): Promise<Proposal[]> {
-  const terms = termsOf(query);
+  const terms = await termsOf(s, query);
   if (!terms) return [];
   const within = options.spaceId ? s.tx`and space_id in (select space_subtree(${options.spaceId}::uuid))` : s.tx``;
   // Someone has only a few waiting, so their words are matched as they are, without an index.
