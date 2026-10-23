@@ -969,53 +969,93 @@ export async function historyOf(s: Session, itemIds: string[]): Promise<(Revisio
   `;
 }
 
+/** Kinds of word a note keeps as written, which a query looks for the same way. */
+const asWritten = new Set(['asciiword', 'word', 'numword', 'hword_asciipart', 'hword_part', 'hword_numpart', 'uint', 'int', 'float', 'sfloat', 'version']);
+/** Kinds that stand for the parts that follow them: a hyphenated word, and a link's host and path. */
+const madeOfParts = new Set(['asciihword', 'hword', 'numhword', 'url']);
+/** Numbers with a sign, decimals and versions are written whole, so they don't match by how they start. */
+const whole = new Set(['int', 'float', 'sfloat', 'version']);
+
+/** Letters with their accents and marks, and digits, as one word: how search split everything until #115. */
+const lettersAndDigits = (text: string) => text.match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
+
 /**
- * The first words of a text, as written and in order, split the way PostgreSQL splits a note to
- * search it, so a query matches what notes have: "BETA-881" is "BETA" and "-881", "2026-0417" is
- * "2026" and "-0417", and "2.4.1" is one word. A hyphenated word or a link counts by its parts,
- * which notes have too, so "e-post" is "e" and "post".
+ * The first words of a text, in order, as PostgreSQL's parser splits a note to search it: what
+ * kind each is, whether a search keeps it as one word, and whether it's written straight onto a
+ * word, as the "-881" of "BETA-881" is.
  */
-function wordsOf(s: Session, text: string, limit: number) {
-  // The parser to_tsvector('simple', …) uses, and only the words it keeps. A text can't hold the null character.
-  return s.tx<{ word: string }[]>`
-    select p.token as word, p.n
-    from ts_parse('default', ${text.normalize('NFC').replaceAll('\0', ' ')}) with ordinality as p (tokid, token, n)
-    join ts_token_type('default') as t on t.tokid = p.tokid
-    where t.alias not in ('asciihword', 'hword', 'numhword', 'url') and length(to_tsvector('simple', p.token)) > 0
-    order by p.n
-    limit ${limit}
+function tokensOf(s: Session, text: string) {
+  // The parser to_tsvector('simple', …) uses. A text can't hold the null character.
+  return s.tx<{ token: string; alias: string; single: boolean; afterWord: boolean }[]>`
+    select token, alias, single, after_word from (
+      select p.n, p.token, t.alias, length(to_tsvector('simple', p.token)) = 1 as single,
+             coalesce(lag(t.alias) over (order by p.n) in ('asciiword', 'word', 'numword'), false) as after_word
+      from ts_parse('default', ${text.normalize('NFC').replaceAll('\0', ' ')}) with ordinality as p (tokid, token, n)
+      join ts_token_type('default') as t on t.tokid = p.tokid
+    ) tokens
+    where alias <> 'blank'
+    order by n
+    limit 1000
   `;
 }
 
-/** The words search looks for in a query: at most 32, split as notes are. */
-export async function queryWords(s: Session, query: string): Promise<string[]> {
+/**
+ * The words search looks for in a query, split as PostgreSQL splits the notes, so an identifier
+ * matches as written: "BETA-881" is "BETA" and "-881", and "2.4.1" is one word. A hyphenated word
+ * counts by its parts, which notes have too. An address, a path or a dotted name, such as
+ * "ana@acme.no" or "node.js", is looked for as written and by its letters and digits, as before.
+ * Up to 32 words count, besides those addresses as written. Longer words and numbers match by how
+ * they start, so "launch" finds "launches"; identifiers and addresses only as written.
+ */
+export async function queryTerms(s: Session, query: string): Promise<{ word: string; prefix: boolean }[]> {
   if (!query.trim()) return [];
-  return (await wordsOf(s, query, 32)).map(({ word }) => word);
+  const terms: { word: string; prefix: boolean }[] = [];
+  let words = 0;
+  for (const { token, alias, single } of await tokensOf(s, query)) {
+    if (words === 32) break;
+    if (madeOfParts.has(alias)) continue;
+    if (asWritten.has(alias)) {
+      if (single) terms.push({ word: token, prefix: !whole.has(alias) && token.length >= 4 });
+      words++;
+      continue;
+    }
+    // Not as written when a search would split it again, as it does a link's path with "&" in it.
+    if (single) terms.push({ word: token, prefix: false });
+    for (const part of lettersAndDigits(token).slice(0, 32 - words)) {
+      terms.push({ word: part, prefix: part.length >= 4 });
+      words++;
+    }
+  }
+  return terms;
 }
 
-/**
- * Search terms for full-text search: longer words match by how they start, so "launch" finds
- * "launches". Each word is quoted, so nothing in a query, such as "&", "!" or ":*", is read as
- * an operator.
- */
+/** Search terms for full-text search. Each word is quoted, so nothing in a query, such as "&", "!" or ":*", is read as an operator. */
 export async function termsOf(s: Session, query: string): Promise<string | undefined> {
-  const words = await queryWords(s, query);
   const quoted = (word: string) => `'${word.replaceAll('\\', '\\\\').replaceAll("'", "''")}'`;
-  return words.length ? words.map((word) => (word.length >= 4 ? `${quoted(word)}:*` : quoted(word))).join(' | ') : undefined;
+  const terms = (await queryTerms(s, query)).map(({ word, prefix }) => (prefix ? `${quoted(word)}:*` : quoted(word)));
+  return terms.length ? terms.join(' | ') : undefined;
 }
 
 /**
  * The words of a request that tell it apart, at most 32, split as search splits them, without the
  * common ones that match nearly anything, such as "what" or "hva", and without numbers of one to
- * three digits. Longer numbers, such as an invoice number or a year, count, and so does a number
- * written onto something else, such as the "-881" of "BETA-881". Common words are PostgreSQL's
- * English and Norwegian stopwords, so English words that are common in Norwegian, such as "men" or
- * "bare", don't count either. Empty when nothing is left.
+ * three digits. Longer numbers, such as an invoice number or a year, count, and so does a short one
+ * written straight onto a word, such as the "-881" of "BETA-881", but not one in a date, a range or
+ * a phone number. An address or a path counts by its letters and digits. Common words are
+ * PostgreSQL's English and Norwegian stopwords, so English words that are common in Norwegian,
+ * such as "men" or "bare", don't count either. Empty when nothing is left.
  */
 export async function tellingWords(s: Session, text: string): Promise<string> {
+  const words: string[] = [];
+  for (const { token, alias, afterWord } of await tokensOf(s, text)) {
+    if (madeOfParts.has(alias)) continue;
+    if (!asWritten.has(alias)) words.push(...lettersAndDigits(token));
+    else if (afterWord || !/^[-+][0-9]{1,3}$/.test(token)) words.push(token);
+  }
+  if (!words.length) return '';
   const [{ telling }] = await s.tx<{ telling: string | null }[]>`
     select string_agg(word, ' ' order by n) as telling from (
-      select word, n from (${wordsOf(s, text, 1000)}) w
+      select word, n from unnest(${words.slice(0, 1000)}::text[]) with ordinality as w (word, n)
       where word !~ '^[0-9]{1,3}$' and length(to_tsvector('english', word)) > 0 and length(to_tsvector('norwegian', word)) > 0
       order by n
       limit 32
@@ -1024,11 +1064,17 @@ export async function tellingWords(s: Session, text: string): Promise<string> {
   return telling ?? '';
 }
 
-/** How many of the words a text has, matched as search matches them: longer words by how they start. */
+/**
+ * How many of the words a text has, matched as search matches them: longer words by how they
+ * start. A word written with dots or dashes, such as "2.4.1", counts once, when the text has its
+ * parts in a row.
+ */
 export function wordsIn(text: string, words: string): number {
-  const have = text.toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [];
-  const wanted = [...new Set(words.toLowerCase().normalize('NFC').match(/[\p{L}\p{M}\p{N}]+/gu) ?? [])];
-  return wanted.filter((want) => have.some((word) => (want.length >= 4 ? word.startsWith(want) : word === want))).length;
+  const have = lettersAndDigits(text.toLowerCase().normalize('NFC'));
+  const matches = (want: string, word?: string) => word !== undefined && (want.length >= 4 ? word.startsWith(want) : word === want);
+  const wanted = words.toLowerCase().normalize('NFC').split(/\s+/).map(lettersAndDigits).filter((parts) => parts.length);
+  const once = new Map(wanted.map((parts) => [parts.join(' '), parts]));
+  return [...once.values()].filter((parts) => have.some((_, at) => parts.every((part, n) => matches(part, have[at + n])))).length;
 }
 
 /**
