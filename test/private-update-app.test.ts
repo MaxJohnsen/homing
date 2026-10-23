@@ -10,7 +10,7 @@ import { addSource, createPage, supersedeItem, updateItem, writeItem } from '../
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace, removeMember } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, until, type Member } from './helpers.ts';
+import { admin, as, db, member, share, until, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -160,10 +160,10 @@ test('a newer private item doesn’t hide a shared one unless it says it replace
 });
 
 test('changing what she shared as she shares it never rewrites the original out of sight', async () => {
-  const { page, item } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Catering', shared: true });
+  const page = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Catering', shared: true }));
+  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
     const email = await addSource(s, { spaceId: acme, reference: 'Email from the caterer', excerpt: 'Lunch for 40.' });
-    return { page, item: (await writeItem(s, { pageId: page, body: 'Lunch is for 40 people.', sources: [email.id] })).id };
+    return (await writeItem(s, { pageId: page, body: 'Lunch is for 40 people.', sources: [email.id] })).id;
   });
   // Ana shares it while her assistant changes it: the change waits for the sharing, then updates what was shared.
   let published!: () => void, release!: () => void;
@@ -197,10 +197,10 @@ test('an update still rests on a source Ana can no longer open, and sharing it s
     await addMember(s, beta, ana.id);
     return beta;
   });
-  const { page, item } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+  const page = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Rates', shared: true }));
+  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
     const prices = await addSource(s, { spaceId: beta, reference: 'Beta’s price list', excerpt: 'Beta pays 1,200 a day.', shared: true });
-    const page = await createPage(s, { spaceId: acme, title: 'Rates', shared: true });
-    return { page, item: (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [prices.id] })).id };
+    return (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [prices.id] })).id;
   });
   await approve(refIn((await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${item}` } })).text, 'proposal'));
   await as({ person: cara.id, direct: true }, (s) => removeMember(s, beta, ana.id));
@@ -216,10 +216,10 @@ test('an update still rests on a source Ana can no longer open, and sharing it s
 });
 
 test('asking to share an original again names what everyone sees now', async () => {
-  const { page, item } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Parking', shared: true });
+  const page = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Parking', shared: true }));
+  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
     const note = await addSource(s, { spaceId: acme, reference: 'Note from the landlord', excerpt: 'Ten spaces.' });
-    return { page, item: (await writeItem(s, { pageId: page, body: 'There are ten parking spaces.', sources: [note.id] })).id };
+    return (await writeItem(s, { pageId: page, body: 'There are ten parking spaces.', sources: [note.id] })).id;
   });
   await approve(refIn((await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${item}` } })).text, 'proposal'));
   const copy = (await pageAs(cara, page)).items[0].id;
@@ -259,10 +259,12 @@ test('sources carry over only between one person’s own items on one page', asy
 });
 
 test('when something shared replaces what Ana updated, her update no longer says the others still see it', async () => {
+  // Cara's Claude wrote the deadline, and Cara shared it.
   const { page, item } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const page = await createPage(s, { spaceId: acme, title: 'Deadline', shared: true });
-    return { page, item: (await writeItem(s, { pageId: page, body: 'The report is due Friday.', shared: true })).id };
+    const page = await createPage(s, { spaceId: acme, title: 'Deadline' });
+    return { page, item: (await writeItem(s, { pageId: page, body: 'The report is due Friday.' })).id };
   });
+  await share(cara, item);
   await anas.call('remember', { space: `space:${acme}`, replaces: `item:${item}`, text: 'The report is due Monday.' });
   await as({ person: cara.id, direct: true }, (s) => supersedeItem(s, item, { body: 'The report is due Tuesday.', shared: true }));
 

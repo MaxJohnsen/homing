@@ -259,7 +259,9 @@ export class TooLong extends Error {}
 /**
  * Rewrites an item. What it said before stays in its history. Something of yours that you shared
  * as a copy is the copy from then on, so rewriting it is your own update of the copy, resting on
- * what yours did, which others don't see until you share it (spec §5).
+ * what yours did, which others don't see until you share it (spec §5). An assistant never rewrites
+ * what everyone sees: its change to something shared is the person's own update of it, as
+ * replacing it is.
  */
 export async function updateItem(
   s: Session,
@@ -268,6 +270,7 @@ export async function updateItem(
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
+  if (original.privateTo === null && s.principal.agent !== undefined && personOf(s.principal)) return supersedeItem(s, itemId, input);
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
   if (shared === itemId) {
     // Shared meanwhile by moving it: everyone sees it now, so yours is an update of it.

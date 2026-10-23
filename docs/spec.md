@@ -160,7 +160,7 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 
 Upkeep runs when new evidence arrives, and in a periodic tidy pass per space that handles splits, duplicates, contradictions and inactive pages. The space's routine tidies the shared side, and each person's routine tidies their own private items.
 
-**Text written by people is protected.** Agents never rewrite or supersede it. They can record conflicting evidence beside it, point out the difference and propose a change, but only a person decides whether it still holds. Agents keep what agents wrote up to date.
+**Text written by people is protected.** Agents never rewrite or supersede it. They can record conflicting evidence beside it, point out the difference and propose a change, but only a person decides whether it still holds. Agents keep what agents wrote up to date. A person's assistant does so on their private side: its change to something shared is their own update of it, which the others see once they share it (§5).
 
 **Conflicts are marked uncertain,** never silently resolved.
 

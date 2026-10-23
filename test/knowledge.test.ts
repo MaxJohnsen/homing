@@ -69,12 +69,9 @@ test('a private page never shows up for anyone else', async () => {
 });
 
 test('a page’s title is shown only to those who can see it', async () => {
-  const { claude, cara, space } = await acme();
-  const page = await as(claude, async (s) => {
-    const page = await createPage(s, { spaceId: space, title: 'Gunnar, slow to answer' });
-    await writeItem(s, { pageId: page, body: 'Gunnar is the project manager', shared: true });
-    return page;
-  });
+  const { ana, claude, cara, space } = await acme();
+  const page = await as(claude, (s) => createPage(s, { spaceId: space, title: 'Gunnar, slow to answer' }));
+  await as(ana, (s) => writeItem(s, { pageId: page, body: 'Gunnar is the project manager', shared: true }));
 
   // Cara sees the shared item, but not the title Ana gave the page privately.
   // Homing hides it on its own too, without row-level security.
@@ -135,8 +132,8 @@ test('a colleague can replace a shared item for everyone', async () => {
 });
 
 test('replacing a shared item privately changes only your own view', async () => {
-  const { claude, cara, space } = await acme();
-  const { page, launch } = await as(claude, async (s) => {
+  const { ana, claude, cara, space } = await acme();
+  const { page, launch } = await as(ana, async (s) => {
     const page = await createPage(s, { spaceId: space, title: 'Launch', shared: true });
     const launch = await writeItem(s, { pageId: page, body: 'Acme launches on 1 March', shared: true });
     return { page, launch };

@@ -11,7 +11,7 @@ import { createPage, supersedeItem, updateItem, writeItem } from '../src/knowled
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, until, type Member } from './helpers.ts';
+import { admin, as, db, member, share, until, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -246,11 +246,12 @@ test('a partial edit is allowed only where an assistant may change the whole ite
   }
   assert.equal((await pageAs(cara, refIn(kept.text, 'page'))).items[0].text, '# Salary talk\n\nAsk for 8%.\nMention the Beta project.');
 
-  // What everyone in Acme sees, which Cara's Claude wrote: Ana's assistant can't rewrite it for everyone...
+  // What everyone in Acme sees, which Cara's Claude wrote and Cara shared: Ana's assistant can't rewrite it for everyone...
   const { plan, shared } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const plan = await createPage(s, { spaceId: acme, title: 'Launch plan', shared: true });
-    return { plan, shared: (await writeItem(s, { pageId: plan, body: '# Launch plan\n\n- Go-live: 1 March\n- Owner: Cara', shared: true })).id };
+    const plan = await createPage(s, { spaceId: acme, title: 'Launch plan' });
+    return { plan, shared: (await writeItem(s, { pageId: plan, body: '# Launch plan\n\n- Go-live: 1 March\n- Owner: Cara' })).id };
   });
+  await share(cara, shared);
   const rewrite = await anas.call('remember', { updates: `item:${shared}`, edits: [{ old: 'Go-live: 1 March', new: 'Go-live: 15 March' }] });
   assert.deepEqual([rewrite.failed, rewrite.text], [true, "remember can't rewrite shared knowledge. Use replaces to update it in your own view."]);
   assert.deepEqual((await pageAs(cara, plan)).items.map((entry) => [entry.id, entry.text, entry.earlier.length]), [[shared, '# Launch plan\n\n- Go-live: 1 March\n- Owner: Cara', 0]]);
@@ -340,9 +341,10 @@ test('a change made meanwhile is built on or refused, never undone', async () =>
 
   // ChatGPT replaces something shared for Ana while Claude edits it too: Claude's waits, and is pointed to ChatGPT's.
   const { plan, shared } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const plan = await createPage(s, { spaceId: acme, title: 'Rollout plan', shared: true });
-    return { plan, shared: (await writeItem(s, { pageId: plan, body: '# Rollout\n\n- Pilot: Bergen office\n- Then: everyone', shared: true })).id };
+    const plan = await createPage(s, { spaceId: acme, title: 'Rollout plan' });
+    return { plan, shared: (await writeItem(s, { pageId: plan, body: '# Rollout\n\n- Pilot: Bergen office\n- Then: everyone' })).id };
   });
+  await share(cara, shared);
   let chatgpts = '';
   const pointed = await meanwhile(
     async (s) => (chatgpts = (await supersedeItem(s, shared, { body: '# Rollout\n\n- Pilot: Oslo office\n- Then: everyone' }))!.id),

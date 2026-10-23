@@ -8,7 +8,7 @@ import { authDatabaseUrl } from '../src/db.ts';
 import { addSource, createPage, supersedeItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
-import { as, db, member, type Member } from './helpers.ts';
+import { as, db, member, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -24,19 +24,20 @@ before(async () => {
     await addMember(s, acme, cara.id);
     return acme;
   });
-  // Claude keeps Gunnar's email for Cara and builds the launch page from it. Meeting notes stay a source on their own.
-  ({ email, notes, launch } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
+  // Claude keeps Gunnar's email for Cara and builds the launch page from it, which Cara shares. Meeting notes stay a source on their own.
+  let date: string;
+  ({ email, notes, launch, date } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
     const email = (await addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true })).id;
     const notes = (await addSource(s, { spaceId: acme, reference: 'Meeting notes, 9 October', excerpt: 'Content is late. Design is signed off.', shared: true })).id;
-    const launch = await createPage(s, { spaceId: acme, title: 'Website launch', shared: true });
-    await writeItem(s, { pageId: launch, body: 'The launch is on 14 November.', sources: [email], shared: true });
-    return { email, notes, launch };
+    const launch = await createPage(s, { spaceId: acme, title: 'Website launch' });
+    const date = (await writeItem(s, { pageId: launch, body: 'The launch is on 14 November.', sources: [email] })).id;
+    return { email, notes, launch, date };
   }));
+  await share(cara, date);
   // Ana heard otherwise on a call, which only she has, and keeps her own version of the date.
   call = await as(ana, async (s) => {
     const call = (await addSource(s, { spaceId: acme, reference: 'Call with Gunnar', excerpt: 'New launch date is 20 November, but don’t tell the team yet.' })).id;
-    const [date] = await s.tx`select id from content where page_id = ${launch} and kind = 'text'`;
-    await supersedeItem(s, date.id, { body: 'The launch is on 20 November.', sources: [call, email] });
+    await supersedeItem(s, date, { body: 'The launch is on 20 November.', sources: [call, email] });
     return call;
   });
 });

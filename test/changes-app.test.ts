@@ -9,7 +9,7 @@ import { addRule } from '../src/guidance.ts';
 import { createPage, supersedeItem, updateItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
-import { as, db, member, type Member } from './helpers.ts';
+import { as, db, member, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -37,13 +37,14 @@ before(async () => {
 after(() => homing.close());
 
 test('what changed leads with the newest, says what kind of change and who made it', async () => {
-  // Claude starts a launch page for Cara, Cara corrects the budget, and Ana keeps a newer date to herself.
+  // Claude starts a launch page for Cara, which she shares, Cara corrects the budget, and Ana keeps a newer date to herself.
   const { date, budget, launch } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
-    const launch = await createPage(s, { spaceId: acme, title: 'Website launch', shared: true });
-    const date = await writeItem(s, { pageId: launch, body: 'The launch is on **14 November**.', shared: true });
-    const budget = await writeItem(s, { pageId: launch, body: 'The budget is 400,000 NOK.', shared: true });
+    const launch = await createPage(s, { spaceId: acme, title: 'Website launch' });
+    const date = await writeItem(s, { pageId: launch, body: 'The launch is on **14 November**.' });
+    const budget = await writeItem(s, { pageId: launch, body: 'The budget is 400,000 NOK.' });
     return { date: date.id, budget: budget.id, launch };
   });
+  for (const item of [date, budget]) await share(cara, item);
   await as({ person: cara.id }, (s) => updateItem(s, budget, { body: 'The budget is 450,000 NOK.' }));
   await as({ person: ana.id, agent: 'Claude' }, (s) => supersedeItem(s, date, { body: 'The launch moved to 20 November.' }));
   await as({ person: ana.id, direct: true }, (s) => addRule(s, { spaceId: acme, kind: 'preference', body: 'Write launch notes in English', shared: true }));

@@ -6,9 +6,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { addSource, createPage, readItem, writeItem } from '../src/knowledge.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
-import { as, person, refused } from './helpers.ts';
+import { as, person, refused, share } from './helpers.ts';
 
-/** Ana's shared pricing page, with a decision she wrote and a note her agent wrote. */
+/** Ana's shared pricing page, with a decision she wrote and a note her agent wrote, which she shared. */
 async function acme() {
   const ana = await person('Ana');
   const cara = await person('Cara');
@@ -19,9 +19,8 @@ async function acme() {
     const decision = await writeItem(s, { pageId: page, body: 'We never discount more than 10%', shared: true });
     return { space, page, decision };
   });
-  const note = await as({ ...ana, agent: 'Claude Code' }, (s) =>
-    writeItem(s, { pageId: page, body: 'Gunnar asked about volume discounts', shared: true }),
-  );
+  const note = await as({ ...ana, agent: 'Claude Code' }, (s) => writeItem(s, { pageId: page, body: 'Gunnar asked about volume discounts' }));
+  await share(ana, note.id);
   return { ana, cara, space, page, decision, note };
 }
 
@@ -81,18 +80,22 @@ test('every change keeps what was there before, and records who made it', async 
 test('agents never change what people wrote, even straight against the database', async () => {
   const { cara, space, page, decision, note } = await acme();
   const claude = { ...cara, agent: 'Claude Code' };
+  // What Ana wrote for everyone, and what Cara wrote on her own side, where her agent otherwise keeps things up to date.
+  const own = await as(cara, (s) => writeItem(s, { pageId: page, body: 'Schools ask for 12%' }));
 
-  await assert.rejects(
-    as(claude, (s) => s.tx`update content set body = 'We discount up to 20%' where id = ${decision.id}`),
-    refused,
-  );
-  await assert.rejects(
-    as(claude, (s) => s.tx`
-      insert into content (space_id, page_id, private_to, body, supersedes)
-      values (${space}, ${page}, ${cara.id}, 'We discount up to 20%', ${decision.id})
-    `),
-    refused,
-  );
+  for (const item of [decision, own]) {
+    await assert.rejects(
+      as(claude, (s) => s.tx`update content set body = 'We discount up to 20%' where id = ${item.id}`),
+      refused,
+    );
+    await assert.rejects(
+      as(claude, (s) => s.tx`
+        insert into content (space_id, page_id, private_to, body, supersedes)
+        values (${space}, ${page}, ${cara.id}, 'We discount up to 20%', ${item.id})
+      `),
+      refused,
+    );
+  }
 
   // What an agent wrote, an agent may replace.
   await as(claude, (s) => s.tx`

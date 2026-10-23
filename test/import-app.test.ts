@@ -305,6 +305,9 @@ test('who wrote imported knowledge comes along by name, credited to nobody here'
     as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`insert into content (page_id, space_id, kind, body, supersedes, private_to) select page_id, space_id, 'text', 'Replaced', id, ${cara.id} from content where id = ${written}`),
     refused,
   );
+  // Nor on the person's own side, where their assistant otherwise keeps things up to date.
+  const [{ item: calls }] = await admin`select id as item from content where space_id = ${copy} and body = 'Prefers calls before nine.'`;
+  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${calls}`), refused);
   // A task a person wrote stays theirs too: Ana's assistant can mark it done, but not reword it.
   const [{ task: venue }] = await admin`select id as task from tasks where space_id = ${copy} and title = 'Book a bigger venue'`;
   const forAna = new Assistant(homing.url, assistants.claude);
