@@ -214,9 +214,15 @@ test('a passage that isn’t there, or is there twice, is refused, saying how to
 
   // The same letters typed another way are the same text, such as é typed as an e and an accent.
   const lunch = refIn((await anas.call('remember', { space: `space:${acme}`, page: 'Workshop', text: 'Lunch is at Café Sjøen.' })).text, 'item');
-  const typed = await anas.call('remember', { updates: `item:${lunch}`, edits: [{ old: 'Café Sjøen', new: 'Kafé Fjord' }] });
+  const typed = await anas.call('remember', { updates: `item:${lunch}`, edits: [{ old: 'Cafe\u0301 Sjøen', new: 'Kafe\u0301 Fjord' }] });
   assert.ok(!typed.failed, typed.text);
   assert.equal((await anas.call('read', { ref: `item:${lunch}` })).text.split('\n')[0], 'Lunch is at Kafé Fjord.');
+
+  // An exact edit changes nothing outside its passage, not even how a letter elsewhere was typed.
+  const dinner = await anas.call('remember', { space: `space:${acme}`, page: 'Workshop', text: 'Dinner is at Cafe\u0301 Sjøen, then Hotel Norge.' });
+  const exact = await anas.call('remember', { updates: `item:${refIn(dinner.text, 'item')}`, edits: [{ old: 'Hotel Norge', new: 'Hotel Bristol' }] });
+  assert.ok(!exact.failed, exact.text);
+  assert.equal((await itemAsAna(refIn(dinner.text, 'page'), refIn(dinner.text, 'item'))).text, 'Dinner is at Cafe\u0301 Sjøen, then Hotel Bristol.');
 });
 
 test('a partial edit is allowed only where an assistant may change the whole item', async () => {
@@ -261,6 +267,29 @@ test('a partial edit is allowed only where an assistant may change the whole ite
   assert.equal(again.text, `Updated item:${mine}. What it said before is kept in its history. It's in Acme (space:${acme}), where that item is.`);
   assert.deepEqual((await pageAs(cara, plan)).items.map((entry) => [entry.id, entry.text]), [[shared, '# Launch plan\n\n- Go-live: 1 March\n- Owner: Cara']]);
   assert.doesNotMatch((await caras.call('read', { ref: `page:${plan}` })).text, /15 March|Jonas/);
+});
+
+test('an overview stays a short summary, however it’s changed', async () => {
+  const saved = await anas.call('remember', { space: `space:${acme}`, overview: true, text: 'The relaunch goes live on 15 March. More soon.' });
+  const overview = refIn(saved.text, 'item');
+  const tooLong = 'Keep the overview under 2,000 characters. Details belong on pages.';
+  const long = 'The relaunch, in detail. '.repeat(100);
+  // By reference, in part or whole, an assistant can't make it longer than an overview keeps...
+  for (const change of [
+    { updates: `item:${overview}`, edits: [{ old: 'More soon.', new: long }] },
+    { replaces: `item:${overview}`, edits: [{ old: 'More soon.', new: long }] },
+    { updates: `item:${overview}`, text: long },
+  ]) {
+    const attempt = await anas.call('remember', change);
+    assert.deepEqual([attempt.failed, attempt.text], [true, tooLong], JSON.stringify(change).slice(0, 40));
+  }
+  // ...and nor can Ana correct it that way in the app.
+  const corrected = await ana.browser.json(`/api/items/${overview}`, { text: long });
+  assert.deepEqual([corrected.status, corrected.body.field, corrected.body.message], [400, 'text', tooLong]);
+  assert.equal((await anas.call('read', { ref: `item:${overview}` })).text.split('\n')[0], 'The relaunch goes live on 15 March. More soon.');
+  // A change that keeps it short is made.
+  const shorter = await anas.call('remember', { updates: `item:${overview}`, edits: [{ old: ' More soon.', new: '' }] });
+  assert.ok(!shorter.failed, shorter.text);
 });
 
 /**
@@ -321,6 +350,35 @@ test('a change made meanwhile is built on or refused, never undone', async () =>
   );
   assert.deepEqual([pointed.failed, pointed.text], [true, `That item is no longer current. It was replaced by item:${chatgpts}.`]);
   assert.deepEqual((await pageAs(ana, plan)).items.map((entry) => [entry.id, entry.text]), [[chatgpts, '# Rollout\n\n- Pilot: Oslo office\n- Then: everyone']]);
+});
+
+test('a change made meanwhile to the copy Ana shared is never undone by editing her original', async () => {
+  const approve = async (proposal: string) => {
+    const shown = (await ana.browser.json(`/api/proposals/${proposal}`)).body.proposal.publication;
+    assert.equal((await ana.browser.json(`/api/proposals/${proposal}/decide`, { approve: true, shown: shown.text })).status, 200);
+  };
+  const rates = '# Rates\n\n- Day rate: 1,200 NOK\n- Travel: billed at cost';
+  for (const how of ['replaces', 'updates']) {
+    // Claude keeps the rates from Gunnar's email, and Ana shares them: the email is only hers, so everyone gets a copy.
+    const saved = await anas.call('remember', {
+      space: `space:${acme}`, page: `Rates, ${how}`, text: rates,
+      sources: [{ reference: 'Email from Gunnar', excerpt: 'Our day rate is 1,200.' }],
+    });
+    const [original, page] = [refIn(saved.text, 'item'), refIn(saved.text, 'page')];
+    await approve(refIn((await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${original}` } })).text, 'proposal'));
+    const [copy] = (await pageAs(cara, page)).items;
+    assert.notEqual(copy.id, original);
+
+    // ChatGPT updates the copy for Ana while Claude edits her original, which the copy stands for: Claude's waits, and is pointed to ChatGPT's.
+    let chatgpts = '';
+    const pointed = await meanwhile(
+      async (s) => (chatgpts = (await supersedeItem(s, copy.id, { body: rates.replace('1,200', '1,250') }))!.id),
+      () => anas.call('remember', { [how]: `item:${original}`, edits: [{ old: 'Travel: billed at cost', new: 'Travel: billed at cost, by train' }] }),
+    );
+    assert.deepEqual([pointed.failed, pointed.text], [true, `That item is no longer current. It was replaced by item:${chatgpts}.`], how);
+    assert.deepEqual((await pageAs(ana, page)).items.map((entry) => [entry.id, entry.text]), [[chatgpts, rates.replace('1,200', '1,250')]], how);
+    assert.deepEqual((await pageAs(cara, page)).items.map((entry) => entry.text), [rates], how);
+  }
 });
 
 test('reading a page shows each item’s Markdown as written', async () => {

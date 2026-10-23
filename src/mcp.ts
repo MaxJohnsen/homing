@@ -34,6 +34,9 @@ import {
   type Hit,
   type Item,
   type Imported,
+  applyEdits,
+  TooLong,
+  type Edit,
   type NewText,
   type Page,
 } from './knowledge.ts';
@@ -545,7 +548,7 @@ async function respond(sql: Sql, principal: AgentPrincipal, fn: (s: Session) => 
 
 /** What to tell the agent when Homing refuses a request on purpose. */
 function refusal(error: unknown): string | undefined {
-  if (error instanceof AccessDenied || error instanceof Refused || error instanceof IncludeRefused) return error.message;
+  if (error instanceof AccessDenied || error instanceof Refused || error instanceof IncludeRefused || error instanceof TooLong) return error.message;
   if (error instanceof postgres.PostgresError) {
     if (error.constraint_name === 'pages_type_check') return 'Guidance and skill pages are reserved for guidance.';
     if (error.message === 'only people change guidance') return onlyPeople;
@@ -1084,33 +1087,21 @@ async function remember(
   return input.gatherInto || input.removeFrom ? `${saved} ${await collect(s, spaceId, { ...input, page: ref('page', target.id) })}` : saved;
 }
 
-/** A change to part of an item: the exact text to replace, and what it becomes. */
-type Edit = { old: string; new: string };
-
-/**
- * An item's text with the edits made to it, in order, each to the one place its text is once the
- * edits before it are made. Text is compared and kept in NFC, so the same characters match however
- * they were typed, and kept trimmed, as a whole text is.
- */
+/** An item's text with the edits made to it, kept trimmed, as a whole text is, or why they can't be made. */
 function edited(current: string, edits: Edit[], itemId: string): string {
   const item = ref('item', itemId);
-  let text = current.normalize('NFC');
-  for (const [index, edit] of edits.entries()) {
-    const which = edits.length === 1 ? 'The text to replace' : `The text to replace in edit ${index + 1}`;
-    const old = edit.old.normalize('NFC');
-    if (!old) throw new Refused(`${which} is empty. Give the exact text to replace, such as a sentence or a section. Nothing was changed.`);
-    const at = text.indexOf(old);
-    if (at === -1) {
-      throw new Refused(
-        `${which} isn't in ${item}${index ? ' once the edits before it are made' : ''}. It may have changed since you read it: read it again, and copy the text exactly, line breaks included. Nothing was changed.`,
-      );
-    }
-    if (text.includes(old, at + 1)) {
-      throw new Refused(`${which} is in ${item} more than once. Include more of the text around it, so it's there once. Nothing was changed.`);
-    }
-    text = text.slice(0, at) + edit.new.normalize('NFC') + text.slice(at + old.length);
+  const made = applyEdits(current, edits);
+  if ('problem' in made) {
+    const which = edits.length === 1 ? 'The text to replace' : `The text to replace in edit ${made.edit + 1}`;
+    throw new Refused(
+      made.problem === 'empty'
+        ? `${which} is empty. Give the exact text to replace, such as a sentence or a section. Nothing was changed.`
+        : made.problem === 'missing'
+          ? `${which} isn't in ${item}${made.edit ? ' once the edits before it are made' : ''}. It may have changed since you read it: read it again, and copy the text exactly, line breaks included. Nothing was changed.`
+          : `${which} is in ${item} more than once. Include more of the text around it, so it's there once. Nothing was changed.`,
+    );
   }
-  text = text.trim();
+  const text = made.text.trim();
   if (!text) throw new Refused(`These edits would leave ${item} empty. Nothing was changed.`);
   if (text.length > itemLength) throw new Refused(`These edits would make ${item} longer than 20,000 characters. Nothing was changed: split it over more items.`);
   return text;

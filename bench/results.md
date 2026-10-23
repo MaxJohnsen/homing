@@ -24,6 +24,8 @@ Benchmark 0 asks how knowledge should be kept as it grows: as Homing's small ite
 
 **Recommendation: keep pages of small, sourced items for knowledge from sources, and let an item be edited in part for substantial work.** The evidence supports items with supersede: they keep provenance by construction, cost less than a rewritten wiki, and take out most of what's outdated, which matters as soon as an assistant reads through search rather than everything. The page model held up for long documents too, with no new object type, but that is a moderate finding: it was tested on items of up to about 5,000 characters over five sessions, and it holds only if a section can be changed without resending it, which today is the one place the wiki clearly wins.
 
+**Since then,** [#114](https://github.com/MaxJohnsen/homing/issues/114) has let `remember` change part of an item, and `read` of a page show each item's Markdown as written: suggestions 1 and 2 below. The results here are from before, and weren't run again.
+
 #### Worth deciding
 
 These are suggestions from the results. None is built here.

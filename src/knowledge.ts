@@ -221,6 +221,41 @@ export async function writeItem(
  */
 export type NewText = string | ((current: string) => string);
 
+/** A change to part of an item: the exact text to replace, and what it becomes. */
+export interface Edit {
+  old: string;
+  new: string;
+}
+
+/**
+ * Makes edits to a text, in order, each to the one place its text is once the edits before it are
+ * made. A passage is matched exactly, and only when it isn't there that way, in NFC, so the same
+ * characters match however they were typed: only then is the text kept in NFC, so an exact edit
+ * changes nothing outside its passages. Gives the new text, or which edit can't be made, and why.
+ */
+export function applyEdits(text: string, edits: Edit[]): { text: string } | { edit: number; problem: 'empty' | 'missing' | 'twice' } {
+  let nfc = false;
+  for (const [index, edit] of edits.entries()) {
+    if (!edit.old) return { edit: index, problem: 'empty' };
+    let old = edit.old;
+    let at = text.indexOf(old);
+    if (at === -1) {
+      const normal = text.normalize('NFC');
+      old = old.normalize('NFC');
+      at = normal.indexOf(old);
+      if (at === -1) return { edit: index, problem: 'missing' };
+      text = normal;
+      nfc = true;
+    }
+    if (text.includes(old, at + 1)) return { edit: index, problem: 'twice' };
+    text = text.slice(0, at) + edit.new + text.slice(at + old.length);
+  }
+  return { text: nfc ? text.normalize('NFC') : text };
+}
+
+/** Text longer than its item keeps, such as an overview over 2,000 characters. */
+export class TooLong extends Error {}
+
 /**
  * Rewrites an item. What it said before stays in its history. Something of yours that you shared
  * as a copy is the copy from then on, so rewriting it is your own update of the copy, resting on
@@ -246,7 +281,7 @@ export async function updateItem(
     return update;
   }
   const [item] = await s.tx<Item[]>`
-    update content set body = ${await textFor(s, itemId, input.body)}
+    update content set body = ${await textFor(s, original, input.body)}
     where id = ${itemId}::uuid and ${visible(s, 'content')}
     returning ${itemColumns(s)}
   `;
@@ -272,24 +307,30 @@ export async function supersedeItem(
   const old = shared && shared !== itemId ? await changeableItem(s, shared) : original;
   if (!old) return undefined;
   const privateTo = sideOf(s, input.shared);
-  const body = await textFor(s, old.id, input.body);
+  const body = await textFor(s, old, input.body);
   return insertItem(s, { sources: input.sources, body, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
 }
 
 /**
- * The text an item gets. Made from its current text, it's made from what the item says once
- * nothing else can change or replace it until the transaction ends, so a change made meanwhile is
- * built on, or refused, and never silently undone.
+ * The text an item gets, as long as its page keeps. Made from its current text, it's made from
+ * what the item says once nothing else can change or replace it until the transaction ends, so a
+ * change made meanwhile is built on, or refused, and never silently undone.
  */
-async function textFor(s: Session, itemId: string, text: NewText): Promise<string> {
-  if (typeof text === 'string') return text;
-  const [item] = await s.tx<{ body: string }[]>`
-    select body from content where id = ${itemId}::uuid and ${visible(s, 'content')} for update
-  `;
-  if (!item) throw new AccessDenied('There is no item with that reference that you can see.');
-  const replacement = await replacementOf(s, itemId);
-  if (replacement) throw new AccessDenied(`That item is no longer current. It was replaced by item:${replacement.id}.`);
-  return text(item.body);
+async function textFor(s: Session, item: Item, text: NewText): Promise<string> {
+  let body = text;
+  if (typeof body !== 'string') {
+    const [now] = await s.tx<{ body: string }[]>`
+      select body from content where id = ${item.id}::uuid and ${visible(s, 'content')} for update
+    `;
+    if (!now) throw new AccessDenied('There is no item with that reference that you can see.');
+    const replacement = await replacementOf(s, item.id);
+    if (replacement) throw new AccessDenied(`That item is no longer current. It was replaced by item:${replacement.id}.`);
+    body = body(now.body);
+  }
+  // An overview stays a short summary, however it's written.
+  const [page] = await s.tx<{ type: string | null }[]>`select type from pages where id = ${item.pageId}::uuid`;
+  if (page?.type === 'overview' && body.length > overviewLength) throw new TooLong('Keep the overview under 2,000 characters. Details belong on pages.');
+  return body;
 }
 
 /**
