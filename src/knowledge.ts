@@ -216,6 +216,12 @@ export async function writeItem(
 }
 
 /**
+ * An item's new text: given whole, or made from the text it has when it changes, such as by
+ * replacing one passage of a long document (spec §3).
+ */
+export type NewText = string | ((current: string) => string);
+
+/**
  * Rewrites an item. What it said before stays in its history. Something of yours that you shared
  * as a copy is the copy from then on, so rewriting it is your own update of the copy, resting on
  * what yours did, which others don't see until you share it (spec §5).
@@ -223,7 +229,7 @@ export async function writeItem(
 export async function updateItem(
   s: Session,
   itemId: string,
-  input: { body: string; sources?: string[] },
+  input: { body: NewText; sources?: string[] },
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
@@ -240,7 +246,7 @@ export async function updateItem(
     return update;
   }
   const [item] = await s.tx<Item[]>`
-    update content set body = ${input.body}
+    update content set body = ${await textFor(s, itemId, input.body)}
     where id = ${itemId}::uuid and ${visible(s, 'content')}
     returning ${itemColumns(s)}
   `;
@@ -258,7 +264,7 @@ export async function updateItem(
 export async function supersedeItem(
   s: Session,
   itemId: string,
-  input: { body: string; sources?: string[]; shared?: boolean },
+  input: { body: NewText; sources?: string[]; shared?: boolean },
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
@@ -266,7 +272,24 @@ export async function supersedeItem(
   const old = shared && shared !== itemId ? await changeableItem(s, shared) : original;
   if (!old) return undefined;
   const privateTo = sideOf(s, input.shared);
-  return insertItem(s, { ...input, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
+  const body = await textFor(s, old.id, input.body);
+  return insertItem(s, { sources: input.sources, body, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
+}
+
+/**
+ * The text an item gets. Made from its current text, it's made from what the item says once
+ * nothing else can change or replace it until the transaction ends, so a change made meanwhile is
+ * built on, or refused, and never silently undone.
+ */
+async function textFor(s: Session, itemId: string, text: NewText): Promise<string> {
+  if (typeof text === 'string') return text;
+  const [item] = await s.tx<{ body: string }[]>`
+    select body from content where id = ${itemId}::uuid and ${visible(s, 'content')} for update
+  `;
+  if (!item) throw new AccessDenied('There is no item with that reference that you can see.');
+  const replacement = await replacementOf(s, itemId);
+  if (replacement) throw new AccessDenied(`That item is no longer current. It was replaced by item:${replacement.id}.`);
+  return text(item.body);
 }
 
 /**
