@@ -211,6 +211,12 @@ test('a passage that isn’t there, or is there twice, is refused, saying how to
   const unique = await edit([{ old: '## Slide 6: Team\n- Owner: Cara', new: '## Slide 6: Team\n- Owner: Jonas' }]);
   assert.ok(!unique.failed, unique.text);
   assert.equal((await itemAsAna(page, item)).text, outline.replace('## Slide 6: Team\n- Owner: Cara', '## Slide 6: Team\n- Owner: Jonas'));
+
+  // The same letters typed another way are the same text, such as é typed as an e and an accent.
+  const lunch = refIn((await anas.call('remember', { space: `space:${acme}`, page: 'Workshop', text: 'Lunch is at Café Sjøen.' })).text, 'item');
+  const typed = await anas.call('remember', { updates: `item:${lunch}`, edits: [{ old: 'Café Sjøen', new: 'Kafé Fjord' }] });
+  assert.ok(!typed.failed, typed.text);
+  assert.equal((await anas.call('read', { ref: `item:${lunch}` })).text.split('\n')[0], 'Lunch is at Kafé Fjord.');
 });
 
 test('a partial edit is allowed only where an assistant may change the whole item', async () => {
