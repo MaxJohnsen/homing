@@ -131,7 +131,7 @@ There is no claim extraction, no fact keys and no automatic dependencies between
 
 **No sections.** A page is its items in order. Headings inside an item give longer prose its structure, and a sprawling page is split into pages that a collection gathers. A coherent document isn't split just because it's long.
 
-**Substantial work stays whole.** People and assistants develop long documents, research and analyses over many sessions, often with different assistants. The next session carries the work on without losing its structure, reasoning, references or history. A document kept in Homing stays intact, and can be read, edited and exported as a whole. One whose home is elsewhere, such as a repository or a drive, stays there, and Homing works with it rather than copying it. How this work is kept is decided after benchmark 0. Pages as they are get tested first, and a new building block is added only if the evidence calls for one.
+**Substantial work stays whole.** People and assistants develop long documents, research and analyses over many sessions, often with different assistants. The next session carries the work on without losing its structure, reasoning, references or history. A document kept in Homing stays intact, and can be read, edited and exported as a whole. One whose home is elsewhere, such as a repository or a drive, stays there, and Homing works with it rather than copying it. In Homing, a document is an item on a page, or a few, with no building block of its own, and it is read as written, with its structure. Part of it can be changed without sending the rest: changing a passage, such as one section, is an update or a replacement like any other, allowed where they are and recorded in its history. It's made to the text as it is then, so a change made meanwhile is never undone.
 
 **When a page is created.** When guidance names its type, when a person asks, or when an agent judges that someone would look the subject up by name. A subject coming up again is a signal, not a rule. Someone who only appears in sources doesn't get a page until they matter, so a mailbox with 20,000 contacts doesn't produce 20,000 pages.
 
@@ -373,8 +373,9 @@ The line between `remember` and `act` is where a change happens and whom it affe
 
 More about the tools:
 
-- `remember` needs no approval, but it still has permissions. It can't overwrite text people wrote, change guidance, or write to anyone else's private side. Where an agent reads a page, each item says who wrote it, so it knows what a person wrote before it tries.
+- `remember` needs no approval, but it still has permissions. It can't overwrite text people wrote, change guidance, or write to anyone else's private side. Where an agent reads a page, each item shows as written and says who wrote it, so it knows what a person wrote before it tries.
 - `remember` puts knowledge on the page for its subject: an existing page when there is one, a new one when the subject deserves it, and otherwise the space's notes, which upkeep can reorganize later. Sources can be kept on their own as evidence. An agent's own words are never treated as a source.
+- `remember` can change part of an item, such as one section of a long document, without sending the rest. It names each exact passage to replace and what it becomes, and the edits are made in order, all or none, only where updating or replacing the whole item is allowed. A passage that isn't there, or is there more than once, is refused, saying which, so the agent reads the item again or includes the text around it.
 - `act` returns one of three outcomes: done, waiting for approval (with a form or a link), or blocked. Approval is never a tool.
 - What a person does only in Homing, such as downloading a space's export, `act` answers with the link to it.
 - Every write can, and should, cite its sources.
@@ -455,7 +456,7 @@ Morning email triage, shared project knowledge and cross-client weekly planning 
 ## Open questions
 
 - **Context.** Should the guidance that applies be precompiled per person and space, and how is it invalidated? What is the default context budget?
-- **Knowledge.** How is it tracked that a source is still available and still permitted? How should active knowledge work: finding gaps, then investigating them on your private side? How is substantial work represented and edited, such as changing part of a long document without resending all of it, and how does upkeep keep it whole?
+- **Knowledge.** How is it tracked that a source is still available and still permitted? How should active knowledge work: finding gaps, then investigating them on your private side? How does upkeep keep substantial work whole?
 - **Sharing.** Audience reporting for systems beyond email, chat and meetings, such as Asana and Drive, which count as unknown until then. If a private source is deleted, does knowledge published from it stay, flagged "source removed"? Leaning towards yes, because a person vouched for it.
 - **Interface.** How should client integrations work, starting with a Claude Code plugin? How is a session's context captured: through client integrations, learning, or both?
 - **Connections.** How does OAuth to external systems work across tenants? Which adapters come first: APIs, MCP clients, local bridges such as iMessage on a Mac, webhooks? Should there be one Connections screen plus status in each space?

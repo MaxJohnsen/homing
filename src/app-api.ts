@@ -8,7 +8,7 @@ import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
-import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
+import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
@@ -903,6 +903,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     if (error instanceof SpaceRefused) return answer(res, error.status, { field: error.field, message: error.message });
     if (error instanceof IncludeRefused) return answer(res, error.status, { message: error.message });
     if (error instanceof TaskRefused) return answer(res, 400, { field: error.field, message: error.message });
+    if (error instanceof TooLong) return answer(res, 400, { field: 'text', message: error.message });
     if (error instanceof ImportRefused) return answer(res, 400, { field: error.field, message: error.message });
     if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
       return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });

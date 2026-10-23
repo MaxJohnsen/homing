@@ -1,10 +1,11 @@
 // Benchmark 0, scenario 2: the work after each session, rebuilt from the calls the results keep, so
 // its checks can be computed again without calling a model. For the wiki, every write, edit and
-// delete is applied to the seed in order. For Homing, every item saved, updated or replaced, as
-// Homing's answers name them. Items already on the world's pages aren't in the rebuilt work; nothing
+// delete is applied to the seed in order. For Homing, every item saved, updated or replaced, whole
+// or by edits, as Homing's answers name them. Items already on the world's pages aren't in the rebuilt work; nothing
 // the checks look for is on them.
 
 import { readFileSync } from 'node:fs';
+import { applyEdits, type Edit } from '../src/knowledge.ts';
 import { kroner } from './upkeep-mail.ts';
 import { outdated, staleMentions, workFacts } from './upkeep-work.ts';
 
@@ -71,9 +72,12 @@ function rebuildHoming(sessions: { calls?: Call[] }[]): Rebuilt[][] {
     for (const call of session.calls ?? []) {
       if (call.name !== 'remember' || call.failed) continue;
       const args = (typeof call.args === 'object' && call.args ? call.args : {}) as Record<string, unknown>;
-      if (args.task !== undefined || typeof args.text !== 'string') continue;
-      // Homing keeps the text trimmed.
-      const text = args.text.trim();
+      if (args.task !== undefined) continue;
+      // Edits are made to the text of the item they name, as Homing makes them. Homing keeps the text trimmed.
+      const named = new RegExp(`^item:(${uuid})$`, 'i').exec(String(args.updates ?? args.replaces ?? '').trim())?.[1].toLowerCase();
+      const made = Array.isArray(args.edits) && named && bodies.has(named) ? applyEdits(bodies.get(named)!, args.edits as Edit[]) : undefined;
+      const text = typeof args.text === 'string' ? args.text.trim() : made && 'text' in made ? made.text.trim() : undefined;
+      if (text === undefined) continue;
       if (args.overview) {
         overview = text;
         continue;
