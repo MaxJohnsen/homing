@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { addSource, createPage, search, supersedeItem, updateItem, writeItem } from '../src/knowledge.ts';
+import { addSource, createPage, gather, search, supersedeItem, ungather, updateItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
@@ -119,10 +119,9 @@ test('what was written without anything hidden simply moves to the shared side, 
 
 test('what rests on another space names it, and sharing an update replaces what everyone sees', async () => {
   const page = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Pricing', shared: true }));
-  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
-    const betaNote = await addSource(s, { spaceId: beta, reference: 'Beta’s price list', excerpt: 'Beta pays 1,200 a day.', shared: true });
-    return (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [betaNote.id] })).id;
-  });
+  // Beta's price list, which Ana kept for everyone in Beta.
+  const betaNote = await as(ana, (s) => addSource(s, { spaceId: beta, reference: 'Beta’s price list', excerpt: 'Beta pays 1,200 a day.', shared: true }));
+  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [betaNote.id] })).id);
   const first = await publish(item);
   assert.deepEqual((await shown(first.proposal!)).publication.hidden, [{ space: 'Beta', reference: null }]);
   await decide(first.proposal!);
@@ -158,30 +157,46 @@ test('only people share, only their own, and never from a personal space', async
 });
 
 test('an assistant writes only on the user’s own side, even straight against the database', async () => {
-  // Claude wrote the agenda for Ana and she shared it, so it's an assistant's text, which assistants keep up to date.
+  // Ana keeps the venue's confirmation and the caterer's menu for everyone in Acme, and starts a schedule.
+  const { venue, menu, schedule } = await as(ana, async (s) => ({
+    venue: (await addSource(s, { spaceId: acme, reference: 'The venue’s confirmation', excerpt: 'Doors open at nine.', shared: true })).id,
+    menu: (await addSource(s, { spaceId: acme, reference: 'The caterer’s menu', excerpt: 'Lunch is at noon.', shared: true })).id,
+    schedule: await createPage(s, { spaceId: acme, title: 'Offsite schedule', shared: true }),
+  }));
+  // Claude wrote the agenda from the venue's confirmation and Ana shared it, so it's an assistant's text, which assistants keep up to date.
   const { page, agenda } = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
     const page = await createPage(s, { spaceId: acme, title: 'Offsite' });
-    return { page, agenda: (await writeItem(s, { pageId: page, body: 'The offsite starts at nine.' })).id };
+    return { page, agenda: (await writeItem(s, { pageId: page, body: 'The offsite starts at nine.', sources: [venue] })).id };
   });
   await share(ana, agenda);
-  const venue = await as(ana, (s) => addSource(s, { spaceId: acme, reference: 'The venue’s confirmation', excerpt: 'Doors open at nine.', shared: true }));
+  await as({ ...ana, direct: true }, (s) => gather(s, { collectionId: schedule, pageId: page, shared: true }));
   const claudeForAna = { person: ana.id, agent: 'Claude' };
 
-  // It can't change what everyone sees, add to it, or add to what it rests on.
+  // It can't change what everyone sees or add to it: an item, what one rests on, a source, or what a collection gathers.
   const onlyHers = { code: '42501', message: 'an assistant writes only on the private side of the person it acts for' };
   await assert.rejects(as(claudeForAna, (s) => s.tx`update content set body = 'The offsite starts at ten.' where id = ${agenda}`), onlyHers);
   await assert.rejects(as(claudeForAna, (s) => s.tx`insert into content (space_id, page_id, body) values (${acme}, ${page}, 'Bring a laptop.')`), onlyHers);
-  await assert.rejects(as(claudeForAna, (s) => s.tx`insert into citations (content_id, source_id) values (${agenda}, ${venue.id})`), refused);
+  await assert.rejects(as(claudeForAna, (s) => s.tx`insert into citations (content_id, source_id) values (${agenda}, ${menu})`), refused);
+  await assert.rejects(as(claudeForAna, (s) => s.tx`insert into sources (space_id, reference, excerpt) values (${acme}, 'A rumour', 'The offsite is cancelled.')`), onlyHers);
+  await assert.rejects(as(claudeForAna, (s) => s.tx`insert into gathered (collection_id, page_id, space_id) values (${page}, ${schedule}, ${acme})`), onlyHers);
+  await assert.rejects(as(claudeForAna, (s) => s.tx`delete from gathered where collection_id = ${schedule} and page_id = ${page} and private_to is null`), onlyHers);
 
-  // Through Homing, its change is Ana's own update, which the others don't see until she shares it.
-  const update = (await as(claudeForAna, (s) => updateItem(s, agenda, { body: 'The offsite starts at ten.', sources: [venue.id] })))!;
+  // Through Homing, its change is Ana's own update, resting on what the agenda did, which the others don't see until she shares it.
+  const update = (await as(claudeForAna, (s) => updateItem(s, agenda, { body: 'The offsite starts at ten.' })))!;
   assert.deepEqual([update.privateTo, update.supersedes], [ana.id, agenda]);
-  assert.deepEqual((await pageAs(ana, page)).items.map((entry) => [entry.text, entry.shared, entry.replaced?.text]), [['The offsite starts at ten.', false, 'The offsite starts at nine.']]);
-  assert.deepEqual((await pageAs(cara, page)).items.map((entry) => [entry.text, entry.sources.length, entry.earlier.length]), [['The offsite starts at nine.', 0, 0]]);
+  assert.deepEqual((await pageAs(ana, page)).items.map((entry) => [entry.text, entry.shared, entry.replaced?.text, entry.sources.map((source) => source.reference)]), [
+    ['The offsite starts at ten.', false, 'The offsite starts at nine.', ['The venue’s confirmation']],
+  ]);
+  assert.deepEqual((await pageAs(cara, page)).items.map((entry) => [entry.text, entry.sources.length, entry.earlier.length]), [['The offsite starts at nine.', 1, 0]]);
 
   // The space's own routine still keeps its shared side.
-  await as({ space: acme, agent: 'Upkeep' }, (s) => writeItem(s, { pageId: page, body: 'Lunch is at noon.', shared: true }));
-  assert.ok((await pageAs(cara, page)).items.some((entry) => entry.text === 'Lunch is at noon.'));
+  await as({ space: acme, agent: 'Upkeep' }, async (s) => {
+    const minutes = await addSource(s, { spaceId: acme, reference: 'Planning minutes', excerpt: 'Lunch is at noon, outside.', shared: true });
+    await writeItem(s, { pageId: page, body: 'Lunch is at noon.', sources: [minutes.id], shared: true });
+    assert.ok(await ungather(s, { collectionId: schedule, pageId: page, shared: true }));
+    assert.ok(await gather(s, { collectionId: schedule, pageId: page, shared: true }));
+  });
+  assert.deepEqual((await pageAs(cara, page)).items.find((entry) => entry.text === 'Lunch is at noon.')?.sources.map((source) => source.reference), ['Planning minutes']);
 });
 
 test('a chain of private updates is shared as one, replacing for everyone what it updates', async () => {

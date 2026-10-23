@@ -28,10 +28,10 @@ before(async () => {
     return { acme, northwind: await createSpace(s, { name: 'Northwind', parentId: acme, closed: true }) };
   }));
 
-  // Acme's launch page: a date from an email that Claude saved for Cara, which she shared, and a budget Cara wrote and later corrected.
+  // Acme's launch page: a date that Claude saved for Cara from an email she kept for everyone, which she shared, and a budget Cara wrote and later corrected.
+  const email = await as(cara, (s) => addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true }));
   ({ launch, launchDate, budget } = await as({ person: cara.id, agent: 'Claude' }, async (s) => {
     const launch = await createPage(s, { spaceId: acme, title: 'Website launch', type: 'project' });
-    const email = await addSource(s, { spaceId: acme, reference: 'Email from Gunnar, 2 October', excerpt: 'We go live on 14 November.', shared: true });
     const launchDate = (await writeItem(s, { pageId: launch, body: 'The launch is on **14 November**.', sources: [email.id] })).id;
     return { launch, launchDate, budget: '' };
   }));

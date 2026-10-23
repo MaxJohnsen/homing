@@ -197,11 +197,11 @@ test('an update still rests on a source Ana can no longer open, and sharing it s
     await addMember(s, beta, ana.id);
     return beta;
   });
-  const page = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Rates', shared: true }));
-  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
-    const prices = await addSource(s, { spaceId: beta, reference: 'Beta’s price list', excerpt: 'Beta pays 1,200 a day.', shared: true });
-    return (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [prices.id] })).id;
-  });
+  const { page, prices } = await as(ana, async (s) => ({
+    page: await createPage(s, { spaceId: acme, title: 'Rates', shared: true }),
+    prices: await addSource(s, { spaceId: beta, reference: 'Beta’s price list', excerpt: 'Beta pays 1,200 a day.', shared: true }),
+  }));
+  const item = await as({ person: ana.id, agent: 'Claude' }, async (s) => (await writeItem(s, { pageId: page, body: 'Our rate is about 1,200 a day.', sources: [prices.id] })).id);
   await approve(refIn((await anas.call('act', { action: 'knowledge.publish', input: { item: `item:${item}` } })).text, 'proposal'));
   await as({ person: cara.id, direct: true }, (s) => removeMember(s, beta, ana.id));
 

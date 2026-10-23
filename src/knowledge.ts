@@ -270,11 +270,13 @@ export async function updateItem(
 ): Promise<Item | undefined> {
   const original = await changeableItem(s, itemId);
   if (!original) return undefined;
-  if (original.privateTo === null && s.principal.agent !== undefined && personOf(s.principal)) return supersedeItem(s, itemId, input);
+  const me = personOf(s.principal);
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
-  if (shared === itemId) {
-    // Shared meanwhile by moving it: everyone sees it now, so yours is an update of it.
-    const kept = await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid`;
+  if (shared === itemId || (original.privateTo === null && s.principal.agent !== undefined && me)) {
+    // Everyone sees it, so yours is an update of it. Something you shared by moving it, meanwhile
+    // or before, still rests on what it did, and so does your update.
+    const moved = shared === itemId || (original.publishedFrom === null && original.publishedBy === me);
+    const kept = moved ? await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid` : [];
     return supersedeItem(s, itemId, { body: input.body, sources: [...new Set([...kept.map((row) => row.sourceId), ...(input.sources ?? [])])] });
   }
   if (shared) {
