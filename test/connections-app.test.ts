@@ -293,7 +293,7 @@ test('Cara, in Acme with Ana, can’t discover or use Ana’s connection, throug
   });
   await assert.rejects(as(cara, (s) => s.tx`select * from credentials`), refused);
   await assert.rejects(as(cara, (s) => s.tx`select keep_credentials(${place.connection.id}::uuid, '\\x00', null, null)`), refused);
-  await assert.rejects(as(cara, (s) => s.tx`select connection_needs_attention(${place.connection.id}::uuid)`), refused);
+  await assert.rejects(as(cara, (s) => s.tx`select connection_needs_attention(${place.connection.id}::uuid, '\\x00')`), refused);
   const caraInApp = { person: cara.id, direct: true as const };
   await as(caraInApp, async (s) => {
     assert.equal((await s.tx`select remove_place(${place.id}::uuid) as done`)[0].done, false);

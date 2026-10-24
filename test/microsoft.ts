@@ -108,6 +108,8 @@ export class MicrosoftStandIn {
   private readonly mailboxes = new Map<string, Kept[]>();
   /** Accounts whose mailbox answers slowly, by how many milliseconds. */
   private readonly slowness = new Map<string, number>();
+  /** How many milliseconds refreshing a sign-in takes. */
+  private refreshDelay = 0;
   private server?: Server;
   url!: string;
 
@@ -193,6 +195,11 @@ export class MicrosoftStandIn {
   /** The account's mailbox answers after this many milliseconds, or at once again with 0. */
   slow(account: Account, milliseconds: number) {
     this.slowness.set(account.oid, milliseconds);
+  }
+
+  /** Refreshing a sign-in takes this many milliseconds from now on, or no time again with 0. */
+  slowRefresh(milliseconds: number) {
+    this.refreshDelay = milliseconds;
   }
 
   /** Expires an account's access tokens, so the next use needs a refresh. */
@@ -324,6 +331,7 @@ export class MicrosoftStandIn {
     }
     if (form.get('grant_type') === 'refresh_token') {
       this.asked.refreshes++;
+      if (this.refreshDelay) await new Promise((resolve) => setTimeout(resolve, this.refreshDelay));
       const account = this.refreshTokens.get(form.get('refresh_token') ?? '');
       if (!account) return refuse('invalid_grant', 9002313);
       const refusal = this.refusals.get(account.oid);

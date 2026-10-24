@@ -433,7 +433,8 @@ export async function discardStale(sql: Sql, step = takeOutStep): Promise<number
 /**
  * Keeps imports tidy: takes out what imports put in that stopped without finishing, as when
  * Homing stopped on the way, once nothing has been written to them for a while, and removes
- * uploads and exports left on disk. Now, and every few minutes. Returns how to stop.
+ * uploads and exports left on disk. It also forgets uses of connections older than 90 days. Now,
+ * and every few minutes. Returns how to stop.
  */
 export function keepTidy(sql: Sql): () => void {
   let sweeping = false;
@@ -442,6 +443,8 @@ export function keepTidy(sql: Sql): () => void {
     if (sweeping) return;
     sweeping = true;
     try {
+      // Uses of connections are kept for 90 days.
+      await sql`select forget_old_uses()`;
       await discardStale(sql);
       for (const [person, kept] of pending) if (kept.until <= Date.now()) forget(person);
       await mkdir(workFolder, { recursive: true });
@@ -451,7 +454,7 @@ export function keepTidy(sql: Sql): () => void {
         if (Date.now() - mtimeMs > 2 * keptFor && ![...pending.values()].some((kept) => kept.path === path)) await rm(path, { force: true });
       }
     } catch (error) {
-      console.error('Tidying up imports:', error);
+      console.error('Tidying up:', error);
     } finally {
       sweeping = false;
     }

@@ -63,3 +63,65 @@ with check (
 );
 
 grant select, insert (connection_id, place_id, space_id, private_to, operation, agent) on connection_uses to homing_app;
+
+-- A refresh happens outside any transaction, since Microsoft may take a
+-- while and nothing else should wait on it. Its new tokens are kept only
+-- while the sign-in is still the one it refreshed, so a refresh that finished
+-- meanwhile, a new sign-in or revoking wins, and a revoked connection never
+-- gets credentials back. Whether they were kept.
+create function keep_refreshed(connection uuid, used bytea, refresh_token bytea, access_token bytea, access_expires_at timestamptz)
+returns boolean
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+#variable_conflict use_column
+declare
+  found_connection connections;
+begin
+  found_connection := own_connection(connection);
+  if found_connection.status <> 'connected' then
+    return false;
+  end if;
+  update credentials c
+  set refresh_token = keep_refreshed.refresh_token, access_token = keep_refreshed.access_token, access_expires_at = keep_refreshed.access_expires_at
+  where c.connection_id = keep_refreshed.connection and c.refresh_token = keep_refreshed.used;
+  if not found then
+    return false;
+  end if;
+  update connections c set refreshed_at = now() where c.id = keep_refreshed.connection;
+  return true;
+end
+$$;
+
+-- The system refused a refresh, so the connection needs its owner to sign in
+-- again: only while the sign-in is still the one refused, so it never blames
+-- one that came after. Whether it was marked.
+drop function connection_needs_attention(uuid);
+create function connection_needs_attention(connection uuid, used bytea) returns boolean
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  perform own_connection(connection);
+  update credentials c set access_token = null, access_expires_at = null
+  where c.connection_id = connection_needs_attention.connection and c.refresh_token = connection_needs_attention.used;
+  if not found then
+    return false;
+  end if;
+  update connections c set status = 'needs attention' where c.id = connection_needs_attention.connection;
+  return true;
+end
+$$;
+
+revoke execute on function keep_refreshed, connection_needs_attention from public;
+grant execute on function keep_refreshed, connection_needs_attention to homing_app;
+
+-- Uses are kept for 90 days. Housekeeping forgets older ones, anyone's,
+-- which is all this does.
+create function forget_old_uses() returns integer
+language sql security definer set search_path = public, pg_temp
+as $$
+  with forgotten as (delete from connection_uses where used_at < now() - interval '90 days' returning 1)
+  select count(*)::integer from forgotten
+$$;
+
+revoke execute on function forget_old_uses from public;
+grant execute on function forget_old_uses to homing_app;

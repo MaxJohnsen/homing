@@ -371,7 +371,8 @@ describe('straight against the database', () => {
       await assert.rejects(as(me, (s) => s.tx`update places set private_to = ${me.id} where id = ${target.connection.place}`), refused);
       await assert.rejects(as(me, (s) => s.tx`insert into credentials (connection_id, refresh_token) values (${target.connection.id}, '\\x00')`), refused);
       await assert.rejects(as(me, (s) => s.tx`select keep_credentials(${target.connection.id}::uuid, '\\x00', null, null)`), refused);
-      await assert.rejects(as(me, (s) => s.tx`select connection_needs_attention(${target.connection.id}::uuid)`), refused);
+      await assert.rejects(as(me, (s) => s.tx`select connection_needs_attention(${target.connection.id}::uuid, '\\x00')`), refused);
+      await assert.rejects(as(me, (s) => s.tx`select keep_refreshed(${target.connection.id}::uuid, '\\x00', '\\x00', null, null)`), refused);
       assert.equal((await as(me, (s) => s.tx`select * from credentials_of(${target.connection.id}::uuid)`)).length, 0);
       // Nor record a use of the other's mailbox, or keep a source as read through it, or through their own in the other's space.
       await assert.rejects(as(me, (s) => s.tx`

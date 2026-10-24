@@ -204,9 +204,12 @@ export async function redeem(settings: MicrosoftSettings, input: { code: string;
   return { tenant: claims.tid, account: claims.oid, username: claims.username, scopes: granted, tokens };
 }
 
-/** New tokens for an account, with the one Homing kept. Microsoft gives a new refresh token each time. */
-export async function refresh(settings: MicrosoftSettings, refreshToken: string): Promise<Tokens> {
-  const answer = await token(settings, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: scopes.join(' ') });
+/**
+ * New tokens for an account, with the one Homing kept. Microsoft gives a new refresh token each
+ * time. A signal stops waiting for Microsoft once nobody needs the answer.
+ */
+export async function refresh(settings: MicrosoftSettings, refreshToken: string, { signal }: { signal?: AbortSignal } = {}): Promise<Tokens> {
+  const answer = await token(settings, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: scopes.join(' ') }, signal);
   return tokensOf(answer, refreshToken);
 }
 
@@ -267,7 +270,8 @@ const listLength = 25;
  * newest first, for at most a few. The words are Outlook's search syntax, quoted as one search.
  */
 export async function searchMail(settings: MicrosoftSettings, access: string, words: string, { top, signal }: { top: number; signal?: AbortSignal }): Promise<MailSummary[]> {
-  const search = words.replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim().slice(0, 255);
+  // Whole characters, so an emoji is never cut in half, which no address can carry.
+  const search = Array.from(words.toWellFormed().replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, 255).join('');
   if (!search) return [];
   const quoted = `"${search.replace(/[\\"]/g, '\\$&')}"`;
   const body = await graph(settings, access, `/v1.0/me/messages?$search=${encodeURIComponent(quoted)}&$top=${top}&$select=${summaryFields}`, { prefer: [immutableIds], signal });
@@ -409,7 +413,7 @@ interface TokenAnswer {
 }
 
 /** Calls Microsoft's token endpoint as this app. Its answer is never logged, and nor is the request. */
-async function token(settings: MicrosoftSettings, body: Record<string, string>): Promise<TokenAnswer> {
+async function token(settings: MicrosoftSettings, body: Record<string, string>, signal?: AbortSignal): Promise<TokenAnswer> {
   const url = `${settings.login}/${encodeURIComponent(settings.tenant)}/oauth2/v2.0/token`;
   const form = new URLSearchParams({ client_id: settings.clientId, ...body, ...(await clientCredential(settings, url)) });
   let response: Response;
@@ -418,12 +422,13 @@ async function token(settings: MicrosoftSettings, body: Record<string, string>):
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
       body: form,
-      signal: AbortSignal.timeout(15_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
   } catch {
     throw new MicrosoftUnreachable('signing in');
   }
   const answer = (await response.json().catch(() => ({}))) as TokenAnswer & { error?: unknown; error_codes?: unknown };
+  if (signal?.aborted) throw new MicrosoftUnreachable('signing in');
   if (response.ok) return answer;
   if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('signing in');
   // Microsoft's own number for the reason, such as AADSTS70008 for an expired code, helps whoever runs Homing.
