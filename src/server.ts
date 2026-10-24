@@ -14,6 +14,7 @@ import { keepTidy } from './import.ts';
 import { setupLink } from './invites.ts';
 import { mcpServer } from './mcp.ts';
 import { microsoftFromEnvironment, type MicrosoftSettings } from './microsoft.ts';
+import { modelFromEnvironment, modelOf, type ModelSettings } from './model.ts';
 import { vault } from './vault.ts';
 import { handleApi, serveApp, type App } from './web.ts';
 
@@ -46,6 +47,8 @@ export interface ServerOptions {
   microsoft?: MicrosoftSettings | null;
   /** Systems to connect to beside Homing's own connectors. Tests add stand-ins. */
   connectors?: Connector[];
+  /** Homing's own model, for learning. By default from MODEL_API_KEY and the settings beside it; null for none. */
+  model?: ModelSettings | null;
 }
 
 export interface Homing {
@@ -64,6 +67,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   const connectors = connectorsFor({ microsoft }, options.connectors);
   // Where each system sends people back after they sign in there, as its app registration has it.
   const callbacks = new Map([...connectors.values()].map((connector) => [connector.auth.callback, connector]));
+  const modelSettings = options.model === undefined ? modelFromEnvironment() : (options.model ?? undefined);
   let app: App | undefined;
   let mcp: ReturnType<typeof toNodeHandler>;
   let auth: ReturnType<typeof authHandler>;
@@ -145,7 +149,8 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   auth = authHandler(homingAuth);
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
-  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, connectors };
+  const model = modelSettings && modelOf(modelSettings);
+  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, connectors, model };
   // What imports left on the way, when Homing stopped during one, goes, and keeps going.
   const stopTidying = keepTidy(sql);
 

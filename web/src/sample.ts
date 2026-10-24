@@ -4,6 +4,7 @@ import type { ChangeData, OverviewData, PageData, PagesData, SourceData, Sources
 import type { SearchData } from '@/lib/search';
 import type { AdminData } from '@/screens/admin';
 import type { ProposalData, RequestData, WaitingData } from '@/lib/proposals';
+import type { ModelProcessingData, ModelSpendingData, ModelStatement, ModelUseData } from '@/lib/model';
 import type { SpaceData, SpaceSummary } from '@/lib/spaces';
 import type { IncludableData, IncludeSummary, RuleData, SkillData, SkillSummary, WaitingSkill } from '@/lib/guidance';
 
@@ -147,9 +148,17 @@ export const manyWaiting: WaitingData[] = [
 
 const ana = { id: 'ana', name: 'Ana Berg', you: true };
 
+// Acme's Homing learns through OpenRouter, with Ana's company paying for it.
+export const sampleModel: ModelStatement = { provider: 'OpenRouter', capable: 'Claude Sonnet 5.5', cheaper: 'Claude Haiku 5.5' };
+const modelOn: ModelProcessingData = { on: true, offAt: null, offBy: null, you: false, offAbove: false, offIn: null };
+export const sampleModelOff: ModelProcessingData = { on: false, offAt: '2026-10-21T10:15:00Z', offBy: 'Ana Berg', you: true, offAbove: false, offIn: null };
+export const sampleModelOffAbove: ModelProcessingData = { on: false, offAt: null, offBy: null, you: false, offAbove: true, offIn: { id: 'acme', name: 'Acme' } };
+
 export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitchen' | 'fromAbove', SpaceData> = {
   closed: {
     ...sampleSpaces[2],
+    modelProcessing: modelOn,
+    model: sampleModel,
     path: [{ id: 'acme', name: 'Acme' }],
     reachedFromAbove: false,
     members: [
@@ -159,6 +168,8 @@ export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitc
   },
   open: {
     ...sampleSpaces[3],
+    modelProcessing: modelOn,
+    model: sampleModel,
     path: [{ id: 'acme', name: 'Acme' }],
     reachedFromAbove: false,
     members: [
@@ -178,8 +189,8 @@ export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitc
       { id: 'jon', name: 'Jon Dahl', admin: true, member: true, through: null, you: false },
     ],
   },
-  personal: { ...sampleSpaces[1], path: [], reachedFromAbove: false, members: [] },
-  kitchen: { ...sampleSpaces[4], path: [{ id: 'personal', name: 'Personal' }], reachedFromAbove: false, members: [] },
+  personal: { ...sampleSpaces[1], modelProcessing: modelOn, model: sampleModel, path: [], reachedFromAbove: false, members: [] },
+  kitchen: { ...sampleSpaces[4], modelProcessing: modelOn, model: sampleModel, path: [{ id: 'personal', name: 'Personal' }], reachedFromAbove: false, members: [] },
   fromAbove: {
     ...sampleSpaces[3],
     parentId: null,
@@ -268,6 +279,32 @@ export const manySpaces: SpaceSummary[] = [
   ]),
 ];
 
+// What Homing's model did for Ana this month.
+export const sampleModelUse: ModelUseData = {
+  model: sampleModel,
+  limit: 20,
+  pausedAt: null,
+  uses: [
+    { purpose: 'understand', model: 'Claude Sonnet 5.5', calls: 212, cost: 3.1874, underWay: 0.0408, spaces: [{ id: 'northwind', name: 'Northwind' }], elsewhere: 0 },
+    { purpose: 'upkeep', model: 'Claude Sonnet 5.5', calls: 38, cost: 0.6112, underWay: 0, spaces: [{ id: 'acme', name: 'Acme' }, { id: 'northwind', name: 'Northwind' }], elsewhere: 0 },
+    { purpose: 'sort', model: 'Claude Haiku 5.5', calls: 940, cost: 0.2216, underWay: 0, spaces: [{ id: 'personal', name: 'your personal space' }], elsewhere: 1 },
+  ],
+};
+
+// What it cost Acme's Homing this month, for Ana, who looks after it.
+export const sampleModelSpending: ModelSpendingData = {
+  ...sampleModel,
+  limit: 20,
+  pausedAt: null,
+  spent: 7.4111,
+  underWay: 0.0408,
+  people: [
+    { name: 'Ana Berg', calls: 1190, cost: 4.061, you: true },
+    { name: 'Cara Lund', calls: 702, cost: 2.9031, you: false },
+    { name: 'Jon Dahl', calls: 61, cost: 0.4878, you: false },
+  ],
+};
+
 // Ana looks after Acme's Homing.
 export const sampleAdmin: AdminData = {
   host: 'homing.acme.no',
@@ -278,6 +315,7 @@ export const sampleAdmin: AdminData = {
     { name: 'Jon Dahl', email: 'jon@acme.no', joinedAt: '2026-10-15T11:10:00Z', you: false },
     { name: 'Eli Sand', email: 'eli@sand.studio', joinedAt: '2026-10-17T14:45:00Z', you: false },
   ],
+  model: sampleModelSpending,
 };
 
 // Cara asks Claude for a rule in Northwind, a client space only its admins change the rules of.

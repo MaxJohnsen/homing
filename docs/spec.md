@@ -425,9 +425,25 @@ Homing works without an AI model, and learns in the background when it has one. 
 **The model is optional.**
 
 - The core works without one. Guidance and context are deterministic, knowledge is read and written through MCP, search needs no embeddings, and people and external agents keep knowledge up to date. Without a model, Homing learns only through agents.
-- Setup asks one question: which provider should Homing use for background learning (Claude, OpenAI, a local model…)? Cost and data-handling controls are part of that setup. A deployment sets a default, and a space can override it, for example with "no model processing".
+- Whoever runs Homing brings a provider's API key, in its settings. Homing isn't tied to one provider, and has sensible defaults: a capable model for understanding and upkeep, and a cheaper one for simple sorting.
+- What a model writes is untrusted input, never instructions, and no model ever sees credentials (guarantees 3 and 5).
+- "No model processing" governs only Homing's own inference, not what external assistants do. Self-hosting doesn't keep data local if the model is an external API. Homing states both limits plainly.
+
+**No model processing.** A space's admins can turn model processing off. Nothing in the space, or in the spaces in it, is then ever sent to a model, through any other space, routine or source that also concerns it, and what lands there is kept without model processing.
+
+- An admin's assistant can turn it off when they ask, since that sends nothing. Only an admin turns it back on, in Homing itself.
+- It stays off when the space is shared out of a personal space it was off in, and an export carries it, so the imported space keeps it off.
+- Homing calls a model in one place, which refuses any call carrying content from such a space, so no caller can forget the setting. Each call names every space its content concerns: where it lands, the spaces it was matched to, those of the knowledge and rules it brings along, and any space it asks about. Calls already under way when it's turned off finish.
 - Identifier matching runs before any model, so a source that matches a space with no model processing is never sent to one. A source from an unknown sender is processed under the setting of the space where it lands (§8).
-- "No model processing" governs only Homing's own inference, not what external assistants do. Self-hosting doesn't keep data local if the model is an external API. Setup states both limits plainly.
+- A space's settings say whether model processing is on, and which provider processes what, in plain words: "Homing sends what it learns from in Acme to OpenRouter (Claude Sonnet 5.5) to understand it."
+
+**Costs are understandable and capped.**
+
+- Every call is recorded: the model, what it was for, its tokens and cost, and the person and spaces it was for, never what was sent or answered. The cost is what the provider says it charged, or else what its price list says. A model whose price Homing doesn't know is never called.
+- Before a call, Homing reserves its worst case against the limit that applies, counting the calls still under way, and settles what it actually cost afterwards. A call whose cost can't be known, or whose provider reports counts that can't be right, counts at its worst case.
+- There is a monthly limit for ongoing learning, set by whoever looks after Homing, and a limit for each learning run. When what was spent leaves no room for the next call, learning pauses and says why, until the limit is set again, which resumes it without starting over. When only calls still under way leave no room, the next call waits for them instead.
+- Homing keeps to a limit as reliably as it can, without promising precision it can't keep. A provider's own spending cap, if set, is a second guard. Benchmark spending is kept apart.
+- Each person sees what learning cost for them this month and on what. Whoever looks after Homing sees the totals and the limit, person by person, never what the calls were about.
 
 **Capabilities are independent.** Each one adds to the core, and none depends on another.
 

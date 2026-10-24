@@ -41,6 +41,11 @@ Put them in `.env`, next to `compose.yaml`.
 | `MICROSOFT_TENANT` | Which Microsoft accounts may connect: `common`, the default, for work and personal accounts; `organizations` for work accounts only; or one organization's directory (tenant) ID |
 | `MICROSOFT_CERTIFICATE` | The app's certificate and its private key, in one PEM file: the file's path as Homing sees it, or the PEM itself, with `\n` for line breaks |
 | `MICROSOFT_CLIENT_SECRET` | A client secret, instead of a certificate, if you can't use one |
+| `MODEL_API_KEY` | Gives Homing a model of its own, for learning in the background: your API key at the provider. See [A model](#a-model) |
+| `MODEL_API_URL` | The provider's OpenAI-compatible API. Without it, Homing uses OpenRouter's, `https://openrouter.ai/api/v1`, and takes only an OpenRouter key |
+| `MODEL_DEFAULT` | The model for understanding and upkeep. On OpenRouter it defaults to `anthropic/claude-sonnet-5.5`; elsewhere it's required |
+| `MODEL_CHEAPER` | The model for simple sorting. On OpenRouter it defaults to `anthropic/claude-haiku-5.5`; elsewhere to `MODEL_DEFAULT` |
+| `MODEL_PRICES` | Prices for models Homing doesn't know, in dollars per million tokens in and out, each with any dearer prices from so many tokens on, such as `gpt-6.1-sol=2/10,4/15@272000,gpt-6-luna=0.1/0.5` |
 
 ## Microsoft 365
 
@@ -87,6 +92,38 @@ An organization decides in its own Entra ID who may connect, under Enterprise ap
 - **Assignment required.** To let only some people connect, open Homing under Enterprise applications, set "Assignment required?" to Yes in its Properties, and add those people or their groups under Users and groups. Microsoft turns everyone else away on its own page.
 
 Revoking an account in Homing deletes Homing's sign-in for it. Someone who also wants to withdraw their consent on Microsoft's side does it at [My Apps](https://myapps.microsoft.com) for a work account, or at [account.live.com/consent/Manage](https://account.live.com/consent/Manage) for a personal one. An organization that deletes or disables Homing under its Enterprise applications, or withdraws its consent, stops it for everyone there: each of their connections needs attention the next time Homing uses it. If Microsoft instead refuses Homing itself, as with a certificate or secret it doesn't know, nobody's connection is marked: the log says which setting to check.
+
+## A model
+
+Homing works without a model: people's assistants keep its knowledge up to date. With one, it also learns in the background. You bring the key, and pay the provider for what Homing uses, within a monthly limit you set. Homing speaks the OpenAI-compatible API that OpenRouter, OpenAI and local servers such as Ollama offer.
+
+The simplest is OpenRouter, where Homing knows which models to use and what they cost:
+
+```sh
+MODEL_API_KEY=sk-or-v1-...
+```
+
+Elsewhere, name the models and their prices, so Homing can keep to the limit. It never calls a model whose price it doesn't know. A price is dollars per million tokens in and out; where the provider charges more for a long request, add the dearer prices and where they start, after the model's own, such as `4/15@272000` for $4 and $15 from 272,000 tokens in. Leaving that out would count long calls as cheaper than they are.
+
+```sh
+# OpenAI
+MODEL_API_URL=https://api.openai.com/v1
+MODEL_API_KEY=sk-proj-...
+MODEL_DEFAULT=gpt-6.1-sol
+MODEL_CHEAPER=gpt-6-luna
+MODEL_PRICES=gpt-6.1-sol=2/10,4/15@272000,gpt-6-luna=0.1/0.5,0.2/0.75@272000
+
+# Ollama, on this machine or as a Compose service called ollama
+MODEL_API_URL=http://ollama:11434/v1
+MODEL_DEFAULT=llama3.3:70b
+MODEL_PRICES=llama3.3:70b=0/0
+```
+
+The address must use https, unless the model server is on this machine or your own network. Then `docker compose up -d`. Homing won't start with a model setting it can't use, and says which.
+
+- **The limit.** Learning may spend $10 a month to begin with. Change it under Looking after Homing, which also shows what was spent this month, person by person. Before each call Homing reserves what it could cost at most, and pauses learning when what was spent and the next call could pass the limit; calls under way only hold the next one back until they're done. Raising the limit, or saving it as it is, resumes learning. Set a spending limit at the provider as well, as a second guard.
+- **What's sent.** What Homing learns from goes to the provider, with your key. A space's admins can turn model processing off in its settings, or ask their assistant to, and then nothing in that space, or the spaces in it, is sent. Using a provider's API means your content leaves your server, even though Homing runs on it; only a model on your own network keeps it there.
+- **The log** says when a call failed, with the provider's status, and when learning paused, never what was sent, what came back, or the key.
 
 ## Updating
 

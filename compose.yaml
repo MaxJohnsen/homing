@@ -50,6 +50,12 @@ services:
       MICROSOFT_TENANT: ${MICROSOFT_TENANT:-}
       MICROSOFT_CERTIFICATE: ${MICROSOFT_CERTIFICATE:-}
       MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
+      # Optional: gives Homing a model of its own, for learning. See docs/deployment.md.
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      MODEL_API_URL: ${MODEL_API_URL:-}
+      MODEL_DEFAULT: ${MODEL_DEFAULT:-}
+      MODEL_CHEAPER: ${MODEL_CHEAPER:-}
+      MODEL_PRICES: ${MODEL_PRICES:-}
     ports:
       - "127.0.0.1:${HOMING_PORT:-4100}:4100"
     depends_on:

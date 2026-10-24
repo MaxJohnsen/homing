@@ -7,6 +7,7 @@
 
 import { personOf, type Session } from './db.ts';
 import { addInclude, addRule, rulesFor, type Rule } from './guidance.ts';
+import { modelProcessingOf } from './model.ts';
 import { skillsFor } from './skills.ts';
 import { accessibleSpaces, listSpaces, SpaceRefused, type Space } from './spaces.ts';
 
@@ -22,6 +23,8 @@ export interface Conversion {
   skillsLeaving: { name: string; from: string | null }[];
   /** The shared spaces it can go in: those you're an admin of, with who has them now. */
   places: { id: string; name: string; label: string; people: number; above: boolean }[];
+  /** Whether model processing is off in it, there or above it, which it stays once it's shared. */
+  modelOff: boolean;
 }
 
 /** What becomes of the rules that stop applying: included there for you, added there for everyone, or let go. */
@@ -70,7 +73,7 @@ export async function conversionOf(s: Session, spaceId: string): Promise<Convers
     // An archived space takes no new ones.
     .filter((candidate) => !candidate.privateTo && candidate.admin && !candidate.archived)
     .map((place) => ({ id: place.id, name: place.name, label: label(place), ...audience(place) }));
-  return { space, rulesLeaving, skillsLeaving, places };
+  return { space, rulesLeaving, skillsLeaving, places, modelOff: (await modelProcessingOf(s, spaceId))?.on === false };
 }
 
 const sameName = (a: string, b: string) => a.localeCompare(b, 'en', { sensitivity: 'accent' }) === 0;

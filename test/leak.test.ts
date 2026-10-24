@@ -4,8 +4,8 @@
 // client's shared side, a private note on it that cites an email and has an
 // earlier version, notes in their personal space, a shared and a private
 // rule for their client, a skill, a rule their assistant proposed and
-// they haven't decided yet, and their work mailbox connected in their client's
-// space, only for them. Each tries to read and
+// they haven't decided yet, their work mailbox connected in their client's
+// space, only for them, and a call to Homing's model about their client. Each tries to read and
 // change the other's, in three ways: through Homing, through Homing with
 // row-level security off, and straight against the database with Homing's
 // filters bypassed. So each layer is shown to refuse on its own. Then two
@@ -70,6 +70,8 @@ interface Client {
   tasks: string[];
   /** Their work mailbox, connected in the client's space only for them. */
   connection: { id: string; place: string; address: string };
+  /** A call to Homing's model for them, carrying the client's space. */
+  modelCall: string;
 }
 
 let acme: Client;
@@ -295,7 +297,7 @@ for (const [layer, sql] of [
 
 describe('straight against the database', () => {
   test('each person reads only their own client’s rows', async () => {
-    for (const { name, person, space, items, rules: ownRules, skill, source, proposal, connection } of [acme, beta]) {
+    for (const { name, person, space, items, rules: ownRules, skill, source, proposal, connection, modelCall } of [acme, beta]) {
       await as(person, async (s) => {
         const texts = await s.tx`select body from content where kind = 'text' order by created_at`;
         const rules = await s.tx`select body from content where kind in ('requirement', 'preference') order by created_at`;
@@ -315,6 +317,7 @@ describe('straight against the database', () => {
         const uses = await s.tx`select connection_id from connection_uses`;
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
+        const modelCalls = await s.tx`select id, spaces from model_calls`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -334,6 +337,7 @@ describe('straight against the database', () => {
         assert.deepEqual(uses.map((row) => row.connectionId), [connection.id]);
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
+        assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -391,6 +395,22 @@ describe('straight against the database', () => {
       await assert.rejects(as(me, (s) => s.tx`
         insert into sources (space_id, private_to, excerpt, read_through) values (${target.space}, ${me.id}, 'Hello', ${intruder.connection.id})
       `), refused);
+
+      // Nor send the other client's space to Homing's model, settle the other's call, or turn
+      // model processing on or off there, or see what anyone spent.
+      for (const spaces of [[target.space], [intruder.space, target.space], [target.person.personalSpaceId]]) {
+        await assert.rejects(as(me, (s) => s.tx`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array(spaces)}::uuid[], 0)`), refused);
+      }
+      await assert.rejects(as(me, (s) => s.tx`
+        insert into model_calls (person_id, purpose, model, spaces, reserved) values (${me.id}, 'sort', 'test/cheaper', ${s.tx.array([target.space])}::uuid[], 0)
+      `), refused);
+      assert.equal((await as(me, (s) => s.tx`select settle_model_call(${target.modelCall}::uuid, 'done', 0, 'provider', 0, 0) as settled`))[0].settled, false);
+      await assert.rejects(as(me, (s) => s.tx`update model_calls set cost = 0 where id = ${target.modelCall}`), refused);
+      for (const on of [false, true]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select set_model_processing(${target.space}::uuid, ${on})`), refused);
+      }
+      assert.equal((await as(me, (s) => s.tx`select * from model_processing_of(${target.space}::uuid)`)).length, 0);
+      await assert.rejects(as(me, (s) => s.tx`select * from model_usage_this_month()`), refused);
 
       // Nor a proposal there, for anyone.
       for (const privateTo of [me.id, target.person.id]) {
@@ -705,7 +725,13 @@ async function client(
     proposeRule(s, { action: 'add rule', spaceId: client.space, kind: 'preference', text: notes.proposed, shared: true }),
   );
   const connection = await mailbox(p, client.space, `${personName.toLowerCase()}@${name.toLowerCase()}.test`);
-  return { ...client, proposal, connection };
+  // A call to Homing's model about the client, recorded and settled as Homing does around one.
+  const modelCall = await as(p, async (s) => {
+    const [{ call }] = await s.tx<{ call: string }[]>`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array([client.space])}::uuid[], 0.001)`;
+    await s.tx`select settle_model_call(${call}::uuid, 'done', 0.0002, 'provider', 900, 40)`;
+    return call;
+  });
+  return { ...client, proposal, connection, modelCall };
 }
 
 /** Someone's work mailbox, connected in a space only for them, as signing in to Microsoft leaves it. */
@@ -765,8 +791,12 @@ describe('through the app’s endpoints', () => {
       await writeOverview(s, { spaceId: space, text: `${name} keeps a secret overview` });
       return { shared, own, sharedItem, privateItem, sharedSource, privateSource, collection };
     });
-    // Their work mailbox, connected in their client's space only for them.
+    // Their work mailbox, connected in their client's space only for them, and a call to Homing's model about it.
     const connection = await mailbox(who, space, `${name.toLowerCase()}.mailbox@${name.toLowerCase()}-client.test`);
+    await as(who, async (s) => {
+      const [{ call }] = await s.tx<{ call: string }[]>`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array([space])}::uuid[], 0.001)`;
+      await s.tx`select settle_model_call(${call}::uuid, 'done', 0.0002, 'provider', 900, 40)`;
+    });
     return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages, connection };
   };
   type SignedIn = Awaited<ReturnType<typeof signedIn>>;
@@ -870,6 +900,9 @@ describe('through the app’s endpoints', () => {
         [`/api/places/${target.connection.place}/remove`, {}],
         [`/api/connections/${target.connection.id}/revoke`, {}],
         [`/api/spaces/${target.space}/connections/microsoft`, {}],
+        [`/api/spaces/${target.space}/model-processing`, { on: false }],
+        [`/api/spaces/${target.personalSpaceId}/model-processing`, { on: false }],
+        [`/api/admin/model-limit`, { limit: 1000 }],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.ok([403, 404].includes(changed.status), path);
@@ -879,6 +912,10 @@ describe('through the app’s endpoints', () => {
       assert.equal((await admin`select name from spaces where name = 'Hello' or parent_id = ${target.space}`).length, 0);
       assert.equal((await admin`select id from spaces where archived_at is not null and id in (${target.space}, ${target.personalSpaceId})`).length, 0);
       assert.equal((await admin`select id from pages where archived_at is not null and id in (${target.pages.shared}, ${target.pages.own})`).length, 0);
+      assert.equal((await admin`select id from spaces where model_off_at is not null and id in (${target.space}, ${target.personalSpaceId})`).length, 0);
+      // What Homing's model did is each person's own.
+      const used = (await get('/api/model')).body.uses as { spaces: { id: string }[] }[];
+      assert.ok(used.every((use) => use.spaces.every((space) => space.id === intruder.space)));
 
       // Nothing they got back names the other client, what it asked for, its guidance or its mailbox.
       assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report|${target.connection.address}|${target.connection.id}`));

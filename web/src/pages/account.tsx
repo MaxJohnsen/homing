@@ -4,12 +4,14 @@ import { api, ApiError } from '@/lib/api';
 import { reload, useLoad } from '@/lib/load';
 import { cancelled, createPasskey } from '@/lib/passkeys';
 import type { ConnectedAccountsData } from '@/lib/connections';
+import type { ModelUseData } from '@/lib/model';
 import { Account, signInAgainMessage, type AccountData, type AccountNotice } from '@/screens/account';
 
 /** Your account, inside the app. */
 export function AccountPage() {
   const account = useLoad<AccountData>('/api/me').data;
   const connections = useLoad<ConnectedAccountsData>('/api/connections').data;
+  const model = useLoad<ModelUseData>('/api/model').data;
   // Shown once, after recovering or verifying an email, or a Microsoft sign-in that didn't finish, and not again after a reload.
   const [notice] = useState<AccountNotice | undefined>(() => {
     const params = new URLSearchParams(location.search);
@@ -29,6 +31,7 @@ export function AccountPage() {
       account={account}
       notice={notice}
       connections={connections}
+      model={model}
       notConnected={notConnected}
       connectionActions={{
         async revoke(id) {
