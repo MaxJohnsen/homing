@@ -1,3 +1,4 @@
+import type { ConnectedAccountsData, ConnectionData, SpaceConnectionsData } from '@/lib/connections';
 import type { AccountData } from '@/screens/account';
 import type { ChangeData, OverviewData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
@@ -87,6 +88,32 @@ export const sampleAccount: AccountData = {
     { clientId: 'https://chatgpt.com/oauth/client-metadata.json', name: 'ChatGPT', connectedAt: '2026-10-15T08:05:00Z' },
   ],
   mcpUrl: 'https://homing.acme.no/mcp',
+};
+
+// Ana's work mailbox, connected in Acme only for her, and in her personal space too.
+export const sampleConnection: ConnectionData = {
+  id: 'microsoft-ana',
+  service: 'Microsoft 365',
+  address: 'ana.berg@acme.no',
+  name: 'Ana Berg',
+  can: ['read mail'],
+  status: 'connected',
+  connectedAt: '2026-10-24T09:30:00+02:00',
+  refreshedAt: '2026-10-24T09:30:00+02:00',
+};
+
+export const sampleConnections: SpaceConnectionsData = {
+  microsoft: true,
+  looksAfter: false,
+  places: [{ id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection }],
+};
+
+export const sampleConnectedAccounts: ConnectedAccountsData = {
+  microsoft: true,
+  connections: [
+    { ...sampleConnection, places: [{ id: 'mailbox-acme', space: { id: 'acme', name: 'Acme', personal: false } }, { id: 'mailbox-personal', space: { id: 'personal', name: 'Personal', personal: true } }] },
+    { ...sampleConnection, id: 'microsoft-home', address: 'ana.berg@outlook.com', status: 'needs attention', connectedAt: '2026-09-02T20:10:00+02:00', places: [{ id: 'mailbox-kitchen', space: { id: 'kitchen', name: 'Kitchen renovation', personal: false } }] },
+  ],
 };
 
 // Ana's spaces: her personal one with a kitchen renovation, Acme where she works, with a closed

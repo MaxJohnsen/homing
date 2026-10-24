@@ -3,8 +3,9 @@
 // Ana works for Acme and Ben for Beta. Each has a page of knowledge on their
 // client's shared side, a private note on it that cites an email and has an
 // earlier version, notes in their personal space, a shared and a private
-// rule for their client, a skill, and a rule their assistant proposed and
-// they haven't decided yet. Each tries to read and
+// rule for their client, a skill, a rule their assistant proposed and
+// they haven't decided yet, and their work mailbox connected in their client's
+// space, only for them. Each tries to read and
 // change the other's, in three ways: through Homing, through Homing with
 // row-level security off, and straight against the database with Homing's
 // filters bypassed. So each layer is shown to refuse on its own. Then two
@@ -15,6 +16,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
+import { accessToken, ConnectionUnusable, connectionsOf, placesIn, removePlace, revokeConnection } from '../src/connections.ts';
 import { AccessDenied, authDatabaseUrl, type Session } from '../src/db.ts';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { exportSpace, manifestOf } from '../src/export.ts';
@@ -50,6 +52,7 @@ import { addMember, createSpace, listSpaces, peopleNames } from '../src/spaces.t
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { admin, as, authDb, db, importAgain, importInto, member, person, refused, type Member, type Person } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
+import { vault } from '../src/vault.ts';
 
 interface Client {
   name: string;
@@ -63,6 +66,8 @@ interface Client {
   proposal: Proposal;
   /** The space's task and one only the person has. */
   tasks: string[];
+  /** Their work mailbox, connected in the client's space only for them. */
+  connection: { id: string; place: string; address: string };
 }
 
 let acme: Client;
@@ -198,6 +203,26 @@ for (const [layer, sql] of [
       assert.equal((await admin`select name from spaces where name = 'Way in'`).length, 0);
     });
 
+    test('nobody finds, uses or removes another client’s connections', async () => {
+      for (const { intruder, target } of attempts()) {
+        const me = intruder.person;
+        await as(me, async (s) => {
+          assert.deepEqual(await placesIn(s, target.space), []);
+          assert.deepEqual((await placesIn(s, intruder.space)).map((place) => place.id), [intruder.connection.place]);
+          assert.deepEqual((await connectionsOf(s)).map((connection) => connection.address), [intruder.connection.address]);
+        }, sql);
+        await as({ ...me, direct: true }, async (s) => {
+          assert.equal(await removePlace(s, target.connection.place), false);
+          assert.equal(await revokeConnection(s, target.connection.id), false);
+        }, sql);
+        await assert.rejects(
+          accessToken({ sql, vault: vault('a-secret-that-is-long-enough-to-seal-with') }, me.id, target.connection.id),
+          (error) => error instanceof ConnectionUnusable && error.reason === 'gone',
+        );
+      }
+      await assertUntouched();
+    });
+
     test('nobody sees or follows another client’s guidance', async () => {
       for (const { intruder, target } of attempts()) {
         await as(intruder.person, async (s) => {
@@ -261,7 +286,7 @@ for (const [layer, sql] of [
 
 describe('straight against the database', () => {
   test('each person reads only their own client’s rows', async () => {
-    for (const { name, person, items, rules: ownRules, skill, source, proposal } of [acme, beta]) {
+    for (const { name, person, space, items, rules: ownRules, skill, source, proposal, connection } of [acme, beta]) {
       await as(person, async (s) => {
         const texts = await s.tx`select body from content where kind = 'text' order by created_at`;
         const rules = await s.tx`select body from content where kind in ('requirement', 'preference') order by created_at`;
@@ -276,6 +301,8 @@ describe('straight against the database', () => {
         const access = await s.tx`select distinct person_id from space_access`;
         const proposals = await s.tx`select change ->> 'text' as text from proposals`;
         const tasks = await s.tx`select title from tasks order by created_at`;
+        const connections = await s.tx`select address from connections`;
+        const places = await s.tx`select space_id from places`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -290,7 +317,11 @@ describe('straight against the database', () => {
         assert.deepEqual(access.map((row) => row.personId), [person.id]);
         assert.deepEqual(proposals.map((row) => row.text), [proposal.change.text]);
         assert.deepEqual(tasks.map((row) => row.title), [`${name}: book the venue`, `${name}: call the lawyer`]);
+        assert.deepEqual(connections.map((row) => row.address), [connection.address]);
+        assert.deepEqual(places.map((row) => row.spaceId), [space]);
       });
+      // Nobody reads credentials at all, not even their own: only the functions that use them do.
+      await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
     }
   });
 
@@ -316,6 +347,20 @@ describe('straight against the database', () => {
       await assert.rejects(as(me, (s) => s.tx`
         insert into citations (content_id, source_id) values (${intruder.items[1].id}, ${target.source.id})
       `), refused);
+
+      // Nor a place there, on another's connection or their own, nor a connection or credentials of the other's.
+      for (const connection of [target.connection.id, intruder.connection.id]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`
+          insert into places (connection_id, space_id, private_to, kind, resource) values (${connection}, ${target.space}, ${me.id}, 'mailbox', 'x')
+        `), refused);
+      }
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select * from connect_mailbox(${target.space}::uuid, 'microsoft', 't', 'a', 'x@x.test', null, '{Mail.Read}')`), refused);
+      await assert.rejects(as(me, (s) => s.tx`update connections set person_id = ${me.id} where id = ${target.connection.id}`), refused);
+      await assert.rejects(as(me, (s) => s.tx`update places set private_to = ${me.id} where id = ${target.connection.place}`), refused);
+      await assert.rejects(as(me, (s) => s.tx`insert into credentials (connection_id, refresh_token) values (${target.connection.id}, '\\x00')`), refused);
+      await assert.rejects(as(me, (s) => s.tx`select keep_credentials(${target.connection.id}::uuid, '\\x00', null, null)`), refused);
+      await assert.rejects(as(me, (s) => s.tx`select connection_needs_attention(${target.connection.id}::uuid)`), refused);
+      assert.equal((await as(me, (s) => s.tx`select * from credentials_of(${target.connection.id}::uuid)`)).length, 0);
 
       // Nor a proposal there, for anyone.
       for (const privateTo of [me.id, target.person.id]) {
@@ -629,7 +674,19 @@ async function client(
   const proposal = await as({ person: p.id, agent: 'Claude' }, (s) =>
     proposeRule(s, { action: 'add rule', spaceId: client.space, kind: 'preference', text: notes.proposed, shared: true }),
   );
-  return { ...client, proposal };
+  const connection = await mailbox(p, client.space, `${personName.toLowerCase()}@${name.toLowerCase()}.test`);
+  return { ...client, proposal, connection };
+}
+
+/** Someone's work mailbox, connected in a space only for them, as signing in to Microsoft leaves it. */
+async function mailbox(who: { id: string }, space: string, address: string) {
+  return as({ person: who.id, direct: true }, async (s) => {
+    const [{ connectionId, placeId }] = await s.tx<{ connectionId: string; placeId: string }[]>`
+      select * from connect_mailbox(${space}::uuid, 'microsoft', ${crypto.randomUUID()}, ${crypto.randomUUID()}, ${address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[])
+    `;
+    await s.tx`select keep_credentials(${connectionId}::uuid, ${Buffer.from(`sealed refresh token of ${address}`)}, null, null)`;
+    return { id: connectionId, place: placeId, address };
+  });
 }
 
 describe('through the app’s endpoints', () => {
@@ -666,7 +723,9 @@ describe('through the app’s endpoints', () => {
       await writeOverview(s, { spaceId: space, text: `${name} keeps a secret overview` });
       return { shared, own, sharedItem, privateItem, sharedSource, privateSource, collection };
     });
-    return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages };
+    // Their work mailbox, connected in their client's space only for them.
+    const connection = await mailbox(who, space, `${name.toLowerCase()}.mailbox@${name.toLowerCase()}-client.test`);
+    return { name, who, browser: who.browser, space, personalSpaceId: who.personalSpaceId, proposal, rule: ruleId, skill, pages, connection };
   };
   type SignedIn = Awaited<ReturnType<typeof signedIn>>;
 
@@ -704,7 +763,10 @@ describe('through the app’s endpoints', () => {
         assert.equal((await get(`/api/spaces/${space}/pages?q=launch`)).status, 404);
         assert.equal((await get(`/api/spaces/${space}/sources?q=launch`)).status, 404);
         assert.equal((await get(`/api/spaces/${space}/export`)).status, 404);
+        assert.equal((await get(`/api/spaces/${space}/connections`)).status, 404);
       }
+      // Their connected accounts are their own, and only theirs.
+      assert.deepEqual(((await get('/api/connections')).body.connections as { id: string }[]).map((connection) => connection.id), [intruder.connection.id]);
       for (const page of [target.pages.shared, target.pages.own]) assert.equal((await get(`/api/pages/${page}`)).status, 404);
       for (const source of [target.pages.sharedSource, target.pages.privateSource]) assert.equal((await get(`/api/sources/${source}`)).status, 404);
       // Nor the other client's overview.
@@ -763,6 +825,9 @@ describe('through the app’s endpoints', () => {
         [`/api/pages/${target.pages.shared}/archive`, { archived: true }],
         [`/api/pages/${target.pages.own}/archive`, { archived: true }],
         [`/api/spaces/${target.personalSpaceId}/archive`, { archived: true }],
+        [`/api/places/${target.connection.place}/remove`, {}],
+        [`/api/connections/${target.connection.id}/revoke`, {}],
+        [`/api/spaces/${target.space}/connections/microsoft`, {}],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.ok([403, 404].includes(changed.status), path);
@@ -773,11 +838,16 @@ describe('through the app’s endpoints', () => {
       assert.equal((await admin`select id from spaces where archived_at is not null and id in (${target.space}, ${target.personalSpaceId})`).length, 0);
       assert.equal((await admin`select id from pages where archived_at is not null and id in (${target.pages.shared}, ${target.pages.own})`).length, 0);
 
-      // Nothing they got back names the other client, what it asked for, or its guidance.
-      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report`));
+      // Nothing they got back names the other client, what it asked for, its guidance or its mailbox.
+      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report|${target.connection.address}|${target.connection.id}`));
     }
     const proposals = await admin`select state from proposals where id in ${admin([ana.proposal.id, ben.proposal.id])}`;
     assert.deepEqual(proposals.map((row) => row.state), ['open', 'open']);
+    const connections = await admin`
+      select c.revoked_at, p.removed_at from connections c join places p on p.connection_id = c.id
+      where c.id in ${admin([ana.connection.id, ben.connection.id])}
+    `;
+    assert.deepEqual(connections.map((row) => [row.revokedAt, row.removedAt]), [[null, null], [null, null]]);
     const kept = await admin`
       select body from content
       where id in ${admin([ana.rule, ben.rule])} and not exists (select from content r where r.supersedes = content.id)
@@ -835,6 +905,16 @@ describe('through the app’s endpoints', () => {
     assert.equal((await get(`/api/pages/${ana.pages.collection}`)).gathers, 1);
     // What changed shows Cara Ana's shared launch, and nothing she keeps to herself.
     await get('/api/changes');
+    // Ana's mailbox, connected in the space they share, isn't there for Cara: not listed, not counted, not hers to remove.
+    assert.deepEqual((await get(`/api/spaces/${ana.space}/connections`)).places, []);
+    assert.deepEqual((await get('/api/connections')).connections, []);
+    for (const path of [`/api/places/${ana.connection.place}/remove`, `/api/connections/${ana.connection.id}/revoke`]) {
+      const answer = await cara.browser.json(path, {});
+      assert.equal(answer.status, 404, path);
+      seen.push(answer.body);
+    }
+    for (const query of [ana.connection.address, 'mailbox', 'Microsoft']) await get(`/api/search?q=${encodeURIComponent(query)}`);
+    assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${ana.connection.address}|${ana.connection.id}|${ana.connection.place}`));
     // The overview Cara sees is the shared one, and Ana's own stays hers.
     assert.deepEqual((await get(`/api/spaces/${ana.space}/overview`)).overview.map((item: { text: string }) => item.text), ['Ana’s client is planning 2027']);
     // Search finds Ana's shared launch for Cara, and nothing she keeps to herself.
@@ -1183,6 +1263,15 @@ async function assertUntouched() {
   }
   const proposals = await admin`select state from proposals where id in ${admin([acme.proposal.id, beta.proposal.id])}`;
   assert.deepEqual(proposals.map((row) => row.state), ['open', 'open']);
+  const connections = await admin`
+    select c.address, c.status, c.revoked_at, p.removed_at, encode(k.refresh_token, 'escape') as sealed
+    from connections c join places p on p.connection_id = c.id join credentials k on k.connection_id = c.id
+    where c.id in ${admin([acme.connection.id, beta.connection.id])} order by c.connected_at
+  `;
+  assert.deepEqual(connections.map((row) => [row.address, row.status, row.revokedAt, row.removedAt, row.sealed]), [
+    ['ana@acme.test', 'connected', null, null, 'sealed refresh token of ana@acme.test'],
+    ['ben@beta.test', 'connected', null, null, 'sealed refresh token of ben@beta.test'],
+  ]);
   const tasks = await admin`select title, done_at, private_to is null as shared from tasks where id in ${admin([...acme.tasks, ...beta.tasks])} order by created_at`;
   assert.deepEqual(tasks.map((row) => [row.title, row.doneAt, row.shared]), [
     ['Acme: book the venue', null, true],

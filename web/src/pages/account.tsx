@@ -3,21 +3,24 @@ import { WebAuthnError } from '@simplewebauthn/browser';
 import { api, ApiError } from '@/lib/api';
 import { reload, useLoad } from '@/lib/load';
 import { cancelled, createPasskey } from '@/lib/passkeys';
+import type { ConnectedAccountsData } from '@/lib/connections';
 import { Account, signInAgainMessage, type AccountData, type AccountNotice } from '@/screens/account';
 
 /** Your account, inside the app. */
 export function AccountPage() {
   const account = useLoad<AccountData>('/api/me').data;
-  // Shown once, after recovering or verifying an email, and not again after a reload.
+  const connections = useLoad<ConnectedAccountsData>('/api/connections').data;
+  // Shown once, after recovering or verifying an email, or a Microsoft sign-in that didn't finish, and not again after a reload.
   const [notice] = useState<AccountNotice | undefined>(() => {
     const params = new URLSearchParams(location.search);
     return (['recovered', 'verified'] as const).find((name) => params.has(name));
   });
+  const [notConnected] = useState(() => new URLSearchParams(location.search).has('connection'));
   const load = () => reload('/api/me');
 
   useEffect(() => {
-    if (notice) history.replaceState(null, '', '/account');
-  }, [notice]);
+    if (notice || notConnected) history.replaceState(null, '', '/account');
+  }, [notice, notConnected]);
 
   if (!account) return null;
 
@@ -25,6 +28,27 @@ export function AccountPage() {
     <Account
       account={account}
       notice={notice}
+      connections={connections}
+      notConnected={notConnected}
+      connectionActions={{
+        async revoke(id) {
+          try {
+            await api(`/api/connections/${id}/revoke`, {});
+            await reload('/api/connections');
+          } catch (error) {
+            if (error instanceof ApiError && error.status === 404) await reload('/api/connections');
+            return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+          }
+        },
+        async signInAgain(spaceId, id) {
+          try {
+            const { url } = await api<{ url: string }>(`/api/spaces/${spaceId}/connections/microsoft`, { again: id });
+            location.assign(url);
+          } catch (error) {
+            return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+          }
+        },
+      }}
       actions={{
         async disconnect(clientId) {
           try {

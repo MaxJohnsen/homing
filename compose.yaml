@@ -45,6 +45,11 @@ services:
       # Optional: lets Homing send invites and sign-in links by email.
       SMTP_URL: ${SMTP_URL:-}
       HOMING_EMAIL_FROM: ${HOMING_EMAIL_FROM:-}
+      # Optional: lets people connect their Microsoft 365 mailbox. See docs/deployment.md.
+      MICROSOFT_CLIENT_ID: ${MICROSOFT_CLIENT_ID:-}
+      MICROSOFT_TENANT: ${MICROSOFT_TENANT:-}
+      MICROSOFT_CERTIFICATE: ${MICROSOFT_CERTIFICATE:-}
+      MICROSOFT_CLIENT_SECRET: ${MICROSOFT_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:${HOMING_PORT:-4100}:4100"
     depends_on:

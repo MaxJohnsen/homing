@@ -6,11 +6,14 @@ import { toNodeHandler as authHandler } from 'better-auth/node';
 import { Pool } from 'pg';
 import { tokenVerifier, type AgentPrincipal } from './assistants.ts';
 import { authEndpoints, clientAddressHeader, createAuth, type Auth, type AuthSettings } from './auth.ts';
+import { finishConnecting } from './connections.ts';
 import { authDatabaseUrl, connect, type Sql } from './db.ts';
 import { smtpMailer, type Mailer } from './email.ts';
 import { keepTidy } from './import.ts';
 import { setupLink } from './invites.ts';
 import { mcpServer } from './mcp.ts';
+import { callbackPath, microsoftFromEnvironment, type MicrosoftSettings } from './microsoft.ts';
+import { vault } from './vault.ts';
 import { handleApi, serveApp, type App } from './web.ts';
 
 export interface ServerOptions {
@@ -38,6 +41,8 @@ export interface ServerOptions {
   passwords?: boolean;
   /** Whether to log what assistants ask for. On by default. */
   logRequests?: boolean;
+  /** How people connect Microsoft 365. By default from MICROSOFT_CLIENT_ID and the settings beside it; null for none. */
+  microsoft?: MicrosoftSettings | null;
 }
 
 export interface Homing {
@@ -52,6 +57,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   const configured = options.url ?? configuredUrl;
   const secret = options.secret ?? secretFor(configured, options.host);
   const proxies = trustedProxies(options.trustedProxies ?? process.env.HOMING_TRUSTED_PROXIES);
+  const microsoft = options.microsoft === undefined ? microsoftFromEnvironment() : (options.microsoft ?? undefined);
   let app: App | undefined;
   let mcp: ReturnType<typeof toNodeHandler>;
   let auth: ReturnType<typeof authHandler>;
@@ -84,6 +90,8 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
       } else if (path.startsWith('/api/auth/') || path.startsWith('/.well-known/')) {
         if (authEndpoints.has(`${req.method} ${path}`)) await auth(req, res);
         else res.writeHead(404).end();
+      } else if (path === callbackPath) {
+        await finishConnecting(app, req, res);
       } else if (path.startsWith('/api/')) {
         await handleApi(app, req, res, path);
       } else {
@@ -129,7 +137,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   auth = authHandler(homingAuth);
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
-  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true };
+  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: vault(secret), microsoft };
   // What imports left on the way, when Homing stopped during one, goes, and keeps going.
   const stopTidying = keepTidy(sql);
 
@@ -182,7 +190,7 @@ function isLocal(url: URL): boolean {
 
 // Anyone could sign sessions with this one, so only a server that is reached
 // at localhost and listens there alone may use it, as when developing Homing.
-const developmentSecret = 'homing-development-secret-for-localhost-only';
+export const developmentSecret = 'homing-development-secret-for-localhost-only';
 
 function secretFor(url: URL | undefined, host: string | undefined): string {
   const secret = process.env.HOMING_SECRET;
