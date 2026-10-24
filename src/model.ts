@@ -24,32 +24,36 @@ export interface Prices {
   above?: { tokens: number; input: number; output: number };
 }
 
-/** How this Homing reaches its model, from the server's settings. */
+/**
+ * How this Homing reaches its model, from the server's settings. The provider's API key isn't
+ * here: it stays in this module, with the settings it came with, and goes only to the provider.
+ */
 export interface ModelSettings {
   /** The provider's Chat Completions API, such as https://openrouter.ai/api/v1. */
-  url: URL;
+  readonly url: URL;
   /** How people know the provider: OpenRouter, OpenAI, or the address of a server of your own. */
-  provider: string;
-  /** The provider's API key, if it takes one. Never in a log, an error or an answer. */
-  key?: string;
+  readonly provider: string;
   /** The capable model, for understanding and upkeep, and the cheaper one for simple sorting. */
-  capable: string;
-  cheaper: string;
+  readonly capable: string;
+  readonly cheaper: string;
   /** What each model Homing may call costs. A model without prices is never called. */
-  prices: Map<string, Prices>;
+  readonly prices: ReadonlyMap<string, Prices>;
 }
 
-/** The model this Homing calls, by its settings. The provider it speaks to stays in this module. */
+/** The model this Homing calls, by its settings. The provider it speaks to, and its key, stay in this module. */
 export interface Model {
   readonly settings: ModelSettings;
 }
 
-const providerOf = new WeakMap<Model, Provider>();
+/** Each key, by the settings it was read with, and each model's provider and key. Only this module reaches them. */
+const keyOf = new WeakMap<ModelSettings, string>();
+const providerOf = new WeakMap<Model, { provider: Provider; key?: string }>();
 
 /** The model for these settings, with the adapter that speaks to its provider, which only callModel uses. */
 export function modelOf(settings: ModelSettings): Model {
+  const key = keyOf.get(settings);
   const model: Model = Object.freeze({ settings });
-  providerOf.set(model, chatCompletions(settings));
+  providerOf.set(model, { provider: chatCompletions({ url: new URL(settings.url), key }), key });
   return model;
 }
 
@@ -154,7 +158,9 @@ export function modelFromEnvironment(env: Record<string, string | undefined> = p
       );
     }
   }
-  return { url, provider: providers[url.hostname] ?? url.host, key, ...models, prices };
+  const settings: ModelSettings = Object.freeze({ url, provider: providers[url.hostname] ?? url.host, ...models, prices });
+  if (key) keyOf.set(settings, key);
+  return settings;
 }
 
 /** Prices that are plausible: up to $10,000 per million tokens. */
@@ -287,8 +293,9 @@ export function usd(value: number): string {
  */
 export async function callModel(homing: { sql: Sql; model?: Model }, person: string, call: ModelCall): Promise<ModelAnswer> {
   const model = homing.model;
-  const provider = model && providerOf.get(model);
-  if (!model || !provider) throw new ModelRefused('no model', 'Homing has no model set up, so nothing was sent.');
+  const held = model && providerOf.get(model);
+  if (!model || !held) throw new ModelRefused('no model', 'Homing has no model set up, so nothing was sent.');
+  const { provider, key } = held;
   if (!purposes.includes(call.purpose)) throw new TypeError('A model call says what it’s for.');
   if (!Array.isArray(call.messages) || call.messages.length === 0 || !call.messages.every((message) => ['system', 'user', 'assistant'].includes(message.role) && typeof message.content === 'string')) {
     throw new TypeError('A model call has messages.');
@@ -317,7 +324,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
     const said = error instanceof ProviderRefused || error instanceof ProviderFailed ? plausibleCost(error.cost) : undefined;
     const before = error instanceof ProviderRefused;
     await settle(homing.sql, person, reserved, worst, { outcome: 'failed', cost: said ?? (before ? 0 : worst), from: said !== undefined ? 'provider' : before ? 'refused' : 'worst case' });
-    const reason = error instanceof ProviderRefused || error instanceof ProviderFailed ? hidden(error.message, model.settings.key) : 'something went wrong on the way';
+    const reason = error instanceof ProviderRefused || error instanceof ProviderFailed ? hidden(error.message, key) : 'something went wrong on the way';
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: ${reason}`);
     throw new ModelFailed(`The model call failed: ${reason}.`);
   }

@@ -22,7 +22,9 @@ test('a key alone uses OpenRouter, with a capable model, a cheaper one, and thei
   assert.equal(model.provider, 'OpenRouter');
   assert.deepEqual([model.capable, model.cheaper], [defaultModels.capable, defaultModels.cheaper]);
   assert.deepEqual(model.prices.get(model.capable), { input: 2, output: 10 });
-  assert.equal(model.key, key);
+  // The key isn't among the settings anyone gets: it stays in the model module.
+  assert.ok(!Object.values(model).some((value) => String(value).includes(key)) && !JSON.stringify(model).includes(key));
+  assert.ok(Object.isFrozen(model));
 
   const chosen = modelFromEnvironment({ MODEL_API_KEY: key, MODEL_DEFAULT: 'openai/gpt-6.1-sol' })!;
   assert.deepEqual([chosen.capable, chosen.cheaper], ['openai/gpt-6.1-sol', defaultModels.cheaper]);
@@ -42,7 +44,6 @@ test('another provider, or a model server of your own, names its models and thei
 
   for (const address of ['http://localhost:11434/v1', 'http://ollama:11434/v1', 'http://192.168.1.20:8080/v1', 'http://[::1]:11434/v1']) {
     const local = modelFromEnvironment({ MODEL_API_URL: address, MODEL_DEFAULT: 'llama3.3:70b', MODEL_PRICES: 'llama3.3:70b=0/0' })!;
-    assert.equal(local.key, undefined);
     assert.deepEqual([local.capable, local.cheaper], ['llama3.3:70b', 'llama3.3:70b']);
     assert.equal(local.provider, new URL(address).host);
   }
@@ -88,14 +89,24 @@ test('a call’s worst case is all its input and all it may write, at the deares
   assert.equal(worstCase(haiku, 150_000, 1_000), (150_000 * 0.5 + 1_000 * 2.5) / 1e6);
 });
 
-test('only the model module reaches a provider, so no call can skip its checks', () => {
+test('only the model module reaches a provider or its key, so no call can skip its checks', () => {
   const sources = (folder: string): string[] =>
     readdirSync(folder, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? sources(join(folder, entry.name)) : entry.name.endsWith('.ts') ? [join(folder, entry.name)] : []));
   const root = join(import.meta.dirname, '..');
-  const outside = [...sources(join(root, 'src')), ...sources(join(root, 'scripts'))].filter((file) => !file.endsWith(join('src', 'model.ts')));
-  for (const file of outside) {
-    const code = readFileSync(file, 'utf8').replace(/export function chatCompletions\(/, '');
-    assert.doesNotMatch(code, /\.chat\(|chatCompletions\(/, file);
+  const named = (file: string) => file.slice(root.length + 1);
+  // What each may import of the provider's: the model module both, the adapter the interface, and nothing else either.
+  const allowed: Record<string, string[]> = { 'src/model.ts': ['chat-completions', 'provider'], 'src/chat-completions.ts': ['provider'], 'src/provider.ts': [] };
+  for (const file of [...sources(join(root, 'src')), ...sources(join(root, 'scripts'))]) {
+    const code = readFileSync(file, 'utf8');
+    // Every module named, by a static or dynamic import, an export from, or require.
+    const imported = [...code.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"`]([^'"`]+)['"`]/g)].map((match) => match[1]);
+    for (const module of imported) {
+      const which = /(?:^|\/)(chat-completions|provider)(?:\.ts)?$/.exec(module)?.[1];
+      if (which) assert.ok(allowed[named(file)]?.includes(which), `${named(file)} imports ${module}`);
+    }
+    if (named(file) === 'src/model.ts') continue;
+    assert.doesNotMatch(code.replace(/export function chatCompletions\(/, ''), /\.chat\(|chatCompletions\(/, named(file));
+    assert.doesNotMatch(code, /MODEL_API_KEY|settings\.key\b/, named(file));
   }
   assert.match(readFileSync(join(root, 'src', 'model.ts'), 'utf8'), /provider\.chat\(/);
 });

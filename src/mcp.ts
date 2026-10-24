@@ -1816,12 +1816,19 @@ async function modelOffFor(s: Session, links: Links, input: z.infer<typeof model
   const name = space.privateTo !== null && space.parentId === null ? 'their personal space' : space.name;
   if (!space.admin) throw new Refused(`Only ${space.name}'s admins turn model processing off, in its settings in Homing. Nothing changed.`);
   const before = await modelProcessingOf(s, spaceId);
-  if (before?.offAbove) return `Model processing is already off in ${name} (${ref('space', spaceId)}), through a space above it. Nothing changed.`;
-  if (before && !before.on) return `Model processing is already off in ${name} (${ref('space', spaceId)}). Nothing changed.`;
+  if (before?.offAt) return `Model processing is already off in ${name} (${ref('space', spaceId)}). Nothing changed.`;
+  // Off only through a space above, it's kept off here too, so it stays off if that one is turned on.
   await setModelProcessing(s, spaceId, false);
-  const text = `Model processing is off in ${name} (${ref('space', spaceId)}): Homing sends nothing in it, or in the spaces in it, to its own model. ` +
+  const text = (before?.offAbove
+    ? `Model processing was off in ${name} (${ref('space', spaceId)}) through a space above it, and now it's kept off there itself, so it stays off even if it's turned on above. `
+    : `Model processing is off in ${name} (${ref('space', spaceId)}): Homing sends nothing in it, or in the spaces in it, to its own model. `) +
     `This changes nothing about what you can read. Only the user turns it back on, in its settings in Homing: ${links.settings(spaceId)}`;
-  const done = { heading: 'Model processing off', name: space.name, detail: 'Nothing in it, or in the spaces in it, is sent to a model.', link: links.settings(spaceId) };
+  const done = {
+    heading: 'Model processing off',
+    name: space.name,
+    detail: before?.offAbove ? 'It stays off even if it’s turned on in the space above it.' : 'Nothing in it, or in the spaces in it, is sent to a model.',
+    link: links.settings(spaceId),
+  };
   return card ? { text, structuredContent: { done, note: text } } : text;
 }
 

@@ -36,9 +36,14 @@ export function ModelProcessing({ space, set }: { space: SpaceData; set?: (on: b
     if (!answer) setAsking(false);
   };
 
+  // Where it's off above, named when you can open that space.
+  const above = state.offIn?.name;
+  const onAbove = above ? `turned on in ${above}` : 'turned on there';
   let description: string;
-  if (state.offAbove) {
-    description = `It’s off in ${state.offIn?.name ?? 'a space above it'}, so nothing in ${name} is sent to a model, and what lands here is kept without one. ${assistantsAside}`;
+  if (state.offAbove && state.offAt) {
+    description = `It’s off here, and in ${above ?? 'a space above it'} too, so nothing in ${name} is sent to a model, and it stays off even if it’s ${onAbove}. ${assistantsAside}`;
+  } else if (state.offAbove) {
+    description = `It’s off in ${above ?? 'a space above it'}, so nothing in ${name} is sent to a model, and what lands here is kept without one.${space.admin && set ? ` Keep it off here too, and it stays off even if it’s ${onAbove}.` : ''} ${assistantsAside}`;
   } else if (!state.on) {
     description = `Nothing in ${name}, or in the spaces in it, is sent to a model, and what lands here is kept without one. ${assistantsAside}`;
   } else if (model) {
@@ -50,13 +55,20 @@ export function ModelProcessing({ space, set }: { space: SpaceData; set?: (on: b
 
   return (
     <Section title={state.on ? 'Model processing' : 'Model processing is off'} className="max-w-2xl" description={description}>
-      {!state.on && state.offAt && <p className="text-base">Turned off on {dateOf(state.offAt)}{by}.</p>}
+      {!state.on && state.offAt && <p className="text-base">Turned off{state.offAbove ? ' here' : ''} on {dateOf(state.offAt)}{by}.</p>}
       {state.offAbove && state.offIn && (
         <Link href={`/spaces/${state.offIn.id}/settings`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>
           Open {state.offIn.name}
         </Link>
       )}
       {!state.offAbove && !space.admin && <p className="text-base">{state.on ? `${space.name}’s admins can turn it off.` : `${space.name}’s admins can turn it back on.`}</p>}
+      {state.offAbove && !state.offAt && space.admin && set && (
+        <div>
+          <Button variant="outline" size="lg" className={cn(wrapsLabel, 'min-h-11 text-base sm:px-5')} disabled={busy} onClick={() => run(false)}>
+            Keep it off in {name}
+          </Button>
+        </div>
+      )}
       {!state.offAbove && space.admin && set && (
         state.on ? (
           <div>

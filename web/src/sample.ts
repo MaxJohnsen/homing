@@ -153,6 +153,7 @@ export const sampleModel: ModelStatement = { provider: 'OpenRouter', capable: 'C
 const modelOn: ModelProcessingData = { on: true, offAt: null, offBy: null, you: false, offAbove: false, offIn: null };
 export const sampleModelOff: ModelProcessingData = { on: false, offAt: '2026-10-21T10:15:00Z', offBy: 'Ana Berg', you: true, offAbove: false, offIn: null };
 export const sampleModelOffAbove: ModelProcessingData = { on: false, offAt: null, offBy: null, you: false, offAbove: true, offIn: { id: 'acme', name: 'Acme' } };
+export const sampleModelKeptOff: ModelProcessingData = { ...sampleModelOffAbove, offAt: '2026-10-24T09:20:00Z', offBy: 'Ana Berg', you: true };
 
 export const sampleSpace: Record<'closed' | 'open' | 'root' | 'personal' | 'kitchen' | 'fromAbove', SpaceData> = {
   closed: {

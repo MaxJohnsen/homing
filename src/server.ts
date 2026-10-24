@@ -47,7 +47,7 @@ export interface ServerOptions {
   microsoft?: MicrosoftSettings | null;
   /** Systems to connect to beside Homing's own connectors. Tests add stand-ins. */
   connectors?: Connector[];
-  /** Homing's own model, for learning. By default from MODEL_API_KEY and the settings beside it; null for none. */
+  /** Homing's own model, for learning. By default from the model settings in the environment; null for none. */
   model?: ModelSettings | null;
 }
 

@@ -432,6 +432,7 @@ Homing works without an AI model, and learns in the background when it has one. 
 **No model processing.** A space's admins can turn model processing off. Nothing in the space, or in the spaces in it, is then ever sent to a model, through any other space, routine or source that also concerns it, and what lands there is kept without model processing.
 
 - An admin's assistant can turn it off when they ask, since that sends nothing. Only an admin turns it back on, in Homing itself.
+- A space that's off through a space above it can be kept off on its own too, so it stays off when that one is turned on.
 - It stays off when the space is shared out of a personal space it was off in, and an export carries it, so the imported space keeps it off.
 - Homing calls a model in one place, which refuses any call carrying content from such a space, so no caller can forget the setting. Each call names every space its content concerns: where it lands, the spaces it was matched to, those of the knowledge and rules it brings along, and any space it asks about. Calls already under way when it's turned off finish.
 - Identifier matching runs before any model, so a source that matches a space with no model processing is never sent to one. A source from an unknown sender is processed under the setting of the space where it lands (§8).

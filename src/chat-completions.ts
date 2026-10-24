@@ -5,18 +5,17 @@
 // may repeat the prompt or the key, goes into an error: only its status, and a code such as
 // invalid_api_key, of lowercase letters and underscores.
 
-import type { ModelSettings } from './model.ts';
 import { ProviderFailed, ProviderRefused, type Provider } from './provider.ts';
 
 /** The most of an answer Homing reads. A model writes far less within its limit. */
 const mostBytes = 8 * 1024 * 1024;
 
-/** An adapter for the provider at the settings' address. */
-export function chatCompletions(settings: Pick<ModelSettings, 'url' | 'key'>): Provider {
-  const endpoint = new URL(`${settings.url.pathname.replace(/\/$/, '')}/chat/completions`, settings.url);
+/** An adapter for the provider at this address, with its key if it takes one. */
+export function chatCompletions({ url, key }: { url: URL; key?: string }): Provider {
+  const endpoint = new URL(`${url.pathname.replace(/\/$/, '')}/chat/completions`, url);
   // OpenRouter says what each call cost when asked, and OpenAI takes the limit on writing by another name.
-  const openRouter = settings.url.hostname === 'openrouter.ai';
-  const openAi = settings.url.hostname === 'api.openai.com';
+  const openRouter = url.hostname === 'openrouter.ai';
+  const openAi = url.hostname === 'api.openai.com';
   return {
     async chat(request, signal) {
       const body = {
@@ -31,7 +30,7 @@ export function chatCompletions(settings: Pick<ModelSettings, 'url' | 'key'>): P
       try {
         response = await fetch(endpoint, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', ...(settings.key && { authorization: `Bearer ${settings.key}` }) },
+          headers: { 'content-type': 'application/json', ...(key && { authorization: `Bearer ${key}` }) },
           body: JSON.stringify(body),
           // Never followed, so the key never goes anywhere else.
           redirect: 'error',

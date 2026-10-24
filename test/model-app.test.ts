@@ -15,7 +15,7 @@ import { callModel, inputTokensOf, ModelFailed, ModelRefused, worstCase, type Me
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
-import { Assistant, testAssistants } from './assistant.ts';
+import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { Browser } from './browser.ts';
 import { importAgain, until, type Member } from './helpers.ts';
 import { ModelStandIn, plainReply, type Reply } from './model-provider.ts';
@@ -524,6 +524,34 @@ test('an assistant turns model processing off for a space its person looks after
   }
   const now = (await ana.browser.json(`/api/spaces/${acme}`)).body.modelProcessing;
   assert.deepEqual([now.on, now.you], [false, true]);
+});
+
+test('a space that’s off only through the space above can be kept off on its own, and stays off when that one is turned on', async (t) => {
+  t.after(() => owner`update spaces set model_off_at = null, model_off_by = null where id in ${owner([acme, board, website])}`);
+  assert.equal((await ana.browser.json(`/api/spaces/${acme}/model-processing`, { on: false })).status, 200);
+  // Ana, an admin of the board, keeps it off through her assistant, ChatGPT this time, and Website in its settings.
+  const assistant = new Assistant(homing.url, assistants.chatgpt);
+  await assistant.connect(ana.browser);
+  const chatgpt = await assistant.open();
+  try {
+    const kept = await chatgpt.call('act', { action: 'space.model_off', input: { space: `space:${board}` } });
+    assert.equal(kept.failed, false, kept.text);
+    assert.match(kept.text, /now it's kept off there itself, so it stays off even if it's turned on above/);
+  } finally {
+    await chatgpt.close();
+  }
+  const site = (await ana.browser.json(`/api/spaces/${website}/model-processing`, { on: false })).body.modelProcessing;
+  assert.deepEqual([site.offAbove, Boolean(site.offAt), site.you], [true, true, true]);
+
+  // Acme on again: the board and Website stay off, each on its own, and Dan sees who kept the board off.
+  assert.equal((await ana.browser.json(`/api/spaces/${acme}/model-processing`, { on: true })).body.modelProcessing.on, true);
+  for (const space of [board, website]) {
+    const now = (await ana.browser.json(`/api/spaces/${space}`)).body.modelProcessing;
+    assert.deepEqual([now.on, now.offAbove, now.you], [false, false, true]);
+    assert.equal((await refusal(call(ana, [space]))).reason, 'model processing off');
+  }
+  assert.equal((await dan.browser.json(`/api/spaces/${board}`)).body.modelProcessing.offBy, 'Ana');
+  await call(ana, [acme]);
 });
 
 test('no prompt, answer or key ever reaches the log, an error or an answer of the app', async () => {
