@@ -242,7 +242,7 @@ Homing learns privately by default and shares automatically only when sharing is
 - A **binding** lets knowledge flow from a place into a space. A place is a mailbox folder, a channel, a drive folder or a single thread. A thread is a place because it keeps receiving messages; a single email is a source.
   - It is the explicit authorization of what may reach the shared side, separate from connecting the place. Connecting something, even inside the space, never authorizes publishing what's in it, and neither does its audience.
   - A binding needs authority over the place, admin rights on the space, and an explicit, recorded declaration that sharing with current and future members is authorized. Without the declaration, ingestion stays private.
-  - A bound place can be read through a connection the space owns, so automation keeps running without any one member. The space's own automation never uses a member's personal connection.
+  - A bound place can be read through a connection the space owns, so automation keeps running without any one member. A connection made for the space belongs to the space, even when someone signs in with their own account to make it, which they agree to then. A personal connection never becomes the space's, and the space's own automation never uses one.
   - Bindings across organizations get a stronger warning.
   - A binding is not a blanket waiver. It never overrides restrictions a source carries, such as a sensitivity label or a "do not forward" marking, and a material change in audience, like a new participant from another organization, pauses it.
   - Preferences about what to extract are not security boundaries.
@@ -284,15 +284,15 @@ Spaces point to places; people hold keys. You connect a system in the space it b
 | Concept | What it is |
 |---|---|
 | Connection | How Homing gets in: credentials for one account in one system, such as a work Microsoft 365 account. It belongs to the person who connected it, or to a space for shared automation. It is encrypted and never visible to a model. |
-| Place | What Homing reaches: a space's pointer to where things live, with system, tenant and resource, such as a mailbox or "Acme's Asana, project Website". |
-| Binding | What may be shared: an explicit authorization for knowledge from a place to reach its space's shared side (§5). Connecting a place never binds it. |
+| Place | What Homing reaches: a space's pointer to where things live, with system, tenant and resource, such as a mailbox or "Acme's Asana, project Website". A place someone adds for themselves is on their private side there. |
+| Binding | What may be shared: an explicit authorization for knowledge from a place to reach its space's shared side (§5). |
 
-- **Connections are set up where they belong.** A person connects a system from inside a space, such as their work mailbox in their company's space. The space gives Homing the context to use it in, and is the private home for its settings and the sources it brings. It is only for that person by default, even in a space with other members, who can't discover it, its sources or what it taught. What it brings reaches the space only by publishing or a binding (§5). For a resource meant for the whole space, such as a team's project folder, an admin with authority over it can connect it as the space's own.
-- **Places are matched to keys automatically,** by stable IDs and a per-action check: can this connection do this here? Your own connection comes first, then an authorized space connection, and otherwise Homing asks. One connection can serve many places in many spaces, and a space can use many connections. An external action uses the account the person chose, or the only one that fits, and Homing never switches to another on its own (§10).
-- **One connection for every use.** The same connection and place serve reading on request, learning from what's already there (§8), learning from what arrives and, later, authorized actions. There is no separate import, and a connection is useful before Homing learns from it.
+- **You connect things where they belong.** A person adds a place from inside a space, such as their work mailbox in their company's space, through their own connection to that system. The space gives Homing the context to use it in, and is the private home for the place's settings and the sources it brings. What they add is only theirs by default, even in a space with other members, who can't discover it, its sources or what it taught them. What it brings reaches the space only by publishing or a binding (§5). For a resource meant for the whole space, such as a team's project folder, an admin with authority over it binds it to the space (§5), and can read it through a connection the space owns.
+- **Places are matched to keys automatically,** by stable IDs and a per-action check: can this connection do this here? Your own connection comes first, then an authorized space connection, and otherwise Homing asks. One connection can serve many places in many spaces, and a space can use many connections.
+- **One connection for every use.** The same connection and place serve reading on request, learning from what's already there (§8), learning from what arrives and, later, authorized actions. A connection is useful before Homing learns from it.
 - **Revoking an account** stops everything that relies on it, in every space, at once. Knowledge already kept from it stays, and who can see it doesn't change. Removing a place from a space stops only its use there.
 - **Connection status is informative.** A missing connection is shown when it matters and never blocks other work.
-- **Two ways to work with an outside system, and neither replaces the other.** An assistant can use its own integrations, such as its own Outlook connector beside Homing, with nothing to set up in Homing and no mode switch. What it brings is marked agent-reported and stays private: Homing never claims to have checked the original or who could see it, and it can't watch a system it reaches only through an assistant. When the system is connected to Homing directly, Homing reads it itself, keeps knowledge current and, later, acts in it with no assistant open. Background learning and routines need that. One person can use both for the same system, and Homing never confuses the two accounts, or takes what an assistant reported for what it read itself. Context says plainly what Homing can and can't reach.
+- **Two ways to work with an outside system, and neither replaces the other.** An assistant can use its own integrations, such as its own Outlook connector beside Homing, with nothing to set up in Homing and no mode switch. What it brings is marked agent-reported and stays private: Homing never claims to have checked the original or who could see it, and it can't watch a system it reaches only through an assistant. When the system is connected to Homing directly, Homing reads it itself, keeps knowledge current and, later, acts in it with no assistant open. Background learning and routines need that. One person can use both for the same system, and Homing keeps them apart: it never takes what an assistant reported for what it read itself. Context says plainly what Homing can and can't reach.
 
 **Records.**
 
@@ -326,7 +326,7 @@ A routine is work that happens on its own. It always acts for a person or a spac
 
 A space routine never reads anyone's private side or uses a member's connection, even one set up from that space: if an automation needs your mailbox, it belongs to you. System routines are ordinary routines. Capturing from your mailbox is a routine you own, created when you connect it, even inside a shared space. Capturing from a bound place through a space connection is owned by the space.
 
-**Learning a source's history.** When someone connects a mailbox or another source, they choose how far back Homing learns from it, and whether it keeps learning from what arrives. The first pass uses the same connection and place as ongoing learning, never a separate import. It works through the material in the order it happened, following threads and later corrections, to reconstruct how facts, decisions, projects and relationships changed and establish what holds now. Then it carries on as ongoing learning from where it stopped, so nothing is processed twice. Age alone doesn't decide what matters: current and unfinished work gets closer attention, but an old contract can still apply. Old tasks and events are history, and aren't recreated as current unless evidence says they still are, and an old request never triggers an external action. Where spaces or collections would help, it suggests them rather than creating many. The person sees how far along the pass is, it resumes if interrupted, and its scope can change without starting over. What it learns is private by default, and nothing is published or acted on outside Homing without authorization (§5).
+**Learning a source's history.** When someone connects a mailbox or another source, they choose how far back Homing learns from it, and whether it keeps learning from what arrives. The first pass uses the same connection and place as ongoing learning, never a separate import. It works through the material in the order it happened, following threads and later corrections, to reconstruct how facts, decisions, projects and relationships changed and establish what holds now. Then it carries on as ongoing learning from where it stopped, so nothing is processed twice. Age alone doesn't decide what matters: current and unfinished work gets closer attention, but an old contract can still apply. Old tasks and events are history, and aren't recreated as current unless evidence says they still are. An old request never triggers an external action. Where spaces or collections would help, it suggests them rather than creating many. The person sees how far along the pass is and can pause it, it resumes where it stopped, and its scope can change without starting over. What it learns is private by default, and nothing is published or acted on outside Homing without authorization (§5).
 
 **Private work is automatic; publishing isn't.** A person routine updates its owner's private knowledge, notes and tasks across all their spaces without asking. Weekly planning across clients is an ordinary person routine, and its results stay private. A routine publishes automatically only when both the action and every input are authorized for the destination. Being scoped to a space isn't enough: a private email about Acme doesn't become shareable because the routine runs in Acme.
 
@@ -337,9 +337,9 @@ A space routine never reads anyone's private side or uses a member's connection,
 **Routing.**
 
 - Sources from bound places go to their space.
-- Other sources land on your private side of the space their connection was set up in, or your personal space when no other was chosen. What they teach about any space you can open goes on your private side there, citing them, so a work mailbox set up in your company's space also informs your private side of each client's space.
+- Other sources land on your private side of the space their place was added in, or your personal space when no other was chosen. What they teach about any space you can open goes on your private side there, citing them, so a work mailbox set up in your company's space also informs your private side of each client's space.
 - One source can inform many spaces without being copied, and none of them is primary.
-- Routing shares only what a binding authorizes. Connecting a personal source in a shared space publishes nothing, and sharing a parent space never lets anyone discover your private sources, their titles, excerpts or counts, or what they taught you.
+- Routing shares only what a binding authorizes, and sharing a parent space never lets anyone discover your private sources, their titles, excerpts or counts, or what they taught you.
 - Routing rules are guidance.
 - Unclear knowledge stays private, waiting quietly until it can be placed confidently. An unclear action makes the agent ask.
 
@@ -392,7 +392,7 @@ More about the tools:
 - When an agent proposes sharing something, Homing tells it who will see it: everyone who can open its space, which takes in the spaces above it, up to the first closed one. So the agent shares it where it is, rather than copying it to reach more people.
 - A new system adds actions to `act`, never new tools. `act` validates arguments, authorization and approvals.
 - Whether an action publishes depends on its effect, not its name. A draft in a shared mailbox counts as publishing.
-- The identity used for outgoing actions comes from your preference or from asking, never from the space.
+- The account used for an outgoing action is the one you chose, or the only one that fits, and otherwise Homing asks. It never comes from the space, and Homing never moves to another account on its own.
 
 **Clients.**
 
@@ -414,7 +414,7 @@ Homing works without an AI model, and learns in the background when it has one. 
 
 - The core works without one. Guidance and context are deterministic, knowledge is read and written through MCP, search needs no embeddings, and people and external agents keep knowledge up to date. Without a model, Homing learns only through agents.
 - Setup asks one question: which provider should Homing use for background learning (Claude, OpenAI, a local model…)? Cost and data-handling controls are part of that setup. A deployment sets a default, and a space can override it, for example with "no model processing".
-- Identifier matching runs before any model, so a source that matches a space with no model processing is never sent to one. A source from an unknown sender is processed under the setting of the space where it lands, by default the one its connection was set up in.
+- Identifier matching runs before any model, so a source that matches a space with no model processing is never sent to one. A source from an unknown sender is processed under the setting of the space where it lands (§8).
 - "No model processing" governs only Homing's own inference, not what external assistants do. Self-hosting doesn't keep data local if the model is an external API. Setup states both limits plainly.
 
 **Capabilities are independent.** Each one adds to the core, and none depends on another.
@@ -470,7 +470,7 @@ Connections are to be checked against eight cases, in tests and then in the app:
 5. A space routine can't reach your mailbox, even one you set up from that space.
 6. Revoking an account stops everything that relies on it, and what was already learned keeps its visibility.
 7. Two years of history, then ongoing learning: nothing is processed twice, and no obsolete task comes back.
-8. Someone using both their assistant's Outlook connector and Homing's own: Homing never confuses the two accounts, or what the assistant reported with what it read itself.
+8. Someone using both their assistant's Outlook connector and Homing's own: Homing keeps the two apart, and never takes what the assistant reported for what it read itself.
 
 ## Open questions
 
@@ -478,7 +478,7 @@ Connections are to be checked against eight cases, in tests and then in the app:
 - **Knowledge.** How is it tracked that a source is still available and still permitted? How should active knowledge work: finding gaps, then investigating them on your private side? How does upkeep keep substantial work whole?
 - **Sharing.** Audience reporting for systems beyond email, chat and meetings, such as Asana and Drive, which count as unknown until then. If a private source is deleted, does knowledge published from it stay, flagged "source removed"? Leaning towards yes, because a person vouched for it.
 - **Interface.** How should client integrations work, starting with a Claude Code plugin? How is a session's context captured: through client integrations, learning, or both?
-- **Connections.** How does OAuth to external systems work across tenants? After Microsoft 365, which adapters come next: APIs, MCP clients, local bridges such as iMessage on a Mac, webhooks?
+- **Connections.** After Microsoft 365, how does OAuth to other systems work across tenants, and which adapters come next: APIs, MCP clients, local bridges such as iMessage on a Mac, webhooks?
 - **Records.** Which write operations come first? Calendars: availability, opt-in "busy" blocks, and what event titles reveal. The planning skill: deadlines, priorities, effort, availability, dependencies and private notes.
 - **Routines.** What is the minimal runner for v1 (scheduling, retries, history), and later the full orchestration engine?
 

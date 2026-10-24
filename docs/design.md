@@ -106,6 +106,15 @@ Figtree is the only typeface, and it ships with the app. A screen in the app has
 - Your account lists your connected assistants first, with the address for connecting another, then how you sign in. Disconnecting an assistant and removing a passkey ask first, in place, and the last way to sign in can't be removed.
 - Decisions open inside the app, as one centered column with a single heading that says who wants what, where. A suggested space is decided the same way, with the fields of New space and the assistant's reason, and so is a space the person asked for that others would see, which says why it waits. Once decided, it says where the space is and who has it. Home and the space's overview list both with what's waiting. Sharing something asks "Share this with Acme?" and shows exactly what everyone there would see, on which page, how many people that is, and what it rests on that they can't see, such as one of your emails or another client, which stays yours: they see the text and that you shared it. Sharing an update of something shared shows what everyone sees now above what it changes to, and a page only you have says its title is shared too. The buttons are "Share with Acme" and "Don't share"; once shared, it says so and links to the page, where the item says who shared it and when, and its owner still sees their own sources, marked "Only you". A change of members asks it as a question, such as "Add Cara Lund to Acme?", with the assistant's reason, who it's about, and what it shares or stops sharing with them. For an email nobody uses Homing with, or someone the person no longer shares a space with, it says why it can't be approved, and offers only to decline. When an assistant proposes a rule change, its link opens the decision, after signing in if needed, with the assistant's reason, as every decision has. A new rule shows where it applies and the rules already there; a change shows the rule now above its new wording; a removal says where it stops applying. An include shows the space or skill it points to, set apart, with who gets it and the rules it brings in now; an admin who can't open it is told so and can only decline, though a request to stop including one they can't open, they can approve. If the rule changes while the page is open, approving shows it again instead. A member's change to shared rules comes as a request: they send it from the same page, which then says whose decision it waits for, and an admin sees who asked and why. A plan of several changes says how many in its heading, "Claude wants to make 5 changes in Kitchen renovation", shows them as the card does, and once approved, links to the space.
 
+#### Connections
+
+Connections aren't built yet. When they are, their screens do this.
+
+- A space's Connections is where you connect something for that space, such as your work mailbox in your company's space. It lists the space's own connections and yours, never anyone else's. Each one shows the service and what it reaches, whether it's only yours or authorized for the space, what Homing may do with it, whether learning is running, paused or needs you, and how far through the history it is. Connecting asks only what to connect, who it's for, which starts as only you, how far back to learn, and whether to keep learning from what arrives, so nobody needs to know about connections, places or bindings.
+- Your account's Connected accounts lists the accounts Homing uses, such as "Microsoft 365, work account", with where each is used, and can revoke each. Removing something from a space and revoking the account everywhere are different, and each says what it stops before you confirm.
+- Connected accounts stay apart from connected assistants: Claude reaching Homing isn't Homing reaching Outlook.
+- Connecting can start in a conversation with your assistant. You sign in on the service's own page, and decide any sharing in Homing, like any other decision.
+
 ### Outside the app
 
 - The mark and name sit top left.
@@ -114,15 +123,6 @@ Figtree is the only typeface, and it ships with the app. A screen in the app has
 - "Can't sign in?" leads to a page that sends a sign-in link to a verified email, or, without email, says to ask whoever runs Homing. It reads the same whether or not the account exists.
 - Connecting an assistant is a decision page: "Connect Claude to Homing?", the site it says it comes from, what it can read and save, that changing rules or sharing knowledge needs your approval, and Connect Claude or Cancel.
 - Sign-in with Google or Microsoft uses the providers' own marks, as their guidelines ask.
-
-### Connections
-
-Connections aren't built yet. Their screens are designed when they are, and they show and do this.
-
-- A space's Connections is where you connect something for that space, such as your work mailbox in your company's space. Each connection there shows the service and what it reaches, whether it's only yours or authorized for the space, what Homing may do with it, whether learning is running, paused or needs you, and how far it has got through the history. Connecting asks only what to connect, who it's for, only you to start with, how far back to learn, and whether to keep learning from what arrives, so nobody needs to know about connections, places or bindings.
-- Your account's Connected accounts lists the accounts Homing uses, such as "Microsoft 365, work account", with where each is used, and can disconnect each. Removing something from a space and disconnecting the account everywhere are different, and each says what it stops before you confirm.
-- Connected accounts stay apart from connected assistants: Claude reaching Homing isn't Homing reaching Outlook.
-- Connecting can start in a conversation with your assistant. You sign in on the service's own page, and decide any sharing in Homing, like any other decision.
 
 ## Illustrations
 
