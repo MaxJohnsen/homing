@@ -12,7 +12,7 @@ import { fromNodeHeaders } from 'better-auth/node';
 import postgres from 'postgres';
 import { personOf, withPrincipal, type Session, type Sql } from './db.ts';
 import { MicrosoftRefused, MicrosoftUnreachable, redeem, redirectUri, refresh, signInAddress, whoIs, type MicrosoftSettings, type Tokens } from './microsoft.ts';
-import { spaceView } from './spaces.ts';
+import { accessibleSpaces, spaceView } from './spaces.ts';
 import { SealBroken, type Vault } from './vault.ts';
 import type { App } from './web.ts';
 
@@ -40,8 +40,8 @@ export interface Place {
   kind: 'mailbox';
   addedAt: Date;
   connection: Connection;
-  /** In how many other spaces the person uses the same connection, of those they can open. */
-  elsewhere: number;
+  /** The other spaces the person uses the same connection in, of those they can open. */
+  elsewhere: { id: string; name: string; personal: boolean }[];
 }
 
 interface ConnectionRow {
@@ -75,15 +75,28 @@ function connectionOf(row: ConnectionRow): Connection {
 export async function placesIn(s: Session, spaceId: string): Promise<Place[]> {
   const person = personOf(s.principal);
   if (!person) return [];
-  const rows = await s.tx<(ConnectionRow & { id: string; kind: 'mailbox'; addedAt: Date; elsewhere: number })[]>`
-    select p.id, p.kind, p.added_at, c.id as connection_id, c.provider, c.address, c.name, c.scopes, c.status, c.connected_at, c.refreshed_at,
-           (select count(distinct o.space_id)::int from places o
-            where o.connection_id = c.id and o.removed_at is null and o.space_id <> p.space_id) as elsewhere
+  const rows = await s.tx<(ConnectionRow & { id: string; kind: 'mailbox'; addedAt: Date })[]>`
+    select p.id, p.kind, p.added_at, c.id as connection_id, c.provider, c.address, c.name, c.scopes, c.status, c.connected_at, c.refreshed_at
     from places p join connections c on c.id = p.connection_id
     where p.space_id = ${spaceId}::uuid and p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
     order by p.added_at, p.id
   `;
-  return rows.map((row) => ({ id: row.id, kind: row.kind, addedAt: row.addedAt, connection: connectionOf(row), elsewhere: row.elsewhere }));
+  if (rows.length === 0) return [];
+  // Where else the person uses each connection: only their own places, in spaces they can open.
+  const others = await s.tx<{ connectionId: string; id: string; name: string; personal: boolean }[]>`
+    select o.connection_id, sp.id, sp.name, sp.private_to is not null and sp.parent_id is null as personal
+    from places o join spaces sp on sp.id = o.space_id
+    where o.connection_id in ${s.tx(rows.map((row) => row.connectionId))} and o.private_to = ${person}::uuid and o.removed_at is null
+      and o.space_id <> ${spaceId}::uuid and o.space_id in (${accessibleSpaces(s)})
+    order by o.added_at, o.id
+  `;
+  return rows.map((row) => ({
+    id: row.id,
+    kind: row.kind,
+    addedAt: row.addedAt,
+    connection: connectionOf(row),
+    elsewhere: others.filter((other) => other.connectionId === row.connectionId).map(({ id, name, personal }) => ({ id, name, personal })),
+  }));
 }
 
 /** The person's accounts, each with the spaces it's used in that they can open. */
@@ -191,11 +204,18 @@ export async function accessToken(broker: Broker, person: string, connectionId: 
         await s.tx`select connection_needs_attention(${connectionId}::uuid)`;
         return { unusable: 'needs attention' };
       }
+      // Homing's own settings are wrong, which no one person can fix, so their connections stay as they are.
+      if (error instanceof MicrosoftRefused && error.homingItself) console.error(configurationProblem(error));
       throw error;
     }
   });
   if ('token' in outcome) return outcome.token;
   throw new ConnectionUnusable(outcome.unusable);
+}
+
+/** For whoever runs Homing, when Microsoft refuses Homing itself, such as for a certificate it doesn't know. */
+function configurationProblem(error: MicrosoftRefused): string {
+  return `connections: Microsoft refused this Homing itself (${error.message}). Check MICROSOFT_CLIENT_ID, MICROSOFT_TENANT, and MICROSOFT_CERTIFICATE or MICROSOFT_CLIENT_SECRET, and the app registration. See docs/deployment.md.`;
 }
 
 /** Connecting refused before Microsoft's page, with a message to show. */
@@ -211,6 +231,8 @@ interface Attempt {
   space: string;
   verifier: string;
   nonce: string;
+  /** Signing in again for one of their connections, which the same account has to come back for. */
+  again?: { connection: string; tenant: string; account: string };
 }
 
 const attemptKey = (state: string) => `homing-connect:${state}`;
@@ -224,11 +246,11 @@ const attemptMinutes = 10;
 export async function startConnecting(app: App, who: { person: string; session: string }, spaceId: string, again?: string): Promise<URL | undefined> {
   const found = await withPrincipal(app.sql, { person: who.person }, async (s) => {
     if (!(await spaceView(s, spaceId))) return undefined;
-    if (!again) return { hint: undefined };
-    const [connection] = await s.tx<{ address: string }[]>`
-      select address from connections where id = ${again}::uuid and person_id = ${who.person}::uuid and revoked_at is null
+    if (!again) return {};
+    const [connection] = await s.tx<{ id: string; tenant: string; account: string; address: string }[]>`
+      select id, tenant, account, address from connections where id = ${again}::uuid and person_id = ${who.person}::uuid and revoked_at is null
     `;
-    return { hint: connection?.address };
+    return connection ? { again: connection } : {};
   });
   if (!found) return undefined;
   if (!app.microsoft) throw new ConnectRefused('Microsoft 365 isn’t set up on this Homing.');
@@ -236,30 +258,38 @@ export async function startConnecting(app: App, who: { person: string; session: 
   const verifier = randomBytes(32).toString('base64url');
   const state = randomBytes(24).toString('base64url');
   const nonce = randomBytes(24).toString('base64url');
-  const attempt: Attempt = { person: who.person, session: who.session, space: spaceId, verifier, nonce };
-  const { internalAdapter } = await app.auth.$context;
-  await internalAdapter.createVerificationValue({
-    identifier: attemptKey(state),
-    value: JSON.stringify(attempt),
-    expiresAt: new Date(Date.now() + attemptMinutes * 60_000),
-  });
+  const attempt: Attempt = {
+    person: who.person,
+    session: who.session,
+    space: spaceId,
+    verifier,
+    nonce,
+    again: found.again && { connection: found.again.id, tenant: found.again.tenant, account: found.again.account },
+  };
+  // Attempts nobody came back from go once they've expired.
+  await app.authPool.query(`delete from verification where identifier like 'homing-connect:%' and "expiresAt" < now()`);
+  await app.authPool.query(`insert into verification (identifier, value, "expiresAt") values ($1, $2, now() + make_interval(mins => $3))`, [
+    attemptKey(state),
+    JSON.stringify(attempt),
+    attemptMinutes,
+  ]);
   return signInAddress(app.microsoft, {
     redirectUri: redirectUri(app.url),
     state,
     challenge: createHash('sha256').update(verifier).digest('base64url'),
     nonce,
-    loginHint: found.hint,
+    loginHint: found.again?.address,
   });
 }
 
-/** The attempt a state names, used up as it's taken, so a callback works once. */
+/** The attempt a state names, used up in the same statement that finds it, so a callback works once. */
 async function takeAttempt(app: App, state: string): Promise<Attempt | undefined> {
   if (!state || state.length > 200) return undefined;
-  const { internalAdapter } = await app.auth.$context;
-  const stored = await internalAdapter.findVerificationValue(attemptKey(state));
-  if (!stored) return undefined;
-  await internalAdapter.deleteVerificationByIdentifier(attemptKey(state));
-  return new Date(stored.expiresAt) > new Date() ? (JSON.parse(stored.value) as Attempt) : undefined;
+  const { rows } = await app.authPool.query<{ value: string; current: boolean }>(
+    `delete from verification where identifier = $1 returning value, "expiresAt" > now() as current`,
+    [attemptKey(state)],
+  );
+  return rows[0]?.current ? (JSON.parse(rows[0].value) as Attempt) : undefined;
 }
 
 /**
@@ -298,6 +328,8 @@ export async function finishConnecting(app: App, req: IncomingMessage, res: Serv
 
   try {
     const grant = await redeem(app.microsoft, { code, verifier: attempt.verifier, redirectUri: redirectUri(app.url), nonce: attempt.nonce });
+    // Signing in again with another account fixes nothing, and connects nothing new either.
+    if (attempt.again && (grant.tenant !== attempt.again.tenant || grant.account !== attempt.again.account)) return back('another-account');
     const account = await whoIs(app.microsoft, grant.tokens.access);
     const address = account.address ?? grant.username;
     if (!address) throw new MicrosoftRefused('no_address');
@@ -312,7 +344,7 @@ export async function finishConnecting(app: App, req: IncomingMessage, res: Serv
     return back('connected');
   } catch (error) {
     if (error instanceof MicrosoftRefused) {
-      console.error(`connections: connecting a Microsoft account failed (${error.message})`);
+      console.error(error.homingItself ? configurationProblem(error) : `connections: connecting a Microsoft account failed (${error.message})`);
       // A code used before, or one that expired, as when the page is opened again.
       if (error.code === 'invalid_grant') return back('expired');
       if (error.code === 'no_mailbox') return back('no-mailbox');

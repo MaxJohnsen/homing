@@ -105,7 +105,7 @@ export const sampleConnection: ConnectionData = {
 export const sampleConnections: SpaceConnectionsData = {
   microsoft: true,
   looksAfter: false,
-  places: [{ id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: 1, connection: sampleConnection }],
+  places: [{ id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection }],
 };
 
 export const sampleConnectedAccounts: ConnectedAccountsData = {

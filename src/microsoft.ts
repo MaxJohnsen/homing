@@ -99,16 +99,29 @@ export function certificateCredential(value: string): { key: KeyObject; thumbpri
 export class MicrosoftRefused extends Error {
   override name = 'MicrosoftRefused';
   readonly code: string;
+  /** Microsoft's own number for the reason, such as AADSTS70008, when it gave one. */
+  readonly detail?: string;
   constructor(code: string, detail?: string) {
     // Only what Microsoft's codes are made of, so nothing it sent can shape a log line.
     const plain = (text: string) => text.replace(/[^\w.-]/g, '').slice(0, 60);
     super(`Microsoft refused: ${plain(code)}${detail ? ` (${plain(detail)})` : ''}`);
     this.code = plain(code);
+    this.detail = detail && plain(detail);
   }
 
-  /** Whether only the person can fix it, by signing in again: their consent was revoked, or the sign-in expired. */
+  /**
+   * Whether it concerns this account, so it needs its owner to sign in again: their consent was
+   * withdrawn or the sign-in expired, or their organization doesn't let Homing in any more,
+   * having deleted Homing (AADSTS700016) or turned it off (AADSTS7000112).
+   */
   get signInAgain(): boolean {
-    return ['invalid_grant', 'interaction_required', 'consent_required', 'login_required'].includes(this.code);
+    if (['invalid_grant', 'interaction_required', 'consent_required', 'login_required', 'unauthorized_client'].includes(this.code)) return true;
+    return this.code === 'invalid_client' && (this.detail === 'AADSTS700016' || this.detail === 'AADSTS7000112');
+  }
+
+  /** Whether Homing's own settings are wrong, such as a certificate or secret Microsoft doesn't know, which no one person can fix. */
+  get homingItself(): boolean {
+    return this.code === 'invalid_client' && !this.signInAgain;
   }
 }
 

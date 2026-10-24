@@ -24,6 +24,15 @@ export interface Account {
   noMailbox?: boolean;
 }
 
+/** What the ID token says, which a test can change to see Homing refuse it. */
+export interface IdTokenClaims {
+  nonce?: string;
+  audience: string;
+  issuer: string;
+  tid: string;
+  oid: string;
+}
+
 /** A certificate and its private key in one PEM, made the way docs/deployment.md says, with openssl. */
 export function makeCertificate(): string {
   const folder = mkdtempSync(join(tmpdir(), 'homing-certificate-'));
@@ -47,11 +56,14 @@ export class MicrosoftStandIn {
   /** Every token it handed out, so tests can look for them where they mustn't be. */
   readonly issued: string[] = [];
   private readonly signing = generateKeyPairSync('rsa', { modulusLength: 2048 });
-  private readonly codes = new Map<string, { account: Account; redirectUri: string; challenge: string; nonce: string; audience: string; scope: string; expiresAt: number; used: boolean }>();
+  private readonly codes = new Map<string, { account: Account; redirectUri: string; challenge: string; idToken: IdTokenClaims; scope: string; expiresAt: number; used: boolean }>();
   private readonly refreshTokens = new Map<string, Account>();
   private readonly accessTokens = new Map<string, { account: Account; expiresAt: number }>();
-  /** Accounts whose consent was revoked, or whose sign-in expired: Microsoft refuses their refresh tokens. */
-  readonly refused = new Set<string>();
+  /**
+   * Accounts whose refresh tokens Microsoft refuses, with how: consent revoked or the sign-in
+   * expired (invalid_grant), or their organization deleted or disabled Homing's enterprise app.
+   */
+  private readonly refusals = new Map<string, { error: string; number: number }>();
   private server?: Server;
   url!: string;
 
@@ -81,7 +93,7 @@ export class MicrosoftStandIn {
    * The person signs in on Microsoft's page at this address with an account, and allows Homing:
    * where Microsoft sends their browser back to, with a code and the state.
    */
-  signIn(address: string, account: Account, { expired = false, idToken = {} }: { expired?: boolean; idToken?: { nonce?: string; audience?: string } } = {}): string {
+  signIn(address: string, account: Account, { expired = false, idToken = {} }: { expired?: boolean; idToken?: Partial<IdTokenClaims> } = {}): string {
     const asked = new URL(address).searchParams;
     if (asked.get('response_type') !== 'code' || asked.get('code_challenge_method') !== 'S256' || asked.get('client_id') !== this.clientId) {
       throw new Error(`Microsoft wouldn't sign in for ${address}`);
@@ -91,8 +103,7 @@ export class MicrosoftStandIn {
       account,
       redirectUri: asked.get('redirect_uri')!,
       challenge: asked.get('code_challenge')!,
-      nonce: idToken.nonce ?? asked.get('nonce')!,
-      audience: idToken.audience ?? this.clientId,
+      idToken: { nonce: asked.get('nonce')!, audience: this.clientId, issuer: `${this.url}/${account.tenant}/v2.0`, tid: account.tenant, oid: account.oid, ...idToken },
       scope: asked.get('scope')!,
       expiresAt: Date.now() + (expired ? -1000 : 10 * 60_000),
       used: false,
@@ -108,6 +119,16 @@ export class MicrosoftStandIn {
     const back = new URL(asked.get('redirect_uri')!);
     back.search = new URLSearchParams({ error: 'access_denied', error_description: 'AADSTS65004: User declined to consent.', state: asked.get('state')! }).toString();
     return back.toString();
+  }
+
+  /** Microsoft refuses the account's refresh tokens from now on, by default because its consent was revoked. */
+  refuse(account: Account, error = 'invalid_grant', number = 50173) {
+    this.refusals.set(account.oid, { error, number });
+  }
+
+  /** Microsoft takes the account's refresh tokens again. */
+  allow(account: Account) {
+    this.refusals.delete(account.oid);
   }
 
   /** Expires an account's access tokens, so the next use needs a refresh. */
@@ -161,26 +182,29 @@ export class MicrosoftStandIn {
       const verifier = form.get('code_verifier') ?? '';
       if (createHash('sha256').update(verifier).digest('base64url') !== code.challenge) return refuse('invalid_grant', 501481);
       code.used = true;
-      return { status: 200, body: await this.tokensFor(code.account, code.scope, code.nonce, code.audience) };
+      return { status: 200, body: await this.tokensFor(code.account, code.scope, code.idToken) };
     }
     if (form.get('grant_type') === 'refresh_token') {
       this.asked.refreshes++;
       const account = this.refreshTokens.get(form.get('refresh_token') ?? '');
-      if (!account || this.refused.has(account.oid)) return refuse('invalid_grant', 50173);
+      if (!account) return refuse('invalid_grant', 9002313);
+      const refusal = this.refusals.get(account.oid);
+      if (refusal) return { ...refuse(refusal.error, refusal.number), status: refusal.error === 'invalid_client' ? 401 : 400 };
       return { status: 200, body: await this.tokensFor(account, form.get('scope') ?? '') };
     }
     return refuse('unsupported_grant_type', 70003);
   }
 
-  private async tokensFor(account: Account, scope: string, nonce?: string, audience = this.clientId) {
+  private async tokensFor(account: Account, scope: string, claims?: IdTokenClaims) {
     const access = `access-${randomBytes(24).toString('base64url')}`;
     const refresh = `refresh-${randomBytes(24).toString('base64url')}`;
     this.accessTokens.set(access, { account, expiresAt: Date.now() + 3600_000 });
     this.refreshTokens.set(refresh, account);
     this.issued.push(access, refresh);
-    const idToken = await new SignJWT({ tid: account.tenant, oid: account.oid, preferred_username: account.address, name: account.name, ...(nonce && { nonce }) })
+    const { nonce, audience, issuer, tid, oid } = claims ?? { audience: this.clientId, issuer: `${this.url}/${account.tenant}/v2.0`, tid: account.tenant, oid: account.oid };
+    const idToken = await new SignJWT({ tid, oid, preferred_username: account.address, name: account.name, ...(nonce && { nonce }) })
       .setProtectedHeader({ alg: 'RS256', typ: 'JWT' })
-      .setIssuer(`${this.url}/${account.tenant}/v2.0`)
+      .setIssuer(issuer)
       .setAudience(audience)
       .setIssuedAt()
       .setExpirationTime('1h')

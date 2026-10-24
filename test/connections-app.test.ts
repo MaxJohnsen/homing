@@ -16,7 +16,7 @@ import { addMember, createSpace } from '../src/spaces.ts';
 import { vault } from '../src/vault.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { Browser } from './browser.ts';
-import { admin, as, db, member, refused, type Member } from './helpers.ts';
+import { admin, as, db, member, refused, until, type Member } from './helpers.ts';
 import { MicrosoftStandIn, type Account } from './microsoft.ts';
 import { inTestDatabase } from './reset.ts';
 
@@ -59,7 +59,7 @@ async function connect(who: Member, space: string, account: Account) {
   return listed.body.places.find((place: { connection: { address: string } }) => place.connection.address === account.address) as {
     id: string;
     connection: { id: string; address: string; status: string; can: string[] };
-    elsewhere: number;
+    elsewhere: { id: string; name: string; personal: boolean }[];
   };
 }
 
@@ -146,16 +146,16 @@ test('connecting again with the same account, in another space, uses the same co
   const inAcme = await connect(ana, acme, account);
   const inPersonal = await connect(ana, ana.personalSpaceId, account);
   assert.equal(inPersonal.connection.id, inAcme.connection.id);
-  assert.equal(inPersonal.elsewhere, 1);
+  assert.deepEqual(inPersonal.elsewhere, [{ id: acme, name: 'Acme', personal: false }]);
   const again = await connect(ana, acme, account);
   assert.equal(again.id, inAcme.id, 'still one place in Acme');
   const [listed] = (await accounts(ana)).filter((candidate) => candidate.address === account.address);
   assert.deepEqual(listed.places.map((used) => used.space.personal).sort(), [false, true]);
 });
 
-describe('a sign-in that isn’t this person’s attempt, now, connects nothing', () => {
-  const connectionsOfAna = async () => (await admin`select count(*)::int as count from connections where person_id = ${ana.id}`)[0].count as number;
+const connectionsOfAna = async () => (await admin`select count(*)::int as count from connections where person_id = ${ana.id}`)[0].count as number;
 
+describe('a sign-in that isn’t this person’s attempt, now, connects nothing', () => {
   test('a made-up state, or no session', async () => {
     const before = await connectionsOfAna();
     const callback = new URL(microsoft.signIn(await start(ana, acme), work('Ana')));
@@ -192,6 +192,13 @@ describe('a sign-in that isn’t this person’s attempt, now, connects nothing'
     assert.equal(await back(ana, first), '/account?connection=expired');
     assert.equal(microsoft.asked.codes, redeemed);
 
+    // The same answer twice at once: the attempt is used up by whichever comes first.
+    const twice = microsoft.signIn(await start(ana, acme), account);
+    const asked = microsoft.asked.codes;
+    const answers = await Promise.all([back(ana, twice), back(ana, twice), back(ana, twice)]);
+    assert.deepEqual(answers.filter((to) => to.endsWith('connection=connected')).length, 1, answers.join());
+    assert.equal(microsoft.asked.codes, asked + 1);
+
     // The used code, brought back with a fresh attempt's state: Microsoft refuses it.
     const used = new URL(first).searchParams.get('code')!;
     const fresh = new URL(microsoft.signIn(await start(ana, acme), account));
@@ -209,10 +216,11 @@ describe('a sign-in that isn’t this person’s attempt, now, connects nothing'
     assert.equal(await connectionsOfAna(), before + 1);
   });
 
-  test('an ID token from another sign-in, or for another app', async () => {
+  test('an ID token from another sign-in, for another app, or from another issuer', async () => {
     const before = await connectionsOfAna();
-    for (const idToken of [{ nonce: 'a-nonce-from-another-sign-in' }, { audience: crypto.randomUUID() }]) {
-      assert.equal(await back(ana, microsoft.signIn(await start(ana, acme), work('Ana'), { idToken })), `/spaces/${acme}/connections?connection=failed`);
+    const account = work('Ana');
+    for (const idToken of [{ nonce: 'a-nonce-from-another-sign-in' }, { audience: crypto.randomUUID() }, { issuer: `https://login.example.test/${account.tenant}/v2.0` }]) {
+      assert.equal(await back(ana, microsoft.signIn(await start(ana, acme), account, { idToken })), `/spaces/${acme}/connections?connection=failed`, JSON.stringify(idToken));
     }
     assert.match(logged.join('\n'), /invalid_id_token/);
     assert.equal(await connectionsOfAna(), before);
@@ -225,7 +233,23 @@ describe('a sign-in that isn’t this person’s attempt, now, connects nothing'
     assert.equal(await connectionsOfAna(), before);
   });
 
-  test('a space Ana can’t open', async () => {
+  test('a space Ana can’t open, or no longer can', async () => {
+    const together = await as(cara, async (s) => {
+      const space = await createSpace(s, { name: 'Beta projects' });
+      await addMember(s, space, ana.id);
+      return space;
+    });
+    const place = await connect(ana, together, work('Ana'));
+    await as(cara, (s) => s.tx`select remove_member(${together}::uuid, ${ana.id}::uuid)`);
+    // Her place there is out of sight with the space, even straight against the database.
+    await as(ana, async (s) => assert.equal((await s.tx`select id from places where space_id = ${together}::uuid or id = ${place.id}::uuid`).length, 0));
+    assert.equal((await ana.browser.json(`/api/spaces/${together}/connections`)).status, 404);
+    assert.ok((await accounts(ana)).every((connection) => connection.places.every((used) => used.space.id !== together)));
+    const startedThere = await ana.browser.json(`/api/spaces/${together}/connections/microsoft`, {});
+    assert.equal(startedThere.status, 404);
+  });
+
+  test('a space Ana never could open', async () => {
     const theirs = await as(cara, (s) => createSpace(s, { name: 'Cara’s own' }));
     const refusedHere = await ana.browser.json(`/api/spaces/${theirs}/connections/microsoft`, {});
     const nowhere = await ana.browser.json(`/api/spaces/${crypto.randomUUID()}/connections/microsoft`, {});
@@ -335,7 +359,7 @@ test('Homing refreshes an expired sign-in, and one Microsoft refuses needs atten
   assert.ok(stored.refreshedAt > before);
 
   // Ana revokes Homing's access at Microsoft. The next refresh is refused, and the connection needs her.
-  microsoft.refused.add(account.oid);
+  microsoft.refuse(account);
   await admin`update credentials set access_expires_at = now() - interval '1 minute' where connection_id = ${id}`;
   await assert.rejects(accessToken(broker(), ana.id, id), (error) => error instanceof ConnectionUnusable && error.reason === 'needs attention');
   assert.match(logged.join('\n'), /needs attention \(Microsoft refused: invalid_grant \(AADSTS50173\)\)/);
@@ -348,7 +372,7 @@ test('Homing refreshes an expired sign-in, and one Microsoft refuses needs atten
   assert.equal(microsoft.asked.refreshes, tried);
 
   // Signing in again, for the same connection, brings it back.
-  microsoft.refused.delete(account.oid);
+  microsoft.allow(account);
   const again = await start(ana, acme, { again: id });
   assert.equal(new URL(again).searchParams.get('login_hint'), account.address);
   assert.equal(await back(ana, microsoft.signIn(again, account)), `/spaces/${acme}/connections?connection=connected`);
@@ -358,6 +382,102 @@ test('Homing refreshes an expired sign-in, and one Microsoft refuses needs atten
   // Sealed tokens that don't open, as after changing HOMING_SECRET, need attention too, and say so.
   await assert.rejects(accessToken({ ...broker(), vault: vault('a-different-secret-that-is-long-enough') }, ana.id, id), (error) => error instanceof ConnectionUnusable && error.reason === 'needs attention');
   for (const token of microsoft.issued) assert.ok(!logged.join('\n').includes(token));
+});
+
+test('signing in again with another account fixes nothing, and says so', async () => {
+  const account = work('Ana');
+  const place = await connect(ana, acme, account);
+  microsoft.refuse(account);
+  await admin`update credentials set access_expires_at = now() - interval '1 minute' where connection_id = ${place.connection.id}`;
+  await assert.rejects(accessToken(broker(), ana.id, place.connection.id), ConnectionUnusable);
+
+  const other = work('Ana');
+  const before = await connectionsOfAna();
+  assert.equal(await back(ana, microsoft.signIn(await start(ana, acme, { again: place.connection.id }), other)), `/spaces/${acme}/connections?connection=another-account`);
+  assert.equal((await accounts(ana)).find((candidate) => candidate.id === place.connection.id)?.status, 'needs attention');
+  assert.equal(await connectionsOfAna(), before, 'nor does the other account get connected');
+  microsoft.allow(account);
+});
+
+describe('when Microsoft refuses a refresh', () => {
+  const refreshRefused = async (error: string, number: number) => {
+    const account = work('Ana');
+    const place = await connect(ana, acme, account);
+    microsoft.refuse(account, error, number);
+    await admin`update credentials set access_expires_at = now() - interval '1 minute' where connection_id = ${place.connection.id}`;
+    const outcome = await accessToken(broker(), ana.id, place.connection.id).then(() => 'used', (refusal: Error) => refusal);
+    const [{ status }] = await admin`select status from connections where id = ${place.connection.id}`;
+    return { outcome, status };
+  };
+
+  test('because Ana’s organization deleted Homing, turned it off, or doesn’t let her use it, her connection needs attention', async () => {
+    for (const [error, number] of [['invalid_client', 700016], ['invalid_client', 7000112], ['unauthorized_client', 700016]] as const) {
+      const { outcome, status } = await refreshRefused(error, number);
+      assert.ok(outcome instanceof ConnectionUnusable && outcome.reason === 'needs attention', `${error} ${number}`);
+      assert.equal(status, 'needs attention', `${error} ${number}`);
+    }
+  });
+
+  test('because Homing’s own certificate or secret is wrong, nobody’s connection is blamed, and the log says what to check', async () => {
+    for (const number of [700027, 7000215]) {
+      const { outcome, status } = await refreshRefused('invalid_client', number);
+      assert.ok(!(outcome instanceof ConnectionUnusable), String(number));
+      assert.equal(status, 'connected');
+    }
+    assert.match(logged.join('\n'), /Microsoft refused this Homing itself \(Microsoft refused: invalid_client \(AADSTS7000215\)\)\. Check MICROSOFT_CLIENT_ID/);
+  });
+});
+
+test('two sign-ins with the same account at once make one connection and one place', async () => {
+  const account = work('Ana');
+  const keep = (s: Parameters<Parameters<typeof as>[1]>[0]) => s.tx<{ connectionId: string; placeId: string }[]>`
+    select * from connect_mailbox(${acme}::uuid, 'microsoft', ${account.tenant}, ${account.oid}, ${account.address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[])
+  `;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  let kept = false;
+  const first = as({ person: ana.id, direct: true }, async (s) => {
+    const [row] = await keep(s);
+    kept = true;
+    await held;
+    return row;
+  });
+  await until(async () => kept);
+  const second = as({ person: ana.id, direct: true }, async (s) => (await keep(s))[0]);
+  // The second waits for the first to commit.
+  await until(async () => (await admin`select count(*)::int as count from pg_stat_activity where wait_event_type = 'Lock' and datname = current_database()`)[0].count > 0);
+  release();
+  const [a, b] = await Promise.all([first, second]);
+  assert.deepEqual(b, a);
+  assert.equal((await admin`select count(*)::int as count from connections where account = ${account.oid}`)[0].count, 1);
+});
+
+test('a personal Microsoft account connects too', async () => {
+  const personal: Account = { tenant: '9188040d-6c67-4c5b-b112-36a304b66dad', oid: `00000000-0000-0000-${crypto.randomUUID().slice(19)}`, address: `ana.${++n}@outlook.test`, name: 'Ana Berg' };
+  const place = await connect(ana, ana.personalSpaceId, personal);
+  assert.deepEqual([place.connection.address, place.connection.status], [personal.address, 'connected']);
+  const [stored] = await admin`select tenant, account from connections where id = ${place.connection.id}`;
+  assert.deepEqual(stored, { tenant: personal.tenant, account: personal.oid });
+});
+
+describe('a Homing set up for one organization’s directory', () => {
+  const acmeDirectory = '7d2b1c9e-0000-4000-8000-0000000ac3e0';
+  let pinned: Homing;
+  let eve: Member;
+  before(async () => {
+    pinned = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), microsoft: { ...microsoft.settings(), tenant: acmeDirectory }, logRequests: false });
+    eve = await member(pinned.url, 'Eve');
+  });
+  after(() => pinned.close());
+
+  test('connects accounts from that directory, and no other', async () => {
+    const elsewhere: Account = { ...work('Eve'), tenant: '0b6e3f4a-1c2d-4e5f-8a9b-0c1d2e3f4a5b' };
+    const startedOther = new URL(await start(eve, eve.personalSpaceId));
+    assert.equal(startedOther.pathname, `/${acmeDirectory}/oauth2/v2.0/authorize`);
+    assert.equal(await back(eve, microsoft.signIn(startedOther.toString(), elsewhere)), `/spaces/${eve.personalSpaceId}/connections?connection=failed`);
+    assert.equal(await back(eve, microsoft.signIn(await start(eve, eve.personalSpaceId), work('Eve'))), `/spaces/${eve.personalSpaceId}/connections?connection=connected`);
+    assert.deepEqual((await admin`select tenant from connections where person_id = ${eve.id}`).map((row) => row.tenant), [acmeDirectory]);
+  });
 });
 
 test('revoking an account stops everything relying on it, in every space, at once', async () => {

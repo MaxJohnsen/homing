@@ -51,11 +51,12 @@ People connect their mailbox from a space's Connections, signing in on Microsoft
    - **Supported account types:** "Accounts in any organizational directory and personal Microsoft accounts" lets anyone connect a work or personal account, and goes with `MICROSOFT_TENANT=common`. "Accounts in any organizational directory" takes work accounts only (`organizations`), and "this organizational directory only" your own organization's (its directory ID).
    - **Redirect URI:** platform Web, your `HOMING_URL` followed by `/connections/microsoft/callback`, such as `https://homing.example.com/connections/microsoft/callback`. A local install uses `http://localhost:4100/connections/microsoft/callback`.
 2. Under API permissions, add Microsoft Graph's delegated permissions `openid`, `profile`, `email`, `offline_access`, `User.Read` and `Mail.Read`, and no application permissions.
-3. Make a certificate, and upload `certificate.pem` under Certificates & secrets. It holds no key. Keep `microsoft.pem` on the server alone, readable only by Homing, which runs as user 1000 in its container.
+3. Make a certificate, and upload `certificate.pem` under Certificates & secrets. It holds no key. Keep `microsoft.pem` on the server alone, owned by user 1000, which Homing runs as in its container, and readable only by it.
 
    ```sh
    openssl req -x509 -newkey rsa:2048 -nodes -days 730 -subj "/CN=Homing" -keyout key.pem -out certificate.pem
    cat key.pem certificate.pem > microsoft.pem && rm key.pem && chmod 600 microsoft.pem
+   sudo chown 1000:1000 microsoft.pem
    ```
 
    Before it expires, upload a new one beside it, then switch Homing to it. From a month before, Homing warns in its log when it starts. A client secret works too, but a certificate's key never leaves your server.
@@ -85,7 +86,7 @@ An organization decides in its own Entra ID who may connect, under Enterprise ap
 - **Admin consent.** Many organizations let people allow only apps from verified publishers, so their admin approves Homing first, for everyone there. An admin connects their own mailbox and ticks "Consent on behalf of your organization" on Microsoft's page, or, under Enterprise applications, opens Homing and chooses Permissions, then "Grant admin consent".
 - **Assignment required.** To let only some people connect, open Homing under Enterprise applications, set "Assignment required?" to Yes in its Properties, and add those people or their groups under Users and groups. Microsoft turns everyone else away on its own page.
 
-Revoking an account in Homing deletes Homing's sign-in for it. Someone who also wants to withdraw their consent on Microsoft's side does it at [My Apps](https://myapps.microsoft.com) for a work account, or at [account.live.com/consent/Manage](https://account.live.com/consent/Manage) for a personal one. An organization that removes Homing from its Enterprise applications stops it for everyone there, and their connections then need attention.
+Revoking an account in Homing deletes Homing's sign-in for it. Someone who also wants to withdraw their consent on Microsoft's side does it at [My Apps](https://myapps.microsoft.com) for a work account, or at [account.live.com/consent/Manage](https://account.live.com/consent/Manage) for a personal one. An organization that deletes or disables Homing under its Enterprise applications, or withdraws its consent, stops it for everyone there: each of their connections needs attention the next time Homing uses it. If Microsoft instead refuses Homing itself, as with a certificate or secret it doesn't know, nobody's connection is marked: the log says which setting to check.
 
 ## Updating
 

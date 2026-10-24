@@ -28,6 +28,7 @@ const notices: Record<ConnectionNotice, { text: string; problem: boolean }> = {
   failed: { text: 'Microsoft didn’t connect the account, so nothing changed. Try again, and if it keeps happening, tell whoever looks after Homing.', problem: true },
   unreachable: { text: 'Homing couldn’t reach Microsoft, so nothing was connected. Try again in a moment.', problem: true },
   'no-mailbox': { text: 'That account has no mailbox Homing can read, so nothing was connected. Sign in with the account you use for email.', problem: true },
+  'another-account': { text: 'You signed in with another Microsoft account, so nothing changed. Sign in again with the account that needs you.', problem: true },
 };
 
 /**
@@ -71,7 +72,7 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
     setProblem(answer);
     return answer;
   };
-  const elsewhere = place.elsewhere === 1 ? '1 other space' : `${place.elsewhere} other spaces`;
+  const elsewhere = listed(place.elsewhere.map((other) => (other.personal ? 'your personal space' : other.name)));
   return (
     <li className="flex flex-col gap-3 rounded-xl bg-card px-4 py-3">
       <div className="flex items-start gap-3">
@@ -98,7 +99,7 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
       {actions && removing && (
         <div role="group" aria-label={`Remove from ${here}`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
           <p className="text-sm">
-            Homing stops using {connection.address} in {here}. The account stays connected{place.elsewhere > 0 && `, and in use in ${elsewhere},`} until you revoke it in{' '}
+            Homing stops using {connection.address} in {here}. The account stays connected{place.elsewhere.length > 0 && `, and in use in ${elsewhere},`} until you revoke it in{' '}
             <Link href="/account" className={cn('rounded-sm underline underline-offset-[3px]', focusRing)}>your account</Link>.
           </p>
           <div className="flex flex-wrap gap-2">

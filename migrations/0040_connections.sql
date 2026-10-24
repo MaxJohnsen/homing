@@ -120,6 +120,8 @@ create function connect_mailbox(
 )
 language plpgsql security definer set search_path = public, pg_temp
 as $$
+-- In the conflict targets below, connection_id and the account's fields name columns.
+#variable_conflict use_column
 declare
   me uuid := current_person_id();
 begin
@@ -132,28 +134,31 @@ begin
     raise exception 'no access to the space' using errcode = 'insufficient_privilege';
   end if;
 
-  select c.id into connection_id from connections c
-  where c.person_id = me and c.provider = connect_mailbox.provider and c.tenant = connect_mailbox.tenant
-    and c.account = connect_mailbox.account and c.revoked_at is null
-  for update;
+  -- Two sign-ins with the same account at once make one connection and one place: the second
+  -- waits for the first, inserts nothing, and finds what the first made.
+  insert into connections (person_id, provider, tenant, account, address, name, scopes)
+  values (me, connect_mailbox.provider, connect_mailbox.tenant, connect_mailbox.account, connect_mailbox.address, connect_mailbox.name, connect_mailbox.scopes)
+  on conflict (person_id, provider, tenant, account) where revoked_at is null do nothing
+  returning id into connection_id;
   if connection_id is null then
-    insert into connections (person_id, provider, tenant, account, address, name, scopes)
-    values (me, connect_mailbox.provider, connect_mailbox.tenant, connect_mailbox.account, connect_mailbox.address, connect_mailbox.name, connect_mailbox.scopes)
-    returning id into connection_id;
-  else
+    select c.id into connection_id from connections c
+    where c.person_id = me and c.provider = connect_mailbox.provider and c.tenant = connect_mailbox.tenant
+      and c.account = connect_mailbox.account and c.revoked_at is null
+    for update;
     update connections c
     set address = connect_mailbox.address, name = connect_mailbox.name, scopes = connect_mailbox.scopes,
         status = 'connected', refreshed_at = now()
     where c.id = connection_id;
   end if;
 
-  select p.id into place_id from places p
-  where p.connection_id = connect_mailbox.connection_id and p.space_id = space and p.kind = 'mailbox'
-    and p.resource = connect_mailbox.account and p.removed_at is null;
+  insert into places (connection_id, space_id, private_to, kind, resource)
+  values (connect_mailbox.connection_id, space, me, 'mailbox', connect_mailbox.account)
+  on conflict (connection_id, space_id, kind, resource) where removed_at is null do nothing
+  returning id into place_id;
   if place_id is null then
-    insert into places (connection_id, space_id, private_to, kind, resource)
-    values (connect_mailbox.connection_id, space, me, 'mailbox', connect_mailbox.account)
-    returning id into place_id;
+    select p.id into place_id from places p
+    where p.connection_id = connect_mailbox.connection_id and p.space_id = space and p.kind = 'mailbox'
+      and p.resource = connect_mailbox.account and p.removed_at is null;
   end if;
 end
 $$;

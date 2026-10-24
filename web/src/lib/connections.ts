@@ -18,8 +18,8 @@ export interface PlaceData {
   id: string;
   kind: 'mailbox';
   addedAt: string;
-  /** In how many other spaces you use the same account. */
-  elsewhere: number;
+  /** The other spaces you use the same account in. */
+  elsewhere: { id: string; name: string; personal: boolean }[];
   connection: ConnectionData;
 }
 
@@ -42,6 +42,6 @@ export interface ConnectedAccountsData {
 }
 
 /** What happened when you came back from signing in with Microsoft. */
-export type ConnectionNotice = 'connected' | 'declined' | 'expired' | 'failed' | 'unreachable' | 'no-mailbox';
+export type ConnectionNotice = 'connected' | 'declined' | 'expired' | 'failed' | 'unreachable' | 'no-mailbox' | 'another-account';
 
-export const connectionNotices: ConnectionNotice[] = ['connected', 'declined', 'expired', 'failed', 'unreachable', 'no-mailbox'];
+export const connectionNotices: ConnectionNotice[] = ['connected', 'declined', 'expired', 'failed', 'unreachable', 'no-mailbox', 'another-account'];
