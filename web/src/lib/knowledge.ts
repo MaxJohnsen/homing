@@ -144,10 +144,11 @@ export function theirAssistant(author: Author, agent: string): string {
 
 /**
  * What a source is called: its reference, or, for an email Homing read in your mailbox, whose email
- * it is, since its reference is for assistants to open it again.
+ * it is, since its reference is for assistants to open it again. Those start microsoft:, and mail:
+ * before Homing had connectors.
  */
 export function sourceName(source: { reference: string | null; excerpt: string }, unnamed = 'A source without a name'): string {
-  if (!source.reference?.startsWith('mail:')) return source.reference ?? unnamed;
+  if (!/^(mail|microsoft):/.test(source.reference ?? '')) return source.reference ?? unnamed;
   const from = /^From: (.+?)(?: <[^>]*>)?$/m.exec(source.excerpt)?.[1];
   return from && from !== 'unknown' ? `${from}’s email` : 'An email';
 }

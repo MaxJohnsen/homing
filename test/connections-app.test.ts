@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { accessToken, ConnectionUnusable } from '../src/connections.ts';
+import { connectorsFor } from '../src/connectors.ts';
 import { authDatabaseUrl } from '../src/db.ts';
 import { createPage, readItem, writeItem } from '../src/knowledge.ts';
 import { developmentSecret, startServer, type Homing } from '../src/server.ts';
@@ -65,7 +66,7 @@ async function connect(who: Member, space: string, account: Account) {
 
 const connectionsIn = async (who: Member, space: string) => (await who.browser.json(`/api/spaces/${space}/connections`)).body.places as { id: string; connection: { id: string; status: string } }[];
 const accounts = async (who: Member) => (await who.browser.json('/api/connections')).body.connections as { id: string; address: string; status: string; places: { id: string; space: { id: string; name: string; personal: boolean } }[] }[];
-const broker = () => ({ sql: db, vault: keys, microsoft: microsoft.settings() });
+const broker = () => ({ sql: db, vault: keys, connectors: connectorsFor({ microsoft: microsoft.settings() }) });
 
 // What Homing writes to its log while each test runs, so a test can show no token is in it.
 let logged: string[] = [];
@@ -314,7 +315,8 @@ test('Ana’s assistant can’t read or use her credentials, or connect anything
   await assert.rejects(as(claude, (s) => s.tx`select * from credentials_of(${place.connection.id}::uuid)`), refused);
   await assert.rejects(as(claude, (s) => s.tx`select * from credentials`), refused);
   await assert.rejects(as(claude, (s) => s.tx`select keep_credentials(${place.connection.id}::uuid, '\\x00', null, null)`), refused);
-  await assert.rejects(as(claude, (s) => s.tx`select * from connect_mailbox(${acme}::uuid, 'microsoft', 't', 'a', 'x@acme.test', null, '{Mail.Read}')`), refused);
+  await assert.rejects(as(claude, (s) => s.tx`select connect_account(${acme}::uuid, 'microsoft', 't', 'a', 'x@acme.test', null, '{Mail.Read}')`), refused);
+  await assert.rejects(as(claude, (s) => s.tx`select add_place(${acme}::uuid, ${place.connection.id}::uuid, 'mailbox', 'x')`), refused);
   await assert.rejects(as(claude, (s) => s.tx`select remove_place(${place.id}::uuid)`), refused);
   await assert.rejects(as(claude, (s) => s.tx`select revoke_connection(${place.connection.id}::uuid)`), refused);
   // Not even marked direct, which only Homing's own app does.
@@ -432,8 +434,12 @@ describe('when Microsoft refuses a refresh', () => {
 
 test('two sign-ins with the same account at once make one connection and one place', async () => {
   const account = work('Ana');
+  // As Microsoft's callback keeps them: the account, then its mailbox, in one transaction.
   const keep = (s: Parameters<Parameters<typeof as>[1]>[0]) => s.tx<{ connectionId: string; placeId: string }[]>`
-    select * from connect_mailbox(${acme}::uuid, 'microsoft', ${account.tenant}, ${account.oid}, ${account.address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[])
+    with connection as (
+      select connect_account(${acme}::uuid, 'microsoft', ${account.tenant}, ${account.oid}, ${account.address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[]) as id
+    )
+    select id as connection_id, add_place(${acme}::uuid, id, 'mailbox', ${account.oid}) as place_id from connection
   `;
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));

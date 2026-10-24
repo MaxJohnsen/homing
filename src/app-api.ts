@@ -4,7 +4,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import postgres from 'postgres';
 import { hiddenMessage } from './bundle.ts';
-import { ConnectRefused, connectionsOf, placesIn, removePlace, revokeConnection, startConnecting, type Connection } from './connections.ts';
+import { abilitiesOf, ConnectRefused, connectionsOf, placesIn, removePlace, revokeConnection, startConnecting, type Connection } from './connections.ts';
+import type { Connectors } from './connectors.ts';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
@@ -54,6 +55,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
   const noPage = { message: 'There’s no page here that you can open.' };
   const noItem = { message: 'There’s nothing here that you can change.' };
   const noRule = { message: 'There’s no rule here that you can change.' };
+  const microsoft = app.connectors.get('microsoft')?.ready ?? false;
   const looksAfter = async () =>
     (await read((s) => s.tx<{ instanceAdmin: boolean }[]>`select instance_admin from people where id = ${person}::uuid`))[0]?.instanceAdmin ?? false;
 
@@ -906,19 +908,22 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const found = await read(async (s) => ((await spaceView(s, route.id)) ? placesIn(s, route.id) : undefined));
         if (!found) return answer(res, 404, noSpace);
         json(res, 200, {
-          microsoft: Boolean(app.microsoft),
+          microsoft,
           // Whoever looks after Homing is told how to set it up; nobody else is offered anything that can't work.
-          looksAfter: !app.microsoft && (await looksAfter()),
-          places: found.map((place) => ({ id: place.id, kind: place.kind, addedAt: place.addedAt, elsewhere: place.elsewhere, connection: connectionData(place.connection) })),
+          looksAfter: !microsoft && (await looksAfter()),
+          places: found.map((place) => ({ id: place.id, kind: place.kind, addedAt: place.addedAt, elsewhere: place.elsewhere, connection: connectionData(app.connectors, place.connection) })),
         });
         break;
       }
 
-      case 'connect microsoft': {
+      case 'connect': {
+        // A system this Homing has a connector for, such as Microsoft 365, set up or not.
+        const connector = app.connectors.get(route.connector);
+        if (!connector) return answer(res, 404, { message: 'Not found.' });
         const body = await readJson(req);
         const again = typeof body.again === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.again) ? body.again.toLowerCase() : undefined;
         try {
-          const address = await startConnecting(app, { person, session: session.session.id }, route.id, again);
+          const address = await startConnecting(app, { person, session: session.session.id }, route.id, connector, again);
           if (!address) return answer(res, 404, noSpace);
           json(res, 200, { url: address.toString() });
         } catch (error) {
@@ -938,9 +943,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const found = await read(async (s) => ({ connections: await connectionsOf(s), spaces: await listSpaces(s) }));
         const spaces = new Map(found.spaces.map((space) => [space.id, space]));
         json(res, 200, {
-          microsoft: Boolean(app.microsoft),
+          microsoft,
           connections: found.connections.map((connection) => ({
-            ...connectionData(connection),
+            ...connectionData(app.connectors, connection),
             // Where it's used, in the spaces the person can open.
             places: connection.places.flatMap(({ id, spaceId }) => {
               const space = spaces.get(spaceId);
@@ -1058,9 +1063,10 @@ function authorOf(names: Map<string, string>, person: string, writtenBy: string 
 }
 
 /** A connection as the app shows it to its owner: what it is, what Homing may do, and whether it works. Never its credentials. */
-function connectionData(connection: Connection) {
-  const { id, service, address, name, can, status, connectedAt, refreshedAt } = connection;
-  return { id, service, address, name, can, status, connectedAt, refreshedAt };
+function connectionData(connectors: Connectors, connection: Connection) {
+  const { id, provider, address, name, status, connectedAt, refreshedAt } = connection;
+  const service = connectors.get(provider)?.name ?? provider;
+  return { id, service, address, name, can: abilitiesOf(connectors, connection), status, connectedAt, refreshedAt };
 }
 
 function answer(res: ServerResponse, status: number, body: unknown): true {
@@ -1071,7 +1077,8 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'connect microsoft' | 'remove place' | 'revoke connection'; id: string };
+  | { name: 'connect'; id: string; connector: string }
+  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -1112,6 +1119,9 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/import/preview') return { name: 'import preview' };
     const member = new RegExp(`^/api/spaces/${uuid}/members/${uuid}$`, 'i').exec(path);
     if (member) return { name: 'change member', id: member[1].toLowerCase(), person: member[2].toLowerCase() };
+    // Connecting an account of a system, such as Microsoft 365, in a space.
+    const connecting = new RegExp(`^/api/spaces/${uuid}/connections/([a-z][a-z0-9]*)$`, 'i').exec(path);
+    if (connecting) return { name: 'connect', id: connecting[1].toLowerCase(), connector: connecting[2].toLowerCase() };
     for (const [name, pattern] of [
       ['rename space', `/api/spaces/${uuid}`],
       ['archive space', `/api/spaces/${uuid}/archive`],
@@ -1133,7 +1143,6 @@ function routeOf(method: string, path: string): Route | undefined {
       ['remove rule', `/api/rules/${uuid}/remove`],
       ['add include', `/api/spaces/${uuid}/includes`],
       ['remove include', `/api/includes/${uuid}/remove`],
-      ['connect microsoft', `/api/spaces/${uuid}/connections/microsoft`],
       ['remove place', `/api/places/${uuid}/remove`],
       ['revoke connection', `/api/connections/${uuid}/revoke`],
     ] as const) {

@@ -16,7 +16,8 @@ export interface ConnectionData {
 /** Something of yours connected in a space, such as your mailbox, only for you. */
 export interface PlaceData {
   id: string;
-  kind: 'mailbox';
+  /** What kind of place it is, such as a mailbox. */
+  kind: string;
   addedAt: string;
   /** The other spaces you use the same account in. */
   elsewhere: { id: string; name: string; personal: boolean }[];

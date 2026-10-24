@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Audience } from './connectors.ts';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { accessibleSpaces, listSpaces, type Space } from './spaces.ts';
 
@@ -168,11 +169,12 @@ export interface Hit {
 
 /**
  * Keeps where knowledge came from, without giving it a page yet. The same source is kept once.
- * One Homing read itself, such as an email, names the connection it read it through.
+ * One Homing read itself, such as an email, names the connection it read it through, and who could
+ * see it there, where Homing knows.
  */
 export async function addSource(
   s: Session,
-  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string },
+  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string; audience?: Exclude<Audience, 'unknown'> | null },
 ): Promise<Source> {
   const privateTo = sideOf(s, input.shared);
   await checkSpace(s, input.spaceId, input.shared);
@@ -184,8 +186,11 @@ export async function addSource(
   `;
   if (existing) return existing;
   const [source] = await s.tx<Source[]>`
-    insert into sources (space_id, private_to, reference, excerpt, read_through)
-    values (${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt}, ${input.readThrough ?? null}::uuid)
+    insert into sources (space_id, private_to, reference, excerpt, read_through, audience)
+    values (
+      ${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt}, ${input.readThrough ?? null}::uuid,
+      ${input.audience ? s.tx.json(input.audience as never) : null}::jsonb
+    )
     returning ${sourceColumns(s)}
   `;
   return source;
