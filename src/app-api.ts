@@ -517,6 +517,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           shared: source.privateTo === null,
           keptAt: source.createdAt,
           ...authorOf(names, person, source.writtenBy, source.agent, source.imported),
+          readIn: source.readIn,
           space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
           pages: [...pages.values()],
         });

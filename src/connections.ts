@@ -172,15 +172,26 @@ export interface Broker {
   microsoft?: MicrosoftSettings;
 }
 
+/** One use of a connection, through one of the person's places, recorded as it's made (spec §8). */
+export interface Use {
+  place: string;
+  space: string;
+  operation: 'search mail' | 'read mail';
+  /** The assistant it's for, such as Claude. */
+  agent?: string;
+}
+
 /**
  * A current access token for the person's own connection, for Homing's own use on their behalf.
  * It never goes to a model. A token close to expiring is refreshed first, one refresh at a time
  * for each connection. When Microsoft refuses the refresh, because consent was revoked or the
  * sign-in expired, or the sealed tokens don't open, the connection needs attention, which the
  * person sees, and it isn't tried again until they sign in again. It runs as the person, never
- * as their assistant, which the database refuses.
+ * as their assistant, which the database refuses. A use, such as searching their mail, is
+ * recorded with the token, in the same transaction, so none goes unrecorded. Renewing skips the
+ * stored token, for one the system refused before it expired.
  */
-export async function accessToken(broker: Broker, person: string, connectionId: string): Promise<string> {
+export async function accessToken(broker: Broker, person: string, connectionId: string, use?: Use, { renew = false }: { renew?: boolean } = {}): Promise<string> {
   type Outcome = { token: string } | { unusable: ConnectionUnusable['reason'] };
   const outcome = await withPrincipal(broker.sql, { person }, async (s): Promise<Outcome> => {
     const [held] = await s.tx<{ status: Connection['status']; refreshToken: Uint8Array; accessToken: Uint8Array | null; accessExpiresAt: Date | null }[]>`
@@ -188,15 +199,24 @@ export async function accessToken(broker: Broker, person: string, connectionId: 
     `;
     if (!held) return { unusable: 'gone' };
     if (held.status === 'needs attention') return { unusable: 'needs attention' };
+    const used = async (token: string): Promise<Outcome> => {
+      if (use) {
+        await s.tx`
+          insert into connection_uses (connection_id, place_id, space_id, private_to, operation, agent)
+          values (${connectionId}::uuid, ${use.place}::uuid, ${use.space}::uuid, ${person}::uuid, ${use.operation}, ${use.agent ?? null})
+        `;
+      }
+      return { token };
+    };
     try {
-      if (held.accessToken && held.accessExpiresAt && held.accessExpiresAt.getTime() > Date.now() + 2 * 60_000) {
-        return { token: broker.vault.open(held.accessToken, sealedFor(connectionId, 'access')) };
+      if (!renew && held.accessToken && held.accessExpiresAt && held.accessExpiresAt.getTime() > Date.now() + 2 * 60_000) {
+        return await used(broker.vault.open(held.accessToken, sealedFor(connectionId, 'access')));
       }
       const kept = broker.vault.open(held.refreshToken, sealedFor(connectionId, 'refresh'));
       if (!broker.microsoft) return { unusable: 'not set up' };
       const fresh = await refresh(broker.microsoft, kept);
       await keepTokens(s, broker.vault, connectionId, fresh);
-      return { token: fresh.access };
+      return await used(fresh.access);
     } catch (error) {
       if (error instanceof SealBroken || (error instanceof MicrosoftRefused && error.signInAgain)) {
         if (error instanceof MicrosoftRefused) console.error(`connections: Microsoft refused refreshing a sign-in, so it needs attention (${error.message})`);

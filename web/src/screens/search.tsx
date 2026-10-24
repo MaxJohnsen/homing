@@ -3,7 +3,7 @@ import { ChevronRight, Search as SearchIcon } from 'lucide-react';
 import { cn } from 'cn';
 import { OnlyYou } from '@/components/only-you';
 import { capitalize, count, dateOf, focusRing, ScreenHeader } from '@/components/screen';
-import { plain } from '@/lib/knowledge';
+import { plain, sourceName } from '@/lib/knowledge';
 import { Link, navigate } from '@/lib/router';
 import { placeName, type SearchData, type SearchKind } from '@/lib/search';
 import { Pager, pageSize } from '@/screens/pages';
@@ -157,7 +157,7 @@ function kinds(data: SearchData): { kind: Exclude<SearchKind, 'all'>; title: str
       description: 'Where Homing learned it, including what isn’t on a page yet',
       count: data.sources.length,
       rows: data.sources.map((source) => (
-        <Row key={source.id} href={`/sources/${source.id}`} title={source.reference ?? 'A source without a name'} onlyYou={source.onlyYou && !source.space.private} text={`“${source.excerpt.replace(/\s+/g, ' ').trim()}”`} detail={`In ${placeName(source.space)}`} />
+        <Row key={source.id} href={`/sources/${source.id}`} title={sourceName(source)} onlyYou={source.onlyYou && !source.space.private} text={`“${source.excerpt.replace(/\s+/g, ' ').trim()}”`} detail={`In ${placeName(source.space)}`} />
       )),
     },
     {

@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { nameIn, nameOf, plain, theirAssistant, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, sourceName, theirAssistant, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
 import type { PublicationData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import { AboutPage, CollectionPages } from '@/screens/collection';
@@ -241,7 +241,7 @@ function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
           <figcaption className="text-muted-foreground">
             From{' '}
             <Link href={`/sources/${source.id}`} className={cn('rounded-sm font-semibold text-foreground underline decoration-foreground/25 underline-offset-[3px] hover:decoration-foreground', focusRing)}>
-              {source.reference ?? 'a source'}
+              {sourceName(source, 'a source')}
             </Link>
             {item.shared && source.shared === false && <OnlyYou className="ml-2" />}
           </figcaption>

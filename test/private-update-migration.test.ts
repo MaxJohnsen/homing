@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { readdir } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { connect, withPrincipal, type Principal, type Session } from '../src/db.ts';
-import { addSource, readItem, readPage } from '../src/knowledge.ts';
+import { readItem, readPage } from '../src/knowledge.ts';
 import { migrate } from '../src/migrate.ts';
 import { addMember, createPerson, createSpace, removeMember } from '../src/spaces.ts';
 import { freshDatabase } from './reset.ts';
@@ -40,7 +40,9 @@ async function shareCopy(owner: string, shape: string, text: string) {
     return page;
   });
   originals[shape] = await as({ person: owner, agent: 'Claude' }, async (s) => {
-    const email = await addSource(s, { spaceId: acme, reference: `Email about ${shape}`, excerpt: text });
+    const [email] = await s.tx<{ id: string }[]>`
+      insert into sources (space_id, private_to, reference, excerpt) values (${acme}::uuid, ${owner}::uuid, ${`Email about ${shape}`}, ${text}) returning id
+    `;
     const [{ id }] = await s.tx<{ id: string }[]>`
       insert into content (space_id, page_id, kind, body, private_to) values (${acme}::uuid, ${pages[shape]}::uuid, 'text', ${text}, ${owner}::uuid) returning id
     `;

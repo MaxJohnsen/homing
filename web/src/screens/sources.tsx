@@ -5,7 +5,7 @@ import { Markdown } from '@/components/markdown';
 import { OnlyYou } from '@/components/only-you';
 import { ago, count, dateOf, focusRing, ScreenHeader, Section } from '@/components/screen';
 import { Input } from '@/components/ui/input';
-import { nameIn, nameOf, type SourceData, type SourcesData, type SourceSummary } from '@/lib/knowledge';
+import { nameIn, nameOf, sourceName, type SourceData, type SourcesData, type SourceSummary } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { Pager, pageSize, type PageFilters } from '@/screens/pages';
@@ -76,7 +76,7 @@ function SourceRow({ source, space, now }: { source: SourceSummary; space: Space
       <Link href={`/sources/${source.id}`} className={cn('group flex items-center gap-3 rounded-xl px-3 py-3 transition-colors hover:bg-muted', focusRing)}>
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex min-w-0 flex-wrap items-center gap-2 text-base leading-snug font-semibold">
-            <span className="min-w-0 break-words">{source.reference ?? 'A source without a name'}</span>
+            <span className="min-w-0 break-words">{sourceName(source)}</span>
             {source.onlyYou && !space.private && <OnlyYou />}
           </span>
           <span className="line-clamp-2 text-sm text-muted-foreground">“{source.excerpt.replace(/\s+/g, ' ').trim()}”</span>
@@ -94,15 +94,17 @@ function SourceRow({ source, space, now }: { source: SourceSummary; space: Space
  */
 export function Source({ source }: { source: SourceData }) {
   const where = source.space.personal ? 'your personal space' : source.space.name;
-  const kept = source.agent
-    ? `${source.agent} kept it${nameIn(source.by) ? ` for ${nameIn(source.by)}` : ''}`
-    : source.by ? `${nameOf(source.by)} kept it` : 'Homing kept it';
+  const kept = source.readIn
+    ? `Homing read it in your mailbox ${source.readIn}${source.agent ? ` when ${source.agent} saved it` : ''}`
+    : source.agent
+      ? `${source.agent} kept it${nameIn(source.by) ? ` for ${nameIn(source.by)}` : ''}`
+      : source.by ? `${nameOf(source.by)} kept it` : 'Homing kept it';
   const who = source.space.private || !source.shared ? 'Only you have it.' : `Everyone in ${source.space.name} has it.`;
   const original = /^https?:\/\/\S+$/i.test(source.reference ?? '') ? source.reference! : undefined;
   return (
     <>
       <ScreenHeader
-        title={source.reference ?? 'A source without a name'}
+        title={sourceName(source)}
         aside={!source.shared && !source.space.private && <OnlyYou />}
         meta={
           <>
