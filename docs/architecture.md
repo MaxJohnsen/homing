@@ -77,7 +77,7 @@ Each routine run is a job, recording who it acted for, which connection it used,
 - In Claude.ai the person can also decide on a card in the conversation, an MCP App. The card's buttons reach Homing over the assistant's own connection, through tools the assistant keeps from the model. So Homing relies on the assistant for that, offers the card only to assistants checked to do it, and records which assistant's card a decision came through. Every other assistant gives the person the link.
 - One restricted database role handles normal operations. Each request or routine sets its person or space for the transaction, and background workers get no elevated access.
 - A separate admin role is used only for migrations and narrowly defined housekeeping, such as deletion cascades and access-table updates. The normal role can't write the access table, and changes spaces and memberships only through database functions that check the caller's rights.
-- It covers sensitive data: content, sources, credentials and search data. Purely technical tables don't need the same policies.
+- It covers sensitive data: content, sources, connections with their places and credentials, and search data. Purely technical tables don't need the same policies.
 - Sign-in has its own database role and schema. It can't read space data, and Homing's role can't read passwords, passkeys or sessions. An account has the same id as its person, and only accepting an invite creates both.
 - The application still filters explicitly. Row-level security catches missing filters. It is not protection against a fully compromised application.
 
