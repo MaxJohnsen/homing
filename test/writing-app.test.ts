@@ -98,14 +98,16 @@ test('a shared item is corrected for everyone, and the assistant reads it next a
   assert.deepEqual(forCara.map((item) => [item.text, item.shared, item.by?.name, item.agent]), [['The launch is on 20 November.', true, 'Ana', null]]);
   assert.deepEqual(forCara[0].earlier.map((entry) => entry.text), ['The launch is on 14 November.']);
 
-  // Ana's assistant reads it next as written by Ana, and can't rewrite or replace it.
+  // Ana's assistant reads it next as written by Ana, and can't rewrite it for everyone, only make
+  // her own update of it, as she asks.
   const chat = await claudeForAna();
   const read = await chat.call('read', { ref: `item:${date.id}` });
   assert.match(read.text, /The launch is on 20 November\./);
   assert.match(read.text, /Written by Ana on/);
   const replaced = await chat.call('remember', { space: `space:${acme}`, text: 'The launch is on 1 December.', replaces: `item:${date.id}` });
-  assert.ok(replaced.failed, replaced.text);
-  assert.equal((await page(ana, launch)).body.items[0].text, 'The launch is on 20 November.');
+  assert.match(replaced.text, /on your private side\. For you it replaces item:\S+, and others in the space still see the earlier version\./);
+  assert.deepEqual((await page(ana, launch)).body.items.map((item) => [item.text, item.shared, item.by?.name, item.agent]), [['The launch is on 1 December.', false, 'Ana', null]]);
+  assert.equal((await page(cara, launch)).body.items[0].text, 'The launch is on 20 November.');
 });
 
 test('your own version of a shared item is only yours, and others still see theirs', async () => {

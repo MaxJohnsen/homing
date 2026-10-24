@@ -80,14 +80,14 @@ test('every change keeps what was there before, and records who made it', async 
 test('agents never change what people wrote, even straight against the database', async () => {
   const { cara, space, page, decision, note } = await acme();
   const claude = { ...cara, agent: 'Claude Code' };
-  // What Ana wrote for everyone, and what Cara wrote on her own side, where her agent otherwise keeps things up to date.
+  // What Ana wrote for everyone, and what Cara wrote on her own side.
   const own = await as(cara, (s) => writeItem(s, { pageId: page, body: 'Schools ask for 12%' }));
 
+  await assert.rejects(
+    as(claude, (s) => s.tx`update content set body = 'We discount up to 20%' where id = ${decision.id}`),
+    refused,
+  );
   for (const item of [decision, own]) {
-    await assert.rejects(
-      as(claude, (s) => s.tx`update content set body = 'We discount up to 20%' where id = ${item.id}`),
-      refused,
-    );
     await assert.rejects(
       as(claude, (s) => s.tx`
         insert into content (space_id, page_id, private_to, body, supersedes)
@@ -96,6 +96,10 @@ test('agents never change what people wrote, even straight against the database'
       refused,
     );
   }
+
+  // Only Cara's own assistant changes what she wrote on her own side, where it is, and it stays hers (#120).
+  const [kept] = await as(claude, (s) => s.tx`update content set body = 'Schools ask for 15%' where id = ${own.id} returning written_by, agent, edit_agent`);
+  assert.deepEqual({ ...kept }, { writtenBy: cara.id, agent: null, editAgent: 'Claude Code' });
 
   // What an agent wrote, an agent may replace.
   await as(claude, (s) => s.tx`

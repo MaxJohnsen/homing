@@ -312,8 +312,10 @@ function addingOnly(tool: { name: string; description?: string; inputSchema: unk
   delete schema.properties.updates;
   delete schema.properties.edits;
   const description = (tool.description ?? '')
-    .replace(/replaces and updates are for what assistants wrote:[^.]*\. /, '')
+    .replace(/Use replaces when something an assistant wrote[^.]*\. /, '')
     .replace(/To change part of a long item[^.]*\. /, '')
+    .replace(/Change what the user wrote only when they ask you to[^.]*\. It stays theirs[^.]*\. For anything else a person wrote, save/, 'Save')
+    .replace(/To undo a change[^.]*\. /, '')
     .concat(' Items are only added here: what changed is saved as a new item.');
   return { ...tool, description, inputSchema: schema } as never;
 }

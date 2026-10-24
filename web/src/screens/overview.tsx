@@ -2,13 +2,14 @@ import { useState, type ReactNode } from 'react';
 import { ChevronRight, Plus } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
+import { EarlierVersions } from '@/components/history';
 import { Markdown } from '@/components/markdown';
 import { OnlyYou } from '@/components/only-you';
 import { count, dateOf, focusRing, Section, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
-import { nameIn, nameOf, plain, type OverviewData, type WriteOverview } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, theirAssistant, type OverviewData, type WriteOverview } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { PageRows } from '@/screens/pages';
@@ -19,7 +20,10 @@ import { PageRows } from '@/screens/pages';
  * the spaces inside it. It works without a written overview.
  */
 export function Overview({ space, data, write, now }: { space: SpaceData; data: OverviewData; write?: WriteOverview; now?: Date }) {
-  const [editing, setEditing] = useState(false);
+  // Writing it, from what it says now, or one of them from an earlier version being restored.
+  const [editing, setEditing] = useState<{ from?: string; item?: OverviewData['overview'][number] } | false>(false);
+  // The overview whose earlier versions are open.
+  const [history, setHistory] = useState<string>();
   const where = space.personal ? 'your personal space' : space.name;
   const shared = data.overview.find((item) => item.shared);
   const mine = data.overview.find((item) => !item.shared);
@@ -31,7 +35,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
         {data.waiting.length > 0 && <div className="lg:hidden"><WaitingHere waiting={data.waiting} /></div>}
         <section aria-label={`Where ${where} stands`} className="flex flex-col gap-3">
           {editing && write ? (
-            <OverviewEditor space={space} current={mine ?? shared} hasShared={Boolean(shared)} write={write} onDone={() => setEditing(false)} />
+            <OverviewEditor space={space} current={editing.item ?? mine ?? shared} restoring={editing.item} from={editing.from} hasShared={Boolean(shared)} write={write} onDone={() => setEditing(false)} />
           ) : data.overview.length > 0 ? (
             <>
               {data.overview.map((item) => (
@@ -44,16 +48,30 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground">
-                    {item.agent ? `${item.agent} wrote it${nameIn(item.by) ? ` for ${nameIn(item.by)}` : ''}` : `${nameOf(item.by)} wrote it`}, {dateOf(item.writtenAt)}.
+                    {item.agent
+                      ? `${item.agent} wrote it${nameIn(item.by) ? ` for ${nameIn(item.by)}` : ''}, ${dateOf(item.writtenAt)}.`
+                      : item.editAgent
+                        ? `${nameOf(item.by)} wrote it, and ${theirAssistant(item.by, item.editAgent)} changed it on ${dateOf(item.writtenAt)}.`
+                        : `${nameOf(item.by)} wrote it, ${dateOf(item.writtenAt)}.`}
                   </p>
+                  {(item.earlier?.length ?? 0) > 0 && (
+                    <div className="flex flex-col items-start gap-3 text-sm">
+                      <Button variant="outline" size="sm" aria-expanded={history === item.id} onClick={() => setHistory(history === item.id ? undefined : item.id)}>
+                        {history === item.id ? 'Hide earlier versions' : 'Earlier versions'}
+                      </Button>
+                      {history === item.id && (
+                        <EarlierVersions current={item} earlier={item.earlier!} onRestore={write && ((text) => setEditing({ from: text, item }))} />
+                      )}
+                    </div>
+                  )}
                 </div>
               ))}
-              {write && <div><Button variant="outline" onClick={() => setEditing(true)}>Edit the overview</Button></div>}
+              {write && <div><Button variant="outline" onClick={() => setEditing({})}>Edit the overview</Button></div>}
             </>
           ) : (
             <div className="flex flex-col items-start gap-3 rounded-2xl bg-muted p-5 sm:p-6">
               <p className="text-base">No overview yet. A few lines on where {where} stands help whoever opens it next.</p>
-              {write && <Button variant="outline" onClick={() => setEditing(true)}>Write an overview</Button>}
+              {write && <Button variant="outline" onClick={() => setEditing({})}>Write an overview</Button>}
             </div>
           )}
         </section>
@@ -116,26 +134,33 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
 
 /**
  * Writing the overview. The shared one is corrected for everyone, or replaced by your own, which
- * only you see; new writing starts as only yours, and the button names who will see it.
+ * only you see; new writing starts as only yours, and the button names who will see it. Restoring
+ * an earlier version writes that overview in particular: the shared one for everyone, or replaced
+ * by your own, and your own where it is.
  */
-function OverviewEditor({ space, current, hasShared, write, onDone }: {
+function OverviewEditor({ space, current, restoring, from, hasShared, write, onDone }: {
   space: SpaceData;
   current?: OverviewData['overview'][number];
+  /** The overview whose earlier version is restored. */
+  restoring?: OverviewData['overview'][number];
+  /** The earlier version being restored, to start from. */
+  from?: string;
   hasShared: boolean;
   write: WriteOverview;
   onDone: () => void;
 }) {
-  const [text, setText] = useState(current?.text ?? '');
+  const [text, setText] = useState(from ?? current?.text ?? '');
   const [audience, setAudience] = useState<Audience>('you');
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const choice = !space.private;
+  // Your own overview, restored, stays yours.
+  const choice = !space.private && !(restoring && !restoring.shared);
   const shared = choice && audience === 'space';
   const left = 2000 - text.trim().length;
 
   const save = async () => {
     setBusy(true);
-    const answer = await write(text.trim(), shared);
+    const answer = await write(text.trim(), shared, restoring?.id);
     setBusy(false);
     if (answer) setProblem(answer);
     else onDone();
@@ -164,10 +189,11 @@ function OverviewEditor({ space, current, hasShared, write, onDone }: {
             : hasShared ? `Your own overview takes the shared one’s place for you. Others in ${space.name} still see theirs.` : 'Only you see it, until you share it.'}
         </p>
       )}
+      {restoring && !restoring.shared && <p className="text-sm text-muted-foreground">What it says now stays in its history.</p>}
       {problem && <FieldError>{problem}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
-        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || left < 0} onClick={save}>{shared ? `Share with ${space.name}` : 'Save for you'}</Button>
+        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || left < 0} onClick={save}>{shared ? (restoring ? `Restore it for ${space.name}` : `Share with ${space.name}`) : restoring ? 'Restore for you' : 'Save for you'}</Button>
       </div>
     </div>
   );

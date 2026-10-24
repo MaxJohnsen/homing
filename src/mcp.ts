@@ -30,6 +30,8 @@ import {
   writeItem,
   oneLineTitle,
   byPerson,
+  ownText,
+  personWrote,
   importedAuthor,
   type Hit,
   type Item,
@@ -288,9 +290,13 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
         'Save each fact that can change, such as a date, an owner or a decision, on its own, on the page for its subject: ' +
         "an existing page with that title is used, or a new one is created. Leave out the page for small things without a clear subject, and they go on the space's Notes page. " +
         'Sources alone, without text, are kept as evidence. ' +
-        'replaces and updates are for what assistants wrote: use replaces when that is no longer true, and updates to correct something you saved. ' +
+        "Use replaces when something an assistant wrote is no longer true, and updates to correct an item on the user's private side. " +
         'To change part of a long item, give edits, not the whole text or a note beside it. ' +
-        'What a person wrote themselves stays theirs, and pages show who wrote each item. Save the new evidence beside it instead, and point out the difference to the user, who decides whether it still holds. ' +
+        'What a person wrote themselves stays theirs, and pages show who wrote each item. ' +
+        'Change what the user wrote only when they ask you to: on their private side with updates, and what they shared with replaces, as their own update, which others see once they share it. ' +
+        'It stays theirs, and what it said before is kept. ' +
+        'For anything else a person wrote, save the new evidence beside it instead, and point out the difference to the user, who decides whether it still holds. ' +
+        "To undo a change, read the item and update it with an earlier version's text. " +
         'Any page can gather other pages, which makes it a collection, such as "2027 planning": use gatherInto to put the page in one, on your private side.',
       inputSchema: z.object({
         space: text()
@@ -304,8 +310,12 @@ export function mcpServer(sql: Sql, principal: AgentPrincipal, url: URL, { card 
           ),
         page: text().max(200).optional().describe('The title of the page for its subject, or a page reference'),
         type: text().max(40).optional().describe('The type of a new page, such as person, project or decision'),
-        replaces: text().optional().describe('An item an assistant wrote that is no longer true because of this, such as item:…'),
-        updates: text().optional().describe("An item an assistant wrote on the user's private side, to rewrite with this text or these edits"),
+        replaces: text()
+          .optional()
+          .describe("An item an assistant wrote that is no longer true because of this, such as item:…. Something shared becomes the user's own update of it, as does shared text the user wrote, when they ask"),
+        updates: text()
+          .optional()
+          .describe("An item on the user's private side to rewrite with this text or these edits: what an assistant wrote, or what the user wrote, when they ask"),
         edits: z
           .array(
             z.object({
@@ -770,7 +780,13 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
     ...(overview.length
       ? [
           '\n## Overview',
-          'Where the space stands, as written by people or assistants. Keep the user\'s own up to date with `remember` and `overview: true`.',
+          'Where the space stands, as written by people or assistants. ' +
+            (overview.some((item) => ownText(s, item))
+              ? 'The user wrote their own themselves: change it only when they ask you to, with `remember` and updates on it.'
+              : // With no own overview yet, one the user wrote and shared is changed as their own update of it.
+                !overview.some((item) => item.privateTo !== null) && overview.some((item) => ownText(s, item, 'shared'))
+                ? 'The shared one is the user\'s own writing: when they ask you to change it, use `remember` with replaces on it, which makes their own update of it, until they share it.'
+                : 'Keep the user\'s own up to date with `remember` and `overview: true`.'),
           ...overview.map((item) => `- ${oneLine(item.body)} (${ref('item', item.id)}, ${item.privateTo ? (item.replaced?.shared ? 'private, replacing the shared overview for the user' : 'private') : 'shared'})`),
         ]
       : []),
@@ -909,11 +925,18 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     const { collections, mentionedOn } = await linksOf(s, page.id);
     const gathered = await pagesIn(s, page.spaceId, { in: page.id, order: 'name' });
     const names = await peopleNames(s, page.items.map((item) => item.writtenBy));
+    const people = page.items.filter(byPerson);
     return [
       `# ${page.title}`,
       `${page.type ? `A ${page.type} page` : 'A page'} in ${space?.name} (${ref('page', page.id)})`,
       ...(page.archived ? [`Archived ${page.archived.since ? 'since' : 'on'} ${day(page.archived.at)}: no longer active, out of everyday context.`] : []),
-      ...(page.items.some(byPerson)
+      ...(people.some((item) => ownText(s, item) || ownText(s, item, 'shared'))
+        ? [
+            'What the user wrote themselves stays theirs: change it only when they ask you to, with updates where it is private, ' +
+              'and with replaces where it is shared, which makes it their own update until they share it. What it said before is kept.',
+          ]
+        : []),
+      ...(people.some((item) => !ownText(s, item) && !ownText(s, item, 'shared'))
         ? ['What a person wrote themselves stays theirs: save new evidence beside it, and point out the difference to the user.']
         : []),
       ...(collections.length ? [`In ${collections.map((c) => `${quote(c.title)} (${ref('page', c.id)}${c.shared ? '' : ', private'})`).join(', ')}.`] : []),
@@ -923,8 +946,8 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ? page.items.flatMap((item) => [
             // Longer Markdown as written, so its structure shows and a passage can be copied exactly for an edit.
             ...(item.body === oneLine(item.body)
-              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported)})`]
-              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported)}:`, ...fenced(item.body)]),
+              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)})`]
+              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}:`, ...fenced(item.body)]),
             ...(item.privateTo && item.replaced?.shared
               ? [`  - A private update. Others in the space still see: ${quote(item.replaced.body)}`]
               : []),
@@ -952,7 +975,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
       item.body,
       '',
       `${what}${ref('item', item.id)} on ${ref('page', item.pageId)}, ${side(item.privateTo)}. ` +
-        `Written by ${author(names, item.writtenBy, item.agent, item.imported)} on ${day(item.updatedAt)}.`,
+        `Written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)} on ${day(item.updatedAt)}.`,
       ...(item.replacedBy
         ? [
             item.replacedBy.shared || item.privateTo
@@ -981,9 +1004,11 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
       ...(item.history.length
         ? [
             '\n## Earlier versions',
-            ...item.history.map(
-              (revision) => `- ${quote(revision.body)}, by ${author(names, revision.writtenBy, revision.agent, revision.imported)}, until ${day(revision.replacedAt)}`,
-            ),
+            // Exactly as written, so one can be put back by updating the item with its text.
+            ...item.history.flatMap((revision) => {
+              const by = `by ${author(names, revision.writtenBy, revision.agent, revision.imported, revision.editAgent)}, until ${day(revision.replacedAt)}`;
+              return revision.body === oneLine(revision.body) ? [`- ${quote(revision.body)}, ${by}`] : [`- ${capitalize(by)}:`, ...fenced(revision.body)];
+            }),
           ]
         : []),
     ].join('\n');
@@ -1059,9 +1084,14 @@ async function remember(
     let saved: Item;
     if (input.updates) {
       if (item.privateTo !== personOf(s.principal)) {
+        // What someone else wrote stays as it is; anything else shared, the user's own update replaces.
+        if (byPerson(item) && !ownText(s, item, 'shared')) throw new Refused(personWrote(s, item));
         throw new Refused("remember can't rewrite shared knowledge. Use replaces to update it in your own view.");
       }
       saved = (await updateItem(s, itemId, { body, sources }))!;
+      if (saved.id === itemId && saved.editAgent) {
+        return `Updated ${ref('item', itemId)}. The user wrote it, so it stays theirs, and what it said before is kept in its history, where they can restore it.${there}`;
+      }
       if (saved.id === itemId) return `Updated ${ref('item', itemId)}. What it said before is kept in its history.${there}`;
     } else {
       // Knowledge never reaches down, so what remember can read here, it can change.
@@ -1880,7 +1910,7 @@ async function describeHits(s: Session, hits: Hit[], within?: string): Promise<s
             : `${hit.title ? `${oneLine(hit.title)}: ` : ''}${oneLine(hit.text)}`;
     const space = spaces.get(hit.spaceId);
     const included = within && !inside(hit.spaceId) ? ', included here' : '';
-    const by = people(hit) ? `, written by ${author(names, hit.writtenBy, hit.agent, hit.imported)}` : '';
+    const by = people(hit) ? `, written by ${author(names, hit.writtenBy, hit.agent, hit.imported, hit.editAgent)}` : '';
     const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}${by}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
@@ -1913,15 +1943,20 @@ async function describeWaiting(s: Session, proposals: Proposal[]): Promise<strin
   });
 }
 
-/** Who wrote something: "Ana Berg", "Ana Berg through Claude", the space's routine, or who wrote it before it was imported. */
-function author(names: Map<string, string>, writtenBy: string | null, agent: string | null, imported: Imported | null): string {
+/**
+ * Who wrote something: "Ana Berg", "Ana Berg through Claude", the space's routine, or who wrote it
+ * before it was imported. A person's own text that their assistant changed for them stays theirs:
+ * "Ana Berg, changed by Claude for them".
+ */
+function author(names: Map<string, string>, writtenBy: string | null, agent: string | null, imported: Imported | null, editAgent: string | null = null): string {
   // Who wrote it before it was imported is nobody here, so they're named as imported.
   const before = importedAuthor(imported);
   const who = before
     ? before.person ? `${before.name ?? 'someone'} (imported)` : 'a routine, before it was imported'
     : writtenBy ? (names.get(writtenBy) ?? 'someone') : "the space's routine";
-  const through = before ? before.agent : agent;
-  return [who, through && `through ${through}`].filter(Boolean).join(' ');
+  const through = before ? (before.by === 'person' ? null : before.agent) : agent;
+  const edited = before ? (before.by === 'person' ? before.agent : null) : editAgent;
+  return [who, through && `through ${through}`].filter(Boolean).join(' ') + (edited ? `, changed by ${edited} for them` : '');
 }
 
 /** "Preference, from Acme, private: Write reports in Norwegian.", or one an include brings: "…, from Standards (space:…), included in Acme: …" */

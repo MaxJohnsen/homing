@@ -2,7 +2,8 @@
 // assistant changes one passage of a long document without resending the rest, as an update or a
 // replacement whose new text is the old text with that passage changed. So it's allowed exactly
 // where those are, recorded in the item's history, a private update when the item is shared, and
-// never a change to what a person wrote. Edits are made to the text as it is when they're made.
+// a change to what a person wrote only where it's theirs, on their own side (#120). Edits are made
+// to the text as it is when they're made.
 
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
@@ -153,7 +154,9 @@ test('an assistant changes one slide of a long outline without resending the res
   assert.deepEqual(await itemAsAna(page, item), { text: expected, earlier: [outline] });
   const history = (await anas.call('read', { ref: `item:${item}` })).text;
   assert.ok(history.startsWith(`${expected}\n\n`));
-  assert.match(history, /## Earlier versions\n- "# Website relaunch: steering group outline For the steering group/);
+  // Exactly as it was, so it can be put back.
+  assert.match(history, /## Earlier versions\n- By Ana through Claude, until \d{4}-\d{2}-\d{2}:\n```markdown\n# Website relaunch: steering group outline\n\nFor the steering group/);
+  assert.ok(history.includes(`\n\`\`\`markdown\n${outline}\n\`\`\``));
 });
 
 test('several edits are made in order, all of them or none', async () => {
@@ -227,15 +230,17 @@ test('a passage that isn’t there, or is there twice, is refused, saying how to
 
 test('a partial edit is allowed only where an assistant may change the whole item', async () => {
   const space = `space:${acme}`;
-  // Ana writes the agenda herself, in the app: it stays hers, and her assistant can't edit it, as an update or a replacement.
+  // Ana writes the agenda herself, in the app, on her own side. It stays hers: her assistant can't
+  // replace it, only edit it where it is, which she can undo.
   const agendaPage = await as(ana, (s) => createPage(s, { spaceId: acme, title: 'Workshop agenda' }));
   const agendaText = '# Workshop\n\n1. Goals\n2. Budget\n3. Next steps';
   const { id: agenda } = (await ana.browser.json(`/api/pages/${agendaPage}/items`, { text: agendaText })).body;
-  for (const how of ['updates', 'replaces']) {
-    const attempt = await anas.call('remember', { [how]: `item:${agenda}`, edits: [{ old: '2. Budget', new: '2. Budget, with the cut' }] });
-    assert.deepEqual([attempt.failed, attempt.text], [true, 'Agents never change what people wrote. Save what you found as a new item on the same page, and point out the difference to the user.'], how);
-  }
+  const replacing = await anas.call('remember', { replaces: `item:${agenda}`, edits: [{ old: '2. Budget', new: '2. Budget, with the cut' }] });
+  assert.deepEqual([replacing.failed, replacing.text], [true, 'The user wrote that themselves, so only they replace it. If they asked you to change it, use updates instead: it stays theirs, and what it said before is kept.']);
   assert.deepEqual((await pageAs(ana, agendaPage)).items.map((entry) => [entry.text, entry.earlier.length]), [[agendaText, 0]]);
+  const editing = await anas.call('remember', { updates: `item:${agenda}`, edits: [{ old: '2. Budget', new: '2. Budget, with the cut' }] });
+  assert.ok(!editing.failed, editing.text);
+  assert.deepEqual((await pageAs(ana, agendaPage)).items.map((entry) => [entry.text, entry.earlier.map((earlier) => earlier.text)]), [[agendaText.replace('2. Budget', '2. Budget, with the cut'), [agendaText]]]);
 
   // Cara's own notes are hers alone: Ana's assistant can't see them, let alone edit them.
   const kept = await caras.call('remember', { space, page: 'Salary talk', text: '# Salary talk\n\nAsk for 8%.\nMention the Beta project.' });

@@ -176,15 +176,26 @@ test('the same fact saved twice is kept once, with every source it came from', a
   assert.deepEqual(item.sources.map((source) => source.reference), ['Email from Gunnar', 'Meeting notes']);
 });
 
-test('agents never rewrite what people wrote', async () => {
-  const { ana, claude, space } = await acme();
+test('agents never rewrite what people wrote, except a person’s own assistant, where it is', async () => {
+  const { ana, cara, claude, space } = await acme();
   const decision = await as(ana, async (s) => {
     const page = await createPage(s, { spaceId: space, title: 'Pricing' });
     return writeItem(s, { pageId: page, body: 'We never discount more than 10%' });
   });
 
-  await assert.rejects(as(claude, (s) => updateItem(s, decision.id, { body: 'We discount up to 20%' })), AccessDenied);
+  // What Ana wrote on her own side, her assistant never replaces, but changes where it is, and it stays hers.
   await assert.rejects(as(claude, (s) => supersedeItem(s, decision.id, { body: 'We discount up to 20%' })), AccessDenied);
+  const edited = await as(claude, (s) => updateItem(s, decision.id, { body: 'We discount up to 20%' }));
+  assert.deepEqual([edited?.body, edited?.writtenBy, edited?.agent, edited?.editAgent], ['We discount up to 20%', ana.id, null, 'Claude Code']);
+
+  // Shared, nobody's assistant changes it for everyone: Cara's never touches it, and Ana's only makes her own update of it.
+  const shared = await as(ana, async (s) => writeItem(s, { pageId: decision.pageId, body: 'Schools get 5% off', shared: true }));
+  const carasClaude = { ...cara, agent: 'Claude Code' };
+  await assert.rejects(as(carasClaude, (s) => updateItem(s, shared.id, { body: 'Schools get 10% off' })), AccessDenied);
+  await assert.rejects(as(carasClaude, (s) => supersedeItem(s, shared.id, { body: 'Schools get 10% off' })), AccessDenied);
+  const update = await as(claude, (s) => supersedeItem(s, shared.id, { body: 'Schools get 10% off' }));
+  assert.deepEqual([update?.privateTo, update?.supersedes, update?.writtenBy, update?.agent, update?.editAgent], [ana.id, shared.id, ana.id, null, 'Claude Code']);
+  assert.equal((await as(cara, (s) => readItem(s, shared.id)))?.body, 'Schools get 5% off');
 
   // Ana can still change it herself.
   const changed = await as(ana, (s) => updateItem(s, decision.id, { body: 'We never discount more than 15%' }));
