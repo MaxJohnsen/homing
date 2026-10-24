@@ -1,3 +1,5 @@
+import type { ModelProcessingData, ModelStatement } from '@/lib/model';
+
 /** A space in the sidebar. A space whose parent you can't open sits at the top for you. */
 export interface SpaceSummary {
   id: string;
@@ -40,6 +42,9 @@ export interface SpaceData extends SpaceSummary {
    * see, or a space above you can't open, stays unnamed.
    */
   archive?: { at: string | null; by: string | null; you: boolean; with: { id: string; name: string } | null } | null;
+  /** Whether Homing's model may process what's in it, and the model, if Homing has one. */
+  modelProcessing?: ModelProcessingData | null;
+  model?: ModelStatement | null;
 }
 
 /** Your personal space first, then the others in the order they were made. */

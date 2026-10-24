@@ -130,6 +130,8 @@ export interface ProposalView extends Proposal {
     rulesLeaving: { kind: RuleKind; text: string; from: string | null; elsewhere: boolean }[];
     skillsLeaving: { name: string; from: string | null }[];
     places: { id: string; name: string; label: string; people: number; above: boolean }[];
+    /** Whether model processing is off in it, which it stays once it's shared. */
+    modelOff: boolean;
     /** The rules leaving as shown, which approving sends back, so only those are kept or shared. */
     shown: string;
   } | null;
@@ -1175,6 +1177,7 @@ async function conversionFor(s: Session, proposal: Proposal): Promise<ProposalVi
     rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName, elsewhere: rule.elsewhere })),
     skillsLeaving: conversion.skillsLeaving,
     places: conversion.places,
+    modelOff: conversion.modelOff,
     shown: rulesShown(conversion.rulesLeaving),
   };
 }

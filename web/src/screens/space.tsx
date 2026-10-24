@@ -12,6 +12,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Link, navigate, type SpaceView } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
+import { ModelProcessing } from '@/screens/model';
 
 /**
  * A space: where it sits and who it's shared with, then its parts. Overview says where it stands, Knowledge holds its pages,
@@ -150,12 +151,14 @@ export interface ShareSpaceActions {
  * and archive it, and a shared space you moved from your personal tree says where it came from, to
  * you. Everyone who can open it exports it. A personal space keeps its name and stays open.
  */
-export function SpaceSettings({ space, rename, share, archive }: {
+export function SpaceSettings({ space, rename, share, archive, modelProcessing }: {
   space: SpaceData;
   rename?: (name: string) => Promise<string | undefined>;
   share?: ShareSpaceActions;
   /** Archives the space, or reopens it. */
   archive?: (archived: boolean) => Promise<string | undefined>;
+  /** Turns model processing on or off in the space. */
+  modelProcessing?: (on: boolean) => Promise<string | undefined>;
 }) {
   const [name, setName] = useState(space.name);
   const [problem, setProblem] = useState<string>();
@@ -214,6 +217,7 @@ export function SpaceSettings({ space, rename, share, archive }: {
       {share && looksAfter && space.private && !space.archive && (
         <ShareSpace space={space} share={share} open={sharing} onOpen={setSharing} />
       )}
+      <ModelProcessing space={space} set={modelProcessing} />
       <Export space={space} />
       {archive && looksAfter && <Archive space={space} archive={archive} />}
     </div>

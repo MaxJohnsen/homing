@@ -5,7 +5,9 @@ import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { dateOf, ScreenHeader } from '@/components/screen';
 import type { ConnectedAccountsData } from '@/lib/connections';
+import type { ModelUseData } from '@/lib/model';
 import { ConnectedAccounts, type AccountConnectionActions } from '@/screens/connections';
+import { ModelUse } from '@/screens/model';
 import empty from '@/assets/illustrations/empty.png';
 
 export interface Passkey {
@@ -57,15 +59,18 @@ const notices: Record<AccountNotice, (account: AccountData) => { title: string; 
 };
 
 /**
- * Your account: the assistants connected to Homing, the accounts Homing signs in to for you, and
- * how you sign in. Connected accounts show once you have one, or can connect one.
+ * Your account: the assistants connected to Homing, the accounts Homing signs in to for you, what
+ * Homing's model did for you, and how you sign in. Connected accounts show once you have one, or
+ * can connect one, and the model once Homing has one.
  */
-export function Account({ account, notice, actions, connections, connectionActions, notConnected }: {
+export function Account({ account, notice, actions, connections, connectionActions, model, notConnected }: {
   account: AccountData;
   notice?: AccountNotice;
   actions?: AccountActions;
   connections?: ConnectedAccountsData;
   connectionActions?: AccountConnectionActions;
+  /** What Homing's model did for you this month. */
+  model?: ModelUseData;
   /** Coming back from a Microsoft sign-in that didn't finish. */
   notConnected?: boolean;
 }) {
@@ -93,6 +98,7 @@ export function Account({ account, notice, actions, connections, connectionActio
         <>
           <Assistants account={account} actions={actions} />
           {accounts}
+          {model && <ModelUse data={model} />}
           <SignInMethods account={account} actions={actions} />
         </>
       )}

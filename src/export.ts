@@ -11,6 +11,7 @@ import { stringify } from 'yaml';
 import { personOf, type Session } from './db.ts';
 import { includeSeen } from './guidance.ts';
 import { current, importedAuthor, itemColumns, visible, type Imported, type ImportedAuthor, type ImportedPerson, type Item } from './knowledge.ts';
+import { modelProcessingOf } from './model.ts';
 import { frontmatter } from './skills.ts';
 import { accessibleSpaces, listSpaces, peopleNames, type Space } from './spaces.ts';
 import type { Task } from './tasks.ts';
@@ -74,6 +75,11 @@ export interface Manifest {
     createdAt: string;
     /** Its folder in knowledge/ and guidance/, empty for the exported space. */
     folder: string;
+    /**
+     * Off when model processing is off in it, or, for the exported space, in a space above it, so
+     * an import keeps it off, and the spaces in it with it. Older exports don't say.
+     */
+    modelProcessing?: 'off';
     imported?: ImportedFrom;
   }[];
   /** Every time the exporter archived or reopened one of the spaces. */
@@ -351,9 +357,10 @@ async function exportTo(s: Session, spaceId: string, instance: URL, now: Date, s
   // More than an import unpacks, before anything is written.
   if ((await sizeOf(s, ids)) > importLimits.unpacked) throw tooLarge;
 
-  const spaceRows = new Map((await s.tx<{ id: string; archivedBy: string | null; createdAt: Date; createdBy: string | null; agent: string | null; imported: SpaceImported | null }[]>`
-    select id, archived_by, created_at, created_by, agent, imported from spaces where id in ${s.tx(ids)}
+  const spaceRows = new Map((await s.tx<{ id: string; archivedBy: string | null; createdAt: Date; createdBy: string | null; agent: string | null; imported: SpaceImported | null; modelOffAt: Date | null }[]>`
+    select id, archived_by, created_at, created_by, agent, imported, model_off_at from spaces where id in ${s.tx(ids)}
   `).map((row) => [row.id, row]));
+  const rootOff = (await modelProcessingOf(s, root.id))?.on === false;
   const spaceArchives = await s.tx<{ spaceId: string; archived: boolean; personId: string | null; agent: string | null; at: Date }[]>`
     select a.space_id, a.archived, a.person_id, a.agent, a.at from space_archives a
     where a.space_id in ${s.tx(ids)} and a.person_id = ${me}::uuid
@@ -504,6 +511,7 @@ async function exportTo(s: Session, spaceId: string, instance: URL, now: Date, s
       archived: space.archivedAt ? { at: time(space.archivedAt), by: key(row.archivedBy) ?? key(elsewhere(row.imported, row.imported?.archivedBy)) } : null,
       createdAt: time(row.createdAt),
       folder: layout.folders.get(space.id)!,
+      ...((row.modelOffAt || (space === root && rootOff)) && { modelProcessing: 'off' as const }),
       ...from(row.imported),
     });
   }

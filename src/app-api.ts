@@ -11,6 +11,7 @@ import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
+import { modelName, modelProcessingOf, modelStatement, modelUsageOfEveryone, modelUseThisMonth, monthlyLimit, setModelProcessing, setMonthlyLimit } from './model.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
@@ -125,6 +126,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           rulesLeaving: conversion.rulesLeaving.map((rule) => ({ kind: rule.kind, text: rule.body, from: rule.spaceName, elsewhere: rule.elsewhere })),
           skillsLeaving: conversion.skillsLeaving,
           places: conversion.places,
+          modelOff: conversion.modelOff,
         });
         break;
       }
@@ -329,7 +331,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       case 'space': {
         const found = await read(async (s) => {
           const view = await spaceView(s, route.id);
-          return view && { ...view, movedFrom: await movedFrom(s, route.id), archive: await archiveOf(s, view) };
+          return view && { ...view, movedFrom: await movedFrom(s, route.id), archive: await archiveOf(s, view), modelProcessing: await modelProcessingData(s, route.id, person) };
         });
         if (!found) return answer(res, 404, noSpace);
         const { id, name, parentId, closed, privateTo, admin, path: above, reachedFromAbove, members } = found;
@@ -347,7 +349,55 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           // Where it was in your personal space before you shared it, which only you can open.
           movedFrom: found.movedFrom,
           archive: found.archive,
+          modelProcessing: found.modelProcessing,
+          model: modelStatement(app.model),
         });
+        break;
+      }
+
+      case 'model processing': {
+        const body = await readJson(req);
+        if (typeof body.on !== 'boolean') return answer(res, 400, { message: 'Turn model processing on or off.' });
+        const space = await read((s) => spaceView(s, route.id));
+        if (!space) return answer(res, 404, noSpace);
+        if (!space.admin) return answer(res, 403, { message: `Only ${space.name}’s admins turn model processing on or off.` });
+        await write((s) => setModelProcessing(s, route.id, body.on as boolean));
+        json(res, 200, { modelProcessing: await read((s) => modelProcessingData(s, route.id, person)) });
+        break;
+      }
+
+      case 'model use': {
+        // The person's own use of Homing's model this month, and the limit everyone here shares, without what anyone else spent.
+        const found = await read(async (s) => ({ uses: await modelUseThisMonth(s), limit: await monthlyLimit(s), spaces: await listSpaces(s) }));
+        const spaces = new Map(found.spaces.map((space) => [space.id, space]));
+        json(res, 200, {
+          model: modelStatement(app.model),
+          limit: found.limit.limit,
+          pausedAt: found.limit.pausedAt,
+          uses: found.uses.map((use) => ({
+            purpose: use.purpose,
+            model: modelName(use.model),
+            calls: use.calls,
+            cost: use.cost,
+            underWay: use.underWay,
+            // Only the spaces the person can open now are named.
+            spaces: use.spaces.flatMap((id) => {
+              const space = spaces.get(id);
+              return space ? [{ id, name: space.privateTo !== null && space.parentId === null ? 'your personal space' : space.name }] : [];
+            }),
+            elsewhere: use.spaces.filter((id) => !spaces.has(id)).length,
+          })),
+        });
+        break;
+      }
+
+      case 'model limit': {
+        if (!(await looksAfter())) return answer(res, 403, { message: 'Only whoever looks after Homing sets its limit.' });
+        const body = await readJson(req);
+        const limit = typeof body.limit === 'number' ? body.limit : typeof body.limit === 'string' ? Number(body.limit.replace(/^\$/, '').trim() || Number.NaN) : Number.NaN;
+        if (!(Number.isFinite(limit) && limit >= 0 && limit <= 1_000_000)) return answer(res, 400, { field: 'limit', message: 'Write the limit in dollars, such as 20.' });
+        await write((s) => setMonthlyLimit(s, Math.round(limit * 100) / 100));
+        json(res, 200, {});
         break;
       }
 
@@ -896,10 +946,23 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const { rows } = await app.authPool.query<{ id: string; name: string; email: string; createdAt: Date }>(
           'select "id", "name", "email", "createdAt" as "createdAt" from auth."user" order by "createdAt"',
         );
+        // What the model cost this month, person by person, never on what or where.
+        const model = app.model && (await read(async (s) => ({ limit: await monthlyLimit(s), usage: await modelUsageOfEveryone(s) })));
         json(res, 200, {
           host: app.url.host,
           email: { sends: Boolean(app.mailer), from: app.mailer?.from ?? null },
           people: rows.map((row) => ({ name: row.name, email: row.email, joinedAt: row.createdAt, you: row.id === person })),
+          model: model
+            ? {
+                ...modelStatement(app.model),
+                limit: model.limit.limit,
+                pausedAt: model.limit.pausedAt,
+                // What the limit covers: what was spent, and the worst case of the calls under way.
+                spent: model.usage.reduce((sum, row) => sum + row.cost, 0),
+                underWay: model.usage.reduce((sum, row) => sum + row.underWay, 0),
+                people: model.usage.map((row) => ({ name: row.name, calls: row.calls, cost: row.cost + row.underWay, you: row.personId === person })),
+              }
+            : null,
         });
         break;
       }
@@ -1076,10 +1139,10 @@ function answer(res: ServerResponse, status: number, body: unknown): true {
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' | 'model use' | 'model limit' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'connect'; id: string; connector: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -1093,6 +1156,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/import') return { name: 'import progress' };
     if (path === '/api/import/preview') return { name: 'preview progress' };
     if (path === '/api/connections') return { name: 'accounts' };
+    if (path === '/api/model') return { name: 'model use' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],
@@ -1118,6 +1182,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/spaces') return { name: 'create space' };
     if (path === '/api/import') return { name: 'import' };
     if (path === '/api/import/preview') return { name: 'import preview' };
+    if (path === '/api/admin/model-limit') return { name: 'model limit' };
     const member = new RegExp(`^/api/spaces/${uuid}/members/${uuid}$`, 'i').exec(path);
     if (member) return { name: 'change member', id: member[1].toLowerCase(), person: member[2].toLowerCase() };
     // Connecting an account of a system, such as Microsoft 365, in a space.
@@ -1126,6 +1191,7 @@ function routeOf(method: string, path: string): Route | undefined {
     for (const [name, pattern] of [
       ['rename space', `/api/spaces/${uuid}`],
       ['archive space', `/api/spaces/${uuid}/archive`],
+      ['model processing', `/api/spaces/${uuid}/model-processing`],
       ['add member', `/api/spaces/${uuid}/members`],
       ['convert space', `/api/spaces/${uuid}/conversion`],
       ['add task', `/api/spaces/${uuid}/tasks`],
@@ -1167,4 +1233,23 @@ async function archiveOf(s: Session, space: Space) {
   }
   const above = (await listSpaces(s)).find((candidate) => candidate.id === space.archivedIn);
   return { at: above?.archivedAt ?? null, by: null, you: false, with: above ? { id: above.id, name: above.name } : null };
+}
+
+/**
+ * Model processing in a space, as its settings show it: when it was turned off there and by whom,
+ * or the space above it it's off in, named only when the reader can open that one too.
+ */
+async function modelProcessingData(s: Session, spaceId: string, person: string) {
+  const found = await modelProcessingOf(s, spaceId);
+  if (!found) return null;
+  const names = await peopleNames(s, [found.offBy]);
+  const above = found.offIn ? (await listSpaces(s)).find((candidate) => candidate.id === found.offIn) : undefined;
+  return {
+    on: found.on,
+    offAt: found.offAt,
+    offBy: found.offBy ? (names.get(found.offBy) ?? null) : null,
+    you: found.offBy === person,
+    offAbove: found.offAbove,
+    offIn: above ? { id: above.id, name: above.name } : null,
+  };
 }

@@ -325,6 +325,18 @@ function renameSpace(spaceId: string) {
   };
 }
 
+/** Turning model processing on or off in a space, then showing the space as it is now. */
+function modelProcessing(spaceId: string) {
+  return async (on: boolean) => {
+    try {
+      await api(`/api/spaces/${spaceId}/model-processing`, { on });
+      await reload(`/api/spaces/${spaceId}`);
+    } catch (error) {
+      return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+    }
+  };
+}
+
 /** Archiving a space or reopening it, then showing it, and the sidebar, as they are now. */
 function archiveSpace(spaceId: string) {
   return async (archived: boolean) => {
@@ -377,7 +389,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
           {view === 'tasks' && tasks.data && <Tasks space={space} data={tasks.data} actions={taskActions(id)} />}
           {view === 'connections' && failed(connections.error) && <LoadFailed paths={[`/api/spaces/${id}/connections`]} />}
           {view === 'connections' && connections.data && <Connections space={space} data={connections.data} notice={notice} actions={connectionActions(id)} />}
-          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} archive={archiveSpace(id)} />}
+          {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} archive={archiveSpace(id)} modelProcessing={modelProcessing(id)} />}
         </Space>
       )}
     </Titled>
@@ -599,6 +611,14 @@ function AdminPage() {
           return await api<InviteMade>('/api/invites', { email });
         } catch (error) {
           return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.' };
+        }
+      }}
+      setModelLimit={async (limit) => {
+        try {
+          await api('/api/admin/model-limit', { limit });
+          await reload('/api/admin');
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Something went wrong. Try again.';
         }
       }}
     />

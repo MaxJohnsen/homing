@@ -95,7 +95,7 @@ const headerSchema = z.strictObject({
   people: z.array(z.strictObject({ key, name })),
   spaces: z.array(z.strictObject({
     id, name: text(200), parent: id.nullable(), closed: z.boolean(), private: z.boolean(), creator: authorSchema.nullable(),
-    archived: z.strictObject({ at: moment, by: key.nullable() }).nullable(), createdAt: moment, folder: text(10_000), imported,
+    archived: z.strictObject({ at: moment, by: key.nullable() }).nullable(), createdAt: moment, folder: text(10_000), modelProcessing: z.literal('off').optional(), imported,
   })).min(1),
   spaceArchives: z.array(z.strictObject({ space: id, archived: z.boolean(), author: authorSchema, at: time })),
   includes: z.array(z.strictObject({
@@ -499,7 +499,7 @@ export class Reader {
       from: { instance: h.instance, exportedBy: plainName(h.exportedBy.name), exportedAt: h.exportedAt, space: h.space },
       spaces: h.spaces.map((space, at) => ({
         id: to(space.id), name: at === 0 ? name : cleanName(space.name), parent: space.parent === null ? null : to(space.parent), closed: space.closed,
-        createdAt: this.inOrder('spaces', space.createdAt), archivedAt: space.archived?.at ?? null,
+        createdAt: this.inOrder('spaces', space.createdAt), archivedAt: space.archived?.at ?? null, ...(space.modelProcessing && { modelProcessing: space.modelProcessing }),
         imported: { id: space.id, ...(space.creator && { creator: this.by(space.creator) }), ...(space.archived?.by && { archivedBy: this.personOf(space.archived.by) }) },
       })),
     });

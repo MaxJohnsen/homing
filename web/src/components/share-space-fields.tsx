@@ -10,6 +10,8 @@ export interface ConversionData {
   rulesLeaving: { kind: 'requirement' | 'preference'; text: string; from: string | null; elsewhere?: boolean }[];
   skillsLeaving: { name: string; from: string | null }[];
   places: { id: string; name: string; label: string; people: number; above: boolean }[];
+  /** Whether model processing is off in it, which it stays once it's shared. */
+  modelOff?: boolean;
   /** On a proposal: the rules leaving as shown, which approving sends back. */
   shown?: string;
 }
@@ -95,6 +97,7 @@ export function ShareSpaceFields({ name, conversion, choice, onChange, disabled,
           : choice.closed
             ? `In ${parent.name}, with you as its admin. Only the people you add have it, and ${parent.name}’s shared rules apply in it.`
             : `In ${parent.name}. Everyone there sees its name and the spaces under it, ${parent.name}’s admins look after it with you, and its shared rules apply in it.`}
+        {conversion.modelOff && ` Model processing stays off in ${name}, so nothing in it is sent to a model.`}
       </p>
       {conversion.rulesLeaving.length > 0 && (
         <div className="flex flex-col gap-3">

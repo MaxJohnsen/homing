@@ -4,7 +4,9 @@ import { Avatar, count, dateOf, ScreenHeader, Section, Tag } from '@/components/
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
+import type { ModelSpendingData } from '@/lib/model';
 import { CopyAddress } from '@/screens/account';
+import { ModelSpending } from '@/screens/model';
 
 /** What looking after Homing shows: who uses it, and whether it sends email. */
 export interface AdminData {
@@ -12,6 +14,8 @@ export interface AdminData {
   host: string;
   email: { sends: boolean; from: string | null };
   people: { name: string; email: string; joinedAt: string; you: boolean }[];
+  /** Homing's own model and what it cost this month, or null without one. */
+  model: ModelSpendingData | null;
 }
 
 /** An invite just made: a link to share, or sent by email straight to the person. */
@@ -20,8 +24,8 @@ export type InviteMade = { link: string; expiresAt: string; emailed: false } | {
 /** Makes an invite, by email if an address is given. */
 export type MakeInvite = (email?: string) => Promise<InviteMade | { problem: string }>;
 
-/** For whoever looks after Homing: inviting people first, then whether email works, and who uses it. */
-export function Admin({ data, invite }: { data: AdminData; invite?: MakeInvite }) {
+/** For whoever looks after Homing: inviting people first, then whether email works, Homing's model, and who uses it. */
+export function Admin({ data, invite, setModelLimit }: { data: AdminData; invite?: MakeInvite; setModelLimit?: (limit: string) => Promise<string | undefined> }) {
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <ScreenHeader title="Looking after Homing" meta={`Homing at ${data.host}. Looking after it gives you no access to anyone’s spaces.`} />
@@ -41,6 +45,8 @@ export function Admin({ data, invite }: { data: AdminData; invite?: MakeInvite }
           </p>
         )}
       </Section>
+
+      <ModelSpending data={data.model} setLimit={setModelLimit} />
 
       <Section title="People" tone="raised" description={`${count(data.people.length, 'person uses', 'people use')} Homing here.`}>
         <ul className="-mx-3 grid grid-cols-1 gap-1 sm:grid-cols-2">

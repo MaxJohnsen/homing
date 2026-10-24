@@ -42,6 +42,7 @@ import {
   type NewText,
   type Page,
 } from './knowledge.ts';
+import { modelProcessingOf, setModelProcessing } from './model.ts';
 import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePlan, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, searchProposals, suggestArchive, requestsIn, suggestSpace, Undecidable, type PlanStep, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor, skillsMatching } from './skills.ts';
@@ -148,6 +149,10 @@ const renameSpaceInput = z.strictObject({
   space: text().describe('The space to rename, such as space:…'),
   name: spaceName().describe('Its new name'),
 }).describe('For space.rename');
+
+const modelOffInput = z.strictObject({
+  space: text().describe("The space to keep from Homing's own model, such as space:…"),
+}).describe('For space.model_off');
 
 const exportInput = z.strictObject({
   space: text().describe('The space to export, such as space:…'),
@@ -438,14 +443,16 @@ export function mcpServer(
         'Whether a proposal still waits, and how it ended, comes from Homing: `read` it rather than going by what you said before. ' +
         "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once. " +
         'space.export gives the link where the user downloads a space as they see it, with the spaces in it they can open, when they ask for an export or a copy. ' +
+        "space.model_off turns model processing off in a space the user is an admin of, when they ask: Homing then sends nothing in it, or in the spaces in it, to its own model. " +
+        'It changes nothing about what you can read. Only the user turns it back on, in Homing. ' +
         'plan.propose proposes several of these changes as one decision, when one request needs them together, such as sharing what is known in a space, adding someone to it and a rule: ' +
         'they are all in one space, the user approves the whole plan as it is or declines it, and approving makes every change at once, or none. ' +
         'Only what the user decides alone goes in: a request to a space\'s admins goes on its own, and routine work, such as keeping knowledge or a space only the user will have, is done first, outside the plan. ' +
         'Nothing can be added to a plan: to revise one, withdraw it and propose it again.',
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'space.export', 'proposal.withdraw', 'plan.propose']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'space.export', 'space.model_off', 'proposal.withdraw', 'plan.propose']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, exportInput, withdrawInput, planInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, exportInput, modelOffInput, withdrawInput, planInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -475,6 +482,8 @@ export function mcpServer(
             return proposeSpaceSharing(s, links, inputFor(action, shareSpaceInput, input), card);
           case 'space.export':
             return exportLink(s, links, inputFor(action, exportInput, input));
+          case 'space.model_off':
+            return modelOffFor(s, links, inputFor(action, modelOffInput, input), card);
           case 'proposal.withdraw':
             return withdrawFor(s, links, inputFor(action, withdrawInput, input), card);
           case 'plan.propose':
@@ -1794,6 +1803,33 @@ async function exportLink(s: Session, links: Links, input: z.infer<typeof export
   return `The user downloads ${space.name} as a zip from its Settings in Homing, signed in: ${links.settings(space.id)}. ` +
     `Or straight away, from a browser where they're signed in: ${links.export(space.id)}. ` +
     'It holds everything they see there and in the spaces in it they can open, with what only they see marked as theirs.';
+}
+
+/**
+ * Turns model processing off in a space the user looks after, at once, since nothing is sent
+ * because of it. Turning it back on sends what's there, so only the user does that, in Homing.
+ */
+async function modelOffFor(s: Session, links: Links, input: z.infer<typeof modelOffInput>, card: boolean): Promise<string | Answer> {
+  const spaceId = await spaceIdOf(s, input.space, onTheSpace);
+  const space = (await listSpaces(s)).find((candidate) => candidate.id === spaceId);
+  if (!space) throw new Refused('There is no space with that reference that the user can open.');
+  const name = space.privateTo !== null && space.parentId === null ? 'their personal space' : space.name;
+  if (!space.admin) throw new Refused(`Only ${space.name}'s admins turn model processing off, in its settings in Homing. Nothing changed.`);
+  const before = await modelProcessingOf(s, spaceId);
+  if (before?.offAt) return `Model processing is already off in ${name} (${ref('space', spaceId)}). Nothing changed.`;
+  // Off only through a space above, it's kept off here too, so it stays off if that one is turned on.
+  await setModelProcessing(s, spaceId, false);
+  const text = (before?.offAbove
+    ? `Model processing was off in ${name} (${ref('space', spaceId)}) through a space above it, and now it's kept off there itself, so it stays off even if it's turned on above. `
+    : `Model processing is off in ${name} (${ref('space', spaceId)}): Homing sends nothing in it, or in the spaces in it, to its own model. `) +
+    `This changes nothing about what you can read. Only the user turns it back on, in its settings in Homing: ${links.settings(spaceId)}`;
+  const done = {
+    heading: 'Model processing off',
+    name: space.name,
+    detail: before?.offAbove ? 'It stays off even if it’s turned on in the space above it.' : 'Nothing in it, or in the spaces in it, is sent to a model.',
+    link: links.settings(spaceId),
+  };
+  return card ? { text, structuredContent: { done, note: text } } : text;
 }
 
 /** Renames a space the user looks after. */
