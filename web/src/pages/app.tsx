@@ -502,9 +502,9 @@ function SearchPage() {
 
 /** Writing a space's overview, then showing it as it is now. */
 function writeOverview(spaceId: string): WriteOverview {
-  return async (text, shared) => {
+  return async (text, shared, item) => {
     try {
-      await api(`/api/spaces/${spaceId}/overview`, { text, shared });
+      await api(`/api/spaces/${spaceId}/overview`, { text, shared, ...(item && { item }) });
       await reload(`/api/spaces/${spaceId}/overview`);
     } catch (error) {
       return error instanceof Error ? error.message : 'Something went wrong. Try again.';

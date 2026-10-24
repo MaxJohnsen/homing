@@ -218,4 +218,5 @@ export interface OverviewData {
 }
 
 /** Writing a space's overview, for everyone or only you. Answers with what went wrong, or nothing. */
-export type WriteOverview = (text: string, shared: boolean) => Promise<string | undefined>;
+/** Writes the overview, or one of them in particular, such as one whose earlier version is restored. */
+export type WriteOverview = (text: string, shared: boolean, item?: string) => Promise<string | undefined>;

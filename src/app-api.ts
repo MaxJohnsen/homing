@@ -673,6 +673,19 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           return answer(res, 400, { field: 'text', message: text ? 'Keep the overview short, under 2,000 characters. Details belong on pages.' : 'Write where things stand.' });
         }
         if (!(await read((s) => spaceView(s, route.id)))) return answer(res, 404, noSpace);
+        // One overview in particular, such as one whose earlier version is restored: a shared one is
+        // corrected for everyone, or replaced for you by your own, and yours is corrected where it is.
+        if (body.item !== undefined) {
+          const target = typeof body.item === 'string' && new RegExp(`^${uuid}$`).test(body.item) ? body.item : undefined;
+          const found = target && (await read(async (s) => (await overviewOf(s, route.id))?.items.find((item) => item.id === target)));
+          if (!found) return answer(res, 404, noItem);
+          const changed = found.privateTo === null && body.shared !== true
+            ? await write((s) => supersedeItem(s, found.id, { body: text }))
+            : await write((s) => updateItem(s, found.id, { body: text }));
+          if (!changed) return answer(res, 404, noItem);
+          json(res, 200, { id: changed.id });
+          break;
+        }
         const item = await write((s) => writeOverview(s, { spaceId: route.id, text, shared: body.shared === true }));
         json(res, 200, { id: item.id });
         break;

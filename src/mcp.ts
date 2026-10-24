@@ -783,7 +783,10 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
           'Where the space stands, as written by people or assistants. ' +
             (overview.some((item) => ownText(s, item))
               ? 'The user wrote their own themselves: change it only when they ask you to, with `remember` and updates on it.'
-              : 'Keep the user\'s own up to date with `remember` and `overview: true`.'),
+              : // With no own overview yet, one the user wrote and shared is changed as their own update of it.
+                !overview.some((item) => item.privateTo !== null) && overview.some((item) => ownText(s, item, 'shared'))
+                ? 'The shared one is the user\'s own writing: when they ask you to change it, use `remember` with replaces on it, which makes their own update of it, until they share it.'
+                : 'Keep the user\'s own up to date with `remember` and `overview: true`.'),
           ...overview.map((item) => `- ${oneLine(item.body)} (${ref('item', item.id)}, ${item.privateTo ? (item.replaced?.shared ? 'private, replacing the shared overview for the user' : 'private') : 'shared'})`),
         ]
       : []),

@@ -20,8 +20,8 @@ import { PageRows } from '@/screens/pages';
  * the spaces inside it. It works without a written overview.
  */
 export function Overview({ space, data, write, now }: { space: SpaceData; data: OverviewData; write?: WriteOverview; now?: Date }) {
-  // Writing it, from what it says now, or from an earlier version being restored.
-  const [editing, setEditing] = useState<{ from?: string } | false>(false);
+  // Writing it, from what it says now, or one of them from an earlier version being restored.
+  const [editing, setEditing] = useState<{ from?: string; item?: OverviewData['overview'][number] } | false>(false);
   // The overview whose earlier versions are open.
   const [history, setHistory] = useState<string>();
   const where = space.personal ? 'your personal space' : space.name;
@@ -35,7 +35,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
         {data.waiting.length > 0 && <div className="lg:hidden"><WaitingHere waiting={data.waiting} /></div>}
         <section aria-label={`Where ${where} stands`} className="flex flex-col gap-3">
           {editing && write ? (
-            <OverviewEditor space={space} current={mine ?? shared} from={editing.from} hasShared={Boolean(shared)} write={write} onDone={() => setEditing(false)} />
+            <OverviewEditor space={space} current={editing.item ?? mine ?? shared} restoring={editing.item} from={editing.from} hasShared={Boolean(shared)} write={write} onDone={() => setEditing(false)} />
           ) : data.overview.length > 0 ? (
             <>
               {data.overview.map((item) => (
@@ -60,7 +60,7 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                         {history === item.id ? 'Hide earlier versions' : 'Earlier versions'}
                       </Button>
                       {history === item.id && (
-                        <EarlierVersions current={item} earlier={item.earlier!} onRestore={write && ((text) => setEditing({ from: text }))} />
+                        <EarlierVersions current={item} earlier={item.earlier!} onRestore={write && ((text) => setEditing({ from: text, item }))} />
                       )}
                     </div>
                   )}
@@ -134,12 +134,16 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
 
 /**
  * Writing the overview. The shared one is corrected for everyone, or replaced by your own, which
- * only you see; new writing starts as only yours, and the button names who will see it.
+ * only you see; new writing starts as only yours, and the button names who will see it. Restoring
+ * an earlier version writes that overview in particular: the shared one for everyone, or replaced
+ * by your own, and your own where it is.
  */
-function OverviewEditor({ space, current, from, hasShared, write, onDone }: {
+function OverviewEditor({ space, current, restoring, from, hasShared, write, onDone }: {
   space: SpaceData;
   current?: OverviewData['overview'][number];
-  /** An earlier version being restored, to start from. */
+  /** The overview whose earlier version is restored. */
+  restoring?: OverviewData['overview'][number];
+  /** The earlier version being restored, to start from. */
   from?: string;
   hasShared: boolean;
   write: WriteOverview;
@@ -149,13 +153,14 @@ function OverviewEditor({ space, current, from, hasShared, write, onDone }: {
   const [audience, setAudience] = useState<Audience>('you');
   const [problem, setProblem] = useState<string>();
   const [busy, setBusy] = useState(false);
-  const choice = !space.private;
+  // Your own overview, restored, stays yours.
+  const choice = !space.private && !(restoring && !restoring.shared);
   const shared = choice && audience === 'space';
   const left = 2000 - text.trim().length;
 
   const save = async () => {
     setBusy(true);
-    const answer = await write(text.trim(), shared);
+    const answer = await write(text.trim(), shared, restoring?.id);
     setBusy(false);
     if (answer) setProblem(answer);
     else onDone();
@@ -184,10 +189,11 @@ function OverviewEditor({ space, current, from, hasShared, write, onDone }: {
             : hasShared ? `Your own overview takes the shared one’s place for you. Others in ${space.name} still see theirs.` : 'Only you see it, until you share it.'}
         </p>
       )}
+      {restoring && !restoring.shared && <p className="text-sm text-muted-foreground">What it says now stays in its history.</p>}
       {problem && <FieldError>{problem}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
-        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || left < 0} onClick={save}>{shared ? `Share with ${space.name}` : from !== undefined ? 'Restore for you' : 'Save for you'}</Button>
+        <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || left < 0} onClick={save}>{shared ? (restoring ? `Restore it for ${space.name}` : `Share with ${space.name}`) : restoring ? 'Restore for you' : 'Save for you'}</Button>
       </div>
     </div>
   );

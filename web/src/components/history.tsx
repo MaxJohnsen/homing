@@ -1,6 +1,7 @@
 import { dateOf, timeOf } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { nameIn, plain, type Author, type Version } from '@/lib/knowledge';
+import { fromChange } from '@/lib/versions';
 
 /** Who made a version, in the middle of a sentence: "you", "Cara Lund", "your assistant Claude", "Cara Lund’s assistant Claude", "Homing". */
 export function madeBy(version: { by: Author; agent: string | null; editAgent?: string | null }): string {
@@ -8,18 +9,6 @@ export function madeBy(version: { by: Author; agent: string | null; editAgent?: 
   const person = nameIn(version.by);
   if (agent) return person === 'you' ? `your assistant ${agent}` : person ? `${person}’s assistant ${agent}` : agent;
   return person ?? (version.by ? 'someone' : 'Homing');
-}
-
-/**
- * A version's text from a little before where it first differs from the next one, so a long
- * document's versions each show the passage that changed rather than the same opening.
- */
-export function fromChange(text: string, next: string): string {
-  let at = 0;
-  while (at < text.length && text[at] === next[at]) at++;
-  if (at < 60) return text;
-  const start = text.lastIndexOf(' ', at - 40);
-  return `…${text.slice(start + 1)}`;
 }
 
 /**
