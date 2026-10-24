@@ -429,9 +429,9 @@ export const sampleSources: SourcesData = {
   total: 12_400,
   all: 12_400,
   sources: [
-    { id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'Gunnar wants another week for content. New launch date November 20, but he hasn’t told his team yet.', createdAt: daysAgo(0, 5), onlyYou: true, pages: 1 },
-    { id: 'source-4', reference: 'Steering group notes, October 9', excerpt: 'Design is signed off. Content is late, and Northwind’s team asks for help with the booking texts.', createdAt: daysAgo(11), onlyYou: false, pages: 0 },
-    { id: 'source-1', reference: 'Kickoff deck, September 2', excerpt: 'Goal: customers book service appointments online. Acme: design and build. Northwind: content.', createdAt: daysAgo(48), onlyYou: false, pages: 2 },
+    { id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'Gunnar wants another week for content. New launch date November 20, but he hasn’t told his team yet.', createdAt: daysAgo(0, 5), onlyYou: true, readFrom: null, pages: 1 },
+    { id: 'source-4', reference: 'Steering group notes, October 9', excerpt: 'Design is signed off. Content is late, and Northwind’s team asks for help with the booking texts.', createdAt: daysAgo(11), onlyYou: false, readFrom: null, pages: 0 },
+    { id: 'source-1', reference: 'Kickoff deck, September 2', excerpt: 'Goal: customers book service appointments online. Acme: design and build. Northwind: content.', createdAt: daysAgo(48), onlyYou: false, pages: 2, readFrom: null },
   ],
 };
 
@@ -445,6 +445,7 @@ export const sampleSource: SourceData = {
   by: { name: 'Cara Lund', you: false },
   agent: 'Claude',
   readIn: null,
+  readFrom: null,
   space: { id: 'northwind', name: 'Northwind', personal: false, private: false },
   pages: [
     { id: samplePage.id, title: 'Website relaunch', items: [{ id: 'item-1', text: samplePage.items[0].text, shared: true }] },
@@ -473,7 +474,7 @@ export const sampleSearch: SearchData = {
   ],
   rules: [{ id: 'rule-1', text: 'Never announce a launch date before the client does.', kind: 'requirement', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
   skills: [{ id: 'skill-1', name: 'launch-checklist', onlyYou: false, space: { id: 'acme', name: 'Acme', within: null } }],
-  sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'New launch date November 20, but he hasn’t told his team yet.', onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } }],
+  sources: [{ id: 'source-2', reference: 'Call with Gunnar, October 16', excerpt: 'New launch date November 20, but he hasn’t told his team yet.', readFrom: null, onlyYou: true, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } }],
   tasks: [
     { id: 't5', title: 'Book the venue for the launch', due: '2026-11-03', done: false, onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },
     { id: 't6', title: 'Draft the launch plan', due: null, done: true, onlyYou: false, space: { id: 'northwind', name: 'Northwind', within: 'Acme' } },

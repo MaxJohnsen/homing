@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { Audience } from './connectors.ts';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { accessibleSpaces, listSpaces, type Space } from './spaces.ts';
 
@@ -99,7 +100,19 @@ export interface Source {
   readThrough: string | null;
 }
 
-export type Citation = Pick<Source, 'id' | 'reference' | 'excerpt' | 'readThrough'>;
+export type Citation = Pick<Source, 'id' | 'reference' | 'excerpt' | 'readThrough'> & { readFrom: string | null };
+
+/**
+ * The kind of place Homing read a source in, such as a mailbox: the place its reference names,
+ * through the connection it read it through. Null for one Homing didn't read itself.
+ */
+function readFrom(s: Session, table: string) {
+  const t = s.tx(table);
+  return s.tx`(
+    select p.kind from places p
+    where p.connection_id = ${t}.read_through and p.id::text = lower(substring(${t}.reference from '^[a-z][a-z0-9]*:([0-9a-fA-F-]{36}):'))
+  )`;
+}
 
 export interface Page {
   id: string;
@@ -162,17 +175,19 @@ export interface Hit {
   agent: string | null;
   editAgent: string | null;
   imported: Imported | null;
-  /** A source Homing read itself, such as an email in the person's mailbox. */
+  /** A source Homing read itself, such as an email in the person's mailbox, and the kind of place it read it in. */
   readByHoming: boolean;
+  readFrom: string | null;
 }
 
 /**
  * Keeps where knowledge came from, without giving it a page yet. The same source is kept once.
- * One Homing read itself, such as an email, names the connection it read it through.
+ * One Homing read itself, such as an email, names the connection it read it through, and who could
+ * see it there, where Homing knows.
  */
 export async function addSource(
   s: Session,
-  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string },
+  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string; audience?: Exclude<Audience, 'unknown'> | null },
 ): Promise<Source> {
   const privateTo = sideOf(s, input.shared);
   await checkSpace(s, input.spaceId, input.shared);
@@ -184,8 +199,11 @@ export async function addSource(
   `;
   if (existing) return existing;
   const [source] = await s.tx<Source[]>`
-    insert into sources (space_id, private_to, reference, excerpt, read_through)
-    values (${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt}, ${input.readThrough ?? null}::uuid)
+    insert into sources (space_id, private_to, reference, excerpt, read_through, audience)
+    values (
+      ${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt}, ${input.readThrough ?? null}::uuid,
+      ${input.audience ? s.tx.json(input.audience as never) : null}::jsonb
+    )
     returning ${sourceColumns(s)}
   `;
   return source;
@@ -933,6 +951,8 @@ export interface SourceSummary {
   onlyYou: boolean;
   /** How many pages the viewer sees it used on. */
   pages: number;
+  /** The kind of place Homing read it in, such as a mailbox, when it read it itself. */
+  readFrom: string | null;
 }
 
 /**
@@ -949,7 +969,7 @@ export async function sourcesIn(
   const matching = terms ? s.tx`and src.search @@ to_tsquery('simple', ${terms})` : s.tx``;
   const order = terms ? s.tx`ts_rank(src.search, to_tsquery('simple', ${terms}), 1) desc, src.created_at desc` : s.tx`src.created_at desc`;
   const list = (offset: number) => s.tx<(Omit<SourceSummary, 'pages'> & { total: number })[]>`
-    select src.id, src.reference, src.excerpt, src.created_at, src.private_to is not null as only_you, count(*) over ()::int as total
+    select src.id, src.reference, src.excerpt, src.created_at, src.private_to is not null as only_you, ${readFrom(s, 'src')} as read_from, count(*) over ()::int as total
     from sources src
     where src.space_id = ${spaceId}::uuid and ${visible(s, 'src')} ${matching}
     order by ${order}, src.id
@@ -982,8 +1002,9 @@ export async function sourcesIn(
  */
 export async function sourceView(s: Session, sourceId: string) {
   // Which mailbox Homing read it in, for whoever's connection that is: only its owner.
-  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null; readIn: string | null })[]>`
-    select ${sourceColumns(s)}, written_by, agent, created_at, imported, (select c.address from connections c where c.id = sources.read_through) as read_in
+  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null; readIn: string | null; readFrom: string | null })[]>`
+    select ${sourceColumns(s)}, written_by, agent, created_at, imported, (select c.address from connections c where c.id = sources.read_through) as read_in,
+           ${readFrom(s, 'sources')} as read_from
     from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
   `;
   if (!source) return undefined;
@@ -1133,7 +1154,7 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing, read_from from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -1147,14 +1168,14 @@ export async function search(
                and exists (select from content r where r.supersedes = c.id and r.private_to is not null and ${visible(s, 'r')})
                and not exists (select from content r where r.supersedes = c.id and r.private_to is null and ${visible(s, 'r')}) as replaced_for_you,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
-             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported, false as read_by_homing
+             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported, false as read_by_homing, null as read_from
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null, src.read_through is not null
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null, src.read_through is not null, ${readFrom(s, 'src')}
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.
@@ -1397,7 +1418,7 @@ function titleOf(s: Session, pageId: ReturnType<Session['tx']>) {
  */
 function citationsOf(s: Session, withOrigin = false) {
   return s.tx`coalesce((
-    select json_agg(json_build_object('id', src.id, 'reference', src.reference, 'excerpt', src.excerpt, 'shared', src.private_to is null, 'readThrough', src.read_through)
+    select json_agg(json_build_object('id', src.id, 'reference', src.reference, 'excerpt', src.excerpt, 'shared', src.private_to is null, 'readThrough', src.read_through, 'readFrom', ${readFrom(s, 'src')})
                     order by src.created_at)
     from sources src
     where src.id in (

@@ -1,15 +1,18 @@
-// Microsoft 365, the first system Homing connects to (spec §7). A person signs
-// in on Microsoft's own page and allows Homing to read their mail; Homing
-// then reads it as them, with delegated permissions only. This is the
-// sign-in itself, over plain HTTPS: OAuth 2.0's authorization code flow with
-// PKCE and OpenID Connect, Homing proving it is its app registration with a
-// certificate, or a client secret where a self-hoster has no certificate.
-// Then two calls to Microsoft Graph confirm what was connected. Later, Graph
-// searches and reads the person's mail, when they ask for it.
+// Microsoft 365, the first system Homing connects to (spec §7), as a
+// connector (connectors.ts). A person signs in on Microsoft's own page and
+// allows Homing to read their mail; Homing then reads it as them, with
+// delegated permissions only. This is the sign-in itself, over plain HTTPS:
+// OAuth 2.0's authorization code flow with PKCE and OpenID Connect, Homing
+// proving it is its app registration with a certificate, or a client secret
+// where a self-hoster has no certificate. Then two calls to Microsoft Graph
+// confirm what was connected. Later, Graph searches and reads the person's
+// mail, when they ask for it. What's about email in general is in mail.ts.
 
 import { createHash, createPrivateKey, randomUUID, X509Certificate, type KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { decodeJwt, SignJWT } from 'jose';
+import type { Connector, Grant, Party, Tokens } from './connectors.ts';
+import { emailFound, emailItem, mailbox } from './mail.ts';
 
 /** How this Homing signs people in with Microsoft: its app registration in Microsoft Entra ID. */
 export interface MicrosoftSettings {
@@ -134,28 +137,65 @@ export class MicrosoftUnreachable extends Error {
   }
 }
 
-/** What an account's sign-in holds for Homing: tokens to use, and one to get new ones with. */
-export interface Tokens {
-  access: string;
-  refresh: string;
-  expiresAt: Date;
-}
-
-/** An account someone signed in with, by the ids Microsoft keeps for good. */
-export interface Grant {
-  /** The account's directory (tenant) and its object id there. */
-  tenant: string;
-  account: string;
-  /** Its address, as the person signed in with it. */
-  username: string | null;
-  /** What Microsoft allowed Homing, such as Mail.Read. */
-  scopes: string[];
-  tokens: Tokens;
-}
-
-/** Where Microsoft sends the person back to this Homing. */
-export function redirectUri(homing: URL): string {
-  return new URL(callbackPath, homing).toString();
+/**
+ * Microsoft 365 as a connector: the account's own mailbox, which connecting adds, and, once this
+ * Homing is set up for it, the sign-in and Graph. Its account is the directory (tenant) and the
+ * object id there.
+ */
+export function microsoftConnector(settings?: MicrosoftSettings): Connector {
+  const set = (): MicrosoftSettings => {
+    if (!settings) throw new Error('Microsoft 365 isn’t set up on this Homing.');
+    return settings;
+  };
+  return {
+    id: 'microsoft',
+    name: 'Microsoft 365',
+    vendor: 'Microsoft',
+    ready: settings !== undefined,
+    settings: 'Check MICROSOFT_CLIENT_ID, MICROSOFT_TENANT, and MICROSOFT_CERTIFICATE or MICROSOFT_CLIENT_SECRET, and the app registration. See docs/deployment.md.',
+    // Graph's ids, immutable ones included, are URL-safe base64.
+    ids: /^[A-Za-z0-9_=-]{1,1024}$/,
+    abilities: { 'Mail.Read': 'read mail' },
+    auth: {
+      callback: callbackPath,
+      signIn: (attempt) => signInAddress(set(), attempt),
+      redeem: (answer) => redeem(set(), answer),
+      account: async (grant) => {
+        const account = await whoIs(set(), grant.tokens.access);
+        const address = account.address ?? grant.username;
+        if (!address) throw new MicrosoftRefused('no_address');
+        return { address, name: account.name, places: [{ kind: 'mailbox', resource: grant.account }] };
+      },
+      refresh: (kept) => refresh(set(), kept),
+      notice: (error) => {
+        if (!(error instanceof MicrosoftRefused)) return undefined;
+        // A code used before, or one that expired, as when the page is opened again.
+        if (error.code === 'invalid_grant') return 'expired';
+        if (error.code === 'no_mailbox') return 'no-mailbox';
+        return undefined;
+      },
+    },
+    kinds: {
+      mailbox: {
+        // An immutable id lasts while an email moves between folders, though not to an archive mailbox.
+        words: { ...mailbox, lost: 'or it moved to an archive' },
+        search: async (access, words, limit) => (await searchMail(set(), await access.token(), words, { top: limit, signal: access.signal })).map(emailFound),
+        read: async (access, id, { related }) => {
+          const read = await readMail(set(), await access.token(), id, { signal: access.signal, thread: related });
+          return read && emailItem(read.mail, read.thread, read.moreInThread);
+        },
+      },
+    },
+    refused: (error) => {
+      if (error instanceof MicrosoftUnreachable) return 'try later';
+      if (!(error instanceof MicrosoftRefused)) return undefined;
+      if (error.signInAgain) return 'sign in again';
+      if (error.homingItself) return 'homing settings';
+      // Graph refused a token before it expired, such as after the person withdrew their consent.
+      if (error.detail === 'InvalidAuthenticationToken') return 'renew';
+      return 'refused';
+    },
+  };
 }
 
 /**
@@ -221,18 +261,12 @@ export async function whoIs(settings: MicrosoftSettings, access: string): Promis
   return { address: text(me.mail) ?? text(me.userPrincipalName), name: text(me.displayName) };
 }
 
-/** An address on an email: a name, which its sender chose, and the address itself. */
-export interface MailAddress {
-  name: string | null;
-  address: string | null;
-}
-
 /** An email in a mailbox, as a list of them shows it. Its id is its immutable id, which stays while it's in the mailbox. */
 export interface MailSummary {
   id: string;
   conversationId: string | null;
   subject: string | null;
-  from: MailAddress | null;
+  from: Party | null;
   /** When the mailbox received it, or sent it. */
   at: Date | null;
   /** Its first words, as Microsoft gives them. */
@@ -241,8 +275,8 @@ export interface MailSummary {
 
 /** An email to read: who it's from and to, its text, and the names of its attachments. */
 export interface Mail extends MailSummary {
-  to: MailAddress[];
-  cc: MailAddress[];
+  to: Party[];
+  cc: Party[];
   /** Its text, never its HTML. */
   body: string;
   /** The part of its text that's its own, without what it quotes from earlier emails, as Exchange tells them apart. Null when it doesn't say. */
@@ -347,7 +381,7 @@ function summaryOf(message: Record<string, unknown>): MailSummary {
   };
 }
 
-function addressesOf(recipients: unknown): MailAddress[] {
+function addressesOf(recipients: unknown): Party[] {
   if (!Array.isArray(recipients)) return [];
   return recipients.flatMap((recipient) => {
     const email = (recipient as { emailAddress?: { name?: unknown; address?: unknown } } | null)?.emailAddress;

@@ -7,12 +7,13 @@ import { Pool } from 'pg';
 import { tokenVerifier, type AgentPrincipal } from './assistants.ts';
 import { authEndpoints, clientAddressHeader, createAuth, type Auth, type AuthSettings } from './auth.ts';
 import { finishConnecting } from './connections.ts';
+import { connectorsFor, type Connector } from './connectors.ts';
 import { authDatabaseUrl, connect, type Sql } from './db.ts';
 import { smtpMailer, type Mailer } from './email.ts';
 import { keepTidy } from './import.ts';
 import { setupLink } from './invites.ts';
 import { mcpServer } from './mcp.ts';
-import { callbackPath, microsoftFromEnvironment, type MicrosoftSettings } from './microsoft.ts';
+import { microsoftFromEnvironment, type MicrosoftSettings } from './microsoft.ts';
 import { vault } from './vault.ts';
 import { handleApi, serveApp, type App } from './web.ts';
 
@@ -43,6 +44,8 @@ export interface ServerOptions {
   logRequests?: boolean;
   /** How people connect Microsoft 365. By default from MICROSOFT_CLIENT_ID and the settings beside it; null for none. */
   microsoft?: MicrosoftSettings | null;
+  /** Systems to connect to beside Homing's own connectors. Tests add stand-ins. */
+  connectors?: Connector[];
 }
 
 export interface Homing {
@@ -58,6 +61,9 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   const secret = options.secret ?? secretFor(configured, options.host);
   const proxies = trustedProxies(options.trustedProxies ?? process.env.HOMING_TRUSTED_PROXIES);
   const microsoft = options.microsoft === undefined ? microsoftFromEnvironment() : (options.microsoft ?? undefined);
+  const connectors = connectorsFor({ microsoft }, options.connectors);
+  // Where each system sends people back after they sign in there, as its app registration has it.
+  const callbacks = new Map([...connectors.values()].map((connector) => [connector.auth.callback, connector]));
   let app: App | undefined;
   let mcp: ReturnType<typeof toNodeHandler>;
   let auth: ReturnType<typeof authHandler>;
@@ -90,8 +96,8 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
       } else if (path.startsWith('/api/auth/') || path.startsWith('/.well-known/')) {
         if (authEndpoints.has(`${req.method} ${path}`)) await auth(req, res);
         else res.writeHead(404).end();
-      } else if (path === callbackPath) {
-        await finishConnecting(app, req, res);
+      } else if (callbacks.has(path)) {
+        await finishConnecting(app, callbacks.get(path)!, req, res);
       } else if (path.startsWith('/api/')) {
         await handleApi(app, req, res, path);
       } else {
@@ -124,11 +130,11 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   verifyToken = tokenVerifier(homingAuth, pool, url);
 
   const cards = new Set(options.cardClients ?? cardClients);
-  // What reading a person's connected mailbox for them needs: their sealed sign-in, opened only in the server.
-  const broker = { sql, vault: vault(secret), microsoft };
+  // What reading a person's places for them, such as their mailbox, needs: their sealed sign-in, opened only in the server.
+  const broker = { sql, vault: vault(secret), connectors };
   const handler = createMcpHandler(({ authInfo }) => {
     const principal = authInfo?.extra?.principal as AgentPrincipal;
-    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer }, mail: broker });
+    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer }, broker });
   });
   mcp = toNodeHandler({
     fetch: async (request, context) => {
@@ -139,7 +145,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   auth = authHandler(homingAuth);
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
-  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, microsoft };
+  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, connectors };
   // What imports left on the way, when Homing stopped during one, goes, and keeps going.
   const stopTidying = keepTidy(sql);
 

@@ -17,7 +17,8 @@ import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { accessToken, ConnectionUnusable, connectionsOf, placesIn, removePlace, revokeConnection } from '../src/connections.ts';
-import { mailboxesFor, readMailFor } from '../src/mail.ts';
+import { connectorsFor } from '../src/connectors.ts';
+import { placesFor, readFor } from '../src/places.ts';
 import { AccessDenied, authDatabaseUrl, type Session } from '../src/db.ts';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { exportSpace, manifestOf } from '../src/export.ts';
@@ -217,16 +218,16 @@ for (const [layer, sql] of [
           assert.equal(await revokeConnection(s, target.connection.id), false);
         }, sql);
         await assert.rejects(
-          accessToken({ sql, vault: vault('a-secret-that-is-long-enough-to-seal-with') }, me.id, target.connection.id),
+          accessToken({ sql, vault: vault('a-secret-that-is-long-enough-to-seal-with'), connectors: connectorsFor({}) }, me.id, target.connection.id),
           (error) => error instanceof ConnectionUnusable && error.reason === 'gone',
         );
         // Nor searches or reads the other's mail: their mailbox isn't among anyone else's, and its place reads as none.
         await as({ ...me, agent: 'Claude' }, async (s) => {
-          assert.deepEqual((await mailboxesFor(s)).map((mailbox) => mailbox.place), [intruder.connection.place]);
-          assert.deepEqual(await mailboxesFor(s, target.space), []);
+          assert.deepEqual((await placesFor(s)).map((mailbox) => mailbox.place), [intruder.connection.place]);
+          assert.deepEqual(await placesFor(s, target.space), []);
         }, sql);
-        const broker = { sql, vault: vault('a-secret-that-is-long-enough-to-seal-with') };
-        assert.equal(await readMailFor(broker, { person: me.id, agent: 'Claude', clientId: 'claude' }, { place: target.connection.place, id: 'AAkALg' }), undefined);
+        const broker = { sql, vault: vault('a-secret-that-is-long-enough-to-seal-with'), connectors: connectorsFor({}) };
+        assert.equal(await readFor(broker, { person: me.id, agent: 'Claude', clientId: 'claude' }, { connector: 'microsoft', place: target.connection.place, id: 'AAkALg' }), undefined);
       }
       await assertUntouched();
     });
@@ -313,6 +314,7 @@ describe('straight against the database', () => {
         const places = await s.tx`select space_id from places`;
         const uses = await s.tx`select connection_id from connection_uses`;
         const read = await s.tx`select read_through from sources where read_through is not null`;
+        const audiences = await s.tx`select audience from sources where audience is not null`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -331,6 +333,7 @@ describe('straight against the database', () => {
         assert.deepEqual(places.map((row) => row.spaceId), [space]);
         assert.deepEqual(uses.map((row) => row.connectionId), [connection.id]);
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
+        assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -366,7 +369,10 @@ describe('straight against the database', () => {
           insert into places (connection_id, space_id, private_to, kind, resource) values (${connection}, ${target.space}, ${me.id}, 'mailbox', 'x')
         `), refused);
       }
-      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select * from connect_mailbox(${target.space}::uuid, 'microsoft', 't', 'a', 'x@x.test', null, '{Mail.Read}')`), refused);
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select connect_account(${target.space}::uuid, 'microsoft', 't', 'a', 'x@x.test', null, '{Mail.Read}')`), refused);
+      // Nor add a place through the other's connection, even in their own space, or through their own in the other's space.
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select add_place(${intruder.space}::uuid, ${target.connection.id}::uuid, 'mailbox', 'x')`), refused);
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select add_place(${target.space}::uuid, ${intruder.connection.id}::uuid, 'mailbox', 'x')`), refused);
       await assert.rejects(as(me, (s) => s.tx`update connections set person_id = ${me.id} where id = ${target.connection.id}`), refused);
       await assert.rejects(as(me, (s) => s.tx`update places set private_to = ${me.id} where id = ${target.connection.place}`), refused);
       await assert.rejects(as(me, (s) => s.tx`insert into credentials (connection_id, refresh_token) values (${target.connection.id}, '\\x00')`), refused);
@@ -377,7 +383,7 @@ describe('straight against the database', () => {
       // Nor record a use of the other's mailbox, or keep a source as read through it, or through their own in the other's space.
       await assert.rejects(as(me, (s) => s.tx`
         insert into connection_uses (connection_id, place_id, space_id, private_to, operation)
-        values (${target.connection.id}, ${target.connection.place}, ${target.space}, ${me.id}, 'read mail')
+        values (${target.connection.id}, ${target.connection.place}, ${target.space}, ${me.id}, 'read')
       `), refused);
       await assert.rejects(as(me, (s) => s.tx`
         insert into sources (space_id, private_to, excerpt, read_through) values (${intruder.space}, ${me.id}, 'Hello', ${target.connection.id})
@@ -705,18 +711,21 @@ async function client(
 /** Someone's work mailbox, connected in a space only for them, as signing in to Microsoft leaves it. */
 async function mailbox(who: { id: string }, space: string, address: string) {
   return as({ person: who.id, direct: true }, async (s) => {
-    const [{ connectionId, placeId }] = await s.tx<{ connectionId: string; placeId: string }[]>`
-      select * from connect_mailbox(${space}::uuid, 'microsoft', ${crypto.randomUUID()}, ${crypto.randomUUID()}, ${address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[])
+    const account = crypto.randomUUID();
+    const [{ connectionId }] = await s.tx<{ connectionId: string }[]>`
+      select connect_account(${space}::uuid, 'microsoft', ${crypto.randomUUID()}, ${account}, ${address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[]) as connection_id
     `;
+    const [{ placeId }] = await s.tx<{ placeId: string }[]>`select add_place(${space}::uuid, ${connectionId}::uuid, 'mailbox', ${account}) as place_id`;
     await s.tx`select keep_credentials(${connectionId}::uuid, ${Buffer.from(`sealed refresh token of ${address}`)}, null, null)`;
     // One search of it, as Homing records each use, and one email kept from it as read by Homing.
     await s.tx`
       insert into connection_uses (connection_id, place_id, space_id, private_to, operation, agent)
-      values (${connectionId}, ${placeId}, ${space}, ${who.id}, 'search mail', 'Claude')
+      values (${connectionId}, ${placeId}, ${space}, ${who.id}, 'search', 'Claude')
     `;
+    const [{ name }] = await s.tx<{ name: string }[]>`select name from people where id = ${who.id}::uuid`;
     await s.tx`
-      insert into sources (space_id, private_to, reference, excerpt, read_through)
-      values (${space}, ${who.id}, ${`mail:${placeId}:AAkALg`}, ${`From: Gunnar <gunnar@${address.split('@')[1]}>`}, ${connectionId})
+      insert into sources (space_id, private_to, reference, excerpt, read_through, audience)
+      values (${space}, ${who.id}, ${`microsoft:${placeId}:AAkALg`}, ${`From: Gunnar <gunnar@${address.split('@')[1]}>`}, ${connectionId}, ${s.tx.json({ people: [{ name, address }], more: 0 })})
     `;
     return { id: connectionId, place: placeId, address };
   });

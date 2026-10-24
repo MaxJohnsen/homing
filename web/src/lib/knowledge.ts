@@ -64,7 +64,7 @@ export interface ItemData {
   sharedBy?: Author;
   sharedAt?: string | null;
   /** Its sources as you see them. Your own aren't shared, such as those behind something you shared. */
-  sources: { id: string; reference: string | null; excerpt: string; shared?: boolean }[];
+  sources: { id: string; reference: string | null; excerpt: string; shared?: boolean; readFrom?: string | null }[];
   /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
   /** What it said before it was last changed, oldest first, each with who wrote that version. */
@@ -146,8 +146,8 @@ export function theirAssistant(author: Author, agent: string): string {
  * What a source is called: its reference, or, for an email Homing read in your mailbox, whose email
  * it is, since its reference is for assistants to open it again.
  */
-export function sourceName(source: { reference: string | null; excerpt: string }, unnamed = 'A source without a name'): string {
-  if (!source.reference?.startsWith('mail:')) return source.reference ?? unnamed;
+export function sourceName(source: { reference: string | null; excerpt: string; readFrom?: string | null }, unnamed = 'A source without a name'): string {
+  if (source.readFrom !== 'mailbox') return source.reference ?? unnamed;
   const from = /^From: (.+?)(?: <[^>]*>)?$/m.exec(source.excerpt)?.[1];
   return from && from !== 'unknown' ? `${from}’s email` : 'An email';
 }
@@ -167,6 +167,8 @@ export interface SourceSummary {
   onlyYou: boolean;
   /** How many pages you see it used on. */
   pages: number;
+  /** The kind of place Homing read it in, such as a mailbox, when it read it itself. */
+  readFrom: string | null;
 }
 
 /** A space's sources, fifty at a time. */
@@ -187,8 +189,9 @@ export interface SourceData {
   keptAt: string;
   by: Author;
   agent: string | null;
-  /** The mailbox Homing read it in, when it read it itself. */
+  /** The mailbox Homing read it in, when it read it itself, and the kind of place that is. */
   readIn: string | null;
+  readFrom: string | null;
   space: { id: string; name: string; personal: boolean; private: boolean };
   pages: { id: string; title: string; items: { id: string; text: string; shared: boolean }[] }[];
 }

@@ -11,7 +11,7 @@ import { AccessDenied, withPrincipal, type Sql } from './db.ts';
 import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
-import type { MicrosoftSettings } from './microsoft.ts';
+import type { Connectors } from './connectors.ts';
 import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable, withdraw } from './proposals.ts';
 import { accountFinder } from './people.ts';
@@ -31,8 +31,8 @@ export interface App {
   limit: (address: string) => boolean;
   /** Seals and opens the credentials of connections. */
   vault: Vault;
-  /** How people connect Microsoft 365, if this Homing is set up for it. */
-  microsoft?: MicrosoftSettings;
+  /** The systems people connect to, such as Microsoft 365, set up or not. */
+  connectors: Connectors;
 }
 
 // One plain address, nothing a mail program could read as a name and another address.
