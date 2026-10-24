@@ -463,7 +463,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             id: item.id,
             text: item.body,
             shared: item.privateTo === null,
-            ...authorOf(names, person, item.writtenBy, item.agent, item.imported),
+            ...authorOf(names, person, item.writtenBy, item.agent, item.imported, item.editAgent),
             writtenAt: item.updatedAt,
             // Who shared it from their own private side, and when, imported or not.
             sharedBy: item.privateTo !== null ? null : item.publishedBy ? by(item.publishedBy) : item.publishedAt && item.imported?.publishedBy ? { name: item.imported.publishedBy.name, you: false, imported: true } : null,
@@ -473,7 +473,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
             earlier: history
               .filter((entry) => entry.itemId === item.id)
-              .map((entry) => ({ text: entry.body, ...authorOf(names, person, entry.writtenBy, entry.agent, entry.imported), writtenAt: entry.writtenAt, until: entry.replacedAt })),
+              .map((entry) => ({ text: entry.body, ...authorOf(names, person, entry.writtenBy, entry.agent, entry.imported, entry.editAgent), writtenAt: entry.writtenAt, until: entry.replacedAt })),
           })),
         });
         break;
@@ -609,7 +609,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             kind: change.kind,
             newPage: change.newPage,
             overview: change.overview,
-            ...authorOf(names, person, change.writtenBy, change.agent, change.imported),
+            ...authorOf(names, person, change.writtenBy, change.agent, change.imported, change.editAgent),
             // Shared from someone's own side, the change is the sharing, so it says who shared it.
             sharedBy: change.publishedBy && change.publishedAt?.getTime() === change.at.getTime()
               ? { name: names.get(change.publishedBy) ?? null, you: change.publishedBy === person }
@@ -628,7 +628,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           const space = await spaceView(s, route.id);
           if (!space) return undefined;
           const overview = await overviewOf(s, route.id);
-          const names = await peopleNames(s, (overview?.items ?? []).map((item) => item.writtenBy));
+          const history = await historyOf(s, (overview?.items ?? []).map((item) => item.id));
+          const names = await peopleNames(s, [...(overview?.items ?? []), ...history].map((entry) => entry.writtenBy));
           // The map beside it: what's active, its collections, recent decisions, what waits here, and the spaces inside.
           const [active, collections, decisions, waiting, spaces] = [
             await pagesIn(s, route.id, { limit: 8 }),
@@ -637,19 +638,22 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             (await waitingFor(s)).filter((item) => item.spaceId === route.id),
             (await listSpaces(s)).filter((other) => other.parentId === route.id),
           ];
-          return { overview, names, active, collections, decisions, waiting, spaces };
+          return { overview, history, names, active, collections, decisions, waiting, spaces };
         });
         if (!found) return answer(res, 404, noSpace);
-        const { overview, names, active, collections, decisions, waiting, spaces } = found;
+        const { overview, history, names, active, collections, decisions, waiting, spaces } = found;
         json(res, 200, {
           overview: (overview?.items ?? []).map((item) => ({
             id: item.id,
             text: item.body,
             shared: item.privateTo === null,
-            ...authorOf(names, person, item.writtenBy, item.agent, item.imported),
+            ...authorOf(names, person, item.writtenBy, item.agent, item.imported, item.editAgent),
             writtenAt: item.updatedAt,
             // Your own overview that explicitly replaces the shared one, which the others still see.
             replacesShared: item.privateTo !== null && item.replaced?.shared === true ? item.replaced.body : null,
+            earlier: history
+              .filter((entry) => entry.itemId === item.id)
+              .map((entry) => ({ text: entry.body, ...authorOf(names, person, entry.writtenBy, entry.agent, entry.imported, entry.editAgent), writtenAt: entry.writtenAt, until: entry.replacedAt })),
           })),
           active: active.pages,
           pages: active.all,
@@ -1026,12 +1030,17 @@ function clamp(offset: number): number {
  * Who wrote something, as the app shows it: you, someone by name, or nobody named when they're no
  * longer someone the reader shares a space with, and the agent that wrote it for them. What still
  * says what it said when it was imported shows who wrote it before, credited to nobody here.
- * Nobody at all when a space's routine wrote it.
+ * Nobody at all when a space's routine wrote it. A person's own text that their assistant changed
+ * for them stays theirs, and says which assistant.
  */
-function authorOf(names: Map<string, string>, person: string, writtenBy: string | null, agent: string | null, imported: Imported | null) {
+function authorOf(names: Map<string, string>, person: string, writtenBy: string | null, agent: string | null, imported: Imported | null, editAgent: string | null = null) {
   const before = importedAuthor(imported);
-  if (before) return { by: before.person ? { name: before.name, you: false, imported: true } : null, agent: before.agent };
-  return { by: writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person }, agent };
+  const edited = before ? (before.by === 'person' ? before.agent : null) : editAgent;
+  return {
+    by: before ? (before.person ? { name: before.name, you: false, imported: true } : null) : writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person },
+    agent: before ? (before.by === 'person' ? null : before.agent) : agent,
+    ...(edited && { editAgent: edited }),
+  };
 }
 
 /** A connection as the app shows it to its owner: what it is, what Homing may do, and whether it works. Never its credentials. */

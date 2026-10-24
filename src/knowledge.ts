@@ -17,6 +17,11 @@ export interface Item {
   writtenBy: string | null;
   /** The agent that wrote it, or null when a person wrote it themselves. */
   agent: string | null;
+  /**
+   * The assistant that made its latest change for the person who wrote it, who stays its author
+   * (spec §3), or null when they made it themselves.
+   */
+  editAgent: string | null;
   /** The item this one replaced, if any. */
   supersedes: string | null;
   /** Guidance that also applies in the spaces below its own. Knowledge never does. */
@@ -63,9 +68,25 @@ export function importedAuthor(imported: Imported | null | undefined): ImportedA
   return imported?.author ?? null;
 }
 
-/** Whether a person wrote it, here or before it was imported, so agents never rewrite it. */
+/**
+ * Whether a person wrote it, here or before it was imported, so agents never rewrite it, except
+ * the person's own assistant on their private side (ownText).
+ */
 export function byPerson(written: { writtenBy: string | null; agent: string | null; imported: Imported | null }): boolean {
   return (written.writtenBy !== null && written.agent === null) || importedAuthor(written.imported)?.by === 'person';
+}
+
+/**
+ * Whether it's text the person wrote themselves here, which their assistant may change for them,
+ * and which stays theirs (spec §3): on their private side where it is, and on the shared side as
+ * their own update of it. Homing can't tell whether they asked: it allows this only because the
+ * change is private, recorded and can be undone. What someone wrote before it was imported is never
+ * theirs, whatever the name.
+ */
+export function ownText(s: Session, item: Pick<Item, 'kind' | 'privateTo' | 'writtenBy' | 'agent' | 'imported'>, side: 'private' | 'shared' = 'private'): boolean {
+  const me = personOf(s.principal);
+  const there = side === 'private' ? item.privateTo === me : item.privateTo === null;
+  return me !== undefined && there && item.kind === 'text' && item.writtenBy === me && item.agent === null && !importedAuthor(item.imported);
 }
 
 export interface Source {
@@ -108,6 +129,8 @@ export interface Revision {
   body: string;
   writtenBy: string | null;
   agent: string | null;
+  /** The assistant that made this version for the person who wrote the item, if one did. */
+  editAgent: string | null;
   writtenAt: Date;
   replacedAt: Date;
   imported: Imported | null;
@@ -135,6 +158,7 @@ export interface Hit {
   /** Who wrote the matching content, and through which agent, as on an item. Null for a source. */
   writtenBy: string | null;
   agent: string | null;
+  editAgent: string | null;
   imported: Imported | null;
 }
 
@@ -268,7 +292,7 @@ export async function updateItem(
   itemId: string,
   input: { body: NewText; sources?: string[] },
 ): Promise<Item | undefined> {
-  const original = await changeableItem(s, itemId);
+  const original = await changeableItem(s, itemId, 'update');
   if (!original) return undefined;
   const me = personOf(s.principal);
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
@@ -306,10 +330,10 @@ export async function supersedeItem(
   itemId: string,
   input: { body: NewText; sources?: string[]; shared?: boolean },
 ): Promise<Item | undefined> {
-  const original = await changeableItem(s, itemId);
+  const original = await changeableItem(s, itemId, 'replace');
   if (!original) return undefined;
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
-  const old = shared && shared !== itemId ? await changeableItem(s, shared) : original;
+  const old = shared && shared !== itemId ? await changeableItem(s, shared, 'replace') : original;
   if (!old) return undefined;
   const privateTo = sideOf(s, input.shared);
   const body = await textFor(s, old, input.body);
@@ -503,7 +527,7 @@ export async function readItem(s: Session, itemId: string) {
   `;
   if (!item) return undefined;
   const history = await s.tx<Revision[]>`
-    select body, written_by, agent, written_at, replaced_at, imported
+    select body, written_by, agent, edit_agent, written_at, replaced_at, imported
     from revisions
     where content_id = ${itemId}::uuid and ${visible(s, 'revisions')}
     order by replaced_at
@@ -768,7 +792,8 @@ export const overviewLength = 2_000;
 /**
  * Writes a space's overview. Shared, it corrects the shared overview for everyone, or starts it.
  * Your own corrects yours, or explicitly replaces the shared one for you, or starts yours. An
- * assistant never replaces what a person wrote, so its version then sits beside it instead.
+ * assistant never replaces what a person wrote, so its version then sits beside it instead, and
+ * keeps the user's own only when an assistant wrote it.
  */
 export async function writeOverview(s: Session, input: { spaceId: string; text: string; shared?: boolean }): Promise<Item> {
   await checkSpace(s, input.spaceId, input.shared);
@@ -780,6 +805,12 @@ export async function writeOverview(s: Session, input: { spaceId: string; text: 
   if (input.shared) {
     if (shared) return (await updateItem(s, shared.id, { body: input.text }))!;
     return insertItem(s, { pageId: page, spaceId: input.spaceId, privateTo: null, kind: 'text', body: input.text });
+  }
+  // What the person wrote themselves, their assistant changes only when they ask, as an item.
+  if (mine && s.principal.agent !== undefined && ownText(s, mine)) {
+    throw new AccessDenied(
+      `The user wrote their own overview of this space themselves (item:${mine.id}). Change it only when they ask you to, with updates on that item: it stays theirs, and what it said before is kept.`,
+    );
   }
   if (mine) return (await updateItem(s, mine.id, { body: input.text }))!;
   const replaceable = shared && (s.principal.agent === undefined || !byPerson(shared));
@@ -805,6 +836,8 @@ export interface Change {
   pageArchived: boolean;
   writtenBy: string | null;
   agent: string | null;
+  /** The assistant that made the change for the person who wrote it, who stays its author. */
+  editAgent: string | null;
   imported: Imported | null;
   /** Who shared it from their own side, and when, if someone did. */
   publishedBy: string | null;
@@ -842,7 +875,7 @@ export async function recentChanges(
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
   const rows = await s.tx<(Change & { total: number })[]>`
-    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, imported, published_by, published_at, at, only_you, overview,
+    select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, edit_agent, imported, published_by, published_at, at, only_you, overview,
            exists (select from pages p where p.id = recent.page_id and p.archived) as page_archived
     from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
@@ -854,7 +887,7 @@ export async function recentChanges(
                select from content o where o.page_id = c.page_id and o.kind = 'text' and o.created_at < c.created_at and ${visible(s, 'o')}
              ) as new_page,
              -- Shared from someone's own side, it's new when it was shared.
-             c.written_by, c.agent, c.imported, c.published_by, c.published_at, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
+             c.written_by, c.agent, c.edit_agent, c.imported, c.published_by, c.published_at, greatest(c.updated_at, coalesce(c.published_at, c.updated_at)) as at, c.private_to is not null as only_you,
              (select p.type from pages p where p.id = c.page_id) is not distinct from 'overview' as overview,
              ${current(s, 'c')} as is_current,
              ${sharedAsCopy(s, 'c')} as shared_as_copy
@@ -967,7 +1000,7 @@ export async function sourceView(s: Session, sourceId: string) {
 export async function historyOf(s: Session, itemIds: string[]): Promise<(Revision & { itemId: string })[]> {
   if (itemIds.length === 0) return [];
   return s.tx<(Revision & { itemId: string })[]>`
-    select content_id as item_id, body, written_by, agent, written_at, replaced_at, imported
+    select content_id as item_id, body, written_by, agent, edit_agent, written_at, replaced_at, imported
     from revisions
     where content_id in ${s.tx(itemIds)} and ${visible(s, 'revisions')}
     order by replaced_at
@@ -1090,7 +1123,7 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, imported from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -1104,14 +1137,14 @@ export async function search(
                and exists (select from content r where r.supersedes = c.id and r.private_to is not null and ${visible(s, 'r')})
                and not exists (select from content r where r.supersedes = c.id and r.private_to is null and ${visible(s, 'r')}) as replaced_for_you,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
-             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.imported
+             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.
@@ -1130,9 +1163,9 @@ export async function search(
 }
 
 export function itemColumns(s: Session, table?: string) {
-  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at, imported`;
+  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, edit_agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at, imported`;
   const t = s.tx(table);
-  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at, ${t}.imported`;
+  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.edit_agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at, ${t}.imported`;
 }
 
 function sourceColumns(s: Session) {
@@ -1158,8 +1191,13 @@ export async function insertItem(
   return inserted;
 }
 
-/** The item, if the viewer can see it and may change it. */
-async function changeableItem(s: Session, itemId: string): Promise<Item | undefined> {
+/**
+ * The item, if the viewer can see it and may change it where it is, or replace it. An agent, or a
+ * space's routine, never changes what a person wrote, except the person's own assistant changing
+ * their own text (ownText): on their private side where it is, and on the shared side by replacing
+ * it, as their own update of it.
+ */
+async function changeableItem(s: Session, itemId: string, how: 'update' | 'replace'): Promise<Item | undefined> {
   const [item] = await s.tx<Item[]>`
     select ${itemColumns(s)} from content where id = ${itemId}::uuid and ${visible(s, 'content')}
   `;
@@ -1168,12 +1206,23 @@ async function changeableItem(s: Session, itemId: string): Promise<Item | undefi
   if (replacement) {
     throw new AccessDenied(`That item is no longer current. It was replaced by item:${replacement.id}.`);
   }
-  if (s.principal.agent !== undefined && byPerson(item)) {
-    throw new AccessDenied(
-      'Agents never change what people wrote. Save what you found as a new item on the same page, and point out the difference to the user.',
-    );
-  }
+  const notPerson = s.principal.agent !== undefined || personOf(s.principal) === undefined;
+  // Shared, any change of theirs is their own update of it.
+  const theirs = s.principal.agent !== undefined && (ownText(s, item, 'shared') || (how === 'update' && ownText(s, item)));
+  if (notPerson && byPerson(item) && !theirs) throw new AccessDenied(personWrote(s, item));
   return item;
+}
+
+/** Why an agent can't change what a person wrote, and what it does instead. */
+export function personWrote(s: Session, item: Item): string {
+  // Replacing says it's no longer true, which only the person decides.
+  if (ownText(s, item)) {
+    return 'The user wrote that themselves, so only they replace it. If they asked you to change it, use updates instead: it stays theirs, and what it said before is kept.';
+  }
+  const instead = 'Save what you found as a new item on the same page, and point out the difference to the user.';
+  if (importedAuthor(item.imported)) return `Someone wrote that before it was imported, so agents never change it. ${instead}`;
+  if (item.privateTo === null) return `A person wrote that, and it's shared, so agents never change it. ${instead}`;
+  return `Agents never change what people wrote. ${instead}`;
 }
 
 /**

@@ -431,9 +431,10 @@ export class Reader {
     if (key !== null && !this.people.has(key)) throw apart(`${key} isn’t among its people`);
   }
 
-  private author(author: Author | null) {
+  /** Who did something. A version of an item can be a person's own text, changed for them by their assistant. */
+  private author(author: Author | null, version = false) {
     if (!author) return;
-    const fits = author.by === 'person' ? author.person !== null && author.agent === null : author.by === 'agent' ? author.agent !== null : author.person === null && author.agent === null;
+    const fits = author.by === 'person' ? author.person !== null && (version || author.agent === null) : author.by === 'agent' ? author.agent !== null : author.person === null && author.agent === null;
     if (!fits) throw apart('an author is neither a person, an agent nor a routine');
     this.person(author.person);
   }
@@ -556,7 +557,7 @@ export class Reader {
         const kind = itemKind(packed);
         // What it said before is history, which nobody follows, so it may hold what a rule now can't.
         if (this.tooLong(kind, this.pageSort[itemPage(packed)], revision.body)) throw apart(`an earlier version of item ${revision.item} is longer than Homing keeps`);
-        this.author(revision.author);
+        this.author(revision.author, true);
         if (to) {
           add('revisions', {
             // Private whenever its item is, as well as when it was private there.
@@ -679,7 +680,7 @@ export class Reader {
     if ((item.kind === 'requirement' || item.kind === 'preference' || item.kind === 'file') && hiddenIn(item.body, item.kind)) {
       this.hiding.set(item.id, { kind: item.kind, shared: item.visibility === 'shared', space, page: item.page, what: item.kind === 'file' ? item.path!.slice(0, 200) : firstWords(item.body) });
     }
-    this.author(item.author);
+    this.author(item.author, true);
     this.person(item.published?.by ?? null);
     // What an item replaced, or was shared from, is on its page, and comes before it.
     const replaced = item.supersedes === null ? undefined : this.items.get(item.supersedes);
