@@ -142,6 +142,21 @@ export function theirAssistant(author: Author, agent: string): string {
   return `${author?.you ? 'your' : 'their'} assistant ${agent}`;
 }
 
+/**
+ * What a source is called: its reference, or, for an email Homing read in your mailbox, whose email
+ * it is, since its reference is for assistants to open it again.
+ */
+export function sourceName(source: { reference: string | null; excerpt: string }, unnamed = 'A source without a name'): string {
+  if (!source.reference?.startsWith('mail:')) return source.reference ?? unnamed;
+  const from = /^From: (.+?)(?: <[^>]*>)?$/m.exec(source.excerpt)?.[1];
+  return from && from !== 'unknown' ? `${from}’s email` : 'An email';
+}
+
+/** Whether a source Homing made from an email keeps words the email only quotes from an earlier one, which Homing says in its first lines. */
+export function quotesEarlier(excerpt: string): boolean {
+  return excerpt.split('\n\n', 1)[0].split('\n').includes('Quoted: as this email quotes an earlier one, which Homing didn’t read');
+}
+
 /** A source in a space's list of sources. */
 export interface SourceSummary {
   id: string;
@@ -172,6 +187,8 @@ export interface SourceData {
   keptAt: string;
   by: Author;
   agent: string | null;
+  /** The mailbox Homing read it in, when it read it itself. */
+  readIn: string | null;
   space: { id: string; name: string; personal: boolean; private: boolean };
   pages: { id: string; title: string; items: { id: string; text: string; shared: boolean }[] }[];
 }

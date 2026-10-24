@@ -293,7 +293,7 @@ test('Cara, in Acme with Ana, can’t discover or use Ana’s connection, throug
   });
   await assert.rejects(as(cara, (s) => s.tx`select * from credentials`), refused);
   await assert.rejects(as(cara, (s) => s.tx`select keep_credentials(${place.connection.id}::uuid, '\\x00', null, null)`), refused);
-  await assert.rejects(as(cara, (s) => s.tx`select connection_needs_attention(${place.connection.id}::uuid)`), refused);
+  await assert.rejects(as(cara, (s) => s.tx`select connection_needs_attention(${place.connection.id}::uuid, '\\x00')`), refused);
   const caraInApp = { person: cara.id, direct: true as const };
   await as(caraInApp, async (s) => {
     assert.equal((await s.tx`select remove_place(${place.id}::uuid) as done`)[0].done, false);
@@ -320,7 +320,8 @@ test('Ana’s assistant can’t read or use her credentials, or connect anything
   // Not even marked direct, which only Homing's own app does.
   await assert.rejects(as({ ...claude, direct: true }, (s) => s.tx`select * from credentials_of(${place.connection.id}::uuid)`), refused);
 
-  // Over MCP, nothing an assistant can ask for brings up a token, the account or its connection.
+  // Over MCP, nothing an assistant can ask for brings up a token or the connection. The mailbox it
+  // reaches is named by its address, so the assistant knows Homing can search it (#125).
   const assistant = new Assistant(homing.url, assistants.claude);
   await assistant.connect(ana.browser);
   const mcp = await assistant.open();
@@ -335,7 +336,8 @@ test('Ana’s assistant can’t read or use her credentials, or connect anything
   await mcp.close();
   const all = said.join('\n');
   for (const token of microsoft.issued) assert.ok(!all.includes(token));
-  assert.doesNotMatch(all, new RegExp(`${account.address}|${place.connection.id}|Microsoft 365, |mailbox`, 'i'));
+  assert.doesNotMatch(all, new RegExp(`${place.connection.id}|Microsoft 365, |refresh|access token`, 'i'));
+  assert.match(all, new RegExp(`The user's mailboxes? .*${account.address}.* connected to Homing`));
 });
 
 test('Homing refreshes an expired sign-in, and one Microsoft refuses needs attention until Ana signs in again', async () => {

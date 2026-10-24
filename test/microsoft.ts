@@ -3,6 +3,9 @@
 // once, for a few minutes, only with the PKCE verifier it was issued for and
 // only for the app and address it was issued to, and the app proves who it is
 // with an assertion signed by its certificate. It counts what it's asked.
+// Graph also keeps a mailbox for each account, which it searches and reads
+// as Outlook does, with ids that change when an email moves, and immutable
+// ones that don't, for whoever asks for those.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, X509Certificate } from 'node:crypto';
@@ -22,6 +25,32 @@ export interface Account {
   name: string;
   /** An account without a mailbox, such as one only for signing in. */
   noMailbox?: boolean;
+}
+
+/** An email, as someone sends it to an account. */
+export interface Email {
+  from: { name: string; address: string };
+  to?: { name: string; address: string }[];
+  cc?: { name: string; address: string }[];
+  subject: string;
+  /** Its text as HTML, as most emails come. */
+  html: string;
+  at: Date;
+  /** The thread it's in, by default one of its own. */
+  conversation?: string;
+  /**
+   * The part of its HTML that's its own, as Exchange gives it: by default all of it, as for an
+   * email that quotes nothing, or null when Exchange gives none.
+   */
+  unique?: string | null;
+  attachments?: { name: string; inline?: boolean }[];
+}
+
+/** An email in a mailbox: its immutable id, and the folder it's in, which its ordinary id depends on. */
+interface Kept extends Email {
+  id: string;
+  folder: string;
+  conversation: string;
 }
 
 /** What the ID token says, which a test can change to see Homing refuse it. */
@@ -47,12 +76,28 @@ export function makeCertificate(): string {
   }
 }
 
+/** An email's HTML as text, the way Microsoft gives it when asked: without tags, scripts or styles. */
+function textOf(html: string): string {
+  return html
+    .replace(/<(script|style)\b[\s\S]*?<\/\1>/gi, '')
+    .replace(/<br\s*\/?>|<\/p>|<\/div>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .trim();
+}
+
 export class MicrosoftStandIn {
   readonly clientId: string = randomUUID();
   readonly pem = makeCertificate();
   readonly certificate = new X509Certificate(/-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/.exec(this.pem)![0]);
-  /** What it was asked: codes redeemed, refreshes, calls to Graph, and assertions it accepted. */
-  readonly asked = { codes: 0, refreshes: 0, graph: 0, assertions: 0 };
+  /** What it was asked: codes redeemed, refreshes, calls to Graph, and assertions it accepted, and of Graph, searches and emails read. */
+  readonly asked = { codes: 0, refreshes: 0, graph: 0, assertions: 0, searches: 0, reads: 0 };
+  /** What Homing searched for last, as Graph got it. */
+  lastSearch?: string;
   /** Every token it handed out, so tests can look for them where they mustn't be. */
   readonly issued: string[] = [];
   private readonly signing = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -64,6 +109,12 @@ export class MicrosoftStandIn {
    * expired (invalid_grant), or their organization deleted or disabled Homing's enterprise app.
    */
   private readonly refusals = new Map<string, { error: string; number: number }>();
+  /** Each account's mailbox, by the account's object id. */
+  private readonly mailboxes = new Map<string, Kept[]>();
+  /** Accounts whose mailbox answers slowly, by how many milliseconds. */
+  private readonly slowness = new Map<string, number>();
+  /** How many milliseconds refreshing a sign-in takes. */
+  private refreshDelay = 0;
   private server?: Server;
   url!: string;
 
@@ -131,6 +182,31 @@ export class MicrosoftStandIn {
     this.refusals.delete(account.oid);
   }
 
+  /** Someone sends the account an email. Returns its immutable id. */
+  deliver(account: Account, email: Email): string {
+    const id = `AAkALg${randomBytes(24).toString('base64url')}=`;
+    const mailbox = this.mailboxes.get(account.oid) ?? [];
+    mailbox.push({ ...email, id, folder: 'inbox', conversation: email.conversation ?? `AAQk${randomBytes(12).toString('base64url')}=` });
+    this.mailboxes.set(account.oid, mailbox);
+    return id;
+  }
+
+  /** The account's owner moves an email to another folder, which changes its ordinary id but not its immutable one. */
+  move(account: Account, id: string, folder: string) {
+    const email = this.mailboxes.get(account.oid)?.find((kept) => kept.id === id);
+    if (email) email.folder = folder;
+  }
+
+  /** The account's mailbox answers after this many milliseconds, or at once again with 0. */
+  slow(account: Account, milliseconds: number) {
+    this.slowness.set(account.oid, milliseconds);
+  }
+
+  /** Refreshing a sign-in takes this many milliseconds from now on, or no time again with 0. */
+  slowRefresh(milliseconds: number) {
+    this.refreshDelay = milliseconds;
+  }
+
   /** Expires an account's access tokens, so the next use needs a refresh. */
   expireAccess() {
     for (const token of this.accessTokens.values()) token.expiresAt = Date.now() - 1000;
@@ -154,8 +230,84 @@ export class MicrosoftStandIn {
         if (held.account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
         return { status: 200, body: { id: 'AAMkAGI2THVSAAA=' } };
       }
+      if (url.pathname.startsWith('/v1.0/me/messages')) {
+        const delay = this.slowness.get(held.account.oid) ?? 0;
+        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+        return this.mail(held.account, url, String(req.headers.prefer ?? ''));
+      }
     }
     return { status: 404, body: {} };
+  }
+
+  /** Graph's messages, as far as Homing uses them: search, one email, its thread and its attachments' names. */
+  private mail(account: Account, url: URL, prefer: string): { status: number; body: unknown } {
+    if (account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
+    const mailbox = this.mailboxes.get(account.oid) ?? [];
+    const immutable = /IdType="ImmutableId"/.test(prefer);
+    const idOf = (email: Kept) => (immutable ? email.id : `AAMk${email.folder}-${email.id.slice(6)}`);
+    const select = (url.searchParams.get('$select') ?? '').split(',').filter(Boolean);
+    const content = (html: string) => (/outlook\.body-content-type="text"/.test(prefer) ? { contentType: 'text', content: textOf(html) } : { contentType: 'html', content: html });
+    const fields = (email: Kept): Record<string, unknown> => {
+      const all: Record<string, unknown> = {
+        id: idOf(email),
+        conversationId: email.conversation,
+        subject: email.subject,
+        from: { emailAddress: email.from },
+        toRecipients: (email.to ?? []).map((emailAddress) => ({ emailAddress })),
+        ccRecipients: (email.cc ?? []).map((emailAddress) => ({ emailAddress })),
+        receivedDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
+        sentDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
+        bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
+        hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
+        // Microsoft gives the text when asked to, and the HTML otherwise.
+        body: content(email.html),
+        ...(email.unique !== null && { uniqueBody: content(email.unique ?? email.html) }),
+      };
+      return Object.fromEntries(Object.entries(all).filter(([name]) => select.length === 0 || select.includes(name)));
+    };
+    const found = (id: string) => mailbox.find((email) => email.id === id || idOf(email) === id || `AAMk${email.folder}-${email.id.slice(6)}` === id);
+    const notFound = { status: 404, body: { error: { code: 'ErrorItemNotFound', message: 'The specified object was not found in the store.' } } };
+
+    const attachments = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(url.pathname);
+    if (attachments) {
+      const email = found(decodeURIComponent(attachments[1]));
+      if (!email) return notFound;
+      // Homing asks for names only, never the files themselves.
+      if (!select.includes('name') || select.includes('contentBytes')) return { status: 400, body: { error: { code: 'BadRequest' } } };
+      return { status: 200, body: { value: (email.attachments ?? []).map((attachment) => ({ name: attachment.name, isInline: attachment.inline ?? false })) } };
+    }
+    const one = /^\/v1\.0\/me\/messages\/([^/]+)$/.exec(url.pathname);
+    if (one) {
+      this.asked.reads++;
+      const email = found(decodeURIComponent(one[1]));
+      return email ? { status: 200, body: fields(email) } : notFound;
+    }
+    if (url.pathname !== '/v1.0/me/messages') return { status: 404, body: {} };
+
+    const search = url.searchParams.get('$search');
+    const filter = url.searchParams.get('$filter');
+    const top = Number(url.searchParams.get('$top') ?? 10);
+    if (search !== null) {
+      // As Graph: a search is one quoted string, and can't be combined with a filter or an order.
+      if (filter !== null || url.searchParams.has('$orderby') || !/^".*"$/s.test(search)) return { status: 400, body: { error: { code: 'BadRequest' } } };
+      this.asked.searches++;
+      const words = search.slice(1, -1).replace(/\\(.)/g, '$1');
+      this.lastSearch = words;
+      const terms = words.toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = mailbox
+        .filter((email) => {
+          const text = `${email.from.name} ${email.from.address} ${email.subject} ${textOf(email.html)}`.toLowerCase();
+          return terms.every((term) => text.includes(term));
+        })
+        .sort((a, b) => b.at.getTime() - a.at.getTime());
+      return { status: 200, body: { value: matches.slice(0, top).map(fields), ...(matches.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
+    }
+    const conversation = filter && /^conversationId eq '(.*)'$/.exec(filter)?.[1]?.replace(/''/g, "'");
+    if (conversation) {
+      const thread = mailbox.filter((email) => email.conversation === conversation);
+      return { status: 200, body: { value: thread.slice(0, top).map(fields), ...(thread.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
+    }
+    return { status: 400, body: { error: { code: 'BadRequest' } } };
   }
 
   private async token(url: URL, form: URLSearchParams): Promise<{ status: number; body: unknown }> {
@@ -186,6 +338,7 @@ export class MicrosoftStandIn {
     }
     if (form.get('grant_type') === 'refresh_token') {
       this.asked.refreshes++;
+      if (this.refreshDelay) await new Promise((resolve) => setTimeout(resolve, this.refreshDelay));
       const account = this.refreshTokens.get(form.get('refresh_token') ?? '');
       if (!account) return refuse('invalid_grant', 9002313);
       const refusal = this.refusals.get(account.oid);

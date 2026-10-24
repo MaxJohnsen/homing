@@ -444,6 +444,7 @@ export const sampleSource: SourceData = {
   keptAt: daysAgo(48),
   by: { name: 'Cara Lund', you: false },
   agent: 'Claude',
+  readIn: null,
   space: { id: 'northwind', name: 'Northwind', personal: false, private: false },
   pages: [
     { id: samplePage.id, title: 'Website relaunch', items: [{ id: 'item-1', text: samplePage.items[0].text, shared: true }] },

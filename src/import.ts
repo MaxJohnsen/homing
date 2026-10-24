@@ -433,7 +433,8 @@ export async function discardStale(sql: Sql, step = takeOutStep): Promise<number
 /**
  * Keeps imports tidy: takes out what imports put in that stopped without finishing, as when
  * Homing stopped on the way, once nothing has been written to them for a while, and removes
- * uploads and exports left on disk. Now, and every few minutes. Returns how to stop.
+ * uploads and exports left on disk. It also forgets uses of connections older than 90 days. Now,
+ * and every few minutes. Returns how to stop.
  */
 export function keepTidy(sql: Sql): () => void {
   let sweeping = false;
@@ -441,6 +442,12 @@ export function keepTidy(sql: Sql): () => void {
     // A sweep of a big import can take a while, and the next waits until it's done.
     if (sweeping) return;
     sweeping = true;
+    // Uses of connections are kept for 90 days, whatever else happens here.
+    try {
+      await sql`select forget_old_uses()`;
+    } catch (error) {
+      console.error('Forgetting old uses of connections:', error);
+    }
     try {
       await discardStale(sql);
       for (const [person, kept] of pending) if (kept.until <= Date.now()) forget(person);

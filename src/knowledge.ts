@@ -95,9 +95,11 @@ export interface Source {
   privateTo: string | null;
   reference: string | null;
   excerpt: string;
+  /** The connection Homing read it through, when it read it itself, such as an email in the person's mailbox. */
+  readThrough: string | null;
 }
 
-export type Citation = Pick<Source, 'id' | 'reference' | 'excerpt'>;
+export type Citation = Pick<Source, 'id' | 'reference' | 'excerpt' | 'readThrough'>;
 
 export interface Page {
   id: string;
@@ -160,12 +162,17 @@ export interface Hit {
   agent: string | null;
   editAgent: string | null;
   imported: Imported | null;
+  /** A source Homing read itself, such as an email in the person's mailbox. */
+  readByHoming: boolean;
 }
 
-/** Keeps where knowledge came from, without giving it a page yet. The same source is kept once. */
+/**
+ * Keeps where knowledge came from, without giving it a page yet. The same source is kept once.
+ * One Homing read itself, such as an email, names the connection it read it through.
+ */
 export async function addSource(
   s: Session,
-  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean },
+  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string },
 ): Promise<Source> {
   const privateTo = sideOf(s, input.shared);
   await checkSpace(s, input.spaceId, input.shared);
@@ -173,11 +180,12 @@ export async function addSource(
     select ${sourceColumns(s)} from sources
     where space_id = ${input.spaceId}::uuid and private_to is not distinct from ${privateTo}::uuid
       and excerpt = ${input.excerpt} and reference is not distinct from ${input.reference ?? null}
+      and read_through is not distinct from ${input.readThrough ?? null}::uuid
   `;
   if (existing) return existing;
   const [source] = await s.tx<Source[]>`
-    insert into sources (space_id, private_to, reference, excerpt)
-    values (${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt})
+    insert into sources (space_id, private_to, reference, excerpt, read_through)
+    values (${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt}, ${input.readThrough ?? null}::uuid)
     returning ${sourceColumns(s)}
   `;
   return source;
@@ -973,8 +981,10 @@ export async function sourcesIn(
  * it, by page, only those the viewer can see and that are still current.
  */
 export async function sourceView(s: Session, sourceId: string) {
-  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null })[]>`
-    select ${sourceColumns(s)}, written_by, agent, created_at, imported from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
+  // Which mailbox Homing read it in, for whoever's connection that is: only its owner.
+  const [source] = await s.tx<(Source & { writtenBy: string | null; agent: string | null; createdAt: Date; imported: Imported | null; readIn: string | null })[]>`
+    select ${sourceColumns(s)}, written_by, agent, created_at, imported, (select c.address from connections c where c.id = sources.read_through) as read_in
+    from sources where id = ${sourceId}::uuid and ${visible(s, 'sources')}
   `;
   if (!source) return undefined;
   // Your original of something you shared as a copy shows as the copy, as it does on its page.
@@ -1123,7 +1133,7 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -1137,14 +1147,14 @@ export async function search(
                and exists (select from content r where r.supersedes = c.id and r.private_to is not null and ${visible(s, 'r')})
                and not exists (select from content r where r.supersedes = c.id and r.private_to is null and ${visible(s, 'r')}) as replaced_for_you,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
-             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported
+             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported, false as read_by_homing
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null, src.read_through is not null
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.
@@ -1169,7 +1179,7 @@ export function itemColumns(s: Session, table?: string) {
 }
 
 function sourceColumns(s: Session) {
-  return s.tx`id, space_id, private_to, reference, excerpt`;
+  return s.tx`id, space_id, private_to, reference, excerpt, read_through`;
 }
 
 export async function insertItem(
@@ -1387,7 +1397,7 @@ function titleOf(s: Session, pageId: ReturnType<Session['tx']>) {
  */
 function citationsOf(s: Session, withOrigin = false) {
   return s.tx`coalesce((
-    select json_agg(json_build_object('id', src.id, 'reference', src.reference, 'excerpt', src.excerpt, 'shared', src.private_to is null)
+    select json_agg(json_build_object('id', src.id, 'reference', src.reference, 'excerpt', src.excerpt, 'shared', src.private_to is null, 'readThrough', src.read_through)
                     order by src.created_at)
     from sources src
     where src.id in (

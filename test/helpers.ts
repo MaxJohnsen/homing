@@ -94,10 +94,10 @@ export async function share(who: { id: string }, itemId: string): Promise<string
   });
 }
 
-/** Waits until the condition holds, such as another request waiting on a lock. */
-export async function until(condition: () => Promise<boolean>) {
+/** Waits until the condition holds, such as another request waiting on a lock, checking at most so many times, 20 ms apart. */
+export async function until(condition: () => Promise<boolean>, most = 100) {
   for (let tries = 0; !(await condition()); tries++) {
-    if (tries > 100) throw new Error('timed out');
+    if (tries > most) throw new Error('timed out');
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }

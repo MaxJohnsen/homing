@@ -124,9 +124,11 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   verifyToken = tokenVerifier(homingAuth, pool, url);
 
   const cards = new Set(options.cardClients ?? cardClients);
+  // What reading a person's connected mailbox for them needs: their sealed sign-in, opened only in the server.
+  const broker = { sql, vault: vault(secret), microsoft };
   const handler = createMcpHandler(({ authInfo }) => {
     const principal = authInfo?.extra?.principal as AgentPrincipal;
-    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer } });
+    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer }, mail: broker });
   });
   mcp = toNodeHandler({
     fetch: async (request, context) => {
@@ -137,7 +139,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   auth = authHandler(homingAuth);
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
-  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: vault(secret), microsoft };
+  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, microsoft };
   // What imports left on the way, when Homing stopped during one, goes, and keeps going.
   const stopTidying = keepTidy(sql);
 

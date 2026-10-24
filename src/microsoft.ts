@@ -4,7 +4,8 @@
 // sign-in itself, over plain HTTPS: OAuth 2.0's authorization code flow with
 // PKCE and OpenID Connect, Homing proving it is its app registration with a
 // certificate, or a client secret where a self-hoster has no certificate.
-// Then two calls to Microsoft Graph confirm what was connected.
+// Then two calls to Microsoft Graph confirm what was connected. Later, Graph
+// searches and reads the person's mail, when they ask for it.
 
 import { createHash, createPrivateKey, randomUUID, X509Certificate, type KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
@@ -220,17 +221,185 @@ export async function whoIs(settings: MicrosoftSettings, access: string): Promis
   return { address: text(me.mail) ?? text(me.userPrincipalName), name: text(me.displayName) };
 }
 
-async function graph(settings: MicrosoftSettings, access: string, path: string): Promise<Record<string, unknown>> {
+/** An address on an email: a name, which its sender chose, and the address itself. */
+export interface MailAddress {
+  name: string | null;
+  address: string | null;
+}
+
+/** An email in a mailbox, as a list of them shows it. Its id is its immutable id, which stays while it's in the mailbox. */
+export interface MailSummary {
+  id: string;
+  conversationId: string | null;
+  subject: string | null;
+  from: MailAddress | null;
+  /** When the mailbox received it, or sent it. */
+  at: Date | null;
+  /** Its first words, as Microsoft gives them. */
+  preview: string;
+}
+
+/** An email to read: who it's from and to, its text, and the names of its attachments. */
+export interface Mail extends MailSummary {
+  to: MailAddress[];
+  cc: MailAddress[];
+  /** Its text, never its HTML. */
+  body: string;
+  /** The part of its text that's its own, without what it quotes from earlier emails, as Exchange tells them apart. Null when it doesn't say. */
+  unique: string | null;
+  attachments: string[];
+}
+
+/** An email with its thread, oldest first, as far as Homing reads it. */
+export interface MailWithThread {
+  mail: Mail;
+  thread: MailSummary[];
+  /** Whether the thread holds more than Homing read of it. */
+  moreInThread: boolean;
+}
+
+/** Ids that stay the same when an email moves to another folder, so a reference to it keeps working. */
+const immutableIds = 'IdType="ImmutableId"';
+const summaryFields = 'id,conversationId,subject,from,receivedDateTime,sentDateTime,bodyPreview';
+/** How many emails of a thread, and attachments of an email, Homing reads. */
+const listLength = 25;
+
+/**
+ * Searches the account's mailbox as Outlook does, in the sender, subject and text of its emails,
+ * newest first, for at most a few. The words are Outlook's search syntax, quoted as one search.
+ */
+export async function searchMail(settings: MicrosoftSettings, access: string, words: string, { top, signal }: { top: number; signal?: AbortSignal }): Promise<MailSummary[]> {
+  // Whole characters, so an emoji is never cut in half, which no address can carry.
+  const search = Array.from(words.toWellFormed().replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, 255).join('');
+  if (!search) return [];
+  const quoted = `"${search.replace(/[\\"]/g, '\\$&')}"`;
+  const body = await graph(settings, access, `/v1.0/me/messages?$search=${encodeURIComponent(quoted)}&$top=${top}&$select=${summaryFields}`, { prefer: [immutableIds], signal });
+  return listOf(body).map(summaryOf);
+}
+
+/**
+ * Reads one email in the account's mailbox by its immutable id, with its text and, unless left
+ * out, the names of its attachments and its thread. Undefined when it isn't in the mailbox any more.
+ */
+export async function readMail(
+  settings: MicrosoftSettings,
+  access: string,
+  id: string,
+  { signal, thread: withThread = true }: { signal?: AbortSignal; thread?: boolean } = {},
+): Promise<MailWithThread | undefined> {
+  let message: Record<string, unknown>;
+  try {
+    message = await graph(
+      settings,
+      access,
+      `/v1.0/me/messages/${encodeURIComponent(id)}?$select=${summaryFields},toRecipients,ccRecipients,body,uniqueBody,hasAttachments`,
+      // Microsoft turns the HTML into text, so nothing in it is fetched or run.
+      { prefer: [immutableIds, 'outlook.body-content-type="text"'], signal },
+    );
+  } catch (error) {
+    if (error instanceof MicrosoftRefused && ['ErrorItemNotFound', 'ErrorInvalidIdMalformed', 'http_404'].includes(error.detail ?? '')) return undefined;
+    throw error;
+  }
+  const summary = summaryOf(message);
+  const conversation = withThread ? summary.conversationId : null;
+  const [thread, attachments] = await Promise.all([
+    conversation
+      ? graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${listLength}&$select=${summaryFields}`, { prefer: [immutableIds], signal })
+      : undefined,
+    withThread && message.hasAttachments === true ? graph(settings, access, `/v1.0/me/messages/${encodeURIComponent(id)}/attachments?$select=name,isInline&$top=${listLength}`, { prefer: [immutableIds], signal }) : undefined,
+  ]);
+  // As text, as Microsoft was asked, or else turned into text here.
+  const textIn = (body: unknown) => {
+    const { contentType, content } = (body ?? {}) as { contentType?: unknown; content?: unknown };
+    if (typeof content !== 'string') return null;
+    return contentType === 'html' ? textOf(content) : content;
+  };
+  return {
+    mail: {
+      ...summary,
+      to: addressesOf(message.toRecipients),
+      cc: addressesOf(message.ccRecipients),
+      body: textIn(message.body) ?? '',
+      unique: textIn(message.uniqueBody),
+      attachments: listOf(attachments)
+        .filter((attachment) => attachment.isInline !== true)
+        .flatMap((attachment) => (typeof attachment.name === 'string' && attachment.name.trim() ? [attachment.name.trim()] : [])),
+    },
+    thread: listOf(thread).map(summaryOf).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)),
+    moreInThread: typeof thread?.['@odata.nextLink'] === 'string',
+  };
+}
+
+function listOf(body: Record<string, unknown> | undefined): Record<string, unknown>[] {
+  return Array.isArray(body?.value) ? body.value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null) : [];
+}
+
+function summaryOf(message: Record<string, unknown>): MailSummary {
+  const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
+  const at = text(message.receivedDateTime) ?? text(message.sentDateTime);
+  return {
+    id: String(message.id ?? ''),
+    conversationId: text(message.conversationId),
+    subject: text(message.subject),
+    from: addressesOf([message.from])[0] ?? null,
+    at: at && !Number.isNaN(Date.parse(at)) ? new Date(at) : null,
+    preview: text(message.bodyPreview) ?? '',
+  };
+}
+
+function addressesOf(recipients: unknown): MailAddress[] {
+  if (!Array.isArray(recipients)) return [];
+  return recipients.flatMap((recipient) => {
+    const email = (recipient as { emailAddress?: { name?: unknown; address?: unknown } } | null)?.emailAddress;
+    if (!email) return [];
+    const name = typeof email.name === 'string' && email.name.trim() ? email.name.trim() : null;
+    const address = typeof email.address === 'string' && email.address.trim() ? email.address.trim() : null;
+    return name || address ? [{ name, address }] : [];
+  });
+}
+
+/**
+ * HTML as plain text, for an email Microsoft gives as HTML all the same: its words and line breaks,
+ * without tags, scripts, styles or anything to fetch.
+ */
+export function textOf(html: string): string {
+  const entities: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+  return html
+    .replace(/<(script|style|head|title)\b[\s\S]*?<\/\1\s*>/gi, '')
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|h[1-6]|blockquote|table)\s*>/gi, '\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (whole, name: string) => {
+      if (name[0] !== '#') return entities[name.toLowerCase()] ?? whole;
+      const code = name[1].toLowerCase() === 'x' ? parseInt(name.slice(2), 16) : parseInt(name.slice(1), 10);
+      return code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : '';
+    })
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+async function graph(
+  settings: MicrosoftSettings,
+  access: string,
+  path: string,
+  { prefer = [], signal }: { prefer?: string[]; signal?: AbortSignal } = {},
+): Promise<Record<string, unknown>> {
   let response: Response;
   try {
+    const headers = new Headers({ authorization: `Bearer ${access}`, accept: 'application/json' });
+    for (const preference of prefer) headers.append('prefer', preference);
     response = await fetch(`${settings.graph}${path}`, {
-      headers: { authorization: `Bearer ${access}`, accept: 'application/json' },
-      signal: AbortSignal.timeout(15_000),
+      headers,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
   } catch {
     throw new MicrosoftUnreachable('Graph');
   }
   const body = (await response.json().catch(() => ({}))) as { error?: { code?: unknown } } & Record<string, unknown>;
+  // A body that didn't finish arriving in time is no answer.
+  if (signal?.aborted) throw new MicrosoftUnreachable('Graph');
   if (response.ok) return body;
   if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('Graph');
   const code = typeof body.error?.code === 'string' ? body.error.code : `http_${response.status}`;

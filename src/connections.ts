@@ -172,45 +172,177 @@ export interface Broker {
   microsoft?: MicrosoftSettings;
 }
 
+/** One use of a connection, through one of the person's places, recorded as it's made (spec §8). */
+export interface Use {
+  place: string;
+  space: string;
+  operation: 'search mail' | 'read mail';
+  /** The assistant it's for, such as Claude. */
+  agent?: string;
+}
+
+type Outcome = { token: string } | { unusable: ConnectionUnusable['reason'] };
+
 /**
  * A current access token for the person's own connection, for Homing's own use on their behalf.
- * It never goes to a model. A token close to expiring is refreshed first, one refresh at a time
- * for each connection. When Microsoft refuses the refresh, because consent was revoked or the
- * sign-in expired, or the sealed tokens don't open, the connection needs attention, which the
- * person sees, and it isn't tried again until they sign in again. It runs as the person, never
- * as their assistant, which the database refuses.
+ * It never goes to a model. It runs as the person, never as their assistant, which the database
+ * refuses. A use, such as searching their mail, is recorded before the token is handed out, so
+ * none goes unrecorded.
+ *
+ * A stored token with two minutes left is used as it is, from one short transaction. Otherwise
+ * Homing refreshes it, and never inside a transaction: Microsoft may take a while, and nothing
+ * else should wait on that. Callers in this process that need the same connection meanwhile share
+ * one refresh, which finishes even after they stopped waiting, so the next use finds its tokens. The new tokens are kept only
+ * while the sign-in is still the one that was refreshed, so a refresh that finished meanwhile, a
+ * new sign-in or revoking wins. When Microsoft refuses the refresh, because consent was revoked or
+ * the sign-in expired, or the sealed tokens don't open, the connection needs attention, which the
+ * person sees, and it isn't tried again until they sign in again. Renewing skips the stored token,
+ * for one the system refused before it expired.
  */
-export async function accessToken(broker: Broker, person: string, connectionId: string): Promise<string> {
-  type Outcome = { token: string } | { unusable: ConnectionUnusable['reason'] };
-  const outcome = await withPrincipal(broker.sql, { person }, async (s): Promise<Outcome> => {
+export async function accessToken(
+  broker: Broker,
+  person: string,
+  connectionId: string,
+  use?: Use,
+  { renew = false, signal }: { renew?: boolean; signal?: AbortSignal } = {},
+): Promise<string> {
+  const held = await withPrincipal(broker.sql, { person }, async (s): Promise<Outcome | { refresh: Uint8Array }> => {
     const [held] = await s.tx<{ status: Connection['status']; refreshToken: Uint8Array; accessToken: Uint8Array | null; accessExpiresAt: Date | null }[]>`
       select * from credentials_of(${connectionId}::uuid)
     `;
     if (!held) return { unusable: 'gone' };
     if (held.status === 'needs attention') return { unusable: 'needs attention' };
+    if (!renew && held.accessToken && held.accessExpiresAt && held.accessExpiresAt.getTime() > Date.now() + 2 * 60_000) {
+      try {
+        const token = broker.vault.open(held.accessToken, sealedFor(connectionId, 'access'));
+        await recordUse(s, connectionId, use);
+        return { token };
+      } catch (error) {
+        // One that doesn't open is refreshed instead, and the sign-in shows whether that opens.
+        if (!(error instanceof SealBroken)) throw error;
+      }
+    }
+    return { refresh: held.refreshToken };
+  });
+  if ('token' in held) return held.token;
+  if ('unusable' in held) throw new ConnectionUnusable(held.unusable);
+
+  const outcome = await sharedRefresh(connectionId, () => refreshed(broker, person, connectionId, held.refresh), signal);
+  if ('unusable' in outcome) throw new ConnectionUnusable(outcome.unusable);
+  try {
+    if (use) await withPrincipal(broker.sql, { person }, (s) => recordUse(s, connectionId, use));
+  } catch (error) {
+    // The place was removed, or the person can't open its space any more, while it refreshed.
+    if (error instanceof postgres.PostgresError && error.code === '42501') throw new ConnectionUnusable('gone');
+    throw error;
+  }
+  return outcome.token;
+}
+
+async function recordUse(s: Session, connectionId: string, use: Use | undefined) {
+  if (!use) return;
+  const person = personOf(s.principal) ?? null;
+  await s.tx`
+    insert into connection_uses (connection_id, place_id, space_id, private_to, operation, agent)
+    values (${connectionId}::uuid, ${use.place}::uuid, ${use.space}::uuid, ${person}::uuid, ${use.operation}, ${use.agent ?? null})
+  `;
+}
+
+/** Refreshes under way in this process, one for each connection, until they settle. */
+const refreshing = new Map<string, Promise<Outcome>>();
+
+/**
+ * Waits for the connection's refresh under way, or starts one. A caller whose signal fires stops
+ * waiting, and the refresh carries on within Microsoft's own time limit, so its new tokens are kept
+ * for the next use, which joins it meanwhile.
+ */
+function sharedRefresh(connectionId: string, start: () => Promise<Outcome>, signal?: AbortSignal): Promise<Outcome> {
+  let outcome = refreshing.get(connectionId);
+  if (!outcome) {
+    const started: Promise<Outcome> = start().finally(() => {
+      if (refreshing.get(connectionId) === started) refreshing.delete(connectionId);
+    });
+    // However it ends, even after everyone stopped waiting.
+    started.catch(() => {});
+    refreshing.set(connectionId, started);
+    outcome = started;
+  }
+  if (!signal) return outcome;
+  const settled = outcome;
+  return new Promise<Outcome>((resolve, reject) => {
+    const gaveUp = () => reject(new MicrosoftUnreachable('signing in'));
+    if (signal.aborted) return gaveUp();
+    signal.addEventListener('abort', gaveUp, { once: true });
+    settled.then(
+      (result) => {
+        signal.removeEventListener('abort', gaveUp);
+        resolve(result);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', gaveUp);
+        reject(error);
+      },
+    );
+  });
+}
+
+/**
+ * Refreshes a connection's sign-in, outside any transaction, and keeps the new tokens only while
+ * the sealed refresh token is still the one used. Refused, it marks the connection as needing
+ * attention on the same condition, so it never blames a sign-in that came after.
+ */
+async function refreshed(broker: Broker, person: string, connectionId: string, used: Uint8Array): Promise<Outcome> {
+  const needsAttention = async (log: string): Promise<Outcome> => {
+    let marked: boolean;
     try {
-      if (held.accessToken && held.accessExpiresAt && held.accessExpiresAt.getTime() > Date.now() + 2 * 60_000) {
-        return { token: broker.vault.open(held.accessToken, sealedFor(connectionId, 'access')) };
-      }
-      const kept = broker.vault.open(held.refreshToken, sealedFor(connectionId, 'refresh'));
-      if (!broker.microsoft) return { unusable: 'not set up' };
-      const fresh = await refresh(broker.microsoft, kept);
-      await keepTokens(s, broker.vault, connectionId, fresh);
-      return { token: fresh.access };
+      [{ marked }] = await withPrincipal(broker.sql, { person }, (s) => s.tx<{ marked: boolean }[]>`
+        select connection_needs_attention(${connectionId}::uuid, ${used}) as marked
+      `);
     } catch (error) {
-      if (error instanceof SealBroken || (error instanceof MicrosoftRefused && error.signInAgain)) {
-        if (error instanceof MicrosoftRefused) console.error(`connections: Microsoft refused refreshing a sign-in, so it needs attention (${error.message})`);
-        else console.error('connections: a sign-in didn’t open with HOMING_SECRET, so it needs attention');
-        await s.tx`select connection_needs_attention(${connectionId}::uuid)`;
-        return { unusable: 'needs attention' };
-      }
-      // Homing's own settings are wrong, which no one person can fix, so their connections stay as they are.
-      if (error instanceof MicrosoftRefused && error.homingItself) console.error(configurationProblem(error));
+      // Revoked meanwhile: there's nothing left to mark.
+      if (error instanceof postgres.PostgresError && error.code === '42501') return { unusable: 'gone' };
       throw error;
     }
-  });
-  if ('token' in outcome) return outcome.token;
-  throw new ConnectionUnusable(outcome.unusable);
+    // Someone signed in again meanwhile, so the next use tries that.
+    if (!marked) throw new MicrosoftUnreachable('signing in');
+    console.error(log);
+    return { unusable: 'needs attention' };
+  };
+  let kept: string;
+  try {
+    kept = broker.vault.open(used, sealedFor(connectionId, 'refresh'));
+  } catch (error) {
+    if (!(error instanceof SealBroken)) throw error;
+    return needsAttention('connections: a sign-in didn’t open with HOMING_SECRET, so it needs attention');
+  }
+  if (!broker.microsoft) return { unusable: 'not set up' };
+  let fresh: Tokens;
+  try {
+    fresh = await refresh(broker.microsoft, kept);
+  } catch (error) {
+    if (error instanceof MicrosoftRefused && error.signInAgain) {
+      return needsAttention(`connections: Microsoft refused refreshing a sign-in, so it needs attention (${error.message})`);
+    }
+    // Homing's own settings are wrong, which no one person can fix, so their connections stay as they are.
+    if (error instanceof MicrosoftRefused && error.homingItself) console.error(configurationProblem(error));
+    throw error;
+  }
+  try {
+    await withPrincipal(broker.sql, { person }, (s) => s.tx`
+      select keep_refreshed(
+        ${connectionId}::uuid, ${used},
+        ${broker.vault.seal(fresh.refresh, sealedFor(connectionId, 'refresh'))},
+        ${broker.vault.seal(fresh.access, sealedFor(connectionId, 'access'))},
+        ${fresh.expiresAt}
+      )
+    `);
+  } catch (error) {
+    // Revoked meanwhile: nothing is kept, and nothing is used.
+    if (error instanceof postgres.PostgresError && error.code === '42501') return { unusable: 'gone' };
+    throw error;
+  }
+  // Kept or not, the token Microsoft just gave works.
+  return { token: fresh.access };
 }
 
 /** For whoever runs Homing, when Microsoft refuses Homing itself, such as for a certificate it doesn't know. */
