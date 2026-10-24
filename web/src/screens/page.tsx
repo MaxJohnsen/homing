@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { nameIn, nameOf, plain, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, theirAssistant, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
 import type { PublicationData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import { AboutPage, CollectionPages } from '@/screens/collection';
@@ -101,7 +101,8 @@ function About({ page, now }: { page: PageData; now?: Date }) {
 /** One item. What only you see is marked, unless the whole page is, which its title already says. */
 function Item({ item, page, marked, actions }: { item: ItemData; page: PageData; marked: boolean; actions?: PageActions }) {
   const [open, setOpen] = useState(false);
-  const [correcting, setCorrecting] = useState(false);
+  // Correcting it, from what it says now, or from an earlier version being restored.
+  const [correcting, setCorrecting] = useState<{ from: string; restoring: boolean } | null>(null);
   const [sharing, setSharing] = useState(false);
   const [shared, setShared] = useState<string>();
   const [othersSee, setOthersSee] = useState(false);
@@ -145,7 +146,7 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   if (correcting && actions) {
     return (
       <div className={cn('-mx-2 flex flex-col gap-3 rounded-xl px-2 py-3 sm:-mx-4 sm:px-4', onlyYou ? 'bg-private/25' : 'bg-muted')}>
-        <Correct item={item} page={page} correct={actions.correct} onDone={() => setCorrecting(false)} />
+        <Correct item={item} page={page} correct={actions.correct} from={correcting.from} restoring={correcting.restoring} onDone={() => setCorrecting(null)} />
       </div>
     );
   }
@@ -191,29 +192,63 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
         </div>
       )}
       {shared && <p role="status" className="text-sm text-muted-foreground">{shared}</p>}
-      {open && <Details item={item} yourUpdate={yourUpdate} onCorrect={actions && (() => setCorrecting(true))} onShare={shareable && !yourUpdate ? share : undefined} space={page.space.name} />}
+      {open && (
+        <Details
+          item={item}
+          yourUpdate={yourUpdate}
+          onCorrect={actions && (() => setCorrecting({ from: item.text, restoring: false }))}
+          onRestore={actions && ((text) => setCorrecting({ from: text, restoring: true }))}
+          onShare={shareable && !yourUpdate ? share : undefined}
+          space={page.space.name}
+        />
+      )}
     </div>
   );
 }
 
-/** "You wrote this", "Claude saved this for Cara Lund". */
-function wrote(by: Author, agent: string | null): string {
+/** "You wrote this", "Claude saved this for Cara Lund", "You wrote this, and your assistant Claude changed it". */
+function wrote(by: Author, agent: string | null, editAgent?: string | null): string {
   if (agent) return nameIn(by) ? `${agent} saved this for ${nameIn(by)}` : `${agent} saved this`;
+  if (editAgent) return `${nameOf(by)} wrote this, and ${theirAssistant(by, editAgent)} changed it`;
   return `${nameOf(by)} wrote this`;
 }
 
-/** Who wrote it and when, its sources, and what it said before: small, under the item it's about. */
-function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemData; yourUpdate: boolean; onCorrect?: () => void; onShare?: (event: MouseEvent<HTMLButtonElement>) => void; space: string }) {
+/** Who made a version of an item, in the middle of a sentence: "you", "Cara Lund", "your assistant Claude", "Cara Lund’s assistant Claude", "Homing". */
+function madeBy(version: { by: Author; agent: string | null; editAgent?: string | null }): string {
+  const agent = version.agent ?? version.editAgent;
+  const person = nameIn(version.by);
+  if (agent) return person === 'you' ? `your assistant ${agent}` : person ? `${person}’s assistant ${agent}` : agent;
+  return person ?? (version.by ? 'someone' : 'Homing');
+}
+
+/**
+ * Who wrote it and when, its sources, and what it said before, each earlier version with who changed
+ * it, to restore where you may correct it: small, under the item it's about.
+ */
+function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
+  item: ItemData;
+  yourUpdate: boolean;
+  onCorrect?: () => void;
+  onRestore?: (text: string) => void;
+  onShare?: (event: MouseEvent<HTMLButtonElement>) => void;
+  space: string;
+}) {
   const byPerson = item.by !== null && item.agent === null;
-  // What it said before, newest first: its own earlier wording, then what it replaced.
+  // Your own text on your side, which your assistant may change when you ask.
+  const yours = byPerson && !item.shared && item.by?.you === true && !item.by.imported;
+  // What it said before, newest first: its own earlier versions, each with who changed it then, the
+  // one who wrote the version after it, then what it replaced.
   const earlier = [
-    ...[...item.earlier].reverse().map((entry) => ({ text: entry.text, until: entry.until })),
-    ...(item.replaced && !yourUpdate ? [{ text: item.replaced.text, until: item.replaced.until }] : []),
+    ...item.earlier
+      .map((entry, index) => ({ text: entry.text, until: entry.until, by: madeBy(item.earlier[index + 1] ?? item), restorable: true }))
+      .reverse(),
+    ...(item.replaced && !yourUpdate ? [{ text: item.replaced.text, until: item.replaced.until, by: null, restorable: false }] : []),
   ];
   return (
     <div className="flex cursor-auto flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
-        {wrote(item.by, item.agent)} on {dateOf(item.writtenAt)}.{byPerson && ' Assistants never rewrite it.'}
+        {wrote(item.by, item.agent, item.editAgent)} on {dateOf(item.writtenAt)}.
+        {byPerson && (yours ? ' Your assistant may change it when you ask, and you can restore an earlier version.' : ' Assistants never rewrite it.')}
       </p>
       {item.sharedBy && item.sharedAt && <p className="text-muted-foreground">{nameOf(item.sharedBy)} shared it with everyone here on {dateOf(item.sharedAt)}.</p>}
       {item.sources.map((source) => (
@@ -230,9 +265,16 @@ function Details({ item, yourUpdate, onCorrect, onShare, space }: { item: ItemDa
       ))}
       {item.sources.length === 0 && !byPerson && !item.sharedBy && <p className="text-muted-foreground">No sources are kept for it.</p>}
       {earlier.map((entry, index) => (
-        <p key={index} className="text-muted-foreground">
-          Until {dateOf(entry.until)}, it said <span className="text-foreground">“{plain(entry.text)}”</span>
-        </p>
+        <div key={index} className="flex flex-col items-start gap-2">
+          <p className="text-muted-foreground">
+            Until {dateOf(entry.until)}{entry.by && `, when ${entry.by} changed it`}, it said <span className="text-foreground">“{plain(entry.text)}”</span>
+          </p>
+          {onRestore && entry.restorable && entry.text !== item.text && (
+            <Button variant="outline" size="sm" aria-label={`Restore what it said until ${dateOf(entry.until)}`} onClick={() => onRestore(entry.text)}>
+              Restore
+            </Button>
+          )}
+        </div>
       ))}
       {(onCorrect || onShare) && (
         <div className="flex flex-wrap gap-2">
@@ -295,12 +337,19 @@ function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: Page
 }
 
 /**
- * Correcting an item. Your own is corrected where it is. A shared one is corrected for everyone,
- * or replaced by your own version that only you see, and nothing written is ever lost: what it
- * said before stays in its history.
+ * Correcting an item, from what it says now or from an earlier version being restored. Your own is
+ * corrected where it is. A shared one is corrected for everyone, or replaced by your own version
+ * that only you see, and nothing written is ever lost: what it said before stays in its history.
  */
-function Correct({ item, page, correct, onDone }: { item: ItemData; page: PageData; correct: PageActions['correct']; onDone: () => void }) {
-  const [text, setText] = useState(item.text);
+function Correct({ item, page, correct, from, restoring, onDone }: {
+  item: ItemData;
+  page: PageData;
+  correct: PageActions['correct'];
+  from: string;
+  restoring: boolean;
+  onDone: () => void;
+}) {
+  const [text, setText] = useState(from);
   // New writing starts as only yours.
   const [audience, setAudience] = useState<Audience>('you');
   const [problem, setProblem] = useState<string>();
@@ -326,13 +375,13 @@ function Correct({ item, page, correct, onDone }: { item: ItemData; page: PageDa
           ? 'Everyone sees your correction. What it said before stays in its history, and assistants won’t rewrite what you wrote.'
           : shared
             ? `Your version takes its place for you. Others in ${page.space.name} still see what it says now.`
-            : 'What it said before stays in its history, and assistants won’t rewrite what you wrote.'}
+            : 'What it says now stays in its history.'}
       </p>
       {problem && <FieldError>{problem}</FieldError>}
       <div className="flex flex-col-reverse gap-2 sm:flex-row sm:flex-wrap-reverse sm:justify-end">
         <Button variant="outline" size="lg" disabled={busy} onClick={onDone}>Cancel</Button>
         <Button size="lg" className={cn(wrapsLabel, 'min-h-10')} disabled={busy || !text.trim() || text.trim() === item.text} onClick={save}>
-          {forEveryone ? `Correct it for ${page.space.name}` : shared ? 'Save your version' : 'Save for you'}
+          {forEveryone ? `${restoring ? 'Restore it' : 'Correct it'} for ${page.space.name}` : shared ? 'Save your version' : restoring ? 'Restore for you' : 'Save for you'}
         </Button>
       </div>
     </div>

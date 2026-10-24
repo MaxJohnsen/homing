@@ -412,6 +412,15 @@ export const samplePage: PageData = {
       sources: [{ id: 'source-3', reference: 'Teams chat with Gunnar', excerpt: 'Can we talk before you send anything on scope? I’d rather not have it in writing yet.' }],
       replaced: null, earlier: [],
     },
+    {
+      id: 'item-6', text: '## Before the steering group\n\nAsk Gunnar whether the booking texts can wait until after the launch. Bring the budget for the second phase, and the hosting quote.',
+      shared: false, by: { name: 'Ana Berg', you: true }, agent: null, editAgent: 'Claude', writtenAt: daysAgo(0, 2),
+      sources: [], replaced: null,
+      earlier: [
+        { text: '## Before the steering group\n\nAsk Gunnar about the booking texts.', by: { name: 'Ana Berg', you: true }, agent: null, writtenAt: daysAgo(9), until: daysAgo(6) },
+        { text: '## Before the steering group\n\nAsk Gunnar whether the booking texts can wait until after the launch. Bring the budget for the second phase.', by: { name: 'Ana Berg', you: true }, agent: null, writtenAt: daysAgo(6), until: daysAgo(0, 2) },
+      ],
+    },
   ],
 };
 

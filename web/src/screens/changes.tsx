@@ -13,11 +13,15 @@ function dayOf(at: string, now = new Date()): string {
   return days <= 0 ? 'Today' : days === 1 ? 'Yesterday' : dateOf(at);
 }
 
-/** "by Cara Lund", "by you", "by Claude, for you", "by Cara Lund through Claude", or "shared by Cara Lund". */
+/**
+ * "by Cara Lund", "by you", "by Claude, for you", "by Cara Lund through Claude", or "shared by Cara
+ * Lund". A change an assistant made to someone's own text is its change, for them.
+ */
 function byWhom(change: ChangeData): string {
   if (change.sharedBy) return `shared by ${nameIn(change.sharedBy) ?? 'someone'}`;
   const person = nameIn(change.by);
-  if (change.agent) return person === 'you' ? `by ${change.agent}, for you` : person ? `by ${person} through ${change.agent}` : `by ${change.agent}`;
+  const agent = change.agent ?? change.editAgent;
+  if (agent) return person === 'you' ? `by ${agent}, for you` : person ? `by ${person} through ${agent}` : `by ${agent}`;
   return person ? `by ${person}` : 'by someone';
 }
 

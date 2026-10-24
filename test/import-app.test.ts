@@ -118,6 +118,9 @@ before(async () => {
   // A space whose creator isn't known, as when they've left.
   await admin`update spaces set created_by = null, agent = null where id = ${legal}`;
   await as({ person: ana.id, agent: 'Claude' }, (s) => writeItem(s, { pageId: gunnar, body: 'Gunnar asked for the budget by Friday.' }));
+  // Ana's own note, which her assistant changed for her, so it stays hers.
+  const bergen = await as({ ...ana, direct: true }, (s) => writeItem(s, { pageId: gunnar, body: 'Gunnar works from Bergen on Fridays.' }));
+  await as({ person: ana.id, agent: 'Claude' }, (s) => updateItem(s, bergen.id, { body: 'Gunnar works from Bergen on Mondays and Fridays.' }));
   await as({ ...cara, direct: true }, async (s) => {
     await addInclude(s, { spaceId: website, included: { space: brand }, shared: true });
     // Her own include, and one for everyone of rules only she can open: neither is Ana's to export, nor a sign of them.
@@ -255,6 +258,11 @@ test('an export comes back as a new space only you have, and exported again it s
   const hidden = (await cara.browser.json(`/api/spaces/${websiteHere}/rules`)).body.includes.filter((include: { spaceId: string | null }) => include.spaceId === null);
   assert.deepEqual(hidden.map((include: { addedBy: string }) => include.addedBy), ['Ana (imported)']);
 
+  // A note Ana wrote and her assistant changed for her is still hers, with the assistant, and so is what it said before.
+  const bergen = before.manifest.items.find((item) => item.body === 'Gunnar works from Bergen on Mondays and Fridays.')!;
+  assert.deepEqual(bergen.author, { by: 'person', person: before.manifest.exportedBy.person, agent: 'Claude' });
+  assert.deepEqual(before.manifest.revisions.find((revision) => revision.item === bergen.id)?.author, { by: 'person', person: before.manifest.exportedBy.person, agent: null });
+
   // Exported again, it means the same, with new ids.
   const after = await exported(ana, copy);
   assert.ok(before.manifest.includes.some((include) => include.elsewhere?.space === 'Standards'));
@@ -299,20 +307,29 @@ test('who wrote imported knowledge comes along by name, credited to nobody here'
 
   // What a person wrote stays theirs: an assistant can't rewrite or replace it, here or in the store.
   const [{ item: written }] = await admin`select id as item from content where space_id = ${copy} and body = 'Jon takes over the steering group from Gunnar in November.'`;
-  assert.match((await claude.call('remember', { space: `space:${copy}`, text: 'Jon took over in October.', replaces: `item:${written}` })).text, /never change what people wrote|isn’t yours|can’t/i);
+  assert.match((await claude.call('remember', { space: `space:${copy}`, text: 'Jon took over in October.', replaces: `item:${written}` })).text, /^Someone wrote that before it was imported, so agents never change it\./);
   await assert.rejects(as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${written}`), refused);
   await assert.rejects(
     as({ person: cara.id, agent: 'Claude' }, (s) => s.tx`insert into content (page_id, space_id, kind, body, supersedes, private_to) select page_id, space_id, 'text', 'Replaced', id, ${cara.id} from content where id = ${written}`),
     refused,
   );
-  // Nor on the person's own side, where their assistant otherwise keeps things up to date.
+  // Nor on the person's own side, where their assistant otherwise changes what they wrote when they
+  // ask: someone named Ana wrote it in the Homing it came from, and that's never the Ana here, even
+  // where her assistant there changed it for her.
   const [{ item: calls }] = await admin`select id as item from content where space_id = ${copy} and body = 'Prefers calls before nine.'`;
   await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${calls}`), refused);
-  // A task a person wrote stays theirs too: Ana's assistant can mark it done, but not reword it.
-  const [{ task: venue }] = await admin`select id as task from tasks where space_id = ${copy} and title = 'Book a bigger venue'`;
   const forAna = new Assistant(homing.url, assistants.claude);
   await forAna.connect(ana.browser);
   const anas = await forAna.open();
+  const [{ item: bergen }] = await admin`select id as item from content where space_id = ${copy} and body = 'Gunnar works from Bergen on Mondays and Fridays.'`;
+  assert.match((await anas.call('read', { ref: `item:${bergen}` })).text, /Written by Ana \(imported\), changed by Claude for them on .+\n\n## Earlier versions\n- "Gunnar works from Bergen on Fridays\.", by Ana \(imported\), until/);
+  for (const item of [calls, bergen]) {
+    const rewrite = await anas.call('remember', { updates: `item:${item}`, text: 'Prefers calls after nine.' });
+    assert.deepEqual([rewrite.failed, rewrite.text], [true, 'Someone wrote that before it was imported, so agents never change it. Save what you found as a new item on the same page, and point out the difference to the user.']);
+    await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update content set body = 'Rewritten' where id = ${item}`), refused);
+  }
+  // A task a person wrote stays theirs too: Ana's assistant can mark it done, but not reword it.
+  const [{ task: venue }] = await admin`select id as task from tasks where space_id = ${copy} and title = 'Book a bigger venue'`;
   assert.match((await anas.call('remember', { space: `space:${copy}`, task: { ref: `task:${venue}`, title: 'Book the town hall' } })).text, /A person wrote this task before it was imported/);
   await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`update tasks set title = 'Rewritten' where id = ${venue}`), refused);
   assert.match((await anas.call('remember', { space: `space:${copy}`, task: { ref: `task:${venue}`, done: true } })).text, /^Done: Book a bigger venue/);

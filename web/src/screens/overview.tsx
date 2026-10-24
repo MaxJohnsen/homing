@@ -8,7 +8,7 @@ import { count, dateOf, focusRing, Section, wrapsLabel } from '@/components/scre
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Textarea } from '@/components/ui/textarea';
-import { nameIn, nameOf, plain, type OverviewData, type WriteOverview } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, theirAssistant, type OverviewData, type WriteOverview } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { PageRows } from '@/screens/pages';
@@ -44,7 +44,11 @@ export function Overview({ space, data, write, now }: { space: SpaceData; data: 
                     </p>
                   )}
                   <p className="text-sm text-muted-foreground">
-                    {item.agent ? `${item.agent} wrote it${nameIn(item.by) ? ` for ${nameIn(item.by)}` : ''}` : `${nameOf(item.by)} wrote it`}, {dateOf(item.writtenAt)}.
+                    {item.agent
+                      ? `${item.agent} wrote it${nameIn(item.by) ? ` for ${nameIn(item.by)}` : ''}, ${dateOf(item.writtenAt)}.`
+                      : item.editAgent
+                        ? `${nameOf(item.by)} wrote it, and ${theirAssistant(item.by, item.editAgent)} changed it on ${dateOf(item.writtenAt)}.`
+                        : `${nameOf(item.by)} wrote it, ${dateOf(item.writtenAt)}.`}
                   </p>
                 </div>
               ))}

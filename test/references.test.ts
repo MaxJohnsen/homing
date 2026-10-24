@@ -362,7 +362,7 @@ test('a page says who wrote each item, so an assistant can tell what a person wr
   const typed = await as({ ...ana, direct: true }, (s) => writeItem(s, { pageId: golive.pageId, body: 'Per Hansen owns hosting and DNS' }));
 
   const page = (await claude.call('read', { ref: `page:${golive.pageId}` })).text;
-  assert.match(page, /What a person wrote themselves stays theirs: save new evidence beside it, and point out the difference to the user\./);
+  assert.match(page, /What the user wrote on their private side stays theirs: change it only when they ask you to, with updates, and what it said before is kept\./);
   assert.match(page, new RegExp(`- Per Hansen owns hosting and DNS \\(item:${typed.id}, private, written by Ana\\)`));
   assert.match(page, new RegExp(`- The relaunch goes live on 1 March 2027 \\(item:${golive.id}, private, written by Ana through Claude\\)`));
   // Briefly where it's found too, only for what a person wrote.
@@ -371,13 +371,13 @@ test('a page says who wrote each item, so an assistant can tell what a person wr
   assert.match(found, new RegExp(`1 March 2027 \\(item:${golive.id}, in Website relaunch, private\\)`));
   assert.match((await claude.call('context', { request: 'hosting', space: `space:${relaunch}` })).text, /Per Hansen owns hosting and DNS \(item:[0-9a-f-]+, in Website relaunch, private, written by Ana\)/);
 
-  // remember says replaces is for what assistants wrote, and Homing holds to it.
+  // remember says replaces is for what assistants wrote, and what the user wrote is changed only when they ask, and Homing holds to it.
   const remember = (await claude.client.listTools()).tools.find((tool) => tool.name === 'remember')!;
-  assert.match(remember.description!, /replaces and updates are for what assistants wrote/);
-  assert.match(remember.description!, /What a person wrote themselves stays theirs, and pages show who wrote each item\. Save the new evidence beside it instead/);
+  assert.match(remember.description!, /Use replaces when something an assistant wrote is no longer true/);
+  assert.match(remember.description!, /What a person wrote themselves stays theirs, and pages show who wrote each item\. Change what the user wrote on their private side only when they ask you to, with updates/);
   const attempt = await claude.call('remember', { replaces: `item:${typed.id}`, text: 'Ola Nordmann owns hosting and DNS' });
   assert.equal(attempt.failed, true);
-  assert.match(attempt.text, /Agents never change what people wrote/);
+  assert.match(attempt.text, /^The user wrote that themselves, so only they replace it\./);
   await claude.close();
 });
 

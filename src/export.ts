@@ -26,12 +26,15 @@ export interface Person {
   name: string | null;
 }
 
-/** Who did something: a person, an agent for a person, or a space's own routine. */
+/**
+ * Who did something: a person, an agent for a person, or a space's own routine. A person's own
+ * text that their assistant changed for them is still the person's, with that assistant as agent.
+ */
 export interface Author {
   by: 'person' | 'agent' | 'routine';
   /** The person's key in the export's people, if a person did it or an agent did it for one. */
   person: string | null;
-  /** The agent, when one did it. */
+  /** The agent, when one did it, or changed a person's own text for them. */
   agent: string | null;
 }
 
@@ -468,11 +471,12 @@ async function exportTo(s: Session, spaceId: string, instance: URL, now: Date, s
     `) imports.set(row.id, row);
     await nameAll([...imports.values()].map((row) => row.importedBy));
   };
-  // What still says what it said when it was imported keeps who wrote it there.
-  const author = (id: string | null, agent: string | null, imported: Imported | null = null): Author => {
+  // What still says what it said when it was imported keeps who wrote it there. A person's own text
+  // that their assistant changed for them stays theirs, with the assistant.
+  const author = (id: string | null, agent: string | null, imported: Imported | null = null, editAgent: string | null = null): Author => {
     const before = importedAuthor(imported);
     if (before) return { by: before.by, person: key(elsewhere(imported, before)), agent: before.agent };
-    return { by: agent ? 'agent' : id ? 'person' : 'routine', person: key(id), agent };
+    return { by: agent ? 'agent' : id ? 'person' : 'routine', person: key(id), agent: agent ?? (id ? editAgent : null) };
   };
   const from = (imported: Imported | null): { imported?: ImportedFrom } => {
     if (!imported) return {};
@@ -614,8 +618,8 @@ async function exportTo(s: Session, spaceId: string, instance: URL, now: Date, s
         where c.space_id = ${here}::uuid and c.page_id in ${pagesHere} and ${visible(s, 'c')} and ${visible(s, 'src')}
         order by src.created_at, src.id
       `;
-      const revisions = await s.tx<{ contentId: string; privateTo: string | null; body: string; writtenBy: string | null; agent: string | null; writtenAt: Date; replacedAt: Date; imported: Imported | null }[]>`
-        select r.content_id, r.private_to, r.body, r.written_by, r.agent, r.written_at, r.replaced_at, r.imported from revisions r
+      const revisions = await s.tx<{ contentId: string; privateTo: string | null; body: string; writtenBy: string | null; agent: string | null; editAgent: string | null; writtenAt: Date; replacedAt: Date; imported: Imported | null }[]>`
+        select r.content_id, r.private_to, r.body, r.written_by, r.agent, r.edit_agent, r.written_at, r.replaced_at, r.imported from revisions r
         join content c on c.id = r.content_id
         where r.space_id = ${here}::uuid and c.page_id in ${pagesHere} and ${visible(s, 'r')}
         order by r.replaced_at
@@ -653,7 +657,7 @@ async function exportTo(s: Session, spaceId: string, instance: URL, now: Date, s
             path: item.path,
             body: verbatim(item.kind) ? item.body : clean(item.body),
             visibility: side(item.privateTo),
-            author: author(item.writtenBy, item.agent, item.imported),
+            author: author(item.writtenBy, item.agent, item.imported, item.editAgent),
             createdAt: time(item.createdAt),
             writtenAt: time(item.updatedAt),
             supersedes: item.supersedes && itemIds.has(item.supersedes) ? item.supersedes : null,
@@ -678,7 +682,7 @@ async function exportTo(s: Session, spaceId: string, instance: URL, now: Date, s
         item: revision.contentId,
         visibility: side(revision.privateTo),
         body: verbatim(kindOf.get(revision.contentId)!) ? revision.body : clean(revision.body),
-        author: author(revision.writtenBy, revision.agent, revision.imported),
+        author: author(revision.writtenBy, revision.agent, revision.imported, revision.editAgent),
         writtenAt: time(revision.writtenAt),
         replacedAt: time(revision.replacedAt),
         ...from(revision.imported),

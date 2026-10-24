@@ -47,6 +47,8 @@ export interface ItemData {
   by: Author;
   /** The assistant that wrote it for that person, or null when they wrote it themselves. */
   agent: string | null;
+  /** The assistant that made its latest change for the person who wrote it, which stays theirs. */
+  editAgent?: string | null;
   writtenAt: string;
   /** Who shared it with the space from their own private side, and when, if someone did. */
   sharedBy?: Author;
@@ -55,8 +57,8 @@ export interface ItemData {
   sources: { id: string; reference: string | null; excerpt: string; shared?: boolean }[];
   /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
-  /** What it said before it was last changed, oldest first. */
-  earlier: { text: string; by: Author; agent: string | null; writtenAt: string; until: string }[];
+  /** What it said before it was last changed, oldest first, each with who wrote that version. */
+  earlier: { text: string; by: Author; agent: string | null; editAgent?: string | null; writtenAt: string; until: string }[];
 }
 
 /** A page as the person sees it: the shared items and their own, and no trace of anyone else's. */
@@ -125,6 +127,11 @@ export function nameIn(author: Author): string | null {
   return author?.name || author?.imported ? nameOf(author) : null;
 }
 
+/** The assistant that changed someone's own text for them: "your assistant Claude", "their assistant Claude". */
+export function theirAssistant(author: Author, agent: string): string {
+  return `${author?.you ? 'your' : 'their'} assistant ${agent}`;
+}
+
 /** A source in a space's list of sources. */
 export interface SourceSummary {
   id: string;
@@ -175,6 +182,8 @@ export interface ChangeData {
   overview?: boolean;
   by: Author;
   agent: string | null;
+  /** The assistant that made the change for the person who wrote it, which stays theirs. */
+  editAgent?: string | null;
   /** Who shared it from their own side, when that's what changed. */
   sharedBy?: Author;
   at: string;
@@ -188,7 +197,7 @@ export interface ChangeData {
 /** A space's overview: what people wrote about where it stands, and the map Homing keeps beside it. */
 export interface OverviewData {
   /** The written overview as you see it: the shared one, your own, or both. */
-  overview: { id: string; text: string; shared: boolean; by: Author; agent: string | null; writtenAt: string; replacesShared: string | null }[];
+  overview: { id: string; text: string; shared: boolean; by: Author; agent: string | null; editAgent?: string | null; writtenAt: string; replacesShared: string | null }[];
   /** The pages changed most recently, and how many there are in all. */
   active: PageSummary[];
   pages: number;

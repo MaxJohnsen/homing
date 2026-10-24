@@ -188,7 +188,7 @@ function harder(results: Result[]): string {
 
 /** What a call Homing refused got wrong, from its answer: the kinds the results of 20 October name. */
 export function refusalKind(answer: string): string {
-  if (/Agents never change what people wrote/.test(answer)) return 'replaces on what a person wrote';
+  if (/Agents never change what people wrote|so agents never change it|so only they replace it/.test(answer)) return 'replaces on what a person wrote';
   if (/in this space that you can see|not in the space given/.test(answer)) return 'a reference with another space';
   if (/isn't a reference|isn't the name of a space|Expected a space reference|That's a page, not a space|Several spaces the user can open are called/.test(answer)) {
     return 'a name or a page where a space was expected';
