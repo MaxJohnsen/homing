@@ -10,8 +10,8 @@
 import type { AgentPrincipal } from './assistants.ts';
 import { ConnectionUnusable, kindOf, messageOf, Unanswered, using, type Broker, type Use } from './connections.ts';
 import type { Access, Audience, Connector, Connectors, Found, Item, Value, Words } from './connectors.ts';
-import { personOf, withPrincipal, type Session } from './db.ts';
-import { accessibleSpaces } from './spaces.ts';
+import { personOf, withPrincipal, type Principal, type Session } from './db.ts';
+import { accessibleSpaces, spaceView } from './spaces.ts';
 
 /** One of the person's places, and the connection that reaches it. */
 export interface Place {
@@ -23,10 +23,17 @@ export interface Place {
   kind: string;
   /** What it is there, such as the account's id for its mailbox. */
   resource: string;
-  /** How it's shown: its own name, or the account's address for the account's own, such as its mailbox. */
-  name: string;
+  /** Its name there, for one the person chose, or null for the account's own, such as its mailbox, which goes by the account's address. */
+  name: string | null;
+  address: string;
   status: 'connected' | 'needs attention';
 }
+
+/**
+ * A place as Homing names it to an assistant, in a sentence of its own: the account's address on
+ * one line, or the name the system gave a place the person chose, quoted, since it's outside content.
+ */
+export const placeName = (place: Pick<Place, 'name' | 'address'>) => (place.name === null ? oneLine(place.address) : quoted(place.name));
 
 /** How long a search waits for a place, so a slow one never holds up the rest of the answer. */
 export const searchTimeLimit = 2_500;
@@ -48,7 +55,7 @@ export async function placesFor(s: Session, spaceId?: string): Promise<Place[]> 
   const places = await s.tx<Place[]>`
     select * from (
       select distinct on (c.id, p.kind, p.resource)
-        p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, coalesce(p.name, c.address) as name, c.status
+        p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status
       from places p join connections c on c.id = p.connection_id
       where p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
         and p.space_id in (${accessibleSpaces(s)})
@@ -57,21 +64,69 @@ export async function placesFor(s: Session, spaceId?: string): Promise<Place[]> 
           : s.tx``}
       order by c.id, p.kind, p.resource, p.space_id = ${spaceId ?? null}::uuid desc nulls last, p.added_at, p.id
     ) places
-    order by name, connection, kind, resource
+    order by coalesce(name, address), connection, kind, resource
   `;
   return [...places];
+}
+
+/** How long listing the places an account reaches may take. */
+const discoverTimeLimit = 10_000;
+
+/**
+ * The places of a kind that the person's account reaches, for them to choose from, as the system
+ * lists them now, by its names for them. Undefined when the connection isn't theirs, or the kind's
+ * places aren't chosen.
+ */
+export async function placesToChoose(broker: Broker, principal: Principal, connectionId: string, kind: string): Promise<{ resource: string; name: string }[] | undefined> {
+  const person = personOf(principal);
+  if (!person) return undefined;
+  const [connection] = await withPrincipal(broker.sql, principal, (s) => s.tx<{ provider: string; account: string }[]>`
+    select provider, account from connections where id = ${connectionId}::uuid and person_id = ${person}::uuid and revoked_at is null
+  `);
+  const connector = connection && broker.connectors.get(connection.provider);
+  const discover = kindOf(connector, kind)?.discover;
+  if (!connector || !discover) return undefined;
+  if (!connector.ready) throw new ConnectionUnusable('not set up');
+  return using(broker, connector, person, { connection: connectionId, resource: connection.account }, undefined, AbortSignal.timeout(discoverTimeLimit), discover);
+}
+
+/** The most characters of a chosen place's name Homing keeps. */
+const nameLength = 200;
+
+/**
+ * Adds a place the person chose in a space, on their private side there: one their account
+ * reaches now, as the system lists them, with its name there on one line. As whoever asks, so
+ * only the person themselves in Homing's own app adds one, which the database checks. The place's
+ * id, or undefined when the space isn't one they can open, or the place isn't one they can choose.
+ */
+export async function choosePlace(broker: Broker, principal: Principal, spaceId: string, connectionId: string, kind: string, resource: string): Promise<string | undefined> {
+  if (!(await withPrincipal(broker.sql, principal, (s) => spaceView(s, spaceId)))) return undefined;
+  const chosen = (await placesToChoose(broker, principal, connectionId, kind))?.find((place) => place.resource === resource);
+  if (!chosen) return undefined;
+  const name = Array.from(oneLine(chosen.name)).slice(0, nameLength).join('') || null;
+  return withPrincipal(broker.sql, principal, async (s) => {
+    const [{ id }] = await s.tx<{ id: string }[]>`select add_place(${spaceId}::uuid, ${connectionId}::uuid, ${kind}, ${chosen.resource}, ${name}) as id`;
+    return id;
+  });
 }
 
 /** An item's reference: its connector, the place it's in, and its id there, such as microsoft:…:…. */
 export const referenceTo = (place: Pick<Place, 'connector' | 'place'>, id: string) => `${place.connector}:${place.place}:${id}`;
 
 /**
- * The connector whose reference a value is meant as, by how it starts, such as microsoft:…. Email's
- * references started mail: before connectors had their own, and only Microsoft mailboxes had them,
- * so those still lead there.
+ * What a reference to an item in a place looks like: its connector's id, in lower case, the place,
+ * and the item's id there. Anything else, such as "Microsoft: Azure pricing" as an assistant cites
+ * it, is a citation of the assistant's own, never a reference of Homing's.
+ */
+const referenceShape = /^([a-z][a-z0-9]*):([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}):(.+)$/s;
+
+/**
+ * The connector whose reference a value is, when it's shaped like one. Email's references started
+ * mail: before connectors had their own, and only Microsoft mailboxes had them, so those still lead
+ * there.
  */
 export function connectorOf(connectors: Connectors, value: string | undefined): Connector | undefined {
-  const start = /^\s*([a-z][a-z0-9]*):/i.exec(value ?? '')?.[1].toLowerCase();
+  const start = referenceShape.exec(value?.trim() ?? '')?.[1];
   return start ? connectors.get(start === 'mail' ? 'microsoft' : start) : undefined;
 }
 
@@ -85,9 +140,9 @@ export interface Reference {
 /** The connector, place and item a reference names, or undefined when it isn't one. */
 export function parseReference(connectors: Connectors, value: string): Reference | undefined {
   const connector = connectorOf(connectors, value);
-  const match = /^[a-z][a-z0-9]*:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):(.+)$/is.exec(value.trim());
+  const [, , place, id] = referenceShape.exec(value.trim()) ?? [];
   // Only an id made of nothing but what the system's ids are made of.
-  return connector && match && connector.ids.exec(match[2])?.[0] === match[2] ? { connector: connector.id, place: match[1].toLowerCase(), id: match[2] } : undefined;
+  return connector && id && connector.ids.exec(id)?.[0] === id ? { connector: connector.id, place: place.toLowerCase(), id } : undefined;
 }
 
 /** How a connector's items are worded where its kind of place isn't known: by its only kind, or plainly. */
@@ -174,7 +229,7 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   const person = personOf(s.principal);
   if (!person) return undefined;
   const [named] = await s.tx<(Place & { removed: boolean; tenant: string; account: string })[]>`
-    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, coalesce(p.name, c.address) as name, c.status,
+    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status,
            c.tenant, c.account, p.removed_at is not null or c.revoked_at is not null as removed
     from places p join connections c on c.id = p.connection_id
     where p.id = ${ref.place}::uuid and p.private_to = ${person}::uuid and c.person_id = ${person}::uuid and c.provider = ${ref.connector}
@@ -184,7 +239,7 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   const { tenant, account, ...place } = named;
   if (!place.removed) return place;
   const [again] = await s.tx<Place[]>`
-    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, coalesce(p.name, c.address) as name, c.status
+    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status
     from places p join connections c on c.id = p.connection_id
     where p.space_id = ${place.space}::uuid and p.private_to = ${person}::uuid and p.kind = ${place.kind} and p.resource = ${place.resource} and p.removed_at is null
       and c.person_id = ${person}::uuid and c.revoked_at is null and c.provider = ${place.connector} and c.tenant = ${tenant} and c.account = ${account}
@@ -226,7 +281,7 @@ export function problemText(connectors: Connectors, place: Place, problem: Probl
   const kind = kindOf(connector, place.kind);
   const words = wordsOf(connector, place.kind);
   const vendor = connector?.vendor ?? place.connector;
-  const box = `the user's ${words.place} ${place.name}`;
+  const box = `the user's ${words.place} ${placeName(place)}`;
   const left = doing === 'searching' ? ', so this leaves it out' : '';
   switch (problem) {
     case 'needs attention':
@@ -314,7 +369,7 @@ function plainValue(value: Value): string {
  * zero-width spaces and tags, except the joiners some scripts and emoji need; variation selectors
  * beyond the sixteen emoji use; and the Hangul fillers that show as nothing.
  */
-const hiding = /(?![‌‍])\p{Cf}|[\u{e0100}-\u{e01ef}ᅟᅠㅤﾠ]/gu;
+const hiding = /(?![\u200c\u200d])\p{Cf}|[\u{e0100}-\u{e01ef}\u115f\u1160\u3164\uffa0]/gu;
 
 /** Outside text without characters that hide or turn text around, keeping its lines. */
 export function withoutHidden(text: string): string {
@@ -324,6 +379,16 @@ export function withoutHidden(text: string): string {
 /** Outside text on one line, without characters that hide or turn text around. */
 export function oneLine(value: string): string {
   return value.replace(hiding, '').replace(/[\p{Cc}\s]+/gu, ' ').trim();
+}
+
+/**
+ * Outside text on one line, quoted: without control characters, or ones that hide or turn text
+ * around, and at most so many characters, whole.
+ */
+export function quoted(value: string, most?: number): string {
+  const line = oneLine(value);
+  const characters = Array.from(line);
+  return JSON.stringify(most && characters.length > most ? `${characters.slice(0, most).join('')}…` : line);
 }
 
 /** A time as Homing shows what it read, in UTC to the minute. */

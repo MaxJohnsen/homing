@@ -198,8 +198,56 @@ test('an email’s reference from before, mail:…, still opens, and what’s ke
     select ${acme}, ${ana.id}, ${before}, 'From: Gunnar Lie <gunnar@northwind.test>', connection_id from places where id = ${place}
   `);
   assert.ok((await claude.call('search', { query: 'Gunnar Lie' })).text.includes(`Source: ${before}, an email Homing read in the user's mailbox: "From: Gunnar Lie <gunnar@northwind.test>"`));
-  // Anything else starting mail: is still meant as an email's reference, and isn't one.
-  assert.deepEqual(await claude.call('read', { ref: 'mail:budget' }), { failed: true, text: '"mail:budget" isn\'t a reference. An email\'s looks like microsoft:…:…, as `search` gives it.' });
+  await claude.close();
+});
+
+test('a citation that only starts like a system’s name is the assistant’s own, and only a reference Homing read is named as an email', async () => {
+  const { ana, acme, place, gunnar, claude } = await world();
+  const reference = `microsoft:${place}:${gunnar}`;
+  const saved = await claude.call('remember', {
+    space: `space:${acme}`,
+    text: 'The Northwind budget for 2027 is NOK 2 million',
+    sources: [
+      { reference, excerpt: 'NOK 2 million' },
+      { reference: 'Microsoft: Azure pricing page', excerpt: 'Storage costs NOK 2 per GB' },
+      { reference: 'mail: notes from Monday', excerpt: 'Gunnar confirmed the budget' },
+    ],
+  });
+  assert.ok(!saved.failed, saved.text);
+  const kept = await admin`select reference, read_through, agent from sources where private_to = ${ana.id} order by reference`;
+  assert.deepEqual(kept.map((row) => [row.reference, row.readThrough !== null, row.agent]), [
+    ['Microsoft: Azure pricing page', false, 'Claude'],
+    ['mail: notes from Monday', false, 'Claude'],
+    [reference, true, 'Claude'],
+  ]);
+  // The app names an email by where Homing read it, and anything else by its reference, even one
+  // that cites the same email without Homing having read it, as an import keeps it.
+  await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`insert into sources (space_id, private_to, reference, excerpt) values (${acme}, ${ana.id}, ${reference}, 'Imported')`);
+  const listed = (await ana.browser.json(`/api/spaces/${acme}/sources`)).body.sources as { id: string; reference: string; excerpt: string; readFrom: string | null }[];
+  assert.deepEqual(listed.map((source) => [source.reference, source.excerpt === 'Imported' ? 'imported' : 'kept', source.readFrom]).sort(), [
+    ['Microsoft: Azure pricing page', 'kept', null],
+    ['mail: notes from Monday', 'kept', null],
+    [reference, 'imported', null],
+    [reference, 'kept', 'mailbox'],
+  ]);
+  for (const source of listed) assert.equal((await ana.browser.json(`/api/sources/${source.id}`)).body.readFrom, source.readFrom);
+  const found = (await ana.browser.json('/api/search?q=NOK')).body.sources as { reference: string; readFrom: string | null }[];
+  assert.deepEqual(found.map((source) => [source.reference, source.readFrom]).sort(), [['Microsoft: Azure pricing page', null], [reference, 'mailbox']]);
+  const item = /item:([0-9a-f-]{36})/.exec(saved.text)![1];
+  const [{ id: pageId }] = await admin<{ id: string }[]>`select page_id as id from content where id = ${item}`;
+  const page = (await ana.browser.json(`/api/pages/${pageId}`)).body;
+  const cited = page.items.find((one: { id: string }) => one.id === item).sources as { reference: string; readFrom: string | null }[];
+  assert.deepEqual(cited.map((source) => [source.reference, source.readFrom]).sort(), [
+    ['Microsoft: Azure pricing page', null],
+    ['mail: notes from Monday', null],
+    [reference, 'mailbox'],
+  ]);
+  // To an assistant, likewise: only what Homing read says so.
+  const shown = (await claude.call('read', { ref: `item:${item}` })).text;
+  assert.ok(shown.includes(`- Source: ${reference}, an email Homing read in the user's mailbox: `));
+  assert.ok(shown.includes('- Source: Microsoft: Azure pricing page: "Storage costs NOK 2 per GB"'));
+  // Something not shaped like a reference isn't read as one, and isn't refused as one either.
+  assert.deepEqual(await claude.call('read', { ref: 'mail:budget' }), { failed: true, text: '"mail:budget" isn\'t a reference. References look like page:… or item:….' });
   await claude.close();
 });
 

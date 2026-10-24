@@ -85,8 +85,8 @@ test('the connection and its place stay as they were', async () => {
   `;
   assert.deepEqual(stored, { provider: 'microsoft', address: account.address, status: 'connected', revokedAt: null, kind: 'mailbox', resource: account.oid, name: null, removedAt: null });
   assert.deepEqual(
-    (await as({ person: ana, agent: 'Claude' }, (s) => placesFor(s, acme))).map(({ place, connector, kind, name, status }) => ({ place, connector, kind, name, status })),
-    [{ place, connector: 'microsoft', kind: 'mailbox', name: account.address, status: 'connected' }],
+    (await as({ person: ana, agent: 'Claude' }, (s) => placesFor(s, acme))).map(({ place, connector, kind, name, address, status }) => ({ place, connector, kind, name, address, status })),
+    [{ place, connector: 'microsoft', kind: 'mailbox', name: null, address: account.address, status: 'connected' }],
   );
 });
 

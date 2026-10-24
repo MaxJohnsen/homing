@@ -12,7 +12,7 @@ export interface SearchData {
   pages: { id: string; title: string; type: string | null; text: string | null; onlyYou: boolean; superseded: boolean; archived?: boolean; updatesShared: boolean; overview?: boolean; space: Where }[];
   rules: { id: string; text: string; kind: 'requirement' | 'preference'; onlyYou: boolean; space: Where }[];
   skills: { id: string; name: string; onlyYou: boolean; space: Where }[];
-  sources: { id: string; reference: string | null; excerpt: string; onlyYou: boolean; space: Where }[];
+  sources: { id: string; reference: string | null; excerpt: string; readFrom: string | null; onlyYou: boolean; space: Where }[];
   /** Due as YYYY-MM-DD. */
   tasks: { id: string; title: string; due: string | null; done: boolean; onlyYou: boolean; space: Where }[];
 }

@@ -14,9 +14,11 @@ alter table connections add constraint connections_provider_check check (provide
 alter table places drop constraint places_kind_check;
 alter table places add constraint places_kind_check check (kind ~ '^[a-z][a-z0-9]{1,30}$');
 
--- How a place the person chose is shown, such as a project's name. Null for
--- the account's own, such as its mailbox, which shows as the account.
-alter table places add column name text check (name is null or length(name) between 1 and 200);
+-- How a place the person chose is named there, such as a project's name, on
+-- one line: it comes from the system, and Homing quotes it wherever it shows
+-- it. Null for the account's own, such as its mailbox, which goes by the
+-- account's address.
+alter table places add column name text check (name is null or (length(name) between 1 and 200 and name !~ '[[:cntrl:]]'));
 
 -- Searching or reading for the person, following changes once Homing learns,
 -- or an action's name, such as microsoft.sendMail, once it acts. The uses

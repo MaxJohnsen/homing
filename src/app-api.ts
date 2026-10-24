@@ -520,6 +520,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           keptAt: source.createdAt,
           ...authorOf(names, person, source.writtenBy, source.agent, source.imported),
           readIn: source.readIn,
+          readFrom: source.readFrom,
           space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null, private: space.privateTo !== null },
           pages: [...pages.values()],
         });
@@ -583,7 +584,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             .map((hit) => ({ id: hit.pageId, name: hit.title, onlyYou: hit.private, space: where(hit.spaceId) })),
           sources: hits
             .filter((hit) => hit.kind === 'source')
-            .map((hit) => ({ id: hit.id, reference: hit.title, excerpt: hit.text, onlyYou: hit.private, space: where(hit.spaceId) })),
+            .map((hit) => ({ id: hit.id, reference: hit.title, excerpt: hit.text, readFrom: hit.readFrom, onlyYou: hit.private, space: where(hit.spaceId) })),
           // Best match first, open before done, as assistants find them.
           tasks: tasks.map((task) => ({ id: task.id, title: task.title, due: task.due, done: task.doneAt !== null, onlyYou: task.privateTo !== null, space: where(task.spaceId) })),
         });

@@ -144,7 +144,11 @@ export type Found = Envelope & { preview?: string };
 /** An item as Homing reads it. All of it is outside content, which Homing frames. */
 export interface Item {
   envelope: Envelope;
-  /** What it says in fields, each a label and its value, such as From and To, or Status and Amount. */
+  /**
+   * What it says in fields, each a label and its value, such as From and To, or Status and Amount.
+   * A label is the connector's own word, never the system's, since Homing shows it as its own; the
+   * value is outside content, which Homing frames.
+   */
   fields: [label: string, value: Value][];
   /** Its text, for a kind with prose, such as an email's; null for one of fields only. */
   text: string | null;

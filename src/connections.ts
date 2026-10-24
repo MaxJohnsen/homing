@@ -400,39 +400,6 @@ function configurationProblem(connector: Connector, error: unknown): string {
   return `connections: ${connector.vendor} refused this Homing itself (${messageOf(error)}). ${connector.settings}`;
 }
 
-/** How long listing the places an account reaches may take. */
-const discoverTimeLimit = 10_000;
-
-/**
- * The places of a kind that the person's account reaches, for them to choose from, as the system
- * lists them now. Undefined when the connection isn't theirs, or the kind's places aren't chosen.
- */
-export async function placesToChoose(broker: Broker, person: string, connectionId: string, kind: string): Promise<{ resource: string; name: string }[] | undefined> {
-  const [connection] = await withPrincipal(broker.sql, { person }, (s) => s.tx<{ provider: string; account: string }[]>`
-    select provider, account from connections where id = ${connectionId}::uuid and person_id = ${person}::uuid and revoked_at is null
-  `);
-  const connector = connection && broker.connectors.get(connection.provider);
-  const discover = kindOf(connector, kind)?.discover;
-  if (!connector || !discover) return undefined;
-  if (!connector.ready) throw new ConnectionUnusable('not set up');
-  return using(broker, connector, person, { connection: connectionId, resource: connection.account }, undefined, AbortSignal.timeout(discoverTimeLimit), discover);
-}
-
-/**
- * Adds a place the person chose in a space, on their private side there: one their account
- * reaches now, as the system lists them. The place's id, or undefined when the space isn't one
- * they can open, or the place isn't one they can choose.
- */
-export async function choosePlace(broker: Broker, person: string, spaceId: string, connectionId: string, kind: string, resource: string): Promise<string | undefined> {
-  if (!(await withPrincipal(broker.sql, { person }, (s) => spaceView(s, spaceId)))) return undefined;
-  const chosen = (await placesToChoose(broker, person, connectionId, kind))?.find((place) => place.resource === resource);
-  if (!chosen) return undefined;
-  return withPrincipal(broker.sql, { person, direct: true }, async (s) => {
-    const [{ id }] = await s.tx<{ id: string }[]>`select add_place(${spaceId}::uuid, ${connectionId}::uuid, ${kind}, ${chosen.resource}, ${chosen.name}) as id`;
-    return id;
-  });
-}
-
 /** Connecting refused before the system's page, with a message to show. */
 export class ConnectRefused extends Error {
   override name = 'ConnectRefused';
