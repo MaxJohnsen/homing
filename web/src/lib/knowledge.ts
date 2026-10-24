@@ -39,6 +39,16 @@ export interface PagesData {
  */
 export type Author = { name: string | null; you: boolean; imported?: boolean } | null;
 
+/** An earlier version of an item: what it said, who wrote it, through which assistant, and until when. */
+export interface Version {
+  text: string;
+  by: Author;
+  agent: string | null;
+  editAgent?: string | null;
+  writtenAt: string;
+  until: string;
+}
+
 export interface ItemData {
   id: string;
   /** Markdown. */
@@ -58,7 +68,7 @@ export interface ItemData {
   /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
   /** What it said before it was last changed, oldest first, each with who wrote that version. */
-  earlier: { text: string; by: Author; agent: string | null; editAgent?: string | null; writtenAt: string; until: string }[];
+  earlier: Version[];
 }
 
 /** A page as the person sees it: the shared items and their own, and no trace of anyone else's. */
@@ -197,7 +207,7 @@ export interface ChangeData {
 /** A space's overview: what people wrote about where it stands, and the map Homing keeps beside it. */
 export interface OverviewData {
   /** The written overview as you see it: the shared one, your own, or both. */
-  overview: { id: string; text: string; shared: boolean; by: Author; agent: string | null; editAgent?: string | null; writtenAt: string; replacesShared: string | null }[];
+  overview: { id: string; text: string; shared: boolean; by: Author; agent: string | null; editAgent?: string | null; writtenAt: string; replacesShared: string | null; earlier?: Version[] }[];
   /** The pages changed most recently, and how many there are in all. */
   active: PageSummary[];
   pages: number;

@@ -99,6 +99,13 @@ export function dateOf(at: string): string {
   return (date.getFullYear() === new Date().getFullYear() ? dayOnly : dayYear).format(date);
 }
 
+const time = new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' });
+
+/** "2:05 PM". */
+export function timeOf(at: string): string {
+  return time.format(new Date(at));
+}
+
 /** Whether a load failed for a reason other than there being nothing there to open. */
 export function failed(...errors: (ApiError | undefined)[]): boolean {
   return errors.some((error) => error !== undefined && error.status !== 404);

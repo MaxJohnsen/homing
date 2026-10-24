@@ -628,7 +628,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           const space = await spaceView(s, route.id);
           if (!space) return undefined;
           const overview = await overviewOf(s, route.id);
-          const names = await peopleNames(s, (overview?.items ?? []).map((item) => item.writtenBy));
+          const history = await historyOf(s, (overview?.items ?? []).map((item) => item.id));
+          const names = await peopleNames(s, [...(overview?.items ?? []), ...history].map((entry) => entry.writtenBy));
           // The map beside it: what's active, its collections, recent decisions, what waits here, and the spaces inside.
           const [active, collections, decisions, waiting, spaces] = [
             await pagesIn(s, route.id, { limit: 8 }),
@@ -637,10 +638,10 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             (await waitingFor(s)).filter((item) => item.spaceId === route.id),
             (await listSpaces(s)).filter((other) => other.parentId === route.id),
           ];
-          return { overview, names, active, collections, decisions, waiting, spaces };
+          return { overview, history, names, active, collections, decisions, waiting, spaces };
         });
         if (!found) return answer(res, 404, noSpace);
-        const { overview, names, active, collections, decisions, waiting, spaces } = found;
+        const { overview, history, names, active, collections, decisions, waiting, spaces } = found;
         json(res, 200, {
           overview: (overview?.items ?? []).map((item) => ({
             id: item.id,
@@ -650,6 +651,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             writtenAt: item.updatedAt,
             // Your own overview that explicitly replaces the shared one, which the others still see.
             replacesShared: item.privateTo !== null && item.replaced?.shared === true ? item.replaced.body : null,
+            earlier: history
+              .filter((entry) => entry.itemId === item.id)
+              .map((entry) => ({ text: entry.body, ...authorOf(names, person, entry.writtenBy, entry.agent, entry.imported, entry.editAgent), writtenAt: entry.writtenAt, until: entry.replacedAt })),
           })),
           active: active.pages,
           pages: active.all,

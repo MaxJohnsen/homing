@@ -77,14 +77,16 @@ export function byPerson(written: { writtenBy: string | null; agent: string | nu
 }
 
 /**
- * Whether it's text the person wrote themselves here, on their own private side, which their
- * assistant may change for them, and which stays theirs (spec §3). Homing can't tell whether they
- * asked: it allows this only because the change is private, recorded and can be undone. What
- * someone wrote before it was imported is never theirs, whatever the name.
+ * Whether it's text the person wrote themselves here, which their assistant may change for them,
+ * and which stays theirs (spec §3): on their private side where it is, and on the shared side as
+ * their own update of it. Homing can't tell whether they asked: it allows this only because the
+ * change is private, recorded and can be undone. What someone wrote before it was imported is never
+ * theirs, whatever the name.
  */
-export function ownText(s: Session, item: Pick<Item, 'kind' | 'privateTo' | 'writtenBy' | 'agent' | 'imported'>): boolean {
+export function ownText(s: Session, item: Pick<Item, 'kind' | 'privateTo' | 'writtenBy' | 'agent' | 'imported'>, side: 'private' | 'shared' = 'private'): boolean {
   const me = personOf(s.principal);
-  return me !== undefined && item.kind === 'text' && item.privateTo === me && item.writtenBy === me && item.agent === null && !importedAuthor(item.imported);
+  const there = side === 'private' ? item.privateTo === me : item.privateTo === null;
+  return me !== undefined && there && item.kind === 'text' && item.writtenBy === me && item.agent === null && !importedAuthor(item.imported);
 }
 
 export interface Source {
@@ -156,6 +158,7 @@ export interface Hit {
   /** Who wrote the matching content, and through which agent, as on an item. Null for a source. */
   writtenBy: string | null;
   agent: string | null;
+  editAgent: string | null;
   imported: Imported | null;
 }
 
@@ -789,7 +792,8 @@ export const overviewLength = 2_000;
 /**
  * Writes a space's overview. Shared, it corrects the shared overview for everyone, or starts it.
  * Your own corrects yours, or explicitly replaces the shared one for you, or starts yours. An
- * assistant never replaces what a person wrote, so its version then sits beside it instead.
+ * assistant never replaces what a person wrote, so its version then sits beside it instead, and
+ * keeps the user's own only when an assistant wrote it.
  */
 export async function writeOverview(s: Session, input: { spaceId: string; text: string; shared?: boolean }): Promise<Item> {
   await checkSpace(s, input.spaceId, input.shared);
@@ -801,6 +805,12 @@ export async function writeOverview(s: Session, input: { spaceId: string; text: 
   if (input.shared) {
     if (shared) return (await updateItem(s, shared.id, { body: input.text }))!;
     return insertItem(s, { pageId: page, spaceId: input.spaceId, privateTo: null, kind: 'text', body: input.text });
+  }
+  // What the person wrote themselves, their assistant changes only when they ask, as an item.
+  if (mine && s.principal.agent !== undefined && ownText(s, mine)) {
+    throw new AccessDenied(
+      `The user wrote their own overview of this space themselves (item:${mine.id}). Change it only when they ask you to, with updates on that item: it stays theirs, and what it said before is kept.`,
+    );
   }
   if (mine) return (await updateItem(s, mine.id, { body: input.text }))!;
   const replaceable = shared && (s.principal.agent === undefined || !byPerson(shared));
@@ -1113,7 +1123,7 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, imported from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -1127,14 +1137,14 @@ export async function search(
                and exists (select from content r where r.supersedes = c.id and r.private_to is not null and ${visible(s, 'r')})
                and not exists (select from content r where r.supersedes = c.id and r.private_to is null and ${visible(s, 'r')}) as replaced_for_you,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
-             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.imported
+             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.
@@ -1184,7 +1194,8 @@ export async function insertItem(
 /**
  * The item, if the viewer can see it and may change it where it is, or replace it. An agent, or a
  * space's routine, never changes what a person wrote, except the person's own assistant changing
- * their own text where it is (ownText).
+ * their own text (ownText): on their private side where it is, and on the shared side by replacing
+ * it, as their own update of it.
  */
 async function changeableItem(s: Session, itemId: string, how: 'update' | 'replace'): Promise<Item | undefined> {
   const [item] = await s.tx<Item[]>`
@@ -1196,12 +1207,14 @@ async function changeableItem(s: Session, itemId: string, how: 'update' | 'repla
     throw new AccessDenied(`That item is no longer current. It was replaced by item:${replacement.id}.`);
   }
   const notPerson = s.principal.agent !== undefined || personOf(s.principal) === undefined;
-  if (notPerson && byPerson(item) && !(how === 'update' && ownText(s, item))) throw new AccessDenied(personWrote(s, item));
+  // Shared, any change of theirs is their own update of it.
+  const theirs = s.principal.agent !== undefined && (ownText(s, item, 'shared') || (how === 'update' && ownText(s, item)));
+  if (notPerson && byPerson(item) && !theirs) throw new AccessDenied(personWrote(s, item));
   return item;
 }
 
 /** Why an agent can't change what a person wrote, and what it does instead. */
-function personWrote(s: Session, item: Item): string {
+export function personWrote(s: Session, item: Item): string {
   // Replacing says it's no longer true, which only the person decides.
   if (ownText(s, item)) {
     return 'The user wrote that themselves, so only they replace it. If they asked you to change it, use updates instead: it stays theirs, and what it said before is kept.';

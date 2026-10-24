@@ -188,12 +188,14 @@ test('agents never rewrite what people wrote, except a person’s own assistant,
   const edited = await as(claude, (s) => updateItem(s, decision.id, { body: 'We discount up to 20%' }));
   assert.deepEqual([edited?.body, edited?.writtenBy, edited?.agent, edited?.editAgent], ['We discount up to 20%', ana.id, null, 'Claude Code']);
 
-  // Shared, nobody's assistant changes it, hers included.
+  // Shared, nobody's assistant changes it for everyone: Cara's never touches it, and Ana's only makes her own update of it.
   const shared = await as(ana, async (s) => writeItem(s, { pageId: decision.pageId, body: 'Schools get 5% off', shared: true }));
-  for (const agent of [claude, { ...cara, agent: 'Claude Code' }]) {
-    await assert.rejects(as(agent, (s) => updateItem(s, shared.id, { body: 'Schools get 10% off' })), AccessDenied);
-    await assert.rejects(as(agent, (s) => supersedeItem(s, shared.id, { body: 'Schools get 10% off' })), AccessDenied);
-  }
+  const carasClaude = { ...cara, agent: 'Claude Code' };
+  await assert.rejects(as(carasClaude, (s) => updateItem(s, shared.id, { body: 'Schools get 10% off' })), AccessDenied);
+  await assert.rejects(as(carasClaude, (s) => supersedeItem(s, shared.id, { body: 'Schools get 10% off' })), AccessDenied);
+  const update = await as(claude, (s) => supersedeItem(s, shared.id, { body: 'Schools get 10% off' }));
+  assert.deepEqual([update?.privateTo, update?.supersedes, update?.writtenBy, update?.agent, update?.editAgent], [ana.id, shared.id, ana.id, null, 'Claude Code']);
+  assert.equal((await as(cara, (s) => readItem(s, shared.id)))?.body, 'Schools get 5% off');
 
   // Ana can still change it herself.
   const changed = await as(ana, (s) => updateItem(s, decision.id, { body: 'We never discount more than 15%' }));

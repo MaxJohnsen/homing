@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 're
 import { ChevronDown } from 'lucide-react';
 import { cn } from 'cn';
 import { AudienceChoice, type Audience } from '@/components/audience';
+import { EarlierVersions } from '@/components/history';
 import { Markdown } from '@/components/markdown';
 import { SharingDetails } from '@/components/proposal';
 import { OnlyYou } from '@/components/only-you';
@@ -213,14 +214,6 @@ function wrote(by: Author, agent: string | null, editAgent?: string | null): str
   return `${nameOf(by)} wrote this`;
 }
 
-/** Who made a version of an item, in the middle of a sentence: "you", "Cara Lund", "your assistant Claude", "Cara Lund’s assistant Claude", "Homing". */
-function madeBy(version: { by: Author; agent: string | null; editAgent?: string | null }): string {
-  const agent = version.agent ?? version.editAgent;
-  const person = nameIn(version.by);
-  if (agent) return person === 'you' ? `your assistant ${agent}` : person ? `${person}’s assistant ${agent}` : agent;
-  return person ?? (version.by ? 'someone' : 'Homing');
-}
-
 /**
  * Who wrote it and when, its sources, and what it said before, each earlier version with who changed
  * it, to restore where you may correct it: small, under the item it's about.
@@ -234,21 +227,13 @@ function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
   space: string;
 }) {
   const byPerson = item.by !== null && item.agent === null;
-  // Your own text on your side, which your assistant may change when you ask.
-  const yours = byPerson && !item.shared && item.by?.you === true && !item.by.imported;
-  // What it said before, newest first: its own earlier versions, each with who changed it then, the
-  // one who wrote the version after it, then what it replaced.
-  const earlier = [
-    ...item.earlier
-      .map((entry, index) => ({ text: entry.text, until: entry.until, by: madeBy(item.earlier[index + 1] ?? item), restorable: true }))
-      .reverse(),
-    ...(item.replaced && !yourUpdate ? [{ text: item.replaced.text, until: item.replaced.until, by: null, restorable: false }] : []),
-  ];
+  // Your own text, which your assistant may change when you ask: here, or as your own update of what you shared.
+  const yours = byPerson && item.by?.you === true && !item.by.imported;
   return (
     <div className="flex cursor-auto flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
         {wrote(item.by, item.agent, item.editAgent)} on {dateOf(item.writtenAt)}.
-        {byPerson && (yours ? ' Your assistant may change it when you ask, and you can restore an earlier version.' : ' Assistants never rewrite it.')}
+        {byPerson && (yours ? (item.shared ? ' Assistants never rewrite it, though yours can make your own update of it when you ask.' : ' Your assistant may change it when you ask, and you can restore an earlier version.') : ' Assistants never rewrite it.')}
       </p>
       {item.sharedBy && item.sharedAt && <p className="text-muted-foreground">{nameOf(item.sharedBy)} shared it with everyone here on {dateOf(item.sharedAt)}.</p>}
       {item.sources.map((source) => (
@@ -264,18 +249,7 @@ function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
         </figure>
       ))}
       {item.sources.length === 0 && !byPerson && !item.sharedBy && <p className="text-muted-foreground">No sources are kept for it.</p>}
-      {earlier.map((entry, index) => (
-        <div key={index} className="flex flex-col items-start gap-2">
-          <p className="text-muted-foreground">
-            Until {dateOf(entry.until)}{entry.by && `, when ${entry.by} changed it`}, it said <span className="text-foreground">“{plain(entry.text)}”</span>
-          </p>
-          {onRestore && entry.restorable && entry.text !== item.text && (
-            <Button variant="outline" size="sm" aria-label={`Restore what it said until ${dateOf(entry.until)}`} onClick={() => onRestore(entry.text)}>
-              Restore
-            </Button>
-          )}
-        </div>
-      ))}
+      <EarlierVersions current={item} earlier={item.earlier} replaced={yourUpdate ? null : item.replaced} onRestore={onRestore} />
       {(onCorrect || onShare) && (
         <div className="flex flex-wrap gap-2">
           {onCorrect && <Button variant="outline" size="sm" onClick={onCorrect}>Correct it</Button>}

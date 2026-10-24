@@ -19,7 +19,10 @@ let ana: Member, cara: Member;
 let acme: string;
 
 type Overview = {
-  overview: { text: string; shared: boolean; by: { name: string | null; you: boolean } | null; agent: string | null; replacesShared: string | null }[];
+  overview: {
+    id: string; text: string; shared: boolean; by: { name: string | null; you: boolean } | null; agent: string | null; editAgent?: string; replacesShared: string | null;
+    earlier: { text: string; by: { name: string | null } | null; agent: string | null; editAgent?: string }[];
+  }[];
   active: { title: string }[];
   pages: number;
   collections: { title: string }[];
@@ -115,6 +118,34 @@ test('an assistant keeps the user’s own overview, reads it in context, and nev
   const again = await chat.call('remember', { space: `space:${acme}`, text: 'Cara thinks the plans slip to February.', overview: true });
   assert.ok(!again.failed, again.text);
   assert.ok((await overview(cara)).overview.some((item) => item.text === 'Cara thinks the plans slip to February.'));
+});
+
+test('an assistant never rewrites the overview the user wrote unasked, and they restore it in the app', async () => {
+  const fjord = await as(ana, (s) => createSpace(s, { name: 'Fjord' }));
+  assert.equal((await write(ana, 'Fjord is waiting for the board.', false, fjord)).status, 200);
+  const [{ id: hers }] = (await overview(ana, fjord)).overview;
+  const claude = new Assistant(homing.url, assistants.claude);
+  await claude.connect(ana.browser);
+  const chat = await claude.open();
+
+  // Context tells the assistant it's hers, and keeping the overview current doesn't overwrite it.
+  assert.match((await chat.call('context', { request: 'Plan the week', space: `space:${fjord}` })).text, /The user wrote their own themselves: change it only when they ask you to, with `remember` and updates on it\./);
+  const unasked = await chat.call('remember', { space: `space:${fjord}`, overview: true, text: 'Fjord slips to January.' });
+  assert.deepEqual([unasked.failed, unasked.text], [true, `The user wrote their own overview of this space themselves (item:${hers}). Change it only when they ask you to, with updates on that item: it stays theirs, and what it said before is kept.`]);
+  assert.deepEqual((await overview(ana, fjord)).overview.map((item) => item.text), ['Fjord is waiting for the board.']);
+
+  // When she asks, it changes it as an item, and it stays hers.
+  assert.ok(!(await chat.call('remember', { updates: `item:${hers}`, text: 'Fjord slips to January.' })).failed);
+  const changed = (await overview(ana, fjord)).overview[0];
+  assert.deepEqual([changed.text, changed.by?.name, changed.agent, changed.editAgent], ['Fjord slips to January.', 'Ana', null, 'Claude']);
+  assert.deepEqual(changed.earlier.map((version) => [version.text, version.by?.name, version.agent, version.editAgent]), [['Fjord is waiting for the board.', 'Ana', null, undefined]]);
+
+  // Restore in the app saves the earlier version as her own change, and keeps the assistant's in the history.
+  assert.equal((await write(ana, 'Fjord is waiting for the board.', false, fjord)).status, 200);
+  const restored = (await overview(ana, fjord)).overview[0];
+  assert.deepEqual([restored.id, restored.text, restored.agent, restored.editAgent], [hers, 'Fjord is waiting for the board.', null, undefined]);
+  assert.deepEqual(restored.earlier.map((version) => [version.text, version.editAgent]), [['Fjord is waiting for the board.', undefined], ['Fjord slips to January.', 'Claude']]);
+  await chat.close();
 });
 
 test('an overview is short, and only people in the space write or read it', async () => {

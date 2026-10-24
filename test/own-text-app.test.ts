@@ -9,11 +9,11 @@
 import assert from 'node:assert/strict';
 import { after, before, test } from 'node:test';
 import { AccessDenied, authDatabaseUrl } from '../src/db.ts';
-import { supersedeItem, updateItem, writeItem } from '../src/knowledge.ts';
+import { addSource, supersedeItem, updateItem, writeItem } from '../src/knowledge.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
-import { admin, as, db, member, refused, type Member } from './helpers.ts';
+import { admin, as, db, member, refused, share, type Member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
 let homing: Homing;
@@ -87,7 +87,7 @@ test('Ana’s assistant changes a paragraph she wrote, as she asks, and it stays
   const page = await newPage(ana, 'Market analysis');
   const item = await write(ana, page, report);
   const read = (await anas.call('read', { ref: `page:${page}` })).text;
-  assert.match(read, /What the user wrote on their private side stays theirs: change it only when they ask you to, with updates, and what it said before is kept\./);
+  assert.match(read, /What the user wrote themselves stays theirs: change it only when they ask you to, with updates where it is private, and with replaces where it is shared, which makes it their own update until they share it\. What it said before is kept\./);
   assert.ok(read.includes(`- item:${item}, private, written by Ana:\n`), read);
 
   // In a conversation she asks her assistant to update the competitors, and it changes that paragraph only.
@@ -105,6 +105,10 @@ test('Ana’s assistant changes a paragraph she wrote, as she asks, and it stays
   assert.deepEqual([shown.text, ...whoWrote(shown)], [edited, 'Ana', null, 'Claude']);
   assert.deepEqual(shown.earlier.map((version) => [version.text, ...whoWrote(version)]), [[report, 'Ana', null, null]]);
   assert.match((await anas.call('read', { ref: `page:${page}` })).text, new RegExp(`- item:${item}, private, written by Ana, changed by Claude for them:\\n`));
+  // So do search and context, where they find it.
+  const found = new RegExp(`\\(item:${item}, in Acme, private, written by Ana, changed by Claude for them\\)`);
+  assert.match((await anas.call('search', { query: 'competitors closes in March' })).text, found);
+  assert.match((await anas.call('context', { request: 'Which competitors close in March?', space: `space:${acme}` })).text, found);
   // The store keeps her as its author, and records the assistant on the new version.
   const [row] = await admin`select written_by, agent, edit_agent from content where id = ${item}`;
   assert.deepEqual({ ...row }, { writtenBy: ana.id, agent: null, editAgent: 'Claude' });
@@ -154,19 +158,63 @@ test('Ana restores what she wrote, in the app or through her assistant, and each
   ]);
 });
 
-test('what else a person wrote stays theirs: shared, someone else’s, or replaced as no longer true', async () => {
-  const space = `space:${acme}`;
-  const nothingChanged = 'Save what you found as a new item on the same page, and point out the difference to the user.';
+test('what Ana wrote and shared, her assistant changes only as her own update, which the others see once she shares it', async () => {
+  const plan = await newPage(ana, 'Rollout plan', true);
+  const golive = await write(ana, plan, 'Go-live is on 15 March.\n\nThe content team signs off a week before.', true);
 
-  // What Ana wrote and shared with Acme: her assistant can't rewrite it, or replace it even in her own view.
-  const plan = await newPage(ana, 'Launch plan', true);
-  const golive = await write(ana, plan, 'Go-live is on 15 March.', true);
+  // Not where everyone sees it.
   const rewrite = await anas.call('remember', { updates: `item:${golive}`, text: 'Go-live is on 22 March.' });
   assert.deepEqual([rewrite.failed, rewrite.text], [true, "remember can't rewrite shared knowledge. Use replaces to update it in your own view."]);
-  const replace = await anas.call('remember', { replaces: `item:${golive}`, text: 'Go-live is on 22 March.' });
-  assert.deepEqual([replace.failed, replace.text], [true, `A person wrote that, and it's shared, so agents never change it. ${nothingChanged}`]);
 
-  // What Cara wrote: her own side Ana's assistant can't even see, and what she shared it can't change.
+  // As her own update, which stays hers, with her assistant on it.
+  const update = await anas.call('remember', { replaces: `item:${golive}`, edits: [{ old: '15 March', new: '22 March' }] });
+  assert.match(update.text, new RegExp(`^Saved as item:\\S+ on your private side\\. For you it replaces item:${golive}, and others in the space still see the earlier version\\.`));
+  const mine = refIn(update.text, 'item');
+  const forAna = (await itemAs(ana, plan, mine))!;
+  assert.deepEqual([forAna.text, forAna.shared, ...whoWrote(forAna)], ['Go-live is on 22 March.\n\nThe content team signs off a week before.', false, 'Ana', null, 'Claude']);
+  assert.equal((await itemAs(cara, plan, golive))!.text, 'Go-live is on 15 March.\n\nThe content team signs off a week before.');
+  assert.equal(await itemAs(cara, plan, mine), undefined);
+
+  // Once Ana shares it, everyone sees it as hers, changed by her assistant.
+  assert.equal((await ana.browser.json(`/api/items/${mine}/publish`, { shown: forAna.text })).status, 200);
+  const forCara = (await cara.browser.json(`/api/pages/${plan}`)).body.items as PageItem[];
+  assert.deepEqual(forCara.map((item) => [item.text, ...whoWrote(item)]), [['Go-live is on 22 March.\n\nThe content team signs off a week before.', 'Ana', null, 'Claude']]);
+});
+
+test('a shared copy keeps the assistant, and nobody else sees what it said before', async () => {
+  const caraClaude = new Assistant(homing.url, assistants.claude);
+  await caraClaude.connect(cara.browser);
+  const caras = await caraClaude.open();
+  const page = await newPage(ana, 'Supplier notes', true);
+  // One rests on Ana's own source, so it's shared as a copy; the other moves to the shared side as it is.
+  const quoted = await as({ ...ana, direct: true }, async (s) => {
+    const call = await addSource(s, { spaceId: acme, excerpt: 'Composa can start on 1 December.', reference: 'Ana’s call notes' });
+    return (await writeItem(s, { pageId: page, body: 'Composa starts in December.', sources: [call.id] })).id;
+  });
+  const plain = await write(ana, page, 'Composa has two developers on it.');
+  for (const [item, text] of [[quoted, 'Composa starts on 1 December.'], [plain, 'Composa has two developers on it until go-live.']]) {
+    assert.ok(!(await anas.call('remember', { updates: `item:${item}`, text })).failed);
+  }
+  const copy = await share(ana, quoted);
+  assert.notEqual(copy, quoted);
+  assert.equal(await share(ana, plain), plain);
+
+  for (const item of [copy, plain]) {
+    const shown = (await itemAs(cara, page, item))!;
+    assert.deepEqual([...whoWrote(shown), shown.earlier.length], ['Ana', null, 'Claude', 0]);
+    const read = (await caras.call('read', { ref: `item:${item}` })).text;
+    assert.match(read, new RegExp(`Written by Ana, changed by Claude for them on ${today()}\\.`));
+    assert.doesNotMatch(read, /Earlier versions|Composa starts in December|two developers on it\./);
+  }
+  await caras.close();
+});
+
+test('what someone else wrote stays theirs, and Ana replaces what she wrote on her own side herself', async () => {
+  const space = `space:${acme}`;
+  const nothingChanged = 'Save what you found as a new item on the same page, and point out the difference to the user.';
+  const plan = await newPage(ana, 'Launch plan', true);
+
+  // What Cara wrote: her own side Ana's assistant can't even see, and what she shared it can't change, even as Ana's own update.
   const caras = await newPage(cara, 'Salary talk');
   const salary = await write(cara, caras, 'Ask for 8%.');
   for (const how of ['updates', 'replaces']) {
@@ -174,8 +222,10 @@ test('what else a person wrote stays theirs: shared, someone else’s, or replac
     assert.deepEqual([attempt.failed, attempt.text], [true, 'There is no item with that reference that you can see.'], how);
   }
   const owner = await write(cara, plan, 'Cara owns the launch.', true);
-  const takeover = await anas.call('remember', { replaces: `item:${owner}`, text: 'Ana owns the launch.' });
-  assert.deepEqual([takeover.failed, takeover.text], [true, `A person wrote that, and it's shared, so agents never change it. ${nothingChanged}`]);
+  for (const how of ['updates', 'replaces']) {
+    const takeover = await anas.call('remember', { [how]: `item:${owner}`, text: 'Ana owns the launch.' });
+    assert.deepEqual([takeover.failed, takeover.text], [true, `A person wrote that, and it's shared, so agents never change it. ${nothingChanged}`], how);
+  }
 
   // What Ana wrote on her own side, her assistant changes where it is, never replaces as no longer true.
   const notes = await newPage(ana, 'Workshop notes');
@@ -184,20 +234,20 @@ test('what else a person wrote stays theirs: shared, someone else’s, or replac
   assert.deepEqual([moved.failed, moved.text], [true, 'The user wrote that themselves, so only they replace it. If they asked you to change it, use updates instead: it stays theirs, and what it said before is kept.']);
 
   // None of them changed, for Ana or Cara.
-  assert.deepEqual((await itemAs(cara, plan, golive))!.text, 'Go-live is on 15 March.');
-  assert.deepEqual((await itemAs(ana, plan, golive))!.text, 'Go-live is on 15 March.');
   assert.deepEqual((await itemAs(ana, plan, owner))!.text, 'Cara owns the launch.');
+  assert.deepEqual((await itemAs(cara, plan, owner))!.text, 'Cara owns the launch.');
   assert.deepEqual((await itemAs(cara, caras, salary))!.text, 'Ask for 8%.');
   assert.deepEqual([(await itemAs(ana, notes, venue))!.text, (await itemAs(ana, notes, venue))!.earlier.length], ['The workshop is at Bislett.', 0]);
-  assert.equal((await admin`select count(*)::int as n from content where supersedes in (${golive}, ${owner}, ${venue})`)[0].n, 0);
+  assert.equal((await admin`select count(*)::int as n from content where supersedes in (${owner}, ${venue})`)[0].n, 0);
 });
 
-test('straight against the database, an assistant changes only its person’s own text on their side, and keeps it theirs', async () => {
+test('straight against the database, an assistant changes only its person’s own text, and keeps it theirs', async () => {
   const claude = { person: ana.id, agent: 'Claude' };
   const page = await newPage(ana, 'Budget thoughts');
   const own = await write(ana, page, 'The budget is 400,000 NOK.');
   const shared = await newPage(ana, 'Budget', true);
   const sharedText = await write(ana, shared, 'The budget is 2 million NOK.', true);
+  const carasShared = await write(cara, shared, 'Finance wants the forecast by Friday.', true);
   const carasOwn = await write(cara, await newPage(cara, 'Cara’s notes'), 'Gunnar may leave in spring.');
 
   // Ana's own text: changed where it is, and still hers, with the assistant on the new version and her text in the history.
@@ -217,11 +267,19 @@ test('straight against the database, an assistant changes only its person’s ow
   await assert.rejects(as(claude, (s) => s.tx`update content set edit_agent = 'Someone else' where id = ${own}`), refused);
   await assert.rejects(as({ ...ana, direct: true }, (s) => s.tx`insert into content (space_id, page_id, private_to, body, edit_agent) values (${acme}, ${page}, ${ana.id}, 'Hello', 'Claude')`), refused);
 
-  // Never replaced, though, nor her page's title changed, nor anything shared or anyone else's.
+  // What Ana shared: never changed where everyone sees it, only replaced by her own update, which stays hers.
+  await assert.rejects(as(claude, (s) => s.tx`update content set body = 'The budget is 3 million NOK.' where id = ${sharedText}`), refused);
+  const [update] = await as(claude, (s) => s.tx`
+    insert into content (space_id, page_id, private_to, body, supersedes) values (${acme}, ${shared}, ${ana.id}, 'The budget is 3 million NOK.', ${sharedText})
+    returning written_by, agent, edit_agent
+  `);
+  assert.deepEqual({ ...update }, { writtenBy: ana.id, agent: null, editAgent: 'Claude' });
+
+  // Never her private text replaced, though, nor her page's title changed, nor anything anyone else wrote.
   await assert.rejects(as(claude, (s) => s.tx`insert into content (space_id, page_id, private_to, body, supersedes) values (${acme}, ${page}, ${ana.id}, 'The budget is 300,000 NOK.', ${own})`), refused);
   await assert.rejects(as(claude, (s) => s.tx`update content set body = 'Budget, again' where page_id = ${page} and kind = 'title'`), refused);
-  await assert.rejects(as(claude, (s) => s.tx`update content set body = 'The budget is 3 million NOK.' where id = ${sharedText}`), refused);
-  await assert.rejects(as(claude, (s) => s.tx`insert into content (space_id, page_id, private_to, body, supersedes) values (${acme}, ${shared}, ${ana.id}, 'The budget is 3 million NOK.', ${sharedText})`), refused);
+  await assert.rejects(as(claude, (s) => s.tx`update content set body = 'Finance wants it by Monday.' where id = ${carasShared}`), refused);
+  await assert.rejects(as(claude, (s) => s.tx`insert into content (space_id, page_id, private_to, body, supersedes) values (${acme}, ${shared}, ${ana.id}, 'Finance wants it by Monday.', ${carasShared})`), refused);
   assert.equal((await as(claude, (s) => s.tx`update content set body = 'Gunnar stays.' where id = ${carasOwn} returning id`)).length, 0);
   assert.equal((await admin`select body from content where id = ${carasOwn}`)[0].body, 'Gunnar may leave in spring.');
 

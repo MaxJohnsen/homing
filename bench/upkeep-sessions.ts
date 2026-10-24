@@ -314,7 +314,7 @@ function addingOnly(tool: { name: string; description?: string; inputSchema: unk
   const description = (tool.description ?? '')
     .replace(/Use replaces when something an assistant wrote[^.]*\. /, '')
     .replace(/To change part of a long item[^.]*\. /, '')
-    .replace(/Change what the user wrote on their private side[^.]*\. For anything else a person wrote, save/, 'Save')
+    .replace(/Change what the user wrote only when they ask you to[^.]*\. It stays theirs[^.]*\. For anything else a person wrote, save/, 'Save')
     .replace(/To undo a change[^.]*\. /, '')
     .concat(' Items are only added here: what changed is saved as a new item.');
   return { ...tool, description, inputSchema: schema } as never;
