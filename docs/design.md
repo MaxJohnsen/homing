@@ -115,6 +115,15 @@ Figtree is the only typeface, and it ships with the app. A screen in the app has
 - Connecting an assistant is a decision page: "Connect Claude to Homing?", the site it says it comes from, what it can read and save, that changing rules or sharing knowledge needs your approval, and Connect Claude or Cancel.
 - Sign-in with Google or Microsoft uses the providers' own marks, as their guidelines ask.
 
+### Connections
+
+Connections aren't built yet. Their screens are designed when they are, and they show and do this.
+
+- A space's Connections is where you connect something for that space, such as your work mailbox in your company's space. Each connection there shows the service and what it reaches, whether it's only yours or authorized for the space, what Homing may do with it, whether learning is running, paused or needs you, and how far it has got through the history. Connecting asks only what to connect, who it's for, only you to start with, how far back to learn, and whether to keep learning from what arrives, so nobody needs to know about connections, places or bindings.
+- Your account's Connected accounts lists the accounts Homing uses, such as "Microsoft 365, work account", with where each is used, and can disconnect each. Removing something from a space and disconnecting the account everywhere are different, and each says what it stops before you confirm.
+- Connected accounts stay apart from connected assistants: Claude reaching Homing isn't Homing reaching Outlook.
+- Connecting can start in a conversation with your assistant. You sign in on the service's own page, and decide any sharing in Homing, like any other decision.
+
 ## Illustrations
 
 Every drawing says something about Homing, with the same few objects:
