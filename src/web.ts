@@ -11,10 +11,12 @@ import { AccessDenied, withPrincipal, type Sql } from './db.ts';
 import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
+import type { MicrosoftSettings } from './microsoft.ts';
 import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable, withdraw } from './proposals.ts';
 import { accountFinder } from './people.ts';
 import { SpaceRefused, type Who } from './spaces.ts';
+import type { Vault } from './vault.ts';
 
 /** What the web app's requests need from the server. */
 export interface App {
@@ -27,6 +29,10 @@ export interface App {
   mailer?: Mailer;
   /** Whether a client address may try once more, for endpoints that could be tried over and over. */
   limit: (address: string) => boolean;
+  /** Seals and opens the credentials of connections. */
+  vault: Vault;
+  /** How people connect Microsoft 365, if this Homing is set up for it. */
+  microsoft?: MicrosoftSettings;
 }
 
 // One plain address, nothing a mail program could read as a name and another address.
@@ -256,7 +262,7 @@ const dist = new URL('../web/dist/app/', import.meta.url);
 
 /** The pages outside the app, and the app's own screens. Each one loads the same single-page app. */
 const pages = new Set(['/sign-in', '/setup', '/join', '/connect', '/recover', '/', '/waiting', '/account', '/admin']);
-const screens = /^\/(search|changes|spaces\/new|spaces\/import|spaces\/[0-9a-f-]{36}(\/(pages|collections|sources|rules|skills|tasks|members|settings))?|(pages|sources|proposals|skills)\/[0-9a-f-]{36})$/i;
+const screens = /^\/(search|changes|spaces\/new|spaces\/import|spaces\/[0-9a-f-]{36}(\/(pages|collections|sources|rules|skills|tasks|members|connections|settings))?|(pages|sources|proposals|skills)\/[0-9a-f-]{36})$/i;
 
 const types: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',

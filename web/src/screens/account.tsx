@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { dateOf, ScreenHeader } from '@/components/screen';
+import type { ConnectedAccountsData } from '@/lib/connections';
+import { ConnectedAccounts, type AccountConnectionActions } from '@/screens/connections';
 import empty from '@/assets/illustrations/empty.png';
 
 export interface Passkey {
@@ -54,9 +56,23 @@ const notices: Record<AccountNotice, (account: AccountData) => { title: string; 
   verified: () => ({ title: 'Your email is verified', text: 'If you ever can’t sign in, Homing can send you a sign-in link.' }),
 };
 
-/** Your account: the assistants connected to Homing, and how you sign in. */
-export function Account({ account, notice, actions }: { account: AccountData; notice?: AccountNotice; actions?: AccountActions }) {
+/**
+ * Your account: the assistants connected to Homing, the accounts Homing signs in to for you, and
+ * how you sign in. Connected accounts show once you have one, or can connect one.
+ */
+export function Account({ account, notice, actions, connections, connectionActions, notConnected }: {
+  account: AccountData;
+  notice?: AccountNotice;
+  actions?: AccountActions;
+  connections?: ConnectedAccountsData;
+  connectionActions?: AccountConnectionActions;
+  /** Coming back from a Microsoft sign-in that didn't finish. */
+  notConnected?: boolean;
+}) {
   const shown = notice && notices[notice](account);
+  const accounts = connections && (connections.connections.length > 0 || connections.microsoft || notConnected) && (
+    <ConnectedAccounts data={connections} expired={notConnected} actions={connectionActions} />
+  );
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       {shown ? (
@@ -71,10 +87,12 @@ export function Account({ account, notice, actions }: { account: AccountData; no
         <>
           <SignInMethods account={account} actions={actions} restoring />
           <Assistants account={account} actions={actions} />
+          {accounts}
         </>
       ) : (
         <>
           <Assistants account={account} actions={actions} />
+          {accounts}
           <SignInMethods account={account} actions={actions} />
         </>
       )}

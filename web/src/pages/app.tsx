@@ -26,6 +26,8 @@ import { Skill } from '@/screens/skill';
 import { ImportSpace, type ImportPreviewData } from '@/screens/import-space';
 import { NewSpace } from '@/screens/new-space';
 import { Members, Space, SpaceSettings, type ConversionData, type MemberActions, type ShareSpaceActions } from '@/screens/space';
+import { Connections, type ConnectionActions } from '@/screens/connections';
+import { connectionNotices, type SpaceConnectionsData } from '@/lib/connections';
 import { Tasks, type TaskActions, type TasksData } from '@/screens/tasks';
 import { Waiting } from '@/screens/waiting';
 
@@ -288,6 +290,29 @@ function memberActions(spaceId: string): MemberActions {
   };
 }
 
+/** Connecting something in a space on its own page, such as Microsoft's, and removing it, then showing the space's connections as they are now. */
+function connectionActions(spaceId: string): ConnectionActions {
+  return {
+    connect: async (again) => {
+      try {
+        const { url } = await api<{ url: string }>(`/api/spaces/${spaceId}/connections/microsoft`, again ? { again } : {});
+        location.assign(url);
+      } catch (error) {
+        return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+      }
+    },
+    remove: async (placeId) => {
+      try {
+        await api(`/api/places/${placeId}/remove`, {});
+        await reload(`/api/spaces/${spaceId}/connections`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) await reload(`/api/spaces/${spaceId}/connections`);
+        return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+      }
+    },
+  };
+}
+
 /** Renaming a space, then showing it, and the sidebar, with its new name. */
 function renameSpace(spaceId: string) {
   return async (name: string) => {
@@ -326,6 +351,12 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const pages = useList<PagesData>(view === 'pages' ? `/api/spaces/${id}/pages` : undefined);
   const collections = useList<PagesData>(view === 'collections' ? `/api/spaces/${id}/pages` : undefined, { collections: '1' });
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
+  const connections = useLoad<SpaceConnectionsData>(view === 'connections' ? `/api/spaces/${id}/connections` : '');
+  // What happened on Microsoft's page, said once, and not again after a reload.
+  const [notice] = useState(() => connectionNotices.find((name) => name === new URLSearchParams(location.search).get('connection')));
+  useEffect(() => {
+    if (notice) history.replaceState(null, '', location.pathname);
+  }, [notice]);
   return (
     <Titled title={space?.name ?? 'Space'}>
       {error?.status === 404 && <ScreenHeader title="There’s no space here" meta="It may have been removed, or you can’t open it." />}
@@ -344,6 +375,8 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
           {view === 'members' && !space.private && <Members space={space} actions={memberActions(id)} />}
           {view === 'tasks' && failed(tasks.error) && <LoadFailed paths={[`/api/spaces/${id}/tasks`]} />}
           {view === 'tasks' && tasks.data && <Tasks space={space} data={tasks.data} actions={taskActions(id)} />}
+          {view === 'connections' && failed(connections.error) && <LoadFailed paths={[`/api/spaces/${id}/connections`]} />}
+          {view === 'connections' && connections.data && <Connections space={space} data={connections.data} notice={notice} actions={connectionActions(id)} />}
           {view === 'settings' && <SpaceSettings space={space} rename={renameSpace(id)} share={shareSpace(id)} archive={archiveSpace(id)} />}
         </Space>
       )}

@@ -15,8 +15,8 @@ import type { SpaceData } from '@/lib/spaces';
 
 /**
  * A space: where it sits and who it's shared with, then its parts. Overview says where it stands, Knowledge holds its pages,
- * Guidance its rules and skills, and Members who can open it. A space in your personal tree has no
- * members but you.
+ * Guidance its rules and skills, Members who can open it, and Connections what Homing can reach for
+ * you there. A space in your personal tree has no members but you.
  */
 export function Space({ space, view, children }: { space: SpaceData; view: SpaceView; children: ReactNode }) {
   const tabs = [
@@ -25,6 +25,8 @@ export function Space({ space, view, children }: { space: SpaceData; view: Space
     { label: 'Guidance', href: `/spaces/${space.id}/rules`, current: view === 'rules' || view === 'skills' },
     { label: 'Tasks', href: `/spaces/${space.id}/tasks`, current: view === 'tasks' },
     ...(space.private ? [] : [{ label: 'Members', href: `/spaces/${space.id}/members`, current: view === 'members' }]),
+    // What Homing can reach for you here, such as your mailbox, only for you.
+    { label: 'Connections', href: `/spaces/${space.id}/connections`, current: view === 'connections' },
     // Settings, for everyone in it to export it, and for its admins to rename, share and archive it.
     { label: 'Settings', href: `/spaces/${space.id}/settings`, current: view === 'settings' },
   ];

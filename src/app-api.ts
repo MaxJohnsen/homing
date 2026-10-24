@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import postgres from 'postgres';
 import { hiddenMessage } from './bundle.ts';
+import { ConnectRefused, connectionsOf, placesIn, removePlace, revokeConnection, startConnecting, type Connection } from './connections.ts';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
@@ -53,6 +54,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
   const noPage = { message: 'There’s no page here that you can open.' };
   const noItem = { message: 'There’s nothing here that you can change.' };
   const noRule = { message: 'There’s no rule here that you can change.' };
+  const looksAfter = async () =>
+    (await read((s) => s.tx<{ instanceAdmin: boolean }[]>`select instance_admin from people where id = ${person}::uuid`))[0]?.instanceAdmin ?? false;
 
   try {
     switch (route.name) {
@@ -880,6 +883,62 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         break;
       }
 
+      case 'connections': {
+        // The person's own connections in the space, never anyone else's, and whether more can be connected here.
+        const found = await read(async (s) => ((await spaceView(s, route.id)) ? placesIn(s, route.id) : undefined));
+        if (!found) return answer(res, 404, noSpace);
+        json(res, 200, {
+          microsoft: Boolean(app.microsoft),
+          // Whoever looks after Homing is told how to set it up; nobody else is offered anything that can't work.
+          looksAfter: !app.microsoft && (await looksAfter()),
+          places: found.map((place) => ({ id: place.id, kind: place.kind, addedAt: place.addedAt, elsewhere: place.elsewhere, connection: connectionData(place.connection) })),
+        });
+        break;
+      }
+
+      case 'connect microsoft': {
+        const body = await readJson(req);
+        const again = typeof body.again === 'string' && new RegExp(`^${uuid}$`, 'i').test(body.again) ? body.again.toLowerCase() : undefined;
+        try {
+          const address = await startConnecting(app, { person, session: session.session.id }, route.id, again);
+          if (!address) return answer(res, 404, noSpace);
+          json(res, 200, { url: address.toString() });
+        } catch (error) {
+          if (error instanceof ConnectRefused) return answer(res, 409, { message: error.message });
+          throw error;
+        }
+        break;
+      }
+
+      case 'remove place': {
+        if (!(await write((s) => removePlace(s, route.id)))) return answer(res, 404, { message: 'There’s nothing of yours to remove here.' });
+        json(res, 200, {});
+        break;
+      }
+
+      case 'accounts': {
+        const found = await read(async (s) => ({ connections: await connectionsOf(s), spaces: await listSpaces(s) }));
+        const spaces = new Map(found.spaces.map((space) => [space.id, space]));
+        json(res, 200, {
+          microsoft: Boolean(app.microsoft),
+          connections: found.connections.map((connection) => ({
+            ...connectionData(connection),
+            // Where it's used, in the spaces the person can open.
+            places: connection.places.flatMap(({ id, spaceId }) => {
+              const space = spaces.get(spaceId);
+              return space ? [{ id, space: { id: space.id, name: space.name, personal: space.privateTo !== null && space.parentId === null } }] : [];
+            }),
+          })),
+        });
+        break;
+      }
+
+      case 'revoke connection': {
+        if (!(await write((s) => revokeConnection(s, route.id)))) return answer(res, 404, { message: 'There’s no account of yours to revoke here.' });
+        json(res, 200, {});
+        break;
+      }
+
       case 'skill': {
         const skill = await read((s) => readSkill(s, route.id));
         if (!skill) return answer(res, 404, { message: 'There’s no skill here that you can open.' });
@@ -975,15 +1034,21 @@ function authorOf(names: Map<string, string>, person: string, writtenBy: string 
   return { by: writtenBy === null ? null : { name: names.get(writtenBy) ?? null, you: writtenBy === person }, agent };
 }
 
+/** A connection as the app shows it to its owner: what it is, what Homing may do, and whether it works. Never its credentials. */
+function connectionData(connection: Connection) {
+  const { id, service, address, name, can, status, connectedAt, refreshedAt } = connection;
+  return { id, service, address, name, can, status, connectedAt, refreshedAt };
+}
+
 function answer(res: ServerResponse, status: number, body: unknown): true {
   json(res, status, body);
   return true;
 }
 
 type Route =
-  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' }
+  | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' }
  | { name: 'change member'; id: string; person: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'connect microsoft' | 'remove place' | 'revoke connection'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -996,6 +1061,7 @@ function routeOf(method: string, path: string): Route | undefined {
     if (path === '/api/changes') return { name: 'changes' };
     if (path === '/api/import') return { name: 'import progress' };
     if (path === '/api/import/preview') return { name: 'preview progress' };
+    if (path === '/api/connections') return { name: 'accounts' };
     for (const [name, pattern] of [
       ['space', `/api/spaces/${uuid}`],
       ['pages', `/api/spaces/${uuid}/pages`],
@@ -1011,6 +1077,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['includable', `/api/spaces/${uuid}/includable`],
       ['skills', `/api/spaces/${uuid}/skills`],
       ['skill', `/api/skills/${uuid}`],
+      ['connections', `/api/spaces/${uuid}/connections`],
     ] as const) {
       const id = match(pattern);
       if (id) return { name, id };
@@ -1043,6 +1110,9 @@ function routeOf(method: string, path: string): Route | undefined {
       ['remove rule', `/api/rules/${uuid}/remove`],
       ['add include', `/api/spaces/${uuid}/includes`],
       ['remove include', `/api/includes/${uuid}/remove`],
+      ['connect microsoft', `/api/spaces/${uuid}/connections/microsoft`],
+      ['remove place', `/api/places/${uuid}/remove`],
+      ['revoke connection', `/api/connections/${uuid}/revoke`],
     ] as const) {
       const id = match(pattern);
       if (id) return { name, id };

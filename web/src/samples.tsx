@@ -6,6 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
+import { sampleConnectedAccounts, sampleConnections, sampleConnection } from '@/sample';
 import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
@@ -29,6 +30,7 @@ import { NewSpace, type CreateSpace } from '@/screens/new-space';
 import { Tasks } from '@/screens/tasks';
 import { ImportSpace, type ImportActions, type ImportPreviewData } from '@/screens/import-space';
 import { Members, Space, SpaceSettings, type MemberActions, type ShareSpaceActions } from '@/screens/space';
+import { Connections, type AccountConnectionActions, type ConnectionActions } from '@/screens/connections';
 import { Waiting } from '@/screens/waiting';
 
 // Every screen with sample data, for `npm run dev:web`. Each state has its own address for review.
@@ -95,6 +97,14 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/skill': { label: 'A skill', render: () => <InApp spaceId="northwind"><Skill skill={sampleSkill} /></InApp> },
   '/spaces/tasks': { label: 'A space’s tasks', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="tasks"><Tasks space={sampleSpace.closed} data={sampleTasks} actions={{ add: notSaved, done: notSaved, share: notSaved }} now={new Date('2026-10-20T10:00:00+02:00')} /></Space></InApp> },
   '/spaces/tasks/empty': { label: 'A space with no tasks', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="tasks"><Tasks space={sampleSpace.root} data={{ open: [], done: [] }} actions={{ add: notSaved, done: notSaved, share: notSaved }} /></Space></InApp> },
+  '/spaces/connections': { label: 'A space’s connections: your mailbox, only for you', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleConnections} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/connected': { label: 'A space’s connections, just after connecting', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: sampleConnections.places.map((place) => ({ ...place, elsewhere: 0 })) }} notice="connected" actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/empty': { label: 'A space with nothing connected yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/personal': { label: 'Your personal space’s connections', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="connections"><Connections space={sampleSpace.personal} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/needs-you': { label: 'A connection that needs you to sign in again', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: [{ ...sampleConnections.places[0], connection: { ...sampleConnection, status: 'needs attention' } }] }} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/declined': { label: 'Back from Microsoft, not allowed', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: [] }} notice="declined" actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/not-set-up': { label: 'Connections without Microsoft set up, for whoever looks after Homing', render: () => <InApp spaceId="acme" looksAfterHoming><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ microsoft: false, looksAfter: true, places: [] }} /></Space></InApp> },
+  '/spaces/connections/not-set-up/member': { label: 'Connections without Microsoft set up, for everyone else', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ microsoft: false, looksAfter: false, places: [] }} /></Space></InApp> },
   '/spaces/closed': { label: 'A closed space’s members', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="members"><Members space={sampleSpace.closed} /></Space></InApp> },
   '/spaces/open': { label: 'Members of a space open to everyone above it', render: () => <InApp spaceId="website"><Space space={sampleSpace.open} view="members"><Members space={sampleSpace.open} /></Space></InApp> },
   '/spaces/root': { label: 'Members of a space at the top, as its admin', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="members"><Members space={sampleSpace.root} actions={sampleMemberActions} /></Space></InApp> },
@@ -120,7 +130,9 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
     },
   },
   '/spaces/from-above': { label: 'Members of a space whose parent you can’t open', render: () => <InApp spaceId="website"><Space space={sampleSpace.fromAbove} view="members"><Members space={sampleSpace.fromAbove} /></Space></InApp> },
-  '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} /></InApp> },
+  '/account': { label: 'Your account', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} connections={sampleConnectedAccounts} connectionActions={sampleAccountConnections} /></InApp> },
+  '/account/no-accounts': { label: 'Your account, with no connected accounts yet', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} connections={{ microsoft: true, connections: [] }} connectionActions={sampleAccountConnections} /></InApp> },
+  '/account/not-connected': { label: 'Your account, after a Microsoft sign-in that didn’t finish', render: () => <InApp route={{ name: 'account' }}><Account account={sampleAccount} connections={{ microsoft: true, connections: [] }} notConnected /></InApp> },
   '/account/admin': { label: 'Your account, looking after Homing', render: () => <InApp route={{ name: 'account' }} looksAfterHoming><Account account={{ ...sampleAccount, instanceAdmin: true }} /></InApp> },
   '/admin': { label: 'Looking after Homing', render: () => <InApp route={{ name: 'admin' }} looksAfterHoming><Admin data={sampleAdmin} invite={sampleInvite} /></InApp> },
   '/admin/no-email': { label: 'Looking after Homing, without email', render: () => <InApp route={{ name: 'admin' }} looksAfterHoming><Admin data={{ ...sampleAdmin, email: { sends: false, from: null } }} invite={sampleInvite} /></InApp> },
@@ -247,6 +259,16 @@ const sampleMemberActions: MemberActions = {
 
 /** Samples show the form, and say so when asked to create something. */
 const notCreated: CreateSpace = async () => ({ problem: 'Samples don’t create spaces.' });
+
+const sampleConnectionActions: ConnectionActions = {
+  connect: async () => 'Samples don’t connect anything.',
+  remove: async () => 'Samples don’t save anything.',
+};
+
+const sampleAccountConnections: AccountConnectionActions = {
+  revoke: async () => 'Samples don’t save anything.',
+  signInAgain: async () => 'Samples don’t connect anything.',
+};
 
 function InApp({ children, route = { name: 'home' }, spaceId, waiting = 2, spaces = sampleSpaces, recent = [], looksAfterHoming = false }: {
   children: ReactNode;
