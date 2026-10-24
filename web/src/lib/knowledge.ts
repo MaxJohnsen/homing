@@ -152,6 +152,11 @@ export function sourceName(source: { reference: string | null; excerpt: string }
   return from && from !== 'unknown' ? `${from}’s email` : 'An email';
 }
 
+/** Whether a source Homing made from an email keeps words the email only quotes from an earlier one, which Homing says in its first lines. */
+export function quotesEarlier(excerpt: string): boolean {
+  return excerpt.split('\n\n', 1)[0].split('\n').includes('Quoted: as this email quotes an earlier one, which Homing didn’t read');
+}
+
 /** A source in a space's list of sources. */
 export interface SourceSummary {
   id: string;

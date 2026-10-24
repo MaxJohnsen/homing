@@ -41,9 +41,10 @@ create table connection_uses (
   used_at timestamptz not null default clock_timestamp()
 );
 
-create index connection_uses_connection on connection_uses (connection_id, used_at);
+create index connection_uses_connection on connection_uses (connection_id);
 create index connection_uses_space on connection_uses (space_id);
 create index connection_uses_place on connection_uses (place_id);
+create index connection_uses_used_at on connection_uses (used_at);
 create index sources_read_through on sources (read_through) where read_through is not null;
 
 alter table connection_uses enable row level security;

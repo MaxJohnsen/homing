@@ -442,9 +442,13 @@ export function keepTidy(sql: Sql): () => void {
     // A sweep of a big import can take a while, and the next waits until it's done.
     if (sweeping) return;
     sweeping = true;
+    // Uses of connections are kept for 90 days, whatever else happens here.
     try {
-      // Uses of connections are kept for 90 days.
       await sql`select forget_old_uses()`;
+    } catch (error) {
+      console.error('Forgetting old uses of connections:', error);
+    }
+    try {
       await discardStale(sql);
       for (const [person, kept] of pending) if (kept.until <= Date.now()) forget(person);
       await mkdir(workFolder, { recursive: true });
@@ -454,7 +458,7 @@ export function keepTidy(sql: Sql): () => void {
         if (Date.now() - mtimeMs > 2 * keptFor && ![...pending.values()].some((kept) => kept.path === path)) await rm(path, { force: true });
       }
     } catch (error) {
-      console.error('Tidying up:', error);
+      console.error('Tidying up imports:', error);
     } finally {
       sweeping = false;
     }

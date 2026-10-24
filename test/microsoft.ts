@@ -38,6 +38,11 @@ export interface Email {
   at: Date;
   /** The thread it's in, by default one of its own. */
   conversation?: string;
+  /**
+   * The part of its HTML that's its own, as Exchange gives it: by default all of it, as for an
+   * email that quotes nothing, or null when Exchange gives none.
+   */
+  unique?: string | null;
   attachments?: { name: string; inline?: boolean }[];
 }
 
@@ -241,6 +246,7 @@ export class MicrosoftStandIn {
     const immutable = /IdType="ImmutableId"/.test(prefer);
     const idOf = (email: Kept) => (immutable ? email.id : `AAMk${email.folder}-${email.id.slice(6)}`);
     const select = (url.searchParams.get('$select') ?? '').split(',').filter(Boolean);
+    const content = (html: string) => (/outlook\.body-content-type="text"/.test(prefer) ? { contentType: 'text', content: textOf(html) } : { contentType: 'html', content: html });
     const fields = (email: Kept): Record<string, unknown> => {
       const all: Record<string, unknown> = {
         id: idOf(email),
@@ -254,7 +260,8 @@ export class MicrosoftStandIn {
         bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
         hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
         // Microsoft gives the text when asked to, and the HTML otherwise.
-        body: /outlook\.body-content-type="text"/.test(prefer) ? { contentType: 'text', content: textOf(email.html) } : { contentType: 'html', content: email.html },
+        body: content(email.html),
+        ...(email.unique !== null && { uniqueBody: content(email.unique ?? email.html) }),
       };
       return Object.fromEntries(Object.entries(all).filter(([name]) => select.length === 0 || select.includes(name)));
     };

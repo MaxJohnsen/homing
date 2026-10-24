@@ -29,7 +29,7 @@ const readTimeLimit = 10_000;
 const mailShown = 5;
 /** The fewest and most characters an assistant may quote from an email for a source. */
 const quoteLength = { least: 12, most: 600 };
-/** How much of the sentences around the quoted words a source keeps, on each side. */
+/** How much of the paragraph around the quoted words a source keeps, on each side. */
 const contextLength = 200;
 /** What a source keeps of an email when no words are given: its opening. */
 const openingLength = 500;
@@ -206,9 +206,11 @@ export class MailSourceRefused extends Error {
 
 /**
  * Reads an email for the person and makes the source that keeps it: its reference, sender, date,
- * subject and the whole sentences around the words given, once Homing finds them in what its
- * sender wrote, or else its opening. So what's kept is what Homing read, with its context, never
- * what an assistant said it says, nor what the email only quotes from an earlier one.
+ * subject and the words given with what's around them in their paragraph, so a "not" before them
+ * comes along, or else the sender's opening. The words are looked for in what its sender wrote,
+ * never in its subject. Words it only quotes from an earlier email are kept marked as quoted:
+ * Homing read this email, not the earlier one. So what's kept is what Homing read, never what an
+ * assistant said it says.
  */
 export async function mailSource(broker: Broker, principal: AgentPrincipal, reference: string, words?: string): Promise<MailSource> {
   const ref = parseMailRef(reference);
@@ -217,84 +219,127 @@ export async function mailSource(broker: Broker, principal: AgentPrincipal, refe
   if (!read) throw new MailSourceRefused(noEmail);
   if ('problem' in read) throw new MailSourceRefused(`Nothing was saved: ${mailProblem(read.mailbox, read.problem, 'reading')}`);
   const { mail } = read.mail;
-  const { own, earlier } = splitQuoted(mail.body);
+  // What its sender wrote: Exchange's own part unique to this email, or, where it doesn't give one,
+  // the text up to what it quotes, as Outlook and Gmail mark that in English and Norwegian.
+  const own = splitQuoted(mail.unique ?? mail.body).own;
   let kept: string;
+  let quoted = false;
   if (words?.trim()) {
     const wanted = flat(words);
     if (wanted.length < quoteLength.least || wanted.length > quoteLength.most) {
       throw new MailSourceRefused(`Nothing was saved: quote ${quoteLength.least} to ${quoteLength.most} characters of the email as its excerpt, the words the knowledge rests on.`);
     }
-    const found = sentencesAround(own, wanted);
+    const found = around(own, wanted) ?? around(quotedPart(mail.body, own), wanted);
     if (!found) {
-      throw new MailSourceRefused(
-        flat(earlier).includes(wanted)
-          ? 'Nothing was saved: those words are in an earlier email this one quotes, not in what its sender wrote. Cite that email instead: `read` lists the thread.'
-          : 'Nothing was saved: those words aren’t in what the email’s sender wrote, as Homing reads it. Quote them exactly as `read` shows them, or leave out the excerpt to keep its opening.',
-      );
+      throw new MailSourceRefused('Nothing was saved: those words aren’t in the email’s text as Homing reads it. Quote them exactly as `read` shows them, or leave out the excerpt to keep its opening.');
     }
+    quoted = !around(own, wanted);
     kept = found;
   } else {
-    const opening = flat(own || mail.preview);
+    // Only the sender's own words. Microsoft's preview is used only for an email without any text.
+    const opening = own.join(' ');
     const cut = opening.lastIndexOf(' ', openingLength);
-    kept = opening.length > openingLength ? `${opening.slice(0, cut > 0 ? cut : openingLength)}…` : opening;
+    kept = opening.length > openingLength ? `${opening.slice(0, cut > 0 ? cut : openingLength)}…` : opening || (flat(mail.body) ? '' : flat(mail.preview));
   }
-  const excerpt = [`From: ${addressLine(mail.from)}`, `Date: ${mail.at ? when(mail.at) : 'unknown'}`, `Subject: ${oneLine(mail.subject ?? '')}`, '', kept || '(no text)'].join('\n');
+  const excerpt = [
+    `From: ${addressLine(mail.from)}`,
+    `Date: ${mail.at ? when(mail.at) : 'unknown'}`,
+    `Subject: ${oneLine(mail.subject ?? '')}`,
+    ...(quoted ? [quotedLine] : []),
+    '',
+    kept || '(no text)',
+  ].join('\n');
   return { spaceId: read.mailbox.space, reference: mailRef(read.mailbox.place, mail.id || ref.id), excerpt, connection: read.mailbox.connection };
+}
+
+/** What a source says above the words when the email only quotes them from an earlier one. */
+const quotedLine = 'Quoted: as this email quotes an earlier one, which Homing didn’t read';
+
+/**
+ * Whether a source Homing made from an email keeps words it only quotes from an earlier one. Its
+ * first lines, before the blank line, are Homing's own, each on one line.
+ */
+export const quotesEarlier = (excerpt: string) => excerpt.split('\n\n', 1)[0].split('\n').includes(quotedLine);
+
+/**
+ * An email's text as paragraphs, one line each: a single line break is only where a line was
+ * wrapped, and a blank line ends a paragraph. Markers of quoting, ">", are left out.
+ */
+function paragraphs(text: string): string[] {
+  const found: string[] = [];
+  let current: string[] = [];
+  for (const line of text.replace(/\r\n?/g, '\n').split('\n').map((line) => flat(line.replace(/^\s*(>\s?)+/, '')))) {
+    if (line) current.push(line);
+    else if (current.length) found.push(current.join(' ')), (current = []);
+  }
+  if (current.length) found.push(current.join(' '));
+  return found;
+}
+
+/**
+ * What an email's text holds besides what its sender wrote, which comes first: the rest of its
+ * paragraphs, from where the sender's own words end. All of them when the sender's words don't come
+ * first, as in an answer written between quoted lines.
+ */
+function quotedPart(body: string, own: string[]): string[] {
+  const all = paragraphs(body);
+  let left = own.join(' ');
+  for (const [at, paragraph] of all.entries()) {
+    if (!left) return all.slice(at);
+    if (paragraph.startsWith(left)) return [paragraph.slice(left.length).trim(), ...all.slice(at + 1)].filter(Boolean);
+    if (!left.startsWith(paragraph)) return all;
+    left = left.slice(paragraph.length).trim();
+  }
+  return [];
 }
 
 /**
  * An email's text split into what its sender wrote and what it quotes from earlier emails: lines
  * starting with ">", and everything from a line that starts a quoted email, as Outlook and Gmail
- * write it in English and Norwegian. Both come one line at a time, with spaces collapsed.
+ * write it in English and Norwegian. Both as paragraphs.
  */
-export function splitQuoted(body: string): { own: string; earlier: string } {
-  const lines = body.replace(/\r\n?/g, '\n').split('\n').map(flat);
-  const header = (at: number) => /^(From|Fra|Von|Från):\s/i.test(lines[at]) && lines.slice(at + 1, at + 5).some((line) => /^(Sent|Sendt|Date|Dato|Gesendet|Skickat):\s/i.test(line));
+export function splitQuoted(body: string): { own: string[]; earlier: string[] } {
+  const lines = body.replace(/\r\n?/g, '\n').split('\n');
+  const plainLines = lines.map(flat);
+  const header = (at: number) =>
+    /^(From|Fra|Von|Från):\s/i.test(plainLines[at]) && plainLines.slice(at + 1, at + 5).some((line) => /^(Sent|Sendt|Date|Dato|Gesendet|Skickat):\s/i.test(line));
   const starts = (at: number) =>
-    /^-{2,}\s*(Original Message|Opprinnelig melding)\s*-{2,}$/i.test(lines[at]) ||
-    /^_{8,}$/.test(lines[at]) ||
-    /^On\s.*\bwrote:$/i.test(lines[at]) ||
-    (/^On\s/i.test(lines[at]) && /\bwrote:$/i.test(lines[at + 1] ?? '')) ||
-    /\d.*\bskrev\b.*:$/i.test(lines[at]) ||
+    /^-{2,}\s*(Original Message|Opprinnelig melding)\s*-{2,}$/i.test(plainLines[at]) ||
+    /^_{8,}$/.test(plainLines[at]) ||
+    /^On\s.*\bwrote:$/i.test(plainLines[at]) ||
+    (/^On\s/i.test(plainLines[at]) && /\bwrote:$/i.test(plainLines[at + 1] ?? '')) ||
+    /\d.*\bskrev\b.*:$/i.test(plainLines[at]) ||
     header(at);
-  const first = lines.findIndex((_, at) => starts(at));
-  const own = first < 0 ? lines : lines.slice(0, first);
-  const earlier = first < 0 ? [] : lines.slice(first);
+  const first = plainLines.findIndex((_, at) => starts(at));
+  const before = first < 0 ? lines : lines.slice(0, first);
+  const quotes = (line: string) => /^\s*>/.test(line);
   return {
-    own: own.filter((line) => line && !line.startsWith('>')).join('\n'),
-    earlier: [...own.filter((line) => line.startsWith('>')), ...earlier].filter(Boolean).join('\n'),
+    // A quoted line among the sender's own ends a paragraph, as a blank line would.
+    own: paragraphs(before.map((line) => (quotes(line) ? '' : line)).join('\n')),
+    earlier: paragraphs([...before.map((line) => (quotes(line) ? line : '')), '', ...(first < 0 ? [] : lines.slice(first))].join('\n')),
   };
 }
 
 /**
- * The words in the text, with the whole sentences they're in, so what comes before and after them,
- * such as a "not", comes along: at most a little more on each side. Undefined when they aren't in it.
+ * The words, found in one paragraph, or across them, with up to a little of what's around them
+ * there on each side, cut at a word. Undefined when they aren't there.
  */
-function sentencesAround(text: string, words: string): string | undefined {
-  const at = text.replace(/\n/g, ' ').indexOf(words);
-  if (at < 0) return undefined;
+function around(text: string[], words: string): string | undefined {
+  const within = text.find((paragraph) => paragraph.includes(words)) ?? (text.join(' ').includes(words) ? text.join(' ') : undefined);
+  if (within === undefined) return undefined;
+  const at = within.indexOf(words);
   const end = at + words.length;
-  // A sentence ends at ., ! or ?, with any closing quote or bracket, before a space, or at the end of a line.
   let start = 0;
-  for (const boundary of text.slice(0, at).matchAll(/[.!?]["'’”)\]]*[ \n]|\n/g)) start = boundary.index + boundary[0].length;
-  let stop = end;
-  if (!/[.!?]["'’”)\]]*$/.test(words)) {
-    const next = /[.!?]["'’”)\]]*(?=[ \n]|$)|\n/.exec(text.slice(end));
-    stop = next ? end + next.index + (next[0] === '\n' ? 0 : next[0].length) : text.length;
-  }
-  let before = '';
-  let beyond = '';
-  if (at - start > contextLength) {
-    const space = text.indexOf(' ', at - contextLength);
+  let stop = within.length;
+  if (at > contextLength) {
+    const space = within.indexOf(' ', at - contextLength);
     start = space >= 0 && space < at ? space + 1 : at - contextLength;
-    before = '…';
   }
-  if (stop - end > contextLength) {
-    const space = text.lastIndexOf(' ', end + contextLength);
+  if (within.length - end > contextLength) {
+    const space = within.lastIndexOf(' ', end + contextLength);
     stop = space > end ? space : end + contextLength;
-    beyond = '…';
   }
-  return `${before}${text.slice(start, stop).replace(/\n/g, ' ').trim()}${beyond}`;
+  return `${start > 0 ? '…' : ''}${within.slice(start, stop).trim()}${stop < within.length ? '…' : ''}`;
 }
 
 /** The answer for a reference that names no email the person can read, whoever's it is. */
@@ -327,9 +372,21 @@ export function mailProblem(mailbox: Mailbox, problem: MailProblem | 'removed' |
   }
 }
 
+/**
+ * Characters that hide text or turn it around: format characters, such as bidirectional controls,
+ * zero-width spaces and tags, except the joiners some scripts and emoji need; variation selectors
+ * beyond the sixteen emoji use; and the Hangul fillers that show as nothing.
+ */
+const hiding = /(?![\u200c\u200d])\p{Cf}|[\u{e0100}-\u{e01ef}\u115f\u1160\u3164\uffa0]/gu;
+
+/** Text from an email without characters that hide or turn text around, keeping its lines. */
+export function withoutHidden(text: string): string {
+  return text.replace(hiding, '').replace(/[^\P{Cc}\n\t]/gu, '');
+}
+
 /** Text from an email on one line, without characters that hide or turn text around. */
 export function oneLine(value: string): string {
-  return value.replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return value.replace(hiding, '').replace(/[\p{Cc}\s]+/gu, ' ').trim();
 }
 
 /** "Gunnar Lie <gunnar@minus1.no>", or whichever of the two the email gives. */
@@ -344,4 +401,4 @@ function addressLine(address: MailAddress | null): string {
 export const when = (at: Date) => `${at.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 
 /** Text as compared and kept: in one form of Unicode, without characters that hide or turn text around, with single spaces. */
-const flat = (value: string) => value.normalize('NFC').replace(/\p{Cf}/gu, '').replace(/[\p{Cc}\s]+/gu, ' ').trim();
+const flat = (value: string) => oneLine(value.normalize('NFC'));

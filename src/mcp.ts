@@ -60,9 +60,11 @@ import {
   noEmail,
   oneLine as plainLine,
   parseMailRef,
+  quotesEarlier,
   readMailFor,
   searchMailboxes,
   when,
+  withoutHidden,
   type Mailbox,
   type MailFound,
   type MailRead,
@@ -2072,7 +2074,7 @@ function describeEmail(mailbox: Mailbox, { mail, thread, moreInThread }: Extract
     addresses.slice(0, recipientsShown).map(sender).join(', ') + (addresses.length > recipientsShown ? `, and ${addresses.length - recipientsShown} more` : '');
   // Only what can be read: line breaks and tabs stay, and other control characters go, as do characters
   // that turn text around or hide it, keeping the joiners some scripts and emoji need.
-  const text = mail.body.replace(/\r\n?/g, '\n').replace(/[^\P{Cc}\n\t]/gu, '').replace(/(?![\u200c\u200d])\p{Cf}/gu, '');
+  const text = withoutHidden(mail.body.replace(/\r\n?/g, '\n'));
   const shown = text.length > emailShown ? text.slice(0, emailShown) : text;
   const here = mailRef(mailbox.place, mail.id);
   return [
@@ -2184,7 +2186,8 @@ function describeRule(rule: Rule): string {
  * such as an email, says so, so it's never taken for what an assistant reported.
  */
 function describeSource(source: { reference: string | null; excerpt: string }, readByHoming = false): string {
-  const from = readByHoming ? `${source.reference ? `${oneLine(source.reference)}, ` : ''}an email Homing read in the user's mailbox` : source.reference && oneLine(source.reference);
+  const read = `an email Homing read in the user's mailbox${quotesEarlier(source.excerpt) ? ', quoting an earlier one Homing didn’t read' : ''}`;
+  const from = readByHoming ? `${source.reference ? `${oneLine(source.reference)}, ` : ''}${read}` : source.reference && oneLine(source.reference);
   return from ? `${from}: ${quote(source.excerpt)}` : quote(source.excerpt);
 }
 

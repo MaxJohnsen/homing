@@ -204,12 +204,9 @@ export async function redeem(settings: MicrosoftSettings, input: { code: string;
   return { tenant: claims.tid, account: claims.oid, username: claims.username, scopes: granted, tokens };
 }
 
-/**
- * New tokens for an account, with the one Homing kept. Microsoft gives a new refresh token each
- * time. A signal stops waiting for Microsoft once nobody needs the answer.
- */
-export async function refresh(settings: MicrosoftSettings, refreshToken: string, { signal }: { signal?: AbortSignal } = {}): Promise<Tokens> {
-  const answer = await token(settings, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: scopes.join(' ') }, signal);
+/** New tokens for an account, with the one Homing kept. Microsoft gives a new refresh token each time. */
+export async function refresh(settings: MicrosoftSettings, refreshToken: string): Promise<Tokens> {
+  const answer = await token(settings, { grant_type: 'refresh_token', refresh_token: refreshToken, scope: scopes.join(' ') });
   return tokensOf(answer, refreshToken);
 }
 
@@ -248,6 +245,8 @@ export interface Mail extends MailSummary {
   cc: MailAddress[];
   /** Its text, never its HTML. */
   body: string;
+  /** The part of its text that's its own, without what it quotes from earlier emails, as Exchange tells them apart. Null when it doesn't say. */
+  unique: string | null;
   attachments: string[];
 }
 
@@ -293,7 +292,7 @@ export async function readMail(
     message = await graph(
       settings,
       access,
-      `/v1.0/me/messages/${encodeURIComponent(id)}?$select=${summaryFields},toRecipients,ccRecipients,body,hasAttachments`,
+      `/v1.0/me/messages/${encodeURIComponent(id)}?$select=${summaryFields},toRecipients,ccRecipients,body,uniqueBody,hasAttachments`,
       // Microsoft turns the HTML into text, so nothing in it is fetched or run.
       { prefer: [immutableIds, 'outlook.body-content-type="text"'], signal },
     );
@@ -309,14 +308,19 @@ export async function readMail(
       : undefined,
     withThread && message.hasAttachments === true ? graph(settings, access, `/v1.0/me/messages/${encodeURIComponent(id)}/attachments?$select=name,isInline&$top=${listLength}`, { prefer: [immutableIds], signal }) : undefined,
   ]);
-  const content = (message.body ?? {}) as { contentType?: unknown; content?: unknown };
-  const text = typeof content.content === 'string' ? content.content : '';
+  // As text, as Microsoft was asked, or else turned into text here.
+  const textIn = (body: unknown) => {
+    const { contentType, content } = (body ?? {}) as { contentType?: unknown; content?: unknown };
+    if (typeof content !== 'string') return null;
+    return contentType === 'html' ? textOf(content) : content;
+  };
   return {
     mail: {
       ...summary,
       to: addressesOf(message.toRecipients),
       cc: addressesOf(message.ccRecipients),
-      body: content.contentType === 'html' ? textOf(text) : text,
+      body: textIn(message.body) ?? '',
+      unique: textIn(message.uniqueBody),
       attachments: listOf(attachments)
         .filter((attachment) => attachment.isInline !== true)
         .flatMap((attachment) => (typeof attachment.name === 'string' && attachment.name.trim() ? [attachment.name.trim()] : [])),
@@ -413,7 +417,7 @@ interface TokenAnswer {
 }
 
 /** Calls Microsoft's token endpoint as this app. Its answer is never logged, and nor is the request. */
-async function token(settings: MicrosoftSettings, body: Record<string, string>, signal?: AbortSignal): Promise<TokenAnswer> {
+async function token(settings: MicrosoftSettings, body: Record<string, string>): Promise<TokenAnswer> {
   const url = `${settings.login}/${encodeURIComponent(settings.tenant)}/oauth2/v2.0/token`;
   const form = new URLSearchParams({ client_id: settings.clientId, ...body, ...(await clientCredential(settings, url)) });
   let response: Response;
@@ -422,13 +426,12 @@ async function token(settings: MicrosoftSettings, body: Record<string, string>, 
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
       body: form,
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
+      signal: AbortSignal.timeout(15_000),
     });
   } catch {
     throw new MicrosoftUnreachable('signing in');
   }
   const answer = (await response.json().catch(() => ({}))) as TokenAnswer & { error?: unknown; error_codes?: unknown };
-  if (signal?.aborted) throw new MicrosoftUnreachable('signing in');
   if (response.ok) return answer;
   if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('signing in');
   // Microsoft's own number for the reason, such as AADSTS70008 for an expired code, helps whoever runs Homing.

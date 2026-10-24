@@ -192,7 +192,7 @@ type Outcome = { token: string } | { unusable: ConnectionUnusable['reason'] };
  * A stored token with two minutes left is used as it is, from one short transaction. Otherwise
  * Homing refreshes it, and never inside a transaction: Microsoft may take a while, and nothing
  * else should wait on that. Callers in this process that need the same connection meanwhile share
- * one refresh, which stops only once all of them have stopped waiting. The new tokens are kept only
+ * one refresh, which finishes even after they stopped waiting, so the next use finds its tokens. The new tokens are kept only
  * while the sign-in is still the one that was refreshed, so a refresh that finished meanwhile, a
  * new sign-in or revoking wins. When Microsoft refuses the refresh, because consent was revoked or
  * the sign-in expired, or the sealed tokens don't open, the connection needs attention, which the
@@ -227,7 +227,7 @@ export async function accessToken(
   if ('token' in held) return held.token;
   if ('unusable' in held) throw new ConnectionUnusable(held.unusable);
 
-  const outcome = await sharedRefresh(connectionId, (stop) => refreshed(broker, person, connectionId, held.refresh, stop), signal);
+  const outcome = await sharedRefresh(connectionId, () => refreshed(broker, person, connectionId, held.refresh), signal);
   if ('unusable' in outcome) throw new ConnectionUnusable(outcome.unusable);
   try {
     if (use) await withPrincipal(broker.sql, { person }, (s) => recordUse(s, connectionId, use));
@@ -248,51 +248,38 @@ async function recordUse(s: Session, connectionId: string, use: Use | undefined)
   `;
 }
 
-/** Refreshes under way in this process, one for each connection, with how many callers still wait for it. */
-const refreshing = new Map<string, { outcome: Promise<Outcome>; stop: AbortController; waiting: number }>();
+/** Refreshes under way in this process, one for each connection, until they settle. */
+const refreshing = new Map<string, Promise<Outcome>>();
 
 /**
  * Waits for the connection's refresh under way, or starts one. A caller whose signal fires stops
- * waiting, and once nobody waits, the refresh stops too.
+ * waiting, and the refresh carries on within Microsoft's own time limit, so its new tokens are kept
+ * for the next use, which joins it meanwhile.
  */
-function sharedRefresh(connectionId: string, start: (stop: AbortSignal) => Promise<Outcome>, signal?: AbortSignal): Promise<Outcome> {
-  let under = refreshing.get(connectionId);
-  if (!under) {
-    const stop = new AbortController();
-    const outcome = start(stop.signal).finally(() => {
-      if (refreshing.get(connectionId)?.outcome === outcome) refreshing.delete(connectionId);
+function sharedRefresh(connectionId: string, start: () => Promise<Outcome>, signal?: AbortSignal): Promise<Outcome> {
+  let outcome = refreshing.get(connectionId);
+  if (!outcome) {
+    const started: Promise<Outcome> = start().finally(() => {
+      if (refreshing.get(connectionId) === started) refreshing.delete(connectionId);
     });
-    under = { outcome, stop, waiting: 0 };
-    refreshing.set(connectionId, under);
+    // However it ends, even after everyone stopped waiting.
+    started.catch(() => {});
+    refreshing.set(connectionId, started);
+    outcome = started;
   }
-  const mine = under;
-  mine.waiting++;
+  if (!signal) return outcome;
+  const settled = outcome;
   return new Promise<Outcome>((resolve, reject) => {
-    let done = false;
-    const leave = () => {
-      if (done) return;
-      done = true;
-      signal?.removeEventListener('abort', gaveUp);
-      if (--mine.waiting === 0 && refreshing.get(connectionId) === mine) {
-        refreshing.delete(connectionId);
-        mine.stop.abort();
-      }
-    };
-    const gaveUp = () => {
-      leave();
-      reject(new MicrosoftUnreachable('signing in'));
-    };
-    if (signal?.aborted) return gaveUp();
-    signal?.addEventListener('abort', gaveUp, { once: true });
-    mine.outcome.then(
-      (outcome) => {
-        if (done) return;
-        leave();
-        resolve(outcome);
+    const gaveUp = () => reject(new MicrosoftUnreachable('signing in'));
+    if (signal.aborted) return gaveUp();
+    signal.addEventListener('abort', gaveUp, { once: true });
+    settled.then(
+      (result) => {
+        signal.removeEventListener('abort', gaveUp);
+        resolve(result);
       },
       (error: unknown) => {
-        if (done) return;
-        leave();
+        signal.removeEventListener('abort', gaveUp);
         reject(error);
       },
     );
@@ -304,11 +291,18 @@ function sharedRefresh(connectionId: string, start: (stop: AbortSignal) => Promi
  * the sealed refresh token is still the one used. Refused, it marks the connection as needing
  * attention on the same condition, so it never blames a sign-in that came after.
  */
-async function refreshed(broker: Broker, person: string, connectionId: string, used: Uint8Array, stop: AbortSignal): Promise<Outcome> {
+async function refreshed(broker: Broker, person: string, connectionId: string, used: Uint8Array): Promise<Outcome> {
   const needsAttention = async (log: string): Promise<Outcome> => {
-    const [{ marked }] = await withPrincipal(broker.sql, { person }, (s) => s.tx<{ marked: boolean }[]>`
-      select connection_needs_attention(${connectionId}::uuid, ${used}) as marked
-    `);
+    let marked: boolean;
+    try {
+      [{ marked }] = await withPrincipal(broker.sql, { person }, (s) => s.tx<{ marked: boolean }[]>`
+        select connection_needs_attention(${connectionId}::uuid, ${used}) as marked
+      `);
+    } catch (error) {
+      // Revoked meanwhile: there's nothing left to mark.
+      if (error instanceof postgres.PostgresError && error.code === '42501') return { unusable: 'gone' };
+      throw error;
+    }
     // Someone signed in again meanwhile, so the next use tries that.
     if (!marked) throw new MicrosoftUnreachable('signing in');
     console.error(log);
@@ -324,7 +318,7 @@ async function refreshed(broker: Broker, person: string, connectionId: string, u
   if (!broker.microsoft) return { unusable: 'not set up' };
   let fresh: Tokens;
   try {
-    fresh = await refresh(broker.microsoft, kept, { signal: stop });
+    fresh = await refresh(broker.microsoft, kept);
   } catch (error) {
     if (error instanceof MicrosoftRefused && error.signInAgain) {
       return needsAttention(`connections: Microsoft refused refreshing a sign-in, so it needs attention (${error.message})`);

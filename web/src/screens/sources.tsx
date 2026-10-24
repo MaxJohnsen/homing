@@ -5,7 +5,7 @@ import { Markdown } from '@/components/markdown';
 import { OnlyYou } from '@/components/only-you';
 import { ago, count, dateOf, focusRing, ScreenHeader, Section } from '@/components/screen';
 import { Input } from '@/components/ui/input';
-import { nameIn, nameOf, sourceName, type SourceData, type SourcesData, type SourceSummary } from '@/lib/knowledge';
+import { nameIn, nameOf, quotesEarlier, sourceName, type SourceData, type SourcesData, type SourceSummary } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { Pager, pageSize, type PageFilters } from '@/screens/pages';
@@ -112,7 +112,7 @@ export function Source({ source }: { source: SourceData }) {
             <Link href={`/spaces/${source.space.id}/sources`} className={cn('rounded-sm text-primary-ink underline decoration-primary/30 underline-offset-[3px] hover:decoration-primary', focusRing)}>
               {where}
             </Link>
-            . {kept} on {dateOf(source.keptAt)}. {who}
+            . {kept} on {dateOf(source.keptAt)}.{source.readIn && quotesEarlier(source.excerpt) ? ' The words it keeps are quoted in it from an earlier email, which Homing didn’t read.' : ''} {who}
           </>
         }
       />
