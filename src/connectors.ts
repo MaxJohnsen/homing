@@ -5,7 +5,8 @@
 // the code to redeem, and using a place, an Access with the place's resource,
 // a token and Homing's time limit. Everything it gives back is outside
 // content, which Homing frames itself, so nothing in it passes for Homing's
-// own words. Following changes and acting come later, beside find and read.
+// own words. Beside finding and reading, a kind can be followed, so Homing
+// learns from it; acting comes later.
 
 import { microsoftConnector, type MicrosoftSettings } from './microsoft.ts';
 
@@ -85,7 +86,57 @@ export interface PlaceKind {
   search?(access: Access, words: string, limit: number): Promise<Found[]>;
   /** One item by its id, with what it's read with unless left out, or undefined when it isn't there any more. */
   read(access: Access, id: string, options: { related: boolean }): Promise<Item | undefined>;
+  /** Following what's there, so Homing learns from it. A kind without it is only found and read. */
+  follow?: Follow;
 }
+
+/**
+ * Following a place, for learning: its history, oldest first, then what arrives. One method
+ * serves both. How the connector walks the place, such as by date and then by the system's own
+ * record of changes, stays in its checkpoint, which Homing keeps and hands back as it was.
+ */
+export interface Follow {
+  /**
+   * One page of changes, oldest first, from a checkpoint it gave before, or from the start of the
+   * scope without one. A scope with an end, such as one extended further back, is walked only up
+   * to it; one without carries on with what arrives.
+   */
+  changes(access: Access, from: string | null, scope: Scope): Promise<Changes>;
+  /** How many items the scope holds, as the system counts them, for an estimate. */
+  count(access: Access, scope: Scope): Promise<number>;
+}
+
+/** What learning covers: from a time, and up to one, or on with what arrives. */
+export interface Scope {
+  since: Date;
+  until?: Date;
+}
+
+/** A page of changes. */
+export interface Changes {
+  changes: Change[];
+  /** Where the next page starts, opaque to Homing. */
+  next: string;
+  /** Nothing newer for now, or, for a scope with an end, the end reached. */
+  caughtUp: boolean;
+}
+
+/** An item as it is now in a followed place. */
+export interface Change {
+  /** As Homing reads it, with what it's read with, such as its thread, unless it's set aside. */
+  item: Item;
+  /** Changes when what Homing reads of it changes, and only then. */
+  version: string;
+  /** What it belongs with, such as its conversation, so a thread is learned from together. */
+  thread: string | null;
+  /** Where it is there, such as its folder, by name. */
+  folder: string | null;
+  /** Why it needs no model, by the system's own signs, such as a newsletter's headers. */
+  setAside?: SetAside;
+}
+
+/** What a connector sets aside on its own: newsletters, automated mail, junk, drafts and what was deleted. */
+export type SetAside = 'newsletter' | 'automated' | 'junk' | 'draft' | 'deleted';
 
 /** What Homing hands a connector for one use of a place. */
 export interface Access {
@@ -152,6 +203,11 @@ export interface Item {
   fields: [label: string, value: Value][];
   /** Its text, for a kind with prose, such as an email's; null for one of fields only. */
   text: string | null;
+  /**
+   * Where its text repeats what it's read with, such as an email quoting its thread: the part
+   * that's its own, and the part it quotes, so learning reads each once.
+   */
+  parts?: { own: string; quoted: string };
   /** What it's read with, itself among them, oldest first, such as its thread. */
   related: Envelope[];
   /** Whether there's more of that than Homing read. */
@@ -167,7 +223,7 @@ export type Value = { text: string | null } | { texts: string[] } | { party: Par
 export type Connectors = ReadonlyMap<string, Connector>;
 
 /** Homing's own reference words, and email's before connectors had their own, which no connector's id may be. */
-const reserved = new Set(['space', 'page', 'item', 'source', 'proposal', 'task', 'connection', 'place', 'mail']);
+const reserved = new Set(['space', 'page', 'item', 'source', 'proposal', 'task', 'connection', 'place', 'mail', 'learning']);
 
 /**
  * The connectors this Homing has: each system's module, set up from its settings, such as

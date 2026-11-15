@@ -12,6 +12,7 @@ import { emails, type Mailer } from './email.ts';
 import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
 import type { Connectors } from './connectors.ts';
+import type { Learning } from './learning.ts';
 import type { Model } from './model.ts';
 import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable, withdraw } from './proposals.ts';
@@ -36,6 +37,8 @@ export interface App {
   connectors: Connectors;
   /** Homing's own model, for learning, if it has one. */
   model?: Model;
+  /** What learning from connected places needs. */
+  learning: Learning;
 }
 
 // One plain address, nothing a mail program could read as a name and another address.

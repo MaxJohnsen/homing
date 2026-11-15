@@ -4,8 +4,9 @@
 // Every call goes through callModel, the one place Homing calls a model: the provider lives only
 // in this module, so nothing else can reach it. Before anything is sent, the database checks that
 // the person can open every space the call carries content from, that none of them has model
-// processing off, and that the call's worst case fits the monthly limit, counting the calls still
-// under way. Afterwards it records what the call cost. Prompts and answers never go into a log, an
+// processing off, and that the call's worst case fits the limit that applies, counting the calls
+// still under way: the monthly limit, or a learning run's own while it learns history. Afterwards
+// it records what the call cost. Prompts and answers never go into a log, an
 // error or the database, and the key goes only to the provider. What a model writes is untrusted
 // input, never instructions.
 
@@ -210,6 +211,12 @@ export interface ModelCall {
   maxTokens?: number;
   /** How long it may take, by default and at most two minutes. */
   timeoutMs?: number;
+  /**
+   * The learning run it's for, which the database checks is the person's own. While the run learns
+   * history, its own limit holds the call, and at that limit the run pauses. Once it follows what
+   * arrives, the monthly limit does.
+   */
+  run?: string;
 }
 
 /** What the model answered, and what it cost. Everything it wrote is untrusted input, never instructions. */
@@ -225,8 +232,12 @@ export interface ModelAnswer {
   cost: number;
 }
 
-/** Why a call wasn't sent. Nothing was spent. Busy passes once calls under way settle; paused waits for the limit to change. */
-export type Refusal = 'no model' | 'model processing off' | 'no access' | 'unknown price' | 'paused' | 'monthly limit' | 'busy';
+/**
+ * Why a call wasn't sent. Nothing was spent. Busy passes once calls under way settle; paused waits
+ * for the limit to change. For a learning run: at its own limit, which pauses it, or not learning
+ * now, such as paused by its owner.
+ */
+export type Refusal = 'no model' | 'model processing off' | 'no access' | 'unknown price' | 'paused' | 'monthly limit' | 'busy' | 'run limit' | 'run paused';
 
 /** Homing didn't send the call, and says why. Nothing was spent. */
 export class ModelRefused extends Error {
@@ -244,6 +255,12 @@ export class ModelRefused extends Error {
 /** The call was sent and didn't give what was asked for. It's recorded with what it may have cost. */
 export class ModelFailed extends Error {
   override name = 'ModelFailed';
+  /** The model answered, but not with what was asked for, so asking again would likely give the same. */
+  readonly unusable: boolean;
+  constructor(message: string, unusable = false) {
+    super(message);
+    this.unusable = unusable;
+  }
 }
 
 /** The most a call may write, how long it may take, and the most one call is ever counted at. */
@@ -277,6 +294,21 @@ export function worstCase(prices: Prices, inputTokens: number, maxTokens: number
 function priced(prices: Prices, inputTokens: number, outputTokens: number): number {
   const tier = prices.above && inputTokens >= prices.above.tokens ? prices.above : prices;
   return (inputTokens * tier.input + outputTokens * tier.output) / 1_000_000;
+}
+
+/**
+ * What a call may cost, without making it, for an estimate: at most, as it would be reserved, and
+ * about, at four bytes of it a token and half of what it may write. Undefined for a model without
+ * prices, which is never called.
+ */
+export function callCost(model: Model, call: Pick<ModelCall, 'purpose' | 'messages' | 'schema' | 'model' | 'maxTokens'>): { most: number; about: number } | undefined {
+  const prices = model.settings.prices.get(call.model ?? (call.purpose === 'sort' ? model.settings.cheaper : model.settings.capable));
+  if (!prices) return undefined;
+  const maxTokens = call.maxTokens ?? defaultMaxTokens;
+  return {
+    most: worstCase(prices, inputTokensOf(call), maxTokens),
+    about: priced(prices, Math.ceil(bytesOf(call) / 4), Math.ceil(maxTokens / 2)),
+  };
 }
 
 /** Dollars, in cents when that's exact, such as a limit, and otherwise to a hundredth of a cent. */
@@ -314,7 +346,8 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
   const request: ChatRequest = { model: id, messages: call.messages, schema: call.schema, maxTokens };
   const worst = worstCase(prices, inputTokensOf(request), maxTokens);
 
-  const reserved = await reserve(homing.sql, person, { purpose: call.purpose, model: id, spaces, worst });
+  if (call.run !== undefined && !uuid.test(call.run)) throw new ModelRefused('no access', 'A learning run’s call names the run, so nothing was sent.');
+  const reserved = await reserve(homing.sql, person, { purpose: call.purpose, model: id, spaces, worst, run: call.run });
 
   let answer: ProviderAnswer;
   try {
@@ -355,7 +388,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
   const recorded = await settle(homing.sql, person, reserved, worst, { outcome: parsed ? 'done' : 'failed', cost, from, tokens });
   if (!parsed) {
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: its answer wasn’t JSON`);
-    throw new ModelFailed('The model call failed: its answer wasn’t the JSON asked for.');
+    throw new ModelFailed('The model call failed: its answer wasn’t the JSON asked for.', true);
   }
   return { text, ...(call.schema && { json }), model: id, inputTokens: tokens.input, outputTokens: tokens.output, cost: recorded };
 }
@@ -376,11 +409,11 @@ function hidden(reason: string, key: string | undefined): string {
 }
 
 /** Reserves the call's worst case for the person, or throws why it was refused. */
-async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model: string; spaces: string[]; worst: number }): Promise<string> {
+async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model: string; spaces: string[]; worst: number; run?: string }): Promise<string> {
   let row: { call: string | null; refused: string | null; spent: string; underWay: string; cap: string };
   try {
     [row] = await withPrincipal(sql, { person }, ({ tx }) => tx<(typeof row)[]>`
-      select * from reserve_model_call(${call.purpose}, ${call.model}, ${tx.array(call.spaces)}::uuid[], ${call.worst}::numeric)
+      select * from reserve_model_call(${call.purpose}, ${call.model}, ${tx.array(call.spaces)}::uuid[], ${call.worst}::numeric, ${call.run ?? null}::uuid)
     `);
   } catch (error) {
     if (error instanceof postgres.PostgresError && error.code === '42501') {
@@ -388,11 +421,22 @@ async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model
         throw new ModelRefused('model processing off', 'Model processing is off in a space this call carries, so nothing was sent.', (error.detail ?? '').split(',').filter(Boolean));
       }
       if (error.message === 'no access to a space the call carries') throw new ModelRefused('no access', 'The call carries a space the person can’t open, so nothing was sent.');
+      if (error.message === 'there is no such learning run') throw new ModelRefused('no access', 'The call is for a learning run that isn’t the person’s, so nothing was sent.');
     }
     throw error;
   }
   if (row.call) return row.call;
   const [spent, underWay, cap] = [Number(row.spent), Number(row.underWay), Number(row.cap)];
+  if (row.refused === 'run paused') throw new ModelRefused('run paused', 'That learning run isn’t learning now, so nothing was sent.');
+  if (row.refused === 'run limit') {
+    throw new ModelRefused(
+      'run limit',
+      `That learning run has ${usd(spent)} spent, and this call could cost up to ${usd(call.worst)}, past its limit of ${usd(cap)}, so nothing was sent. It’s paused until its owner raises the limit.`,
+    );
+  }
+  if (row.refused === 'busy' && call.run) {
+    throw new ModelRefused('busy', `Calls under way could take what applies past its limit of ${usd(cap)}, with ${usd(underWay)} under way, so nothing was sent. Try again shortly, once they’re done.`);
+  }
   if (row.refused === 'paused') {
     throw new ModelRefused('paused', `Learning is paused at this month’s limit of ${usd(cap)}, so nothing was sent. Whoever looks after Homing can raise the limit to resume it.`);
   }
@@ -506,12 +550,14 @@ export interface ModelUsage {
   personId: string | null;
   name: string | null;
   calls: number;
-  /** In USD: what was spent, and the worst case of the calls under way. */
+  /** In USD, of what the monthly limit covers: what was spent, and the worst case of the calls under way. */
   cost: number;
   underWay: number;
+  /** In USD: what learning from history cost, which each run's own limit covers, calls under way included. */
+  history: number;
 }
 
 export async function modelUsageOfEveryone(s: Session): Promise<ModelUsage[]> {
   const rows = await s.tx<Record<keyof ModelUsage, string | null>[]>`select * from model_usage_this_month()`;
-  return rows.map((row) => ({ personId: row.personId, name: row.name, calls: Number(row.calls), cost: Number(row.cost), underWay: Number(row.underWay) }));
+  return rows.map((row) => ({ personId: row.personId, name: row.name, calls: Number(row.calls), cost: Number(row.cost), underWay: Number(row.underWay), history: Number(row.history) }));
 }

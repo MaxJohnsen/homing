@@ -82,12 +82,12 @@ export function byPerson(written: { writtenBy: string | null; agent: string | nu
  * and which stays theirs (spec §3): on their private side where it is, and on the shared side as
  * their own update of it. Homing can't tell whether they asked: it allows this only because the
  * change is private, recorded and can be undone. What someone wrote before it was imported is never
- * theirs, whatever the name.
+ * theirs, whatever the name. Nothing is, to a routine of theirs, which never changes what they wrote.
  */
 export function ownText(s: Session, item: Pick<Item, 'kind' | 'privateTo' | 'writtenBy' | 'agent' | 'imported'>, side: 'private' | 'shared' = 'private'): boolean {
   const me = personOf(s.principal);
   const there = side === 'private' ? item.privateTo === me : item.privateTo === null;
-  return me !== undefined && there && item.kind === 'text' && item.writtenBy === me && item.agent === null && !importedAuthor(item.imported);
+  return me !== undefined && s.principal.routine === undefined && there && item.kind === 'text' && item.writtenBy === me && item.agent === null && !importedAuthor(item.imported);
 }
 
 export interface Source {

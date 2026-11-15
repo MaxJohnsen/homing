@@ -7,6 +7,7 @@
 // own places lead anywhere, so for anyone else there is nothing to find, not
 // even that it's there.
 
+import { createHash } from 'node:crypto';
 import type { AgentPrincipal } from './assistants.ts';
 import { ConnectionUnusable, kindOf, messageOf, Unanswered, using, type Broker, type Use } from './connections.ts';
 import type { Access, Audience, Connector, Connectors, Found, Item, Value, Words } from './connectors.ts';
@@ -249,6 +250,22 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   return again ? { ...again, removed: false } : place;
 }
 
+/**
+ * One of the person's own places in use, by its id, in a space they can open. Undefined for anyone
+ * else's, one that's removed or whose account is revoked, and one that doesn't exist, all alike.
+ */
+export async function ownPlace(s: Session, placeId: string): Promise<Place | undefined> {
+  const person = personOf(s.principal);
+  if (!person) return undefined;
+  const [place] = await s.tx<Place[]>`
+    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status
+    from places p join connections c on c.id = p.connection_id
+    where p.id = ${placeId}::uuid and p.private_to = ${person}::uuid and c.person_id = ${person}::uuid
+      and p.removed_at is null and c.revoked_at is null and p.space_id in (${accessibleSpaces(s)})
+  `;
+  return place;
+}
+
 /** Uses the place as its owner, recording the use, for the assistant it's for. */
 function asOwner<T>(broker: Broker, connector: Connector, principal: AgentPrincipal, place: Place, operation: Use['operation'], signal: AbortSignal, fn: (access: Access) => Promise<T>): Promise<T> {
   return using(broker, connector, principal.person, place, { place: place.place, space: place.space, operation, agent: principal.agent }, signal, fn);
@@ -334,15 +351,32 @@ export async function keepSource(broker: Broker, principal: AgentPrincipal, refe
   const read = await readFor(broker, principal, ref, { related: false });
   if (!read) throw new SourceRefused(noItem(named));
   if ('problem' in read) throw new SourceRefused(`Nothing was saved: ${problemText(broker.connectors, read.place, read.problem, 'reading')}`);
-  const { item, place } = read;
+  return sourceOf(broker.connectors, read.place, read.item, words, ref.id);
+}
+
+/**
+ * The source that keeps an item Homing read in one of the person's places, however it came to read
+ * it: on their assistant's request, or learning from the place.
+ */
+export function sourceOf(connectors: Connectors, place: Place, item: Item, words?: string, id = item.envelope.id): KeptSource {
+  const named = wordsOf(connectors.get(place.connector), place.kind);
   return {
     spaceId: place.space,
-    reference: referenceTo(place, item.envelope.id || ref.id),
-    excerpt: item.excerpt ? item.excerpt(words) : fieldsExcerpt(item, wordsOf(connector, place.kind), words),
+    reference: referenceTo(place, item.envelope.id || id),
+    excerpt: item.excerpt ? item.excerpt(words) : fieldsExcerpt(item, named, words),
     connection: place.connection,
     audience: item.envelope.audience === 'unknown' ? null : item.envelope.audience,
-    words: wordsOf(connector, place.kind),
+    words: named,
   };
+}
+
+/**
+ * An item's version, for following it: what Homing reads of it, its fields and its text, so it
+ * changes when they do and only then, not when the item is read or flagged there.
+ */
+export function contentVersion(item: Pick<Item, 'fields' | 'text'>): string {
+  const read = JSON.stringify([item.fields.map(([label, value]) => [label, plainValue(value)]), item.text]);
+  return createHash('sha256').update(read).digest('base64url');
 }
 
 /** What a source keeps of an item of fields, all of them, one on each line, once the words given are found among them. */
@@ -355,7 +389,7 @@ function fieldsExcerpt(item: Item, words: Words, quoted?: string): string {
 }
 
 /** A field's value as a source keeps it, on one line. */
-function plainValue(value: Value): string {
+export function plainValue(value: Value): string {
   if ('text' in value) return value.text === null ? 'unknown' : oneLine(value.text);
   if ('texts' in value) return value.texts.map(oneLine).join(', ');
   if ('at' in value) return value.at ? when(value.at) : 'unknown';

@@ -4,13 +4,14 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { pipeline } from 'node:stream/promises';
 import postgres from 'postgres';
 import { hiddenMessage } from './bundle.ts';
-import { abilitiesOf, ConnectRefused, connectionsOf, placesIn, removePlace, revokeConnection, startConnecting, type Connection } from './connections.ts';
+import { abilitiesOf, ConnectRefused, connectionsOf, kindOf, placesIn, removePlace, revokeConnection, startConnecting, type Connection } from './connections.ts';
 import type { Connectors } from './connectors.ts';
 import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
+import { estimateLearning, extendLearning, LearningRefused, nothingThere, pauseLearning, progressOf, resumeLearning, runsFor, setAsideWords, setLearningLimit, setLeftOut, startLearning, type Progress, type Run } from './learning.ts';
 import { modelName, modelProcessingOf, modelStatement, modelUsageOfEveryone, modelUseThisMonth, monthlyLimit, setModelProcessing, setMonthlyLimit } from './model.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
@@ -971,12 +972,81 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         // The person's own connections in the space, never anyone else's, and whether more can be connected here.
         const found = await read(async (s) => ((await spaceView(s, route.id)) ? placesIn(s, route.id) : undefined));
         if (!found) return answer(res, 404, noSpace);
+        // How far Homing has learned from each, which only they see, as with the place.
+        const runs = await read(async (s) => {
+          const runs = await runsFor(s, found.map((place) => place.id));
+          return new Map(await Promise.all([...runs].map(async ([place, run]) => [place, { run, progress: await progressOf(s, run) }] as const)));
+        });
         json(res, 200, {
           microsoft,
           // Whoever looks after Homing is told how to set it up; nobody else is offered anything that can't work.
           looksAfter: !microsoft && (await looksAfter()),
-          places: found.map((place) => ({ id: place.id, kind: place.kind, addedAt: place.addedAt, elsewhere: place.elsewhere, connection: connectionData(app.connectors, place.connection) })),
+          // Which provider reads what Homing learns from, or null when Homing has no model, so it can't learn yet.
+          model: modelStatement(app.model),
+          places: found.map((place) => {
+            const kind = kindOf(app.connectors.get(place.connection.provider), place.kind);
+            const learning = runs.get(place.id);
+            return {
+              id: place.id,
+              kind: place.kind,
+              addedAt: place.addedAt,
+              elsewhere: place.elsewhere,
+              connection: connectionData(app.connectors, place.connection),
+              // Whether Homing can learn from a place of this kind, and how far it has.
+              learns: Boolean(kind?.follow),
+              learning: learning ? learningData(learning.run, learning.progress, kind?.words ?? { item: 'item', items: 'items' }) : null,
+            };
+          }),
         });
+        break;
+      }
+
+      case 'estimate learning':
+      case 'start learning':
+      case 'pause learning':
+      case 'resume learning':
+      case 'extend learning':
+      case 'learning limit':
+      case 'learning left out': {
+        // Learning from one of the person's own places, which they direct here. Anyone else's place isn't there for them.
+        const nothing = { message: 'There’s nothing of yours to learn from here.' };
+        const body = await readJson(req);
+        const since = typeof body.since === 'string' && /^\d{4}-\d{2}-\d{2}/.test(body.since) ? new Date(body.since) : undefined;
+        const amount = typeof body.limit === 'number' ? body.limit : typeof body.limit === 'string' ? Number(body.limit.replace(/^\$/, '').trim() || Number.NaN) : Number.NaN;
+        const limit = Number.isFinite(amount) && amount >= 0 && amount <= 1_000_000 ? Math.round(amount * 100) / 100 : undefined;
+        const lines = (value: unknown) => (Array.isArray(value) && value.every((line) => typeof line === 'string') ? (value as string[]).map((line) => line.trim()).filter(Boolean) : undefined);
+        try {
+          if (route.name === 'estimate learning') {
+            if (!since) return answer(res, 400, { field: 'since', message: 'Choose how far back to learn.' });
+            await estimateLearning(app.learning, { person, direct: true }, route.id, since);
+          } else if (route.name === 'extend learning') {
+            if (!since) return answer(res, 400, { field: 'since', message: 'Choose how far back to learn.' });
+            if (!(await read(async (s) => (await runsFor(s, [route.id])).get(route.id)))) return answer(res, 404, nothing);
+            const added = await extendLearning(app.learning, { person, direct: true }, route.id, since);
+            if (!added) return answer(res, 409, { message: 'It already learns from that far back.' });
+          } else {
+            if ((route.name === 'start learning' || route.name === 'learning limit') && limit === undefined) {
+              return answer(res, 400, { field: 'limit', message: 'Write the limit in dollars, such as 5.' });
+            }
+            const [senders, folders] = [lines(body.senders), lines(body.folders)];
+            if (route.name === 'learning left out' && (!senders || !folders)) return answer(res, 400, { message: 'Write what to leave out, one on each line.' });
+            const done = await write(async (s) => {
+              const run = (await runsFor(s, [route.id])).get(route.id);
+              if (!run) return false;
+              if (route.name === 'start learning') await startLearning(app.learning, s, run, limit);
+              else if (route.name === 'pause learning') await pauseLearning(s, run);
+              else if (route.name === 'resume learning') await resumeLearning(app.learning, s, run);
+              else if (route.name === 'learning limit') await setLearningLimit(s, run, limit!);
+              else await setLeftOut(s, run, { senders: senders!, folders: folders! });
+              return true;
+            });
+            if (!done) return answer(res, 404, nothing);
+          }
+        } catch (error) {
+          if (error instanceof LearningRefused) return error.message === nothingThere ? answer(res, 404, nothing) : answer(res, 409, { message: error.message });
+          throw error;
+        }
+        json(res, 200, {});
         break;
       }
 
@@ -1133,6 +1203,27 @@ function connectionData(connectors: Connectors, connection: Connection) {
   return { id, service, address, name, can: abilitiesOf(connectors, connection), status, connectedAt, refreshedAt };
 }
 
+/** A learning run as the app shows it to its owner: where it stands, what it learned from and set aside, and what it spent against its limit. */
+function learningData(run: Run, progress: Progress, words: { item: string; items: string }) {
+  const { state, reason, since, learnedUpTo, caughtUpAt, extending, limit, estimate, leftOut } = run;
+  return {
+    state,
+    reason,
+    since,
+    learnedUpTo,
+    caughtUp: caughtUpAt !== null,
+    extending,
+    limit,
+    estimate,
+    leftOut,
+    spent: progress.spent,
+    followed: progress.followed,
+    threads: progress.threads,
+    learned: progress.learned,
+    setAside: progress.setAside.map(({ reason, items }) => ({ reason, items, words: setAsideWords(reason, items, words) })),
+  };
+}
+
 function answer(res: ServerResponse, status: number, body: unknown): true {
   json(res, status, body);
   return true;
@@ -1142,7 +1233,7 @@ type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' | 'model use' | 'model limit' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'connect'; id: string; connector: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection' | 'estimate learning' | 'start learning' | 'pause learning' | 'resume learning' | 'extend learning' | 'learning limit' | 'learning left out'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -1211,6 +1302,13 @@ function routeOf(method: string, path: string): Route | undefined {
       ['add include', `/api/spaces/${uuid}/includes`],
       ['remove include', `/api/includes/${uuid}/remove`],
       ['remove place', `/api/places/${uuid}/remove`],
+      ['estimate learning', `/api/places/${uuid}/learning/estimate`],
+      ['start learning', `/api/places/${uuid}/learning/start`],
+      ['pause learning', `/api/places/${uuid}/learning/pause`],
+      ['resume learning', `/api/places/${uuid}/learning/resume`],
+      ['extend learning', `/api/places/${uuid}/learning/extend`],
+      ['learning limit', `/api/places/${uuid}/learning/limit`],
+      ['learning left out', `/api/places/${uuid}/learning/left-out`],
       ['revoke connection', `/api/connections/${uuid}/revoke`],
     ] as const) {
       const id = match(pattern);
