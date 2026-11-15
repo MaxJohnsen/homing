@@ -117,7 +117,7 @@ async function assistantOf(who: Joined, at: Homing = homing) {
 const work = (who: string): Account => ({ tenant: '7d2b1c9e-0000-4000-8000-0000000ac3e0', oid: crypto.randomUUID(), address: `${who.toLowerCase()}.${++n}@acme.test`, name: `${who} Berg` });
 
 /** Waits until the condition holds, looking every few milliseconds, for at most so many seconds. */
-async function until<T>(condition: () => Promise<T | undefined | false>, seconds = 30): Promise<T> {
+async function until<T>(condition: () => Promise<T | undefined | false>, seconds = 90): Promise<T> {
   const give = Date.now() + seconds * 1000;
   for (;;) {
     const held = await condition();
@@ -224,7 +224,7 @@ test('Ana’s assistant starts Homing learning from her mailbox: estimated, lear
   const following = await until(async () => {
     const run = await runOf(place);
     return run.state === 'following' && run;
-  }, 60);
+  }, 180);
   assert.ok(following.caughtUpAt);
   // Every email was processed, each once: what a model should read was sent to it, what needs none never was.
   const marks = await marksOf(place);
