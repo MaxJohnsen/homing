@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
+import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleLearning, sampleLearningConnections, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
 import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
@@ -98,6 +98,14 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/tasks': { label: 'A space’s tasks', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="tasks"><Tasks space={sampleSpace.closed} data={sampleTasks} actions={{ add: notSaved, done: notSaved, share: notSaved }} now={new Date('2026-10-20T10:00:00+02:00')} /></Space></InApp> },
   '/spaces/tasks/empty': { label: 'A space with no tasks', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="tasks"><Tasks space={sampleSpace.root} data={{ open: [], done: [] }} actions={{ add: notSaved, done: notSaved, share: notSaved }} /></Space></InApp> },
   '/spaces/connections': { label: 'A space’s connections: your mailbox, only for you', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleConnections} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/estimated': { label: 'Learning from your mailbox, estimated, before it starts', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.estimated)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/history': { label: 'Learning from your mailbox, through its history', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.history)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/at-limit': { label: 'Learning from your mailbox, paused at its limit', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.atLimit)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/paused': { label: 'Learning from your mailbox, paused', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.paused)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/following': { label: 'Learning from your mailbox, following what arrives', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.following)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/extending': { label: 'Learning from your mailbox, further back', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.extending)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/failing': { label: 'Learning from your mailbox, stopped after failing', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.failing)} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/learning/no-model': { label: 'A mailbox Homing can’t learn from yet, without a model', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(null, null)} actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/connected': { label: 'A space’s connections, just after connecting', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: sampleConnections.places.map((place) => ({ ...place, elsewhere: [] })) }} notice="connected" actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/empty': { label: 'A space with nothing connected yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/personal': { label: 'Your personal space’s connections', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="connections"><Connections space={sampleSpace.personal} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
@@ -271,6 +279,15 @@ const notCreated: CreateSpace = async () => ({ problem: 'Samples don’t create 
 const sampleConnectionActions: ConnectionActions = {
   connect: async () => 'Samples don’t connect anything.',
   remove: async () => 'Samples don’t save anything.',
+  learning: {
+    estimate: async () => 'Samples don’t reach a mailbox.',
+    start: async () => 'Samples don’t learn from anything.',
+    pause: async () => 'Samples don’t save anything.',
+    resume: async () => 'Samples don’t save anything.',
+    extend: async () => 'Samples don’t reach a mailbox.',
+    setLimit: async () => 'Samples don’t save anything.',
+    leaveOut: async () => 'Samples don’t save anything.',
+  },
 };
 
 const sampleAccountConnections: AccountConnectionActions = {

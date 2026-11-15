@@ -961,7 +961,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
                 // What the limit covers: what was spent, and the worst case of the calls under way.
                 spent: model.usage.reduce((sum, row) => sum + row.cost, 0),
                 underWay: model.usage.reduce((sum, row) => sum + row.underWay, 0),
-                people: model.usage.map((row) => ({ name: row.name, calls: row.calls, cost: row.cost + row.underWay, you: row.personId === person })),
+                // What learning from history cost, which each run's own limit covers, not the monthly one.
+                history: model.usage.reduce((sum, row) => sum + row.history, 0),
+                people: model.usage.map((row) => ({ name: row.name, calls: row.calls, cost: row.cost + row.underWay + row.history, you: row.personId === person })),
               }
             : null,
         });
@@ -992,8 +994,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               addedAt: place.addedAt,
               elsewhere: place.elsewhere,
               connection: connectionData(app.connectors, place.connection),
-              // Whether Homing can learn from a place of this kind, and how far it has.
+              // Whether Homing can learn from a place of this kind, how its items are worded, and how far it has learned.
               learns: Boolean(kind?.follow),
+              words: { place: kind?.words.place ?? 'place', item: kind?.words.item ?? 'item', items: kind?.words.items ?? 'items', thread: kind?.words.related ?? 'thread' },
               learning: learning ? learningData(learning.run, learning.progress, kind?.words ?? { item: 'item', items: 'items' }) : null,
             };
           }),

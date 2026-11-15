@@ -7,8 +7,10 @@ import { dateOf, focusRing, Section, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import type { AccountConnectionData, ConnectedAccountsData, ConnectionData, ConnectionNotice, PlaceData, SpaceConnectionsData } from '@/lib/connections';
+import type { ModelStatement } from '@/lib/model';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
+import { Learning, type LearningActions } from '@/screens/learning';
 
 /** What a space's Connections does. Each resolves to a message to show, or nothing when it worked. */
 export interface ConnectionActions {
@@ -16,6 +18,8 @@ export interface ConnectionActions {
   connect: (again?: string) => Promise<string | undefined>;
   /** Stops using something of yours in this space. The account stays connected. */
   remove: (placeId: string) => Promise<string | undefined>;
+  /** Starting and directing what Homing learns from something of yours here. */
+  learning?: LearningActions;
 }
 
 const deploymentGuide = 'https://github.com/MaxJohnsen/homing/blob/main/docs/deployment.md#microsoft-365';
@@ -49,7 +53,7 @@ export function Connections({ space, data, notice, actions }: { space: SpaceData
         {shown && (shown.problem ? <FieldError className="text-base">{shown.text}</FieldError> : <p role="status" className="text-base">{shown.text}</p>)}
         {data.places.length > 0 && (
           <ul className="flex flex-col gap-2">
-            {data.places.map((place) => <PlaceRow key={place.id} space={space} place={place} actions={actions} />)}
+            {data.places.map((place) => <PlaceRow key={place.id} space={space} place={place} model={data.model} actions={actions} />)}
           </ul>
         )}
       </Section>
@@ -58,7 +62,7 @@ export function Connections({ space, data, notice, actions }: { space: SpaceData
   );
 }
 
-function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceData; actions?: ConnectionActions }) {
+function PlaceRow({ space, place, model, actions }: { space: SpaceData; place: PlaceData; model?: ModelStatement | null; actions?: ConnectionActions }) {
   const { connection } = place;
   const here = space.personal ? 'your personal space' : space.name;
   const [removing, setRemoving] = useState(false);
@@ -88,6 +92,7 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
       {connection.status === 'needs attention' && (
         <p className="text-sm text-destructive">Microsoft stopped letting Homing in, so it isn’t used until you sign in again.</p>
       )}
+      <Learning place={place} model={model} actions={actions?.learning} />
       {actions && !removing && (
         <div className="flex flex-wrap gap-2">
           {connection.status === 'needs attention' && (

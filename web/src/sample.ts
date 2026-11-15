@@ -1,4 +1,4 @@
-import type { ConnectedAccountsData, ConnectionData, SpaceConnectionsData } from '@/lib/connections';
+import type { ConnectedAccountsData, ConnectionData, EstimateData, LearningData, SpaceConnectionsData } from '@/lib/connections';
 import type { AccountData } from '@/screens/account';
 import type { ChangeData, OverviewData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
@@ -103,11 +103,58 @@ export const sampleConnection: ConnectionData = {
   refreshedAt: '2026-10-24T09:30:00+02:00',
 };
 
+const mailboxWords = { place: 'mailbox', item: 'email', items: 'emails', thread: 'thread' };
+
 export const sampleConnections: SpaceConnectionsData = {
   microsoft: true,
   looksAfter: false,
-  places: [{ id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection }],
+  model: { provider: 'OpenRouter', capable: 'Claude Sonnet 5.5', cheaper: 'Claude Haiku 5.5' },
+  places: [
+    { id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection, learns: true, words: mailboxWords, learning: null },
+  ],
 };
+
+// What learning from Ana's mailbox two years back may cost, and the run at each point on its way.
+export const sampleEstimate: EstimateData = { since: '2024-11-15T00:00:00Z', until: null, items: 18240, threads: 5120, setAside: 7410, low: 0.86, high: 2.94, limit: 5, sampled: 100 };
+
+const sampleRun: LearningData = {
+  state: 'learning history',
+  reason: null,
+  since: '2024-11-15T00:00:00Z',
+  learnedUpTo: '2025-03-14T10:20:00Z',
+  caughtUp: false,
+  extending: null,
+  limit: 5,
+  spent: 0.42,
+  followed: 0,
+  estimate: sampleEstimate,
+  leftOut: { senders: ['newsletter@fjordsoftware.no'], folders: ['Receipts'] },
+  threads: 1204,
+  learned: 2610,
+  setAside: [
+    { reason: 'newsletter', items: 1140, words: '1,140 newsletters' },
+    { reason: 'automated', items: 388, words: '388 sent automatically' },
+    { reason: 'excluded folder', items: 96, words: '96 in folders you left out' },
+    { reason: 'junk', items: 41, words: '41 in junk' },
+  ],
+};
+
+export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'paused' | 'following' | 'extending' | 'failing', LearningData> = {
+  estimated: { ...sampleRun, state: 'estimating', learnedUpTo: null, spent: 0, threads: 0, learned: 0, setAside: [], leftOut: { senders: [], folders: [] } },
+  history: sampleRun,
+  atLimit: { ...sampleRun, state: 'paused', reason: 'limit', limit: 1, spent: 0.9984 },
+  paused: { ...sampleRun, state: 'paused', reason: 'person' },
+  following: { ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712 },
+  extending: { ...sampleRun, state: 'learning history', caughtUp: true, extending: { since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z' }, spent: 2.31, estimate: { ...sampleEstimate, since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z', items: 26020, threads: 7300, setAside: 10400, low: 1.2, high: 4.1 } },
+  failing: { ...sampleRun, state: 'needs attention', reason: 'failing' },
+};
+
+/** A space's connections with Ana's mailbox at a point in learning from it. */
+export const sampleLearningConnections = (learning: LearningData | null, model = sampleConnections.model): SpaceConnectionsData => ({
+  ...sampleConnections,
+  model,
+  places: sampleConnections.places.map((place) => ({ ...place, learning })),
+});
 
 export const sampleConnectedAccounts: ConnectedAccountsData = {
   microsoft: true,

@@ -189,6 +189,7 @@ export function ModelSpending({ data, setLimit }: { data: ModelSpendingData | nu
       <p className="text-base">
         This month learning has cost {usd(data.spent)} of its {usd(data.limit)} limit{data.underWay >= 0.005 ? `, with up to ${usd(data.underWay)} more under way` : ''}.
         {!data.pausedAt && data.spent + data.underWay >= data.limit && ' That’s all of it, so learning pauses before its next call.'}
+        {(data.history ?? 0) >= 0.005 && ` Learning from history has cost ${usd(data.history ?? 0)} more, which each person’s own limit for it holds.`}
       </p>
       {data.pausedAt && (
         <p className="rounded-xl bg-muted px-4 py-3 text-base">
