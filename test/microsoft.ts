@@ -149,6 +149,8 @@ export class MicrosoftStandIn {
   private readonly refusals = new Map<string, { error: string; number: number }>();
   /** Each account's mailbox, by the account's object id. */
   private readonly mailboxes = new Map<string, Mailbox>();
+  /** Accounts whose mailbox Graph can't serve for now, by the status it answers with. */
+  private readonly outages = new Map<string, number>();
   /** Accounts whose mailbox answers slowly, by how many milliseconds. */
   private readonly slowness = new Map<string, number>();
   /** How many milliseconds refreshing a sign-in takes. */
@@ -292,6 +294,12 @@ export class MicrosoftStandIn {
     return folder!;
   }
 
+  /** Graph can't serve the account's mailbox for now, as in an outage, or when it's asked too often, or serves it again with 0. */
+  outage(account: Account, status = 503) {
+    if (status) this.outages.set(account.oid, status);
+    else this.outages.delete(account.oid);
+  }
+
   /** The account's mailbox answers after this many milliseconds, or at once again with 0. */
   slow(account: Account, milliseconds: number) {
     this.slowness.set(account.oid, milliseconds);
@@ -321,6 +329,8 @@ export class MicrosoftStandIn {
       if (url.pathname === '/v1.0/me') {
         return { status: 200, body: { id: held.account.oid, displayName: held.account.name, mail: held.account.address, userPrincipalName: held.account.address } };
       }
+      const outage = this.outages.get(held.account.oid);
+      if (outage && url.pathname !== '/v1.0/me') return { status: outage, body: { error: { code: outage === 429 ? 'TooManyRequests' : 'ServiceUnavailable' } } };
       if (url.pathname.startsWith('/v1.0/me/mailFolders')) {
         if (held.account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
         return this.folders(held.account, url, String(req.headers.prefer ?? ''));

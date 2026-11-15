@@ -69,7 +69,7 @@ interface Client {
   /** The space's task and one only the person has. */
   tasks: string[];
   /** Their work mailbox, connected in the client's space only for them. */
-  connection: { id: string; place: string; address: string };
+  connection: { id: string; place: string; address: string; run: string };
   /** A call to Homing's model for them, carrying the client's space. */
   modelCall: string;
 }
@@ -318,6 +318,8 @@ describe('straight against the database', () => {
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
         const modelCalls = await s.tx`select id, spaces from model_calls`;
+        const runs = await s.tx`select place_id from learning_runs`;
+        const learned = await s.tx`select item from learned_items`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -338,6 +340,8 @@ describe('straight against the database', () => {
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
+        assert.deepEqual(runs.map((row) => row.placeId), [connection.place]);
+        assert.deepEqual(learned.map((row) => row.item), [`AAkALg-${connection.address}`]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -411,6 +415,27 @@ describe('straight against the database', () => {
       }
       assert.equal((await as(me, (s) => s.tx`select * from model_processing_of(${target.space}::uuid)`)).length, 0);
       await assert.rejects(as(me, (s) => s.tx`select * from model_usage_this_month()`), refused);
+
+      // Nor learn from the other's place, direct the other's run, spend against it, or mark anything processed for it or for a run of their own.
+      await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select estimate_learning(${target.connection.place}::uuid, now() - interval '1 year', '{}')`), refused);
+      for (const call of ['start_learning($1, 1)', 'pause_learning($1)', 'resume_learning($1)', "extend_learning($1, '2020-01-01', null)", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}')"]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx.unsafe(`select ${call}`, [target.connection.run])), refused, call);
+      }
+      await assert.rejects(as(me, (s) => s.tx`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array([intruder.space])}::uuid[], 0, ${target.connection.run}::uuid)`), refused);
+      for (const run of [target.connection.run, intruder.connection.run]) {
+        await assert.rejects(as(me, (s) => s.tx`
+          insert into learned_items (run_id, space_id, private_to, item, version, outcome) values (${run}, ${intruder.space}, ${me.id}, 'x', 'v', 'learned')
+        `), refused);
+        await assert.rejects(as(me, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
+        await assert.rejects(as(me, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', 'x', true, null, 1)`), refused);
+        await assert.rejects(as(me, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
+        await assert.rejects(as(me, (s) => s.tx`update learning_runs set spending_limit = 1000, private_to = ${me.id} where id = ${run}`), refused);
+        await assert.rejects(as(me, (s) => s.tx`delete from learned_items where run_id = ${run}`), refused);
+      }
+      await assert.rejects(as(me, (s) => s.tx`
+        insert into learning_runs (place_id, connection_id, space_id, private_to, since) values (${target.connection.place}, ${target.connection.id}, ${target.space}, ${me.id}, now())
+      `), refused);
+      await assert.rejects(as(me, (s) => s.tx`select * from claim_learning_run(${crypto.randomUUID()}::uuid, 60)`), refused);
 
       // Nor a proposal there, for anyone.
       for (const privateTo of [me.id, target.person.id]) {
@@ -736,7 +761,7 @@ async function client(
 
 /** Someone's work mailbox, connected in a space only for them, as signing in to Microsoft leaves it. */
 async function mailbox(who: { id: string }, space: string, address: string) {
-  return as({ person: who.id, direct: true }, async (s) => {
+  const connection = await as({ person: who.id, direct: true }, async (s) => {
     const account = crypto.randomUUID();
     const [{ connectionId }] = await s.tx<{ connectionId: string }[]>`
       select connect_account(${space}::uuid, 'microsoft', ${crypto.randomUUID()}, ${account}, ${address}, null, ${s.tx.array(['User.Read', 'Mail.Read'])}::text[]) as connection_id
@@ -753,8 +778,13 @@ async function mailbox(who: { id: string }, space: string, address: string) {
       insert into sources (space_id, private_to, reference, excerpt, read_through, audience)
       values (${space}, ${who.id}, ${`microsoft:${placeId}:AAkALg`}, ${`From: Gunnar <gunnar@${address.split('@')[1]}>`}, ${connectionId}, ${s.tx.json({ people: [{ name, address }], more: 0 })})
     `;
-    return { id: connectionId, place: placeId, address };
+    // Learning from it, estimated as Homing does before it starts. It waits to be started, so no worker picks it up.
+    const [{ run }] = await s.tx<{ run: string }[]>`select estimate_learning(${placeId}::uuid, now() - interval '1 year', ${s.tx.json({ limit: 5 })}) as run`;
+    return { id: connectionId, place: placeId, address, run };
   });
+  // And one email the run has processed, as its worker marks it.
+  await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome) values (${connection.run}, ${space}, ${who.id}, ${`AAkALg-${address}`}, 'v1', 'learned')`;
+  return connection;
 }
 
 describe('through the app’s endpoints', () => {
@@ -898,6 +928,13 @@ describe('through the app’s endpoints', () => {
         [`/api/pages/${target.pages.own}/archive`, { archived: true }],
         [`/api/spaces/${target.personalSpaceId}/archive`, { archived: true }],
         [`/api/places/${target.connection.place}/remove`, {}],
+        [`/api/places/${target.connection.place}/learning/estimate`, { since: '2025-01-01' }],
+        [`/api/places/${target.connection.place}/learning/start`, { limit: 5 }],
+        [`/api/places/${target.connection.place}/learning/pause`, {}],
+        [`/api/places/${target.connection.place}/learning/resume`, {}],
+        [`/api/places/${target.connection.place}/learning/extend`, { since: '2020-01-01' }],
+        [`/api/places/${target.connection.place}/learning/limit`, { limit: 1000 }],
+        [`/api/places/${target.connection.place}/learning/left-out`, { senders: ['x@x.test'], folders: [] }],
         [`/api/connections/${target.connection.id}/revoke`, {}],
         [`/api/spaces/${target.space}/connections/microsoft`, {}],
         [`/api/spaces/${target.space}/model-processing`, { on: false }],

@@ -111,8 +111,8 @@ export function generateMailbox(owner: Person, options: MailboxOptions = {}): Ge
   const hours = 60 * 60 * 1000;
   const start = until.getTime() - days * 24 * hours;
   const emails: Generated[] = [];
-  // Whole seconds, as a mailbox keeps them, and never past the mailbox's last day.
-  const at = (time: number) => new Date(Math.floor(Math.min(time, until.getTime() - 60_000) / 1000) * 1000);
+  // Whole seconds, as a mailbox keeps them.
+  const at = (time: number) => new Date(Math.floor(time / 1000) * 1000);
   const said = (when: Date) => `${when.getUTCDate()} ${['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'][when.getUTCMonth()]} ${when.getUTCFullYear()} at ${pad(when.getUTCHours())}:${pad(when.getUTCMinutes())}`;
   /** A reply's HTML: what its sender wrote, then the email it answers, quoted as Outlook does. */
   const quoting = (own: string, earlier: Generated) =>
@@ -200,7 +200,8 @@ export function generateMailbox(owner: Person, options: MailboxOptions = {}): Ge
       emails.push({ kind: 'draft', conversation, from: owner, to: [pick(colleagues)], subject: 'Thoughts on next year', html: paragraph('A few loose thoughts, not ready to send yet.'), at: at(began), folder: 'drafts', draft: true });
     }
   }
-  return emails.sort((a, b) => a.at.getTime() - b.at.getTime());
+  // What would come after the mailbox's last day hasn't arrived yet: a reply still to come, or a correction.
+  return emails.filter((email) => email.at.getTime() <= until.getTime()).sort((a, b) => a.at.getTime() - b.at.getTime());
 }
 
 if (import.meta.main) {

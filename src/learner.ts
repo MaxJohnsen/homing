@@ -54,10 +54,12 @@ export function startLearner(sql: Sql, l: Learning, options: LearnerOptions = {}
   const worker = randomUUID();
   const stopping = new AbortController();
   const working = new Set<Promise<void>>();
-  let looking = false;
-  const look = async () => {
+  let looking: Promise<void> | undefined;
+  const look = () => {
     if (looking || stopping.signal.aborted) return;
-    looking = true;
+    looking = claimDue().finally(() => (looking = undefined));
+  };
+  const claimDue = async () => {
     try {
       while (!stopping.signal.aborted && working.size < pace.atOnce) {
         const claimed = await claim(sql, worker, pace.leaseSeconds);
@@ -67,23 +69,23 @@ export function startLearner(sql: Sql, l: Learning, options: LearnerOptions = {}
           .finally(() => {
             working.delete(work);
             // The run's next page, or another run, without waiting for the next look.
-            void look();
+            look();
           });
         working.add(work);
       }
     } catch (error) {
       console.error('learning: looking for runs that need work failed:', error);
-    } finally {
-      looking = false;
     }
   };
-  const timer = setInterval(() => void look(), pace.tickMs);
+  const timer = setInterval(look, pace.tickMs);
   timer.unref();
-  void look();
+  look();
   return {
     stop: async () => {
       stopping.abort();
       clearInterval(timer);
+      // A run claimed this very moment is handed back too, before anything is asked of its place.
+      await looking;
       while (working.size) await Promise.allSettled([...working]);
     },
   };
@@ -146,8 +148,8 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
     }
   };
   const failing = () => later(Math.min(pace.backoffSeconds * 2 ** run.attempts, 3600), 'failing');
-  // Removed meanwhile, or its account revoked: the next look ends the run.
-  if (!place) return later(0);
+  // Removed meanwhile, or its account revoked: the next look ends the run. And Homing stopping asks nothing more.
+  if (!place || signal.aborted) return later(0);
   const connector = l.broker.connectors.get(place.connector);
   const follow = kindOf(connector, place.kind)?.follow;
   if (!connector || !follow) return later(0, 'not set up');

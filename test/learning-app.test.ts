@@ -72,8 +72,10 @@ interface Sent {
   earlierNote?: string;
 }
 const sentIn = (body: any): Sent => JSON.parse(body.messages[1].content);
-/** Every email the model was sent since a point, as "date subject". */
-const sentSince = (from: number) => provider.asked.slice(from).flatMap((asked) => sentIn(asked.body).emails.map((email) => `${email.Date} ${email.Subject}`));
+/** An email as the model is sent it, as "date, sender, subject", to the minute. */
+const keyOf = (email: { at: Date; from: { name: string; address: string }; subject: string }) => `${email.at.toISOString().slice(0, 16).replace('T', ' ')} UTC, ${email.from.name} <${email.from.address}>, ${email.subject}`;
+/** Every email the model was sent since a point, as "date, sender, subject". */
+const sentSince = (from: number) => provider.asked.slice(from).flatMap((asked) => sentIn(asked.body).emails.map((email) => `${email.Date}, ${email.From}, ${email.Subject}`));
 
 /** The stand-in model writes a note that says which email it read last, and whether it had a note already. */
 function noteReply(body: any): Reply {
@@ -83,8 +85,8 @@ function noteReply(body: any): Reply {
 }
 
 /** Someone who joined this Homing with an invite and a passkey, signed in to their own browser. */
-async function join(name: string): Promise<Joined> {
-  const browser = new Browser(homing.url);
+async function join(name: string, at: Homing = homing): Promise<Joined> {
+  const browser = new Browser(at.url);
   const token = randomBytes(32).toString('base64url');
   const email = `${name.toLowerCase()}-${randomBytes(4).toString('hex')}@example.test`;
   await owner`insert into invites (hash, expires_at, email) values (${createHash('sha256').update(token).digest()}, now() + interval '1 hour', ${email})`;
@@ -106,8 +108,8 @@ async function connectMailbox(who: Joined, space: string, account: Account): Pro
   return id;
 }
 
-async function assistantOf(who: Joined) {
-  const assistant = new Assistant(homing.url);
+async function assistantOf(who: Joined, at: Homing = homing) {
+  const assistant = new Assistant(at.url);
   await assistant.connect(who.browser);
   return assistant;
 }
@@ -230,7 +232,8 @@ test('Ana’s assistant starts Homing learning from her mailbox: estimated, lear
   const sent = sentSince(asked);
   assert.equal(new Set(sent).size, sent.length, 'no email was sent twice');
   assert.equal(sent.length, mailbox.filter(kept).length);
-  for (const email of mailbox.filter((email) => !kept(email))) assert.ok(!sent.some((one) => one.endsWith(` ${email.subject}`)), email.subject);
+  assert.deepEqual([...sent].sort(), mailbox.filter(kept).map(keyOf).sort());
+  for (const email of mailbox.filter((email) => !kept(email))) assert.ok(!sent.includes(keyOf(email)), email.subject);
   const count = (reason: string) => marks.filter((mark) => mark.reason === reason).length;
   const of = (kind: Generated['kind']) => mailbox.filter((email) => email.kind === kind).length;
   assert.deepEqual(
@@ -260,7 +263,7 @@ test('Ana’s assistant starts Homing learning from her mailbox: estimated, lear
   microsoft.deliver(account, { from: gunnar, to: [{ name: account.name, address: account.address }], subject: 'Northwind steering group', html: '<p>Hi Ana,</p><p>The Northwind steering group meets on 3 December at ten.</p><p>Gunnar</p>', at: new Date() });
   microsoft.deliver(account, { from: { name: 'The Weekly Digest', address: 'news@weekly-digest.test' }, subject: 'This week in consulting, issue 999', html: '<p>Read on.</p>', at: new Date(), headers: { 'List-Unsubscribe': '<https://weekly-digest.test/u>' } });
   await until(async () => (await marksOf(place)).length === mailbox.length + 2);
-  assert.deepEqual(sentSince(then).map((one) => one.replace(/^\S+ \S+ UTC /, '')), ['Northwind steering group']);
+  assert.deepEqual(sentSince(then).map((one) => one.split(', ').at(-1)), ['Northwind steering group']);
   // It costs what following costs, against the monthly limit, not the run's.
   const [last] = await owner`select run_history, cost from model_calls where run_id = ${following.id} order by started_at desc limit 1`;
   assert.equal(last.runHistory, false);
@@ -313,4 +316,141 @@ test('Ana’s assistant starts Homing learning from her mailbox: estimated, lear
   assert.deepEqual([(await runOf(place)).state, (await runOf(place)).spendingLimit], ['following', '5.00']);
   await claude.close();
   await caras.close();
+});
+
+test('Ana leaves out a sender and a folder, and pauses, resumes and extends her run, in the app and through her assistant', async () => {
+  const ana = await join('Ana');
+  const acme = await withPrincipal(sql, { person: ana.id, direct: true }, (s) => createSpace(s, { name: 'Acme' }));
+  const account = work('Ana');
+  const place = await connectMailbox(ana, acme, account);
+  const now = new Date();
+  const mailbox = generateMailbox({ name: account.name, address: account.address }, { seed: 7, conversations: 200, days: 300, until: now });
+  for (const email of mailbox) microsoft.deliver(account, email);
+  const claude = await (await assistantOf(ana)).open();
+  const learning = `learning:${place}`;
+  const days = (count: number) => new Date(now.getTime() - count * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const shown = async () => (await ana.browser.json(`/api/spaces/${acme}/connections`)).body;
+  const post = (path: string, body: unknown = {}) => ana.browser.json(`/api/places/${place}/learning/${path}`, body);
+  const asked = provider.asked.length;
+
+  // In the app, Ana sees that Homing can learn from it and which provider would read it, and asks what the last 100 days would cost.
+  assert.deepEqual([(await shown()).places[0].learns, (await shown()).places[0].learning, (await shown()).model.cheaper], [true, null, 'test/cheaper']);
+  assert.equal((await post('estimate', {})).status, 400);
+  assert.equal((await post('estimate', { since: days(100) })).status, 200);
+  const estimated = (await shown()).places[0].learning;
+  assert.equal(estimated.state, 'estimating');
+  assert.equal(estimated.estimate.items, mailbox.filter((email) => email.at >= new Date(days(100))).length);
+  assert.ok(estimated.estimate.low <= estimated.estimate.high && estimated.estimate.limit === 1 && estimated.estimate.sampled > 0);
+
+  // Before it starts, she leaves out her receipts folder, in the app, and Tor's forwards, through her assistant.
+  assert.equal((await post('left-out', { senders: [], folders: ['Receipts'] })).status, 200);
+  const left = await claude.call('act', { action: 'learning.leave_out', input: { from: learning, senders: ['Tor@acme.test'] } });
+  assert.ok(!left.failed && left.text.startsWith('Left out'), left.text);
+  assert.deepEqual((await shown()).places[0].learning.leftOut, { senders: ['tor@acme.test'], folders: ['Receipts'] });
+  assert.equal((await post('start', { limit: 'lots' })).status, 400);
+  assert.equal((await post('start', { limit: 2 })).status, 200);
+  await until(async () => (await runOf(place)).state === 'following');
+
+  // What she left out was set aside, counted, and never sent.
+  const inScope = mailbox.filter((email) => email.at >= new Date(days(100)));
+  const marks = await marksOf(place);
+  const count = (reason: string) => marks.filter((mark) => mark.reason === reason).length;
+  const [receipts, tors] = [inScope.filter((email) => email.kind === 'receipt'), inScope.filter((email) => email.from.address === 'tor@acme.test')];
+  assert.ok(receipts.length > 0 && tors.length > 0);
+  assert.deepEqual([count('excluded folder'), count('excluded sender')], [receipts.length, tors.length]);
+  const sent = sentSince(asked);
+  for (const email of [...receipts, ...tors]) assert.ok(!sent.includes(keyOf(email)), email.subject);
+  assert.deepEqual([...sent].sort(), inScope.filter((email) => kept(email) && !receipts.includes(email) && !tors.includes(email)).map(keyOf).sort());
+  assert.equal(marks.length, inScope.length);
+  const progress = (await shown()).places[0].learning;
+  assert.deepEqual(progress.setAside.filter((aside: { reason: string }) => aside.reason.startsWith('excluded')).map((aside: { words: string }) => aside.words).sort(), [
+    `${receipts.length} in folders you left out`, `${tors.length} from senders you left out`,
+  ].sort());
+  const read = (await claude.call('read', { ref: learning })).text;
+  assert.ok(read.includes(`${tors.length} from senders the user left out`) && read.includes('Leaves out mail from "tor@acme.test".') && read.includes('Leaves out the folders "Receipts".'), read);
+
+  // Her assistant pauses it, and she resumes it in the app.
+  const paused = await claude.call('act', { action: 'learning.pause', input: { from: learning } });
+  assert.match(paused.text, /^Paused\. Homing keeps where it is/);
+  assert.deepEqual([(await shown()).places[0].learning.state, (await shown()).places[0].learning.reason], ['paused', 'person']);
+  assert.match((await claude.call('context', { request: 'mail', space: `space:${acme}` })).text, new RegExp(`Homing learns from ${account.address}: paused \\(${learning}\\)\\.`));
+  assert.equal((await post('resume')).status, 200);
+  assert.equal((await shown()).places[0].learning.state, 'following');
+  assert.match((await claude.call('act', { action: 'learning.resume', input: { from: learning } })).text, /isn't paused, so nothing changed/);
+  assert.equal((await post('pause')).status, 200);
+  assert.match((await claude.call('act', { action: 'learning.resume', input: { from: learning } })).text, /^Resumed\./);
+
+  // Her assistant extends it to the whole mailbox: only what that adds is learned from, under the same limit, which only she raises.
+  const then = provider.asked.length;
+  const extended = await claude.call('act', { action: 'learning.extend', input: { from: learning, since: days(301) } });
+  assert.ok(!extended.failed, extended.text);
+  assert.match(extended.text, new RegExp(`^Extended\\. Homing also learns from the user's mailbox ${account.address} back to ${days(301)}, and only from what that adds\\. Microsoft counts ${mailbox.length - inScope.length} emails from ${days(301)} to ${days(100)}\\.`));
+  assert.match(extended.text, /Its limit stays \$2\.00, with \$1\.9\d+ left, and it pauses there\. Only the user raises it, in Homing/);
+  await until(async () => (await runOf(place)).state === 'following' && (await marksOf(place)).length === mailbox.length);
+  const added = sentSince(then);
+  assert.equal(new Set([...sent, ...added]).size, sent.length + added.length, 'nothing was sent twice');
+  const older = mailbox.filter((email) => email.at < new Date(days(100)));
+  assert.equal(added.length, older.filter((email) => kept(email) && email.kind !== 'receipt' && email.from.address !== 'tor@acme.test').length);
+  assert.match((await claude.call('act', { action: 'learning.extend', input: { from: learning, since: days(200) } })).text, /already learns from .* back to .*, so nothing changed/);
+  assert.equal((await post('extend', { since: days(200) })).status, 409);
+
+  // She takes Tor off the list again, through her assistant, and raises the limit in the app.
+  await claude.call('act', { action: 'learning.leave_out', input: { from: learning, senders: ['tor@acme.test'], remove: true } });
+  assert.deepEqual((await shown()).places[0].learning.leftOut, { senders: [], folders: ['Receipts'] });
+  assert.equal((await post('limit', { limit: '$10' })).status, 200);
+  assert.equal((await shown()).places[0].learning.limit, 10);
+  // Started, it isn't estimated or started again.
+  assert.equal((await post('estimate', { since: days(10) })).status, 409);
+  assert.equal((await post('start', { limit: 1 })).status, 409);
+  const twice = await claude.call('act', { action: 'learning.start', input: { from: learning, since: days(10) } });
+  assert.ok(twice.failed && /Homing already learns from/.test(twice.text), twice.text);
+  await claude.close();
+});
+
+test('without a model, starting to learn says plainly that Homing has none, and nothing runs', async () => {
+  // This Homing has no model, and it's the only one running on the database.
+  await homing.close();
+  const bare = await start({ port: 0, model: null });
+  try {
+    const ana = await join('Ana', bare);
+    const acme = await withPrincipal(sql, { person: ana.id, direct: true }, (s) => createSpace(s, { name: 'Acme' }));
+    const account = work('Ana');
+    const place = await connectMailbox(ana, acme, account);
+    microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, subject: 'Budget', html: '<p>The budget is approved.</p>', at: new Date(Date.now() - 86_400_000) });
+    const claude = await (await assistantOf(ana, bare)).open();
+    const [asked, graph] = [provider.asked.length, microsoft.asked.graph];
+    const none = 'Homing has no model set up, so it can’t learn from a connected source yet. Whoever looks after Homing can set one up.';
+
+    // Context offers nothing that can't work, and asking for it anyway says why not.
+    assert.doesNotMatch((await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text, /learn/i);
+    for (const input of [{ since: '2025-01-01' }, { since: '2025-01-01', limit: 1 }]) {
+      const answer = await claude.call('act', { action: 'learning.start', input: { from: `learning:${place}`, ...input } });
+      assert.ok(answer.failed);
+      assert.equal(answer.text, none);
+    }
+    assert.ok((await claude.call('read', { ref: `learning:${place}` })).text.endsWith(`Homing hasn’t learned from it. ${none}`));
+    const inApp = await ana.browser.json(`/api/places/${place}/learning/estimate`, { since: '2025-01-01' });
+    assert.deepEqual([inApp.status, inApp.body.message], [409, none]);
+    const shown = (await ana.browser.json(`/api/spaces/${acme}/connections`)).body;
+    assert.deepEqual([shown.model, shown.places[0].learns, shown.places[0].learning], [null, true, null]);
+
+    // Nothing was estimated, started, fetched or sent, and no worker runs to pick anything up.
+    assert.equal(await runOf(place), undefined);
+    assert.deepEqual([provider.asked.length, microsoft.asked.graph], [asked, graph]);
+    // Even a run that was started while Homing had a model stays where it is.
+    await owner`
+      insert into learning_runs (place_id, connection_id, space_id, private_to, since, state, spending_limit, estimate)
+      select p.id, p.connection_id, p.space_id, p.private_to, now() - interval '30 days', 'learning history', 5, null from places p where p.id = ${place}
+    `;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.deepEqual([(await runOf(place)).checkpoint, (await marksOf(place)).length, provider.asked.length, microsoft.asked.graph], [null, 0, asked, graph]);
+    assert.match((await claude.call('read', { ref: `learning:${place}` })).text, /Homing has no model set up now, so it waits\.$/);
+    const resumed = await ana.browser.json(`/api/places/${place}/learning/resume`, {});
+    assert.deepEqual([resumed.status, resumed.body.message], [409, none]);
+    await owner`update learning_runs set state = 'done', reason = 'removed' where place_id = ${place}`;
+    await claude.close();
+  } finally {
+    await bare.close();
+    homing = await start();
+  }
 });

@@ -316,13 +316,14 @@ export const nothingThere = 'There’s nothing of yours connected there to learn
  * assistant.
  */
 export async function estimateLearning(l: Learning, principal: Principal, placeId: string, since: Date): Promise<Run> {
-  if (!l.model) throw new LearningRefused(noModel);
-  checked(since);
   const found = await withPrincipal(l.broker.sql, principal, async (s) => {
     const place = await ownPlace(s, placeId);
     return place && { place, run: (await runsFor(s, [placeId])).get(placeId) };
   });
+  // Anyone else's place gets this answer whatever else holds, so it says nothing about the place.
   if (!found) throw new LearningRefused(nothingThere);
+  if (!l.model) throw new LearningRefused(noModel);
+  checked(since);
   if (found.run && found.run.state !== 'estimating') throw new LearningRefused('Learning there has already started. To learn further back, extend it.');
   let made: Estimate;
   try {
@@ -370,13 +371,13 @@ export async function resumeLearning(l: Learning, s: Session, run: Run): Promise
  * reaches that far back.
  */
 export async function extendLearning(l: Learning, principal: Principal, placeId: string, since: Date): Promise<Estimate | undefined> {
-  if (!l.model) throw new LearningRefused(noModel);
-  checked(since);
   const found = await withPrincipal(l.broker.sql, principal, async (s) => {
     const place = await ownPlace(s, placeId);
     return place && { place, run: (await runsFor(s, [placeId])).get(placeId) };
   });
   if (!found?.run) throw new LearningRefused(found ? 'Learning there hasn’t started yet.' : nothingThere);
+  if (!l.model) throw new LearningRefused(noModel);
+  checked(since);
   const { run, place } = found;
   if (run.state === 'estimating') throw new LearningRefused('Learning there hasn’t started yet. Estimate it again from the day you want instead.');
   if (since.getTime() >= run.since.getTime()) return undefined;
