@@ -17,7 +17,7 @@ import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } f
 import { Unusable, type Ask, type Learned } from './interpret.ts';
 import { addSource, createPage, insertItem, updateItem, visible } from './knowledge.ts';
 import { asOwner, batchesOf, setAside, type Learning, type Run } from './learning.ts';
-import { callModel, ModelFailed, ModelRefused, modelProcessingOf } from './model.ts';
+import { callModel, ModelFailed, ModelRefused } from './model.ts';
 import { ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
 
 /** How the worker paces itself. Tests set it faster. */
@@ -198,25 +198,21 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
   const words = wordsOf(connector, place.kind);
   for (const batch of batchesOf(fresh.filter((change) => !aside.some((one) => one.change === change)))) {
     if (signal.aborted) return later(0);
-    // Its owner may have paused it, or turned model processing off where it lands, a moment ago.
+    // Its owner may have paused it a moment ago.
     const now = await withPrincipal(sql, principal, async (s) => {
       const [row] = await s.tx<{ state: Run['state'] }[]>`select state from learning_runs where id = ${run.id}::uuid and claimed_by = ${worker}::uuid`;
-      return row && { state: row.state, processing: await modelProcessingOf(s, place.space), earlier: await earlierNote(s, run, batch.thread) };
+      return row && { state: row.state, earlier: await earlierNote(s, run, batch.thread) };
     });
     if (!now) return;
     if (!['learning history', 'following'].includes(now.state)) return later(0);
     const off = (reason: string) => withPrincipal(sql, principal, (s) => mark(s, run, worker, batch.changes.map((change) => markOf(change, 'set aside', reason)), null));
-    // Never sent: it's kept from Homing's model there, so it's set aside, saying so.
-    if (!now.processing?.on) {
-      await off('model processing off');
-      continue;
-    }
     let learned: Learned;
     try {
       learned = await l.interpretation.learn({ space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: now.earlier?.text ?? null }, ask);
     } catch (error) {
       if (error instanceof ModelRefused) {
-        // Turned off between looking and calling: nothing was sent.
+        // Model processing is off where it lands: the one place Homing calls a model refused it before
+        // anything was sent, so the thread is set aside as not processed, saying so.
         if (error.reason === 'model processing off') {
           await off('model processing off');
           continue;

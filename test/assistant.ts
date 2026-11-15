@@ -24,6 +24,9 @@ function metadata(clientId: string, name: string) {
   };
 }
 
+/** An assistant from a trusted site that calls itself what Homing's own routines go by. */
+export const namesake = metadata('https://claude.test/oauth/homing.json', ' homing ');
+
 /** A site Homing doesn't trust, which publishes a metadata document all the same. */
 export const stranger = metadata('https://stranger.test/oauth/metadata.json', 'Claude');
 
@@ -37,7 +40,7 @@ export const testAssistants = {
 /** Stands in for the assistants' sites, which are outside Homing. */
 export async function fetchClientMetadata(input: RequestInfo | URL): Promise<Response> {
   const url = input instanceof Request ? input.url : String(input);
-  const document = [...Object.values(assistants), stranger].find((assistant) => assistant.client_id === url);
+  const document = [...Object.values(assistants), namesake, stranger].find((assistant) => assistant.client_id === url);
   return document ? Response.json(document) : new Response('Not found', { status: 404 });
 }
 

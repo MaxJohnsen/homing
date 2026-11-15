@@ -308,10 +308,17 @@ test('Ana’s assistant starts Homing learning from her mailbox: estimated, lear
     const [theirs, none] = [await cara.browser.json(`/api/places/${place}/learning/${path}`, body), await cara.browser.json(`/api/places/${crypto.randomUUID()}/learning/${path}`, body)];
     assert.deepEqual([theirs.status, theirs.body], [404, none.body], path);
   }
-  // Her pages, sources and counts there hold nothing of it, and what she spent says nothing.
-  assert.deepEqual((await cara.browser.json(`/api/spaces/${acme}/pages`)).body.pages, []);
-  assert.deepEqual((await cara.browser.json(`/api/spaces/${acme}/sources`)).body.sources, []);
+  // Her pages, sources and counts there hold nothing of it, nor does the space's overview or what changed, and what she spent says nothing.
+  const [pages, kept2] = [(await cara.browser.json(`/api/spaces/${acme}/pages`)).body, (await cara.browser.json(`/api/spaces/${acme}/sources`)).body];
+  assert.deepEqual([pages.pages, pages.total, kept2.sources, kept2.total], [[], 0, [], 0]);
+  for (const path of [`/api/spaces/${acme}/overview`, '/api/changes', `/api/spaces/${acme}`, '/api/connections', '/api/waiting']) {
+    assert.doesNotMatch(JSON.stringify((await cara.browser.json(path)).body), /noted|Emails in|learn|mailbox|acme\.test/i, path);
+  }
   assert.deepEqual((await cara.browser.json('/api/model')).body.uses, []);
+  // Ana's own show it, so they'd show a leak.
+  assert.ok((await ana.browser.json(`/api/spaces/${acme}/pages`)).body.total > 10);
+  assert.match(JSON.stringify((await ana.browser.json('/api/changes')).body), /noted/);
+  assert.equal((await ana.browser.json('/api/model')).body.uses[0].calls, provider.asked.length - asked);
   // The run is untouched by all of it.
   assert.deepEqual([(await runOf(place)).state, (await runOf(place)).spendingLimit], ['following', '5.00']);
   await claude.close();

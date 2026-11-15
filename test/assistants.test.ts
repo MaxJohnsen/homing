@@ -10,7 +10,7 @@ import { createSpace } from '../src/spaces.ts';
 import { signJWT } from 'better-auth/plugins';
 import { calculateJwkThumbprint, exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { createHash, randomUUID } from 'node:crypto';
-import { Assistant, assistants, stranger, testAssistants } from './assistant.ts';
+import { Assistant, assistants, namesake, stranger, testAssistants } from './assistant.ts';
 import { admin, as, authDb, db, member } from './helpers.ts';
 import { inTestDatabase } from './reset.ts';
 
@@ -53,6 +53,20 @@ test('an assistant acts as the person who signed in and allowed it', async () =>
   const me = await ana.browser.json('/api/me');
   assert.deepEqual(me.body.assistants.map((assistant: { name: string }) => assistant.name), ['Claude']);
   assert.equal(me.body.mcpUrl, new URL('/mcp', homing.url).toString());
+});
+
+test('no assistant goes by the name of Homing’s own routines, so what one saved is never taken for what Homing learned', async () => {
+  const ana = await member(homing.url, 'Ana');
+  const acme = await as(ana, (s) => createSpace(s, { name: 'Acme' }));
+  const impostor = new Assistant(homing.url, namesake);
+  await impostor.connect(ana.browser);
+  const session = await impostor.open();
+  const saved = await session.call('remember', { space: `space:${acme}`, text: 'Acme launches on 1 March' });
+  assert.equal(saved.failed, false, saved.text);
+  // It goes by its site's name instead, here and wherever the person sees it.
+  const [item] = await admin`select agent from content where body = 'Acme launches on 1 March' and space_id = ${acme}`;
+  assert.equal(item.agent, 'claude.test');
+  assert.deepEqual((await ana.browser.json('/api/me')).body.assistants.map((assistant: { name: string }) => assistant.name), ['claude.test']);
 });
 
 test('an assistant that hasn’t signed in gets nothing, and is told where to sign in', async () => {

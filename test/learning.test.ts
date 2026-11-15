@@ -719,7 +719,7 @@ test('where model processing is off, a run sets threads aside as not processed, 
   assert.equal((await run()).state, 'following');
   assert.equal((await owner`select count(*)::integer as calls from model_calls where run_id = ${(await run()).id}`)[0].calls, 0);
 
-  // Turned off between Homing looking and calling, the database still refuses, and the thread is set aside.
+  // Turned off just as Homing is about to call, the database still refuses, and the thread is set aside.
   await withPrincipal(sql, me, (s) => setModelProcessing(s, acme, true));
   microsoft.deliver(account, email('Arrives as it is turned off', 0));
   const turningOff: Interpretation = {

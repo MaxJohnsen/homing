@@ -322,7 +322,6 @@ export async function estimateLearning(l: Learning, principal: Principal, placeI
   });
   // Anyone else's place gets this answer whatever else holds, so it says nothing about the place.
   if (!found) throw new LearningRefused(nothingThere);
-  if (!l.model) throw new LearningRefused(noModel);
   checked(since);
   if (found.run && found.run.state !== 'estimating') throw new LearningRefused('Learning there has already started. To learn further back, extend it.');
   let made: Estimate;
@@ -376,7 +375,6 @@ export async function extendLearning(l: Learning, principal: Principal, placeId:
     return place && { place, run: (await runsFor(s, [placeId])).get(placeId) };
   });
   if (!found?.run) throw new LearningRefused(found ? 'Learning there hasn’t started yet.' : nothingThere);
-  if (!l.model) throw new LearningRefused(noModel);
   checked(since);
   const { run, place } = found;
   if (run.state === 'estimating') throw new LearningRefused('Learning there hasn’t started yet. Estimate it again from the day you want instead.');
