@@ -290,7 +290,7 @@ async function write(s: Session, l: Learning, run: Claim, worker: string, place:
       order by c.created_at limit 1
     `;
     // An item of its own, even when another thread's note says the same: each is kept up to date apart.
-    const pageId = page?.id ?? (await createPage(s, { spaceId: place.space, title: learned.page, type: 'notes' }));
+    const pageId = page?.id ?? (await createPage(s, { spaceId: place.space, title: learned.page }));
     note = (await insertItem(s, { pageId, spaceId: place.space, privateTo: run.owner, kind: 'text', body: learned.text, sources })).id;
   }
   await mark(s, run, worker, changes.map((change) => markOf(change, 'learned', null)), note);

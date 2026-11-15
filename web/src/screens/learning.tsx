@@ -168,7 +168,7 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
 
 /** Where a run stands, as a sentence. */
 function standing(run: LearningData, words: { place: string }, service: string): string {
-  const back = `back to ${dateOf(run.since)}`;
+  const back = run.since.startsWith('1990') ? 'as far back as it goes' : `back to ${dateOf(run.since)}`;
   const upTo = run.learnedUpTo ? ` It’s up to ${dateOf(run.learnedUpTo)}.` : '';
   switch (run.state) {
     case 'learning history':
