@@ -845,41 +845,37 @@ test('an import too big to take out in one statement is taken out a step at a ti
     from: { instance: 'https://elsewhere.test', exportedBy: 'Ana', exportedAt: now, space: crypto.randomUUID() },
     spaces: [{ id: spaces[0], name: 'Too big at once', parent: null, closed: false, archivedAt: null, imported: {} }, { id: spaces[1], name: 'Below', parent: spaces[0], closed: false, archivedAt: null, imported: {} }],
   })}) as id`)[0].id);
-  // Thirty thousand items, with sources, citations, earlier versions and tasks, written a thousand
-  // at a time, each part a load of its own with its number, as loading does.
-  for (let part = 0; part < 30; part++) {
+  // Eighteen thousand items, with sources, citations, earlier versions and tasks, written three
+  // hundred at a time, each part a load of its own with its number, as loading does.
+  for (let part = 0; part < 60; part++) {
     await admin.begin(async (s) => {
       await s`select set_config('homing.person_id', ${ana.id}, true), set_config('homing.direct', 'true', true)`;
       const [{ load }] = await s<{ load: number }[]>`update imports set loaded = loaded + 1 where id = ${made} returning loaded as load`;
-      await s`create temp table part on commit drop as select gen_random_uuid() as id, (${s.array(spaces)}::uuid[])[1 + n % 2] as space_id from generate_series(1, 100) n`;
+      await s`create temp table part on commit drop as select gen_random_uuid() as id, (${s.array(spaces)}::uuid[])[1 + n % 2] as space_id from generate_series(1, 30) n`;
       await s`insert into pages (id, space_id, imported) select id, space_id, '{}' from part`;
       await s`insert into content (page_id, space_id, kind, body, imported, import_load) select id, space_id, 'title', 'Page ' || id, '{}', ${load} from part`;
       await s`insert into content (page_id, space_id, kind, body, imported, import_load) select id, space_id, 'text', 'Note ' || n || ' on ' || id, '{}', ${load} from part, generate_series(1, 9) n`;
-      await s`create temp table cited on commit drop as select gen_random_uuid() as id, n from generate_series(1, 250) n`;
+      await s`create temp table cited on commit drop as select gen_random_uuid() as id, n from generate_series(1, 75) n`;
       await s`insert into sources (id, space_id, excerpt, imported) select id, ${spaces[0]}::uuid, 'Email ' || n, '{}' from cited`;
       await s`
         insert into citations (content_id, source_id)
         select c.id, cited.id from (select id, row_number() over () as n from content where page_id in (select id from part) and kind = 'text') c
         join cited on cited.n = c.n
       `;
-      await s`insert into revisions (content_id, space_id, body, written_at, replaced_at, imported) select id, space_id, 'Before', now(), now(), '{}' from content where page_id in (select id from part) and kind = 'text' limit 250`;
-      await s`insert into tasks (space_id, title, imported) select ${spaces[0]}::uuid, 'Follow up ' || n, '{}' from generate_series(1, 100) n`;
+      await s`insert into revisions (content_id, space_id, body, written_at, replaced_at, imported) select id, space_id, 'Before', now(), now(), '{}' from content where page_id in (select id from part) and kind = 'text' limit 75`;
+      await s`insert into tasks (space_id, title, imported) select ${spaces[0]}::uuid, 'Follow up ' || n, '{}' from generate_series(1, 30) n`;
     });
   }
-  // A statement may take a fraction of a second here, too little to take it all out at once.
-  const timeout = 400;
-  await assert.rejects(admin.begin(async (s) => {
-    await s.unsafe(`set local statement_timeout = ${timeout}`);
-    await s.unsafe(`do $$ declare made uuid[] := '{${spaces.join(',')}}'; begin
-      delete from tasks where space_id = any (made);
-      delete from revisions where space_id = any (made);
-      delete from citations ci using content c where c.id = ci.content_id and c.space_id = any (made);
-      delete from content where space_id = any (made);
-      delete from sources where space_id = any (made);
-      delete from pages where space_id = any (made);
-    end $$`);
-  }), { code: '57014' });
-  // Each step takes out at most 250 rows of one kind, or the items one load brought, a thousand.
+  // Each step takes out at most 150 rows of one kind, or the items one load brought, three hundred.
+  // Every step in one statement, undone, shows how long taking it all out at once takes here. A
+  // statement may take a third of that, however fast or busy the machine: too little to take it
+  // all out at once, and many times what a step needs.
+  const started = performance.now();
+  await assert.rejects(as({ ...ana, direct: true }, async (s) => {
+    await s.tx.unsafe(`do $$ begin while not import_discard('${made}', 150) loop end loop; end $$`);
+    throw new Error('undone');
+  }, admin), /undone/);
+  const timeout = Math.ceil((performance.now() - started) / 3);
   const left = async () => (await admin<Record<string, number>[]>`
     select (select count(*) from tasks where space_id = any (${admin.array(spaces)}::uuid[]))::int as tasks,
            (select count(*) from revisions where space_id = any (${admin.array(spaces)}::uuid[]))::int as revisions,
@@ -891,15 +887,15 @@ test('an import too big to take out in one statement is taken out a step at a ti
   const steps: Record<string, number> = {};
   const slow = postgres(inTestDatabase(databaseUrl), { connection: { statement_timeout: timeout }, transform: postgres.camel, onnotice: () => {} });
   try {
-    assert.equal((await slow`show statement_timeout`)[0].statementTimeout, `${timeout}ms`);
+    assert.equal((await slow`select setting from pg_settings where name = 'statement_timeout'`)[0].setting, `${timeout}`);
     let was = await left();
     for (let done = false; !done; ) {
-      [{ done }] = await as({ ...ana, direct: true }, (s) => s.tx<{ done: boolean }[]>`select import_discard(${made}::uuid, 250) as done`, slow);
+      [{ done }] = await as({ ...ana, direct: true }, (s) => s.tx<{ done: boolean }[]>`select import_discard(${made}::uuid, 150) as done`, slow);
       const now = await left();
       const changed = Object.keys(now).filter((kind) => now[kind] !== was[kind]);
       assert.ok(changed.length <= 1, `${changed.join(', ')} in one step`);
       for (const kind of changed) {
-        assert.ok(was[kind] - now[kind] <= (kind === 'items' ? 1000 : 250), `${was[kind] - now[kind]} ${kind} in one step`);
+        assert.ok(was[kind] - now[kind] <= (kind === 'items' ? 300 : 150), `${was[kind] - now[kind]} ${kind} in one step`);
         steps[kind] = (steps[kind] ?? 0) + 1;
       }
       was = now;
@@ -907,7 +903,7 @@ test('an import too big to take out in one statement is taken out a step at a ti
   } finally {
     await slow.end();
   }
-  assert.ok(steps.revisions >= 30 && steps.items >= 30 && steps.citations >= 30, JSON.stringify(steps));
+  assert.ok(steps.revisions >= 30 && steps.items >= 60 && steps.citations >= 30, JSON.stringify(steps));
   assert.deepEqual(await stored(), before);
 });
 
