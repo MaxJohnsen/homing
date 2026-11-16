@@ -10,8 +10,12 @@ import { ProviderFailed, ProviderRefused, type Provider } from './provider.ts';
 /** The most of an answer Homing reads. A model writes far less within its limit. */
 const mostBytes = 8 * 1024 * 1024;
 
-/** How a request fails when no connection could be made at all: refused, no such host, no route, or no answer to connecting. Nothing was sent. */
-const neverConnected = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT'];
+/**
+ * How a request fails when no connection could be made at all: refused, no such host, or no answer
+ * to connecting. Nothing was sent. No route to the host isn't among them: that can also end a
+ * connection the request already went out on.
+ */
+const neverConnected = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT'];
 
 /** An adapter for the provider at this address, with its key if it takes one. */
 export function chatCompletions({ url, key }: { url: URL; key?: string }): Provider {

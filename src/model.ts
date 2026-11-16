@@ -273,8 +273,11 @@ export class ModelFailed extends Error {
   readonly limited: boolean;
   /** How many seconds the provider asked to wait before asking again, when it said. */
   readonly retryAfter?: number;
-  constructor(message: string, unusable = false, status?: number, retryAfter?: number) {
+  /** In USD, as recorded: what it cost, or its worst case when it may have cost and nothing says what. */
+  readonly cost: number;
+  constructor(message: string, cost: number, unusable = false, status?: number, retryAfter?: number) {
     super(message);
+    this.cost = cost;
     this.unusable = unusable;
     this.refused = status !== undefined && status >= 400 && status < 500 && ![401, 402, 408, 429].includes(status);
     this.limited = status === 429;
@@ -377,7 +380,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
     const said = error instanceof ProviderRefused || error instanceof ProviderFailed ? plausibleCost(error.cost) : undefined;
     const before = error instanceof ProviderRefused;
     const unsent = error instanceof ProviderFailed && error.unsent;
-    await settle(homing.sql, person, reserved, worst, {
+    const recorded = await settle(homing.sql, person, reserved, worst, {
       outcome: 'failed',
       cost: said ?? (before || unsent ? 0 : worst),
       from: said !== undefined ? 'provider' : before ? 'refused' : unsent ? 'not sent' : 'worst case',
@@ -385,7 +388,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
     const reason = error instanceof ProviderRefused || error instanceof ProviderFailed ? hidden(error.message, key) : 'something went wrong on the way';
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: ${reason}`);
     const answered = error instanceof ProviderRefused || error instanceof ProviderFailed ? error : undefined;
-    throw new ModelFailed(`The model call failed: ${reason}.`, false, answered?.status, answered?.retryAfter);
+    throw new ModelFailed(`The model call failed: ${reason}.`, recorded, false, answered?.status, answered?.retryAfter);
   }
 
   // A provider's counts are believed only when they could be right: no more tokens in than the
@@ -414,7 +417,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
   const recorded = await settle(homing.sql, person, reserved, worst, { outcome: parsed ? 'done' : 'failed', cost, from, tokens });
   if (!parsed) {
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: its answer wasn’t JSON`);
-    throw new ModelFailed('The model call failed: its answer wasn’t the JSON asked for.', true);
+    throw new ModelFailed('The model call failed: its answer wasn’t the JSON asked for.', recorded, true);
   }
   return { text, ...(call.schema && { json }), model: id, inputTokens: tokens.input, outputTokens: tokens.output, cost: recorded };
 }

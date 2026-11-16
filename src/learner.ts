@@ -329,6 +329,15 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     let streak: { key: string; changes: Change[] }[] = [];
     // The provider refused or failed on several in a row, or wouldn't say whether it answers: the page isn't done, and the run waits for it.
     let trouble = false;
+    // The threads it failed on in this try, with nothing on the run about that yet. What follows of
+    // such a thread on this page waits for the next try, when there is: a note written from the
+    // newer emails alone would make the older ones look like mail that turned up late, to be cited
+    // unread, however this page ends.
+    const unrecorded = new Set<string>();
+    let held = false;
+    const failedNow = (batch: { thread: string | null; changes: Change[] }) => {
+      if (batch.thread !== null && !before.has(keyOf(batch))) unrecorded.add(batch.thread);
+    };
     /**
      * A thread refused or failed on as one of several in a row. That's the provider's trouble, and
      * the run waits. But the run would wait for good behind threads the provider really won't take,
@@ -352,8 +361,13 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     for (const batch of batches) {
       if (signal.aborted) return await later(0);
       const key = keyOf(batch);
+      if (batch.thread !== null && unrecorded.has(batch.thread)) {
+        held = true;
+        continue;
+      }
       // Failed on before, a thread is tried again hours later, so its tries never all fall within one
-      // passing fault. The first of several in a row is asked with the rest, and only counted hours apart.
+      // passing fault. The first of several in a row is asked with the rest, and only counted hours
+      // apart, until it fails while the provider answers for others.
       const earlierTry = before.get(key);
       if (earlierTry && !earlierTry.row && next(earlierTry) > Date.now()) continue;
       // Nothing was answered for so many in a row that asking on says nothing more.
@@ -392,12 +406,13 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
         }
         if (!(error instanceof ModelFailed)) throw error;
         // Asked too often, or asked to wait: that's about every request, so it never counts against a
-        // thread. Asked too often, the run waits as long as the provider said, and that's no failure.
-        // A provider that fails and says when to come back is still failing: the run waits that long
-        // or as long as after any failure, whichever is longer, so a short wait is never asked again
-        // at once, call after call.
+        // thread. Asked too often, the run waits as long as the provider said, and that's no failure,
+        // when the call cost nothing. One that may have cost, as when the provider's answer couldn't
+        // be read, and a provider that fails and says when to come back, are failures: the run waits
+        // that long or as long as after any failure, whichever is longer, so a short wait is never
+        // asked again at once, call after call.
         if (error.limited || error.retryAfter !== undefined) {
-          return await (error.limited && error.retryAfter !== undefined
+          return await (error.limited && error.retryAfter !== undefined && error.cost === 0
             ? later(error.retryAfter, 'limited', { failures: stillFailing() })
             : backoff('provider', { failures: stillFailing() }, error.retryAfter));
         }
@@ -409,10 +424,14 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
           if (inARow < several && (await answersOtherwise())) {
             pending.delete(key);
             await asideFor(batch.changes, 'provider refused');
-          } else await inRow(key, batch.changes, 'provider refused');
+          } else {
+            failedNow(batch);
+            await inRow(key, batch.changes, 'provider refused');
+          }
           continue;
         }
-        // The provider failed on this one: the rest of the page is tried all the same, so one thread never holds up the others.
+        // The provider failed on this one: the rest of the page is tried all the same, but for what follows of its thread, so one thread never holds up the others.
+        failedNow(batch);
         streak.push({ key, changes: batch.changes });
         continue;
       }
@@ -435,8 +454,12 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     }
     for (const { key, changes } of counted) {
       const earlier = before.get(key);
-      // Asked before its next try was due, as the first of several in a row is: not another try.
-      if (earlier && next(earlier) > Date.now()) continue;
+      // Asked before its next try was due, as the first of several in a row is: not another try. It
+      // failed alone now, so it's no longer asked with the rest: it waits for its next try like any other.
+      if (earlier && next(earlier) > Date.now()) {
+        pending.set(key, { count: earlier.count, at: earlier.at });
+        continue;
+      }
       const count = (earlier?.count ?? 0) + 1;
       // Failed on three times, hours apart, while the provider answers otherwise, a thread is one it won't read: it's set aside, saying so.
       if (count >= triesForThread) {
@@ -445,10 +468,11 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       } else pending.set(key, { count, at: Date.now() });
     }
     if (trouble) return await backoff('provider', { failures: stillFailing() });
-    if (pending.size) {
+    if (pending.size || held) {
       // Until the first of them is tried again, and no longer than until what arrives is looked at
-      // next. It waits for the provider, and that wait is no failure of the run's.
-      const wait = Math.max(0, Math.min(...[...pending.values()].map(next)) - Date.now()) / 1000;
+      // next. It waits for the provider, and that wait is no failure of the run's. What was held
+      // behind a failure is asked about at once, now that the failure is on the run.
+      const wait = held ? 0 : Math.max(0, Math.min(...[...pending.values()].map(next)) - Date.now()) / 1000;
       return await later(run.caughtUpAt === null ? wait : Math.min(wait, pace.pollSeconds), 'limited', { failures: stillFailing() });
     }
 
