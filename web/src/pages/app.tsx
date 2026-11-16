@@ -308,9 +308,11 @@ function connectionActions(spaceId: string): ConnectionActions {
       start: (placeId, limit) => learning(placeId, 'start', { limit }),
       pause: (placeId) => learning(placeId, 'pause'),
       resume: (placeId) => learning(placeId, 'resume'),
+      estimateExtension: (placeId, since) => learning(placeId, 'extend/estimate', { since }),
+      forgetExtension: (placeId) => learning(placeId, 'extend/estimate', { since: null }),
       extend: (placeId, since) => learning(placeId, 'extend', { since }),
       setLimit: (placeId, limit) => learning(placeId, 'limit', { limit }),
-      leaveOut: (placeId, senders, folders) => learning(placeId, 'left-out', { senders, folders }),
+      leaveOut: (placeId, senders, folders, kept) => learning(placeId, 'left-out', { senders, folders, kept }),
     },
     connect: async (again) => {
       try {
@@ -384,7 +386,7 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
   const connections = useLoad<SpaceConnectionsData>(view === 'connections' ? `/api/spaces/${id}/connections` : '');
   // While Homing learns through a place's history, how far it is shows as it goes.
-  const learningNow = connections.data?.places.some((place) => place.learning?.state === 'learning history') ?? false;
+  const learningNow = connections.data?.places.some((place) => place.learning?.state === 'learning history' || place.learning?.extending || place.learning?.again) ?? false;
   useEffect(() => {
     if (!learningNow) return;
     const timer = setInterval(() => void reload(`/api/spaces/${id}/connections`), 4000);
@@ -639,9 +641,9 @@ function AdminPage() {
           return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.' };
         }
       }}
-      setModelLimit={async (limit) => {
+      setModelLimit={async (limit, of) => {
         try {
-          await api('/api/admin/model-limit', { limit });
+          await api('/api/admin/model-limit', of === 'run' ? { ceiling: limit } : { limit });
           await reload('/api/admin');
         } catch (error) {
           return error instanceof Error ? error.message : 'Something went wrong. Try again.';

@@ -18,7 +18,9 @@ export interface ProposalData {
    * sharing an item or a task, archiving or reopening a page, or including another space's rules or
    * a skill, or no longer.
    */
-  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page' | 'include' | 'exclude' | 'plan';
+  action: 'add' | 'change' | 'remove' | 'space' | 'members' | 'publish' | 'task' | 'archive' | 'convert' | 'archive page' | 'reopen page' | 'include' | 'exclude' | 'plan' | 'learn' | 'learn further';
+  /** Learning from something of yours, such as your mailbox, or further back in it: what it would read, what that may cost, and who reads it. */
+  learning?: LearningProposalData | null;
   kind: RuleKind;
   /** The new rule, or the rule's new wording. */
   text: string | null;
@@ -246,6 +248,7 @@ export function wantsTo(
     text?: string | null;
     plan?: Pick<PlanData, 'create' | 'steps'> | null;
     changes?: number | null;
+    learning?: Pick<LearningProposalData, 'address'> | null;
   },
   withPlace = true,
 ): string {
@@ -257,6 +260,8 @@ export function wantsTo(
     if (create) return `${assistant} wants to create ${create}${withPlace ? ` in ${placeOf(proposal)}` : ''} and make ${count(changes, 'change')} in it`;
     return `${assistant} wants to make ${count(changes, 'change')}${withPlace ? ` in ${placeOf(proposal)}` : ''}`;
   }
+  if (action === 'learn') return `${assistant} wants Homing to learn from ${proposal.learning?.address ?? proposal.text ?? 'your mailbox'}`;
+  if (action === 'learn further') return `${assistant} wants Homing to learn further back in ${proposal.learning?.address ?? proposal.text ?? 'your mailbox'}`;
   if (action === 'publish') return withPlace ? `${assistant} wants to share this with ${placeOf(proposal)}` : `${assistant} wants to share this`;
   if (action === 'convert') return `${assistant} wants to share ${proposal.space} with others`;
   if (action === 'task') return withPlace ? `${assistant} wants to share a task with ${placeOf(proposal)}` : `${assistant} wants to share a task`;
@@ -305,6 +310,29 @@ export function requestedChange(request: Pick<RequestData, 'action' | 'kind' | '
   return request.action === 'add' ? 'add a rule' : `${request.action} a ${request.kind}`;
 }
 
+/** Having Homing learn from something of yours, or further back in it, as the decision page and the card show it. */
+export interface LearningProposalData {
+  /** What it would learn from, as you know it, such as your mailbox's address, the service it's at, and how what's in it is worded. */
+  address: string;
+  service: string;
+  words: { place: string; item: string; items: string; thread: string };
+  /** How far back, and for learning further back, up to where it learns from already. */
+  since: string;
+  /** The estimate you're shown: what the service counts there, about what a model would read, and what that may cost. It's rough. */
+  estimate: { since: string; until: string | null; items: number; threads: number; setAside: number; low: number; high: number; limit: number; sampled: number };
+  /** In dollars: the limit it would start with, or the limit it has, which stays. */
+  limit: number;
+  /** Who reads what it learns from: the provider and the model. */
+  provider: string;
+  model: string;
+  further: boolean;
+  /** Why it can't be approved as it is, if it can't. */
+  problem: string | null;
+  /** What approving sends back, so it starts exactly what was shown. */
+  shown: string;
+  why: string | null;
+}
+
 /** "1 change", "3 changes". */
 function count(n: number, thing: string): string {
   return `${n} ${thing}${n === 1 ? '' : 's'}`;
@@ -324,7 +352,7 @@ export function precedenceOf(proposal: Pick<ProposalData, 'kind'>): string {
 
 /** Whether a change or removal lost its rule before anyone decided. */
 export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publication' | 'task' | 'archive' | 'conversion' | 'page' | 'state' | 'include'>): boolean {
-  if (proposal.action === 'include') return false;
+  if (proposal.action === 'include' || proposal.action === 'learn' || proposal.action === 'learn further') return false;
   if (proposal.action === 'exclude') return proposal.state === 'open' && Boolean(proposal.include?.open) && !proposal.include?.current;
   if (proposal.action === 'convert') return proposal.state === 'open' && !proposal.conversion;
   // A page you can't see anymore, or one archived or reopened another way, has nothing left to decide.
@@ -338,8 +366,10 @@ export function isGone(proposal: Pick<ProposalData, 'action' | 'rule' | 'publica
 }
 
 /** Whether the reader can only decline it: an email nobody uses Homing with, or including what they can't open. */
-export function declineOnly(proposal: Pick<ProposalData, 'action' | 'member' | 'include' | 'plan'>): boolean {
+export function declineOnly(proposal: Pick<ProposalData, 'action' | 'member' | 'include' | 'plan' | 'learning'>): boolean {
   if (proposal.member?.found === false) return true;
+  // The estimate or the period changed since, it started another way, or the place is gone.
+  if (proposal.learning) return proposal.learning.problem !== null;
   if (proposal.plan) return planBlocked(proposal.plan);
   return proposal.include?.open === false && !(proposal.action === 'exclude' && proposal.include.current);
 }
@@ -360,6 +390,8 @@ export function buttonsOf(action: ProposalData['action'], sending = false, membe
           : { approve: 'Add', reject: 'Don’t add' };
   }
   if (action === 'space') return { approve: 'Create space', reject: 'Don’t create' };
+  if (action === 'learn') return { approve: 'Start learning', reject: 'Don’t start' };
+  if (action === 'learn further') return { approve: 'Learn further back', reject: 'Leave it as it is' };
   if (action === 'archive' || action === 'archive page') return { approve: 'Archive', reject: 'Keep it open' };
   if (action === 'reopen page') return { approve: 'Reopen', reject: 'Keep it archived' };
   if (action === 'convert') return { approve: 'Share', reject: 'Keep it only mine' };
@@ -410,6 +442,17 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
     if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
+    return undefined;
+  }
+  if (action === 'learn' || action === 'learn further') {
+    const from = proposal.learning?.address ?? 'it';
+    if (state === 'approved') {
+      return action === 'learn'
+        ? { kind: 'approved', heading: 'Learning started', detail: `Homing learns from ${from} in the background now. What it learns is only yours, and the space’s Connections shows how far it is.` }
+        : { kind: 'approved', heading: 'Learning further back', detail: `Homing also learns from what that adds in ${from}, under the limit it has.` };
+    }
+    if (state === 'rejected') return { kind: 'rejected', heading: action === 'learn' ? 'Not started' : 'Left as it is', detail: 'Nothing changed, and nothing was sent to a model.' };
+    if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing started. Ask ${assistant} again if you still want it.` };
     return undefined;
   }
   if (action === 'convert') {

@@ -53,7 +53,7 @@ export function Connections({ space, data, notice, actions }: { space: SpaceData
         {shown && (shown.problem ? <FieldError className="text-base">{shown.text}</FieldError> : <p role="status" className="text-base">{shown.text}</p>)}
         {data.places.length > 0 && (
           <ul className="flex flex-col gap-2">
-            {data.places.map((place) => <PlaceRow key={place.id} space={space} place={place} model={data.model} actions={actions} />)}
+            {data.places.map((place) => <PlaceRow key={place.id} space={space} place={place} model={data.model} ceiling={data.runCeiling} actions={actions} />)}
           </ul>
         )}
       </Section>
@@ -62,7 +62,7 @@ export function Connections({ space, data, notice, actions }: { space: SpaceData
   );
 }
 
-function PlaceRow({ space, place, model, actions }: { space: SpaceData; place: PlaceData; model?: ModelStatement | null; actions?: ConnectionActions }) {
+function PlaceRow({ space, place, model, ceiling, actions }: { space: SpaceData; place: PlaceData; model?: ModelStatement | null; ceiling?: number; actions?: ConnectionActions }) {
   const { connection } = place;
   const here = space.personal ? 'your personal space' : space.name;
   const [removing, setRemoving] = useState(false);
@@ -92,7 +92,7 @@ function PlaceRow({ space, place, model, actions }: { space: SpaceData; place: P
       {connection.status === 'needs attention' && (
         <p className="text-sm text-destructive">Microsoft stopped letting Homing in, so it isn’t used until you sign in again.</p>
       )}
-      <Learning place={place} model={model} actions={actions?.learning} />
+      <Learning place={place} model={model} ceiling={ceiling} actions={actions?.learning} />
       {actions && !removing && (
         <div className="flex flex-wrap gap-2">
           {connection.status === 'needs attention' && (

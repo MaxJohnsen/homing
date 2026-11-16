@@ -36,7 +36,11 @@ export interface EstimateData {
 export interface LearningData {
   state: 'estimating' | 'learning history' | 'following' | 'paused' | 'needs attention' | 'done';
   /** Why it's paused or needs you. */
-  reason: 'person' | 'limit' | 'monthly limit' | 'sign in again' | 'not set up' | 'failing' | 'removed' | null;
+  reason: 'person' | 'limit' | 'monthly limit' | 'model processing off' | 'sign in again' | 'not set up' | 'removed' | null;
+  /** What it waits for while it keeps trying by itself: the model's provider, the service, or an error of Homing's own. */
+  waitingFor?: 'provider' | 'system' | 'error' | null;
+  /** Whether a range you added waits at the limit while it follows what arrives. */
+  waitingAtLimit?: boolean;
   /** How far back it learns, and how far through that it is. */
   since: string;
   learnedUpTo: string | null;
@@ -48,13 +52,17 @@ export interface LearningData {
   spent: number;
   followed: number;
   estimate: EstimateData | null;
-  /** What you left out: senders by address or domain, and folders by name. */
-  leftOut: { senders: string[]; folders: string[] };
+  /** The estimate for a range further back you asked about, which isn't learned from until you say so. */
+  proposed?: EstimateData | null;
+  /** What you left out, senders by address or domain and folders by name, and the senders you keep whatever their mail says about itself. */
+  leftOut: { senders: string[]; folders: string[]; kept: string[] };
   /** How many threads it learned from, and the items in them. */
   threads: number;
   learned: number;
-  /** What it set aside, by why, most first, each in words, such as "240 newsletters". */
-  setAside: { reason: string; items: number; words: string }[];
+  /** What it set aside, by why, most first, each in words, such as "240 newsletters", with who sent them, most first. */
+  setAside: { reason: string; items: number; words: string; senders: { sender: string; items: number }[] }[];
+  /** How many set aside before it now learns from after all, since you said so. */
+  again?: number;
 }
 
 /** Something of yours connected in a space, such as your mailbox, only for you. */
@@ -79,6 +87,8 @@ export interface SpaceConnectionsData {
   looksAfter: boolean;
   /** The model that reads what Homing learns from, or null when Homing has none. */
   model?: ModelStatement | null;
+  /** The most a learning run may spend on history here, in dollars, which whoever looks after Homing sets. */
+  runCeiling?: number;
   places: PlaceData[];
 }
 

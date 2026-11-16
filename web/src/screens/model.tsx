@@ -160,7 +160,7 @@ export function ModelUse({ data }: { data: ModelUseData }) {
  * monthly limit, person by person, and changing the limit, which resumes learning paused at it.
  * Never what the calls were about, or where.
  */
-export function ModelSpending({ data, setLimit }: { data: ModelSpendingData | null; setLimit?: (limit: string) => Promise<string | undefined> }) {
+export function ModelSpending({ data, setLimit }: { data: ModelSpendingData | null; setLimit?: (limit: string, of?: 'month' | 'run') => Promise<string | undefined> }) {
   const [limit, setValue] = useState(data ? String(data.limit) : '');
   const [problem, setProblem] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -232,6 +232,56 @@ export function ModelSpending({ data, setLimit }: { data: ModelSpendingData | nu
         {saved && <p role="status" className="text-sm text-muted-foreground">The limit is {usd(data.limit)} a month now.</p>}
         <p className="text-sm text-muted-foreground">Homing pauses learning before a call could take what was spent past it, and holds back calls while those under way could. A limit set at the provider too is a second guard.</p>
       </form>
+      {data.runCeiling !== undefined && <RunCeiling ceiling={data.runCeiling} setLimit={setLimit} />}
     </Section>
+  );
+}
+
+/**
+ * The most one learning run may spend on a mailbox's history, which each person sets a limit under
+ * when they start one. It's apart from the monthly limit, so both at 0 stop Homing's model learning.
+ */
+function RunCeiling({ ceiling, setLimit }: { ceiling: number; setLimit?: (limit: string, of?: 'month' | 'run') => Promise<string | undefined> }) {
+  const [value, setValue] = useState(String(ceiling));
+  const [problem, setProblem] = useState<string>();
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const save = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!setLimit) return;
+    setBusy(true);
+    setSaved(false);
+    const answer = await setLimit(value.trim(), 'run');
+    setBusy(false);
+    setProblem(answer);
+    setSaved(!answer);
+  };
+  return (
+    <form className="flex flex-col gap-3" onSubmit={save} noValidate>
+      <Field data-invalid={Boolean(problem) || undefined}>
+        <FieldLabel htmlFor="run-ceiling">Most a learning run may spend, in dollars</FieldLabel>
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <Input
+            id="run-ceiling"
+            inputMode="decimal"
+            className="h-11 text-base md:text-base sm:max-w-40"
+            value={value}
+            onChange={(event) => {
+              setValue(event.target.value);
+              setSaved(false);
+            }}
+            aria-invalid={Boolean(problem) || undefined}
+            aria-describedby={problem ? 'run-ceiling-problem' : undefined}
+            disabled={busy}
+          />
+          <Button type="submit" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy || !value.trim() || Number(value) === ceiling}>Change limit</Button>
+        </div>
+      </Field>
+      {problem && <FieldError id="run-ceiling-problem">{problem}</FieldError>}
+      {saved && <p role="status" className="text-sm text-muted-foreground">A learning run may spend at most {usd(ceiling)} now.</p>}
+      <p className="text-sm text-muted-foreground">
+        When someone has Homing learn from their mailbox’s history, they set that run’s limit, up to this. It’s apart from the monthly limit, which covers what arrives afterwards. With both at $0, Homing’s model learns nothing.
+      </p>
+    </form>
   );
 }

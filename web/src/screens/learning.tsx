@@ -16,11 +16,16 @@ export interface LearningActions {
   start: (placeId: string, limit: string) => Promise<string | undefined>;
   pause: (placeId: string) => Promise<string | undefined>;
   resume: (placeId: string) => Promise<string | undefined>;
-  /** Learns further back too, from only what that adds. */
+  /** Works out what learning further back would add. Nothing changes yet. */
+  estimateExtension: (placeId: string, since: string) => Promise<string | undefined>;
+  /** Lets go of what was worked out, without learning further back. */
+  forgetExtension: (placeId: string) => Promise<string | undefined>;
+  /** Learns further back too, from only what that adds, once that was estimated. */
   extend: (placeId: string, since: string) => Promise<string | undefined>;
   /** Sets its limit in dollars, which resumes it when it was paused there. */
   setLimit: (placeId: string, limit: string) => Promise<string | undefined>;
-  leaveOut: (placeId: string, senders: string[], folders: string[]) => Promise<string | undefined>;
+  /** Sets the senders and folders it leaves out, and the senders it learns from whatever their mail says about itself. */
+  leaveOut: (placeId: string, senders: string[], folders: string[], kept: string[]) => Promise<string | undefined>;
 }
 
 /** How far back learning can go, by how many months, with everything last. */
@@ -41,27 +46,35 @@ function sinceOf(scope: (typeof scopes)[number], now = new Date()): string {
 
 const thousands = (value: number) => value.toLocaleString('en-US');
 const selectStyle = 'h-11 w-full rounded-4xl border border-input bg-card px-3.5 text-base disabled:opacity-50 sm:max-w-xs';
+type Words = { place: string; item: string; items: string; thread: string };
 
 /**
  * Learning from something of yours in a space, such as your mailbox: starting it with how far back
- * it goes, after what that may cost, then how far it is, what it set aside, what it spent against
- * its limit, and pausing, resuming, extending it and leaving things out. Only you see any of it.
+ * it goes, after what that may cost, then how far it is, what it set aside and from whom, what it
+ * spent against its limit, and pausing, resuming, extending it and leaving things out. Only you
+ * see any of it.
  */
-export function Learning({ place, model, actions }: { place: PlaceData; model: ModelStatement | null | undefined; actions?: LearningActions }) {
-  const words = place.words ?? { place: 'place', item: 'item', items: 'items', thread: 'thread' };
+export function Learning({ place, model, ceiling, actions }: { place: PlaceData; model: ModelStatement | null | undefined; ceiling?: number; actions?: LearningActions }) {
+  const words: Words = place.words ?? { place: 'place', item: 'item', items: 'items', thread: 'thread' };
   const run = place.learning;
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string>();
-  const [open, setOpen] = useState<'scope' | 'extend' | 'limit' | 'leave out'>();
-  const act = async (action: () => Promise<string | undefined>) => {
+  const [open, setOpen] = useState<'scope' | 'extend' | 'limit' | 'leave out' | 'set aside'>();
+  const act = async (action: () => Promise<string | undefined>, then?: typeof open) => {
     setBusy(true);
     const answer = await action();
     setBusy(false);
     setProblem(answer);
-    if (!answer) setOpen(undefined);
+    if (!answer) setOpen(then);
     return answer;
   };
   if (!place.learns || run?.state === 'done') return null;
+  const most = ceiling === undefined ? '' : ` A run may spend at most ${usd(ceiling)} here, which whoever looks after Homing sets.`;
+  const leaveOut = run && actions && (
+    <Panel label="Leave something out">
+      <LeaveOut run={run} words={words} busy={busy} onSave={(senders, folders, kept) => act(() => actions.leaveOut(place.id, senders, folders, kept))} onCancel={() => setOpen(undefined)} />
+    </Panel>
+  );
 
   let body: ReactNode;
   if (!run || (run.state === 'estimating' && open === 'scope')) {
@@ -81,24 +94,33 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
     body = (
       <>
         {run.estimate && <EstimateText estimate={run.estimate} words={words} service={place.connection.service} model={model} />}
-        {actions && run.estimate && (
+        {(run.leftOut.senders.length > 0 || run.leftOut.folders.length > 0) && (
+          <p className="text-sm text-muted-foreground">It leaves out {leftOutWords(run)}.</p>
+        )}
+        {actions && run.estimate && open !== 'leave out' && (
           <LimitForm
             label="Limit for this run, in dollars"
             value={run.estimate.limit}
             action="Start learning"
             primary
             busy={busy}
-            hint="Homing pauses the run before a call could take it past the limit. You can raise it later, and it carries on from where it paused."
+            hint={`Homing pauses the run before a call could take it past the limit. You can raise it later, and it carries on from where it paused.${most}`}
             onSave={(limit) => act(() => actions.start(place.id, limit))}
-            aside={<Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => setOpen('scope')}>Change how far back</Button>}
+            aside={
+              <>
+                <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => setOpen('scope')}>Change how far back</Button>
+                <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => setOpen('leave out')}>Leave something out</Button>
+              </>
+            }
           />
         )}
+        {open === 'leave out' && leaveOut}
       </>
     );
   } else {
     const active = run.state === 'learning history' || run.state === 'following';
-    const atLimit = run.state === 'paused' && run.reason === 'limit';
-    const canResume = (run.state === 'paused' && run.reason === 'person') || (run.state === 'needs attention' && run.reason === 'failing');
+    const atLimit = (run.state === 'paused' && run.reason === 'limit') || (active && run.waitingAtLimit === true);
+    const canResume = run.state === 'paused' && run.reason === 'person';
     body = (
       <>
         <p className="text-base">{standing(run, words, place.connection.service)}</p>
@@ -108,6 +130,7 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
               ? `Learned from ${count(run.threads, words.thread, `${words.thread}s`)}, ${count(run.learned, words.item, words.items)} in all.`
               : `Nothing learned from yet.`}
             {run.setAside.length > 0 && ` Set aside: ${run.setAside.map((aside) => aside.words).join(', ')}.`}
+            {(run.again ?? 0) > 0 && ` ${capitalize(count(run.again ?? 0, words.item, words.items))} set aside before will be learned from after all.`}
           </p>
           <p>
             Its history has cost {usd(run.spent)} of its {usd(run.limit)} limit.
@@ -115,7 +138,7 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
           </p>
           {!model && <p>Homing has no model set up now, so it waits.</p>}
         </div>
-        {actions && !open && (
+        {actions && !open && !run.proposed && (
           <div className="flex flex-wrap gap-2">
             {active && <Button variant="outline" size="sm" disabled={busy} onClick={() => act(() => actions.pause(place.id))}>Pause</Button>}
             {canResume && <Button size="sm" disabled={busy} onClick={() => act(() => actions.resume(place.id))}>Resume</Button>}
@@ -123,15 +146,26 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
             <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('extend')}>Learn further back</Button>
             {!atLimit && <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('limit')}>Change the limit</Button>}
             <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('leave out')}>Leave something out</Button>
+            {run.setAside.length > 0 && <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('set aside')}>What was set aside</Button>}
           </div>
         )}
-        {actions && open === 'extend' && (
+        {actions && open === 'extend' && !run.proposed && (
           <Panel label="Learn further back">
-            <p className="text-sm">
-              Homing learns from what that adds, and from nothing twice. Its limit stays {usd(run.limit)}, where it pauses.
-              {run.estimate?.until && ` The range you added last: ${estimateSentence(run.estimate, words, place.connection.service)}`}
+            <p className="text-sm">Homing learns from what that adds, and from nothing twice. You see what it may cost first.</p>
+            <ScopeForm label="How far back?" action="See what it would cost" busy={busy} from={run.since} further onChoose={(since) => act(() => actions.estimateExtension(place.id, since), 'extend')} onCancel={() => setOpen(undefined)} />
+          </Panel>
+        )}
+        {actions && run.proposed && (
+          <Panel label="Learn further back">
+            <EstimateText estimate={run.proposed} words={words} service={place.connection.service} model={model} />
+            <p className="text-sm text-muted-foreground">
+              Its limit stays {usd(run.limit)}, with {usd(Math.max(0, run.limit - run.spent))} left. There, what you added waits until you raise the limit
+              {run.caughtUp ? ', and Homing keeps learning from what arrives.' : '.'}
             </p>
-            <ScopeForm label="How far back?" action="Learn further back" busy={busy} from={run.since} further onChoose={(since) => act(() => actions.extend(place.id, since))} onCancel={() => setOpen(undefined)} />
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => act(() => actions.extend(place.id, run.proposed!.since.slice(0, 10)))}>Learn further back</Button>
+              <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => act(() => actions.forgetExtension(place.id))}>Not now</Button>
+            </div>
           </Panel>
         )}
         {actions && open === 'limit' && (
@@ -139,18 +173,19 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
             <LimitForm
               label="Limit for its history, in dollars"
               value={run.limit}
-              action={atLimit ? 'Raise and resume' : 'Change the limit'}
+              action={run.state === 'paused' && run.reason === 'limit' ? 'Raise and resume' : atLimit ? 'Raise the limit' : 'Change the limit'}
               primary={atLimit}
               busy={busy}
-              hint={atLimit ? 'It carries on from where it paused, and nothing is learned from twice.' : 'Homing pauses the run before a call could take it past the limit.'}
+              hint={`${atLimit ? 'It carries on from where it stopped, and nothing is learned from twice.' : 'Homing pauses the run before a call could take it past the limit.'}${most}`}
               onSave={(limit) => act(() => actions.setLimit(place.id, limit))}
               onCancel={() => setOpen(undefined)}
             />
           </Panel>
         )}
-        {actions && open === 'leave out' && (
-          <Panel label="Leave something out">
-            <LeaveOut run={run} words={words} busy={busy} onSave={(senders, folders) => act(() => actions.leaveOut(place.id, senders, folders))} onCancel={() => setOpen(undefined)} />
+        {open === 'leave out' && leaveOut}
+        {actions && open === 'set aside' && (
+          <Panel label="What was set aside">
+            <SetAside run={run} busy={busy} onKeep={(sender) => act(() => actions.leaveOut(place.id, run.leftOut.senders, run.leftOut.folders, [...run.leftOut.kept, sender]), 'set aside')} onClose={() => setOpen(undefined)} />
           </Panel>
         )}
       </>
@@ -166,25 +201,49 @@ export function Learning({ place, model, actions }: { place: PlaceData; model: M
   );
 }
 
-/** Where a run stands, as a sentence. */
+/** "threads with mail from news@shop.example and the folder Receipts" */
+function leftOutWords(run: LearningData): string {
+  const parts = [
+    run.leftOut.senders.length > 0 && `threads with mail from ${run.leftOut.senders.join(', ')}`,
+    run.leftOut.folders.length > 0 && `${run.leftOut.folders.length === 1 ? 'the folder' : 'the folders'} ${run.leftOut.folders.join(', ')}`,
+  ].filter(Boolean);
+  return parts.join(' and ');
+}
+
+/** Where a run stands, as a sentence or two. */
 function standing(run: LearningData, words: { place: string }, service: string): string {
   const back = run.since.startsWith('1990') ? 'as far back as it goes' : `back to ${dateOf(run.since)}`;
   const upTo = run.learnedUpTo ? ` It’s up to ${dateOf(run.learnedUpTo)}.` : '';
+  const waiting =
+    run.waitingFor === 'provider'
+      ? ' Right now it’s waiting for the model’s provider, which isn’t answering. Homing keeps trying by itself.'
+      : run.waitingFor === 'system'
+        ? ` Right now it’s waiting for ${service}, which isn’t answering. Homing keeps trying by itself.`
+        : run.waitingFor === 'error'
+          ? ' Right now something in Homing keeps failing. It tries again by itself, and whoever looks after Homing can see why in its log.'
+          : '';
+  const added = run.extending
+    ? run.waitingAtLimit
+      ? ` What you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}, waits at its limit of ${usd(run.limit)}. Raise the limit to learn from it.`
+      : ` It’s also learning from what you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}.`
+    : '';
   switch (run.state) {
     case 'learning history':
-      return run.extending
-        ? `Homing is learning from what you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}.`
-        : `Homing is learning from its history, ${back}.${run.learnedUpTo ? ` So far it’s up to ${dateOf(run.learnedUpTo)}.` : ''}`;
+      return (
+        (run.extending
+          ? `Homing is learning from what you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}.`
+          : `Homing is learning from its history, ${back}.${run.learnedUpTo ? ` So far it’s up to ${dateOf(run.learnedUpTo)}.` : ''}`) + waiting
+      );
     case 'following':
-      return `Homing has learned from its history, ${back}, and keeps learning from what arrives.`;
+      return `Homing has learned from its history${run.extending ? '' : `, ${back}`}, and keeps learning from what arrives.${added}${waiting}`;
     case 'paused':
       if (run.reason === 'limit') return `Paused at its limit of ${usd(run.limit)}.${upTo} Raise the limit to carry on from there.`;
       if (run.reason === 'monthly limit') return 'Paused, because Homing’s monthly limit for learning is reached. It carries on when whoever looks after Homing raises it, or next month.';
+      if (run.reason === 'model processing off') return 'Waiting, because model processing is off in this space, so nothing is sent to a model. It carries on by itself once it’s turned on, in the space’s Settings.';
       return `Paused.${upTo} It carries on from there when you resume it.`;
     case 'needs attention':
       if (run.reason === 'sign in again') return `Waiting for you to sign in again. It carries on by itself once you have.`;
-      if (run.reason === 'not set up') return `Stopped, because this Homing isn’t set up to reach ${service} any more.`;
-      return `Stopped after failing several times in a row. Resume it to try again from where it was.`;
+      return `Stopped, because this Homing isn’t set up to reach ${service} any more.`;
     default:
       return `Homing learned from this ${words.place}.`;
   }
@@ -301,7 +360,7 @@ function LimitForm({ label, value, action, primary, busy, hint, onSave, onCancel
         <Input id={id} inputMode="decimal" className="h-11 text-base md:text-base sm:max-w-40" value={limit} onChange={(event) => setLimit(event.target.value)} disabled={busy} aria-describedby={`${id}-hint`} />
       </Field>
       <p id={`${id}-hint`} className="text-sm text-muted-foreground">{hint}</p>
-      <div className="flex flex-col gap-2 sm:flex-row">
+      <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
         <Button type="submit" variant={primary ? 'default' : 'outline'} size="lg" className="h-11 text-base sm:px-5" disabled={busy || !limit.trim()}>{action}</Button>
         {aside}
         {onCancel && <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onCancel}>Cancel</Button>}
@@ -310,41 +369,76 @@ function LimitForm({ label, value, action, primary, busy, hint, onSave, onCancel
   );
 }
 
-/** Senders and folders to leave out, one on each line. */
+/** Senders and folders to leave out, and senders to learn from all the same, one on each line. */
 function LeaveOut({ run, words, busy, onSave, onCancel }: {
   run: LearningData;
-  words: { items: string };
+  words: { items: string; thread: string };
   busy: boolean;
-  onSave: (senders: string[], folders: string[]) => void;
+  onSave: (senders: string[], folders: string[], kept: string[]) => void;
   onCancel: () => void;
 }) {
   const id = useId();
   const [senders, setSenders] = useState(run.leftOut.senders.join('\n'));
   const [folders, setFolders] = useState(run.leftOut.folders.join('\n'));
+  const [kept, setKept] = useState(run.leftOut.kept.join('\n'));
   const lines = (text: string) => text.split('\n').map((line) => line.trim()).filter(Boolean);
   return (
     <form
       className="flex flex-col gap-3"
       onSubmit={(event: FormEvent) => {
         event.preventDefault();
-        onSave(lines(senders), lines(folders));
+        onSave(lines(senders), lines(folders), lines(kept));
       }}
     >
       <p className="text-sm">
-        {capitalize(words.items)} from these senders, or in these folders, are set aside without being sent to a model. It applies to what Homing reads from here on, and what it already learned stays.
+        A {words.thread} with any mail from a sender you leave out is set aside whole, your own replies in it too, and nothing of it is sent to a model. So are {words.items} in
+        a folder you leave out. Take one off the list, and what was set aside for it is learned from after all.
       </p>
       <Field>
-        <FieldLabel htmlFor={`${id}-senders`}>Senders, one on each line</FieldLabel>
+        <FieldLabel htmlFor={`${id}-senders`}>Senders to leave out, one on each line</FieldLabel>
         <Textarea id={`${id}-senders`} value={senders} onChange={(event) => setSenders(event.target.value)} disabled={busy} placeholder="An address, or a domain such as shop.example" />
       </Field>
       <Field>
-        <FieldLabel htmlFor={`${id}-folders`}>Folders, one on each line</FieldLabel>
+        <FieldLabel htmlFor={`${id}-folders`}>Folders to leave out, one on each line</FieldLabel>
         <Textarea id={`${id}-folders`} value={folders} onChange={(event) => setFolders(event.target.value)} disabled={busy} placeholder="A folder’s name, such as Receipts" />
+      </Field>
+      <Field>
+        <FieldLabel htmlFor={`${id}-kept`}>Senders to learn from even when their mail looks like a newsletter</FieldLabel>
+        <Textarea id={`${id}-kept`} value={kept} onChange={(event) => setKept(event.target.value)} disabled={busy} placeholder="An address, or a domain" />
       </Field>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Button type="submit" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy}>Save</Button>
         <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={onCancel}>Cancel</Button>
       </div>
     </form>
+  );
+}
+
+/** What was set aside, by why, with who sent it, and a way to learn from a sender whose mail only looked like a newsletter. */
+function SetAside({ run, busy, onKeep, onClose }: { run: LearningData; busy: boolean; onKeep: (sender: string) => void; onClose: () => void }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <p className="text-sm">What Homing set aside without sending it to a model, and who it was from. If a sender’s mail only looks like a newsletter, Homing can learn from them all the same.</p>
+      <ul className="flex flex-col gap-3">
+        {run.setAside.map((aside) => (
+          <li key={aside.reason} className="flex flex-col gap-1">
+            <span className="text-base font-semibold">{capitalize(aside.words)}</span>
+            {aside.senders.length > 0 && (
+              <ul className="flex flex-col gap-1">
+                {aside.senders.map((one) => (
+                  <li key={one.sender} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
+                    <span className="min-w-0 [overflow-wrap:anywhere]">{one.sender}, {thousands(one.items)}</span>
+                    {(aside.reason === 'newsletter' || aside.reason === 'automated') && (
+                      <Button variant="outline" size="sm" disabled={busy} onClick={() => onKeep(one.sender)}>Learn from this sender</Button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+      <div><Button variant="outline" size="sm" disabled={busy} onClick={onClose}>Close</Button></div>
+    </div>
   );
 }
