@@ -418,7 +418,7 @@ describe('straight against the database', () => {
 
       // Nor learn from the other's place, direct the other's run, spend against it, or mark anything processed for it or for a run of their own.
       await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select estimate_learning(${target.connection.place}::uuid, now() - interval '1 year', '{}')`), refused);
-      for (const call of ['start_learning($1, 1)', 'pause_learning($1)', 'resume_learning($1)', "extend_learning($1, '2020-01-01', null)", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}')"]) {
+      for (const call of ['start_learning($1, 1)', 'pause_learning($1)', 'resume_learning($1)', "estimate_extension($1, '2020-01-01', '{}')", "extend_learning($1, '2020-01-01')", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}', '{}')"]) {
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx.unsafe(`select ${call}`, [target.connection.run])), refused, call);
       }
       await assert.rejects(as(me, (s) => s.tx`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array([intruder.space])}::uuid[], 0, ${target.connection.run}::uuid)`), refused);
@@ -427,8 +427,13 @@ describe('straight against the database', () => {
           insert into learned_items (run_id, space_id, private_to, item, version, outcome) values (${run}, ${intruder.space}, ${me.id}, 'x', 'v', 'learned')
         `), refused);
         await assert.rejects(as(me, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
-        await assert.rejects(as(me, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', 'x', true, null, 1)`), refused);
+        await assert.rejects(as(me, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', now(), 'x', true, null, 1)`), refused);
         await assert.rejects(as(me, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
+        // Nor as the routine that learns, which works only on a run of the person it acts for, with the claim that holds it.
+        const routine = { person: me.id, agent: 'Homing', routine: 'learning' } as const;
+        await assert.rejects(as(routine, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
+        await assert.rejects(as(routine, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', now(), 'x', true, null, 1)`), refused);
+        await assert.rejects(as(routine, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
         await assert.rejects(as(me, (s) => s.tx`update learning_runs set spending_limit = 1000, private_to = ${me.id} where id = ${run}`), refused);
         await assert.rejects(as(me, (s) => s.tx`delete from learned_items where run_id = ${run}`), refused);
       }
@@ -436,6 +441,15 @@ describe('straight against the database', () => {
         insert into learning_runs (place_id, connection_id, space_id, private_to, since) values (${target.connection.place}, ${target.connection.id}, ${target.space}, ${me.id}, now())
       `), refused);
       await assert.rejects(as(me, (s) => s.tx`select * from claim_learning_run(${crypto.randomUUID()}::uuid, 60)`), refused);
+      // Nor propose learning from the other's place, in their own space or the other's, or from their own for someone else.
+      const learn = (space: string, privateTo: string, place: string) =>
+        as(me, (s) => s.tx`
+          insert into proposals (space_id, private_to, action, change)
+          values (${space}, ${privateTo}, 'start learning', ${s.tx.json({ place, since: '2025-01-01T00:00:00.000Z', estimate: { items: 1 } })})
+        `);
+      for (const [space, privateTo, place] of [[intruder.space, me.id, target.connection.place], [target.space, me.id, target.connection.place], [intruder.space, target.person.id, intruder.connection.place]] as const) {
+        await assert.rejects(learn(space, privateTo, place), (error: { code?: string }) => ['42501', '23514'].includes(error.code ?? ''));
+      }
 
       // Nor a proposal there, for anyone.
       for (const privateTo of [me.id, target.person.id]) {
@@ -932,14 +946,17 @@ describe('through the app’s endpoints', () => {
         [`/api/places/${target.connection.place}/learning/start`, { limit: 5 }],
         [`/api/places/${target.connection.place}/learning/pause`, {}],
         [`/api/places/${target.connection.place}/learning/resume`, {}],
+        [`/api/places/${target.connection.place}/learning/extend/estimate`, { since: '2020-01-01' }],
+        [`/api/places/${target.connection.place}/learning/extend/estimate`, { since: null }],
         [`/api/places/${target.connection.place}/learning/extend`, { since: '2020-01-01' }],
         [`/api/places/${target.connection.place}/learning/limit`, { limit: 1000 }],
-        [`/api/places/${target.connection.place}/learning/left-out`, { senders: ['x@x.test'], folders: [] }],
+        [`/api/places/${target.connection.place}/learning/left-out`, { senders: ['x@x.test'], folders: [], kept: ['y@y.test'] }],
         [`/api/connections/${target.connection.id}/revoke`, {}],
         [`/api/spaces/${target.space}/connections/microsoft`, {}],
         [`/api/spaces/${target.space}/model-processing`, { on: false }],
         [`/api/spaces/${target.personalSpaceId}/model-processing`, { on: false }],
         [`/api/admin/model-limit`, { limit: 1000 }],
+        [`/api/admin/model-limit`, { ceiling: 1000 }],
       ] as const) {
         const changed = await browser.json(path, body);
         assert.ok([403, 404].includes(changed.status), path);

@@ -354,6 +354,15 @@ test('when what was spent leaves no room for a call, learning pauses and says wh
   await assert.rejects(withPrincipal(sql, { person: ana.id }, (s) => s.tx`select * from model_usage_this_month()`), { code: '42501' });
   await assert.rejects(withPrincipal(sql, { person: ida.id, agent: 'Claude' }, (s) => s.tx`select set_model_limit(1000)`), { code: '42501' });
   assert.equal((await ida.browser.json('/api/admin/model-limit', { limit: 'lots' })).status, 400);
+  // The same for the most a learning run may spend, which is $25 until whoever looks after Homing sets it.
+  assert.equal((await ida.browser.json('/api/admin')).body.model.runCeiling, 25);
+  assert.equal((await ana.browser.json('/api/admin/model-limit', { ceiling: 1000 })).status, 403);
+  await assert.rejects(withPrincipal(sql, { person: ana.id, direct: true }, (s) => s.tx`select set_run_ceiling(1000)`), { code: '42501' });
+  await assert.rejects(withPrincipal(sql, { person: ida.id, agent: 'Claude' }, (s) => s.tx`select set_run_ceiling(1000)`), { code: '42501' });
+  assert.equal((await ida.browser.json('/api/admin/model-limit', { ceiling: 'lots' })).status, 400);
+  assert.equal((await ida.browser.json('/api/admin/model-limit', { ceiling: '$40' })).status, 200);
+  assert.deepEqual([(await ida.browser.json('/api/admin')).body.model.runCeiling, (await ida.browser.json('/api/admin')).body.model.limit], [40, limit], 'one without the other');
+  assert.equal((await ida.browser.json('/api/admin/model-limit', { ceiling: 25 })).status, 200);
 
   // Setting it again, even to the same, resumes: the small call goes, and the big one pauses it again.
   assert.equal((await ida.browser.json('/api/admin/model-limit', { limit })).status, 200);
