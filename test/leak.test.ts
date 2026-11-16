@@ -341,7 +341,7 @@ describe('straight against the database', () => {
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
         assert.deepEqual(runs.map((row) => row.placeId), [connection.place]);
-        assert.deepEqual(learned.map((row) => row.item), [`AAkALg-${connection.address}`]);
+        assert.deepEqual(learned.map((row) => row.item).sort(), [`AAkALg-${connection.address}`, `AAkALh-${connection.address}`]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -418,7 +418,7 @@ describe('straight against the database', () => {
 
       // Nor learn from the other's place, direct the other's run, spend against it, or mark anything processed for it or for a run of their own.
       await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select estimate_learning(${target.connection.place}::uuid, now() - interval '1 year', '{}')`), refused);
-      for (const call of ['start_learning($1, 1)', 'pause_learning($1)', 'resume_learning($1)', "estimate_extension($1, '2020-01-01', '{}')", "extend_learning($1, '2020-01-01')", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}', '{}')"]) {
+      for (const call of ['start_learning($1, 1, now(), now())', 'pause_learning($1)', 'resume_learning($1)', "estimate_extension($1, '2020-01-01', '{}')", "extend_learning($1, '2020-01-01')", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}', '{}')", 'retry_learning($1)']) {
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx.unsafe(`select ${call}`, [target.connection.run])), refused, call);
       }
       await assert.rejects(as(me, (s) => s.tx`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array([intruder.space])}::uuid[], 0, ${target.connection.run}::uuid)`), refused);
@@ -796,8 +796,9 @@ async function mailbox(who: { id: string }, space: string, address: string) {
     const [{ run }] = await s.tx<{ run: string }[]>`select estimate_learning(${placeId}::uuid, now() - interval '1 year', ${s.tx.json({ limit: 5 })}) as run`;
     return { id: connectionId, place: placeId, address, run };
   });
-  // And one email the run has processed, as its worker marks it.
+  // And one email the run has processed, as its worker marks it, and one it set aside, from the mailbox's own address.
   await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome) values (${connection.run}, ${space}, ${who.id}, ${`AAkALg-${address}`}, 'v1', 'learned')`;
+  await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome, reason, sender) values (${connection.run}, ${space}, ${who.id}, ${`AAkALh-${address}`}, 'v1', 'set aside', 'provider refused', ${address})`;
   return connection;
 }
 
@@ -888,6 +889,9 @@ describe('through the app’s endpoints', () => {
       // Nor the other client's overview.
       assert.equal((await get(`/api/spaces/${target.space}/overview`)).status, 404);
       assert.equal((await get(`/api/spaces/${target.space}/tasks`)).status, 404);
+      // Nor who sent what the other client's run set aside, while their own shows.
+      assert.equal((await get(`/api/places/${target.connection.place}/learning/set-aside?reason=provider%20refused`)).status, 404);
+      assert.deepEqual((await get(`/api/places/${intruder.connection.place}/learning/set-aside?reason=provider%20refused`)).body, { senders: [{ sender: intruder.connection.address, items: 1 }], total: 1 });
       const overwritten = await browser.json(`/api/spaces/${target.space}/overview`, { text: 'Hello', shared: true });
       assert.equal(overwritten.status, 404);
       seen.push(overwritten.body);
@@ -951,6 +955,8 @@ describe('through the app’s endpoints', () => {
         [`/api/places/${target.connection.place}/learning/extend`, { since: '2020-01-01' }],
         [`/api/places/${target.connection.place}/learning/limit`, { limit: 1000 }],
         [`/api/places/${target.connection.place}/learning/left-out`, { senders: ['x@x.test'], folders: [], kept: ['y@y.test'] }],
+        [`/api/places/${target.connection.place}/learning/again`, {}],
+        [`/api/places/${target.connection.place}/learning/again`, { reason: 'provider refused' }],
         [`/api/connections/${target.connection.id}/revoke`, {}],
         [`/api/spaces/${target.space}/connections/microsoft`, {}],
         [`/api/spaces/${target.space}/model-processing`, { on: false }],

@@ -11,8 +11,9 @@
 // than asked for and still have a next link; delta gives changes in no
 // promised order, an email that changed with no more than its id and what
 // changed, and one that was only marked read even when it doesn't fit the
-// filter; a link it forgot answers 410; and when it's asked too often it
-// says how long to wait.
+// filter; a link it forgot answers 410; a page of history may come empty
+// with a link to the next; a mailbox may hold hundreds of folders, listed a
+// page at a time; and when it's asked too often it says how long to wait.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, X509Certificate } from 'node:crypto';
@@ -95,6 +96,8 @@ interface Mailbox {
   pageCap?: number;
   /** Emails Graph fails on whenever their text is asked for. */
   poisoned: Set<string>;
+  /** Whether a page of history comes empty with a link to the next: the first one asked for, or every one. */
+  empty?: 'first' | 'always';
 }
 
 /** The folders Outlook makes in every mailbox, by their well-known names. */
@@ -289,6 +292,20 @@ export class MicrosoftStandIn {
     this.mailboxOf(account).pageCap = most;
   }
 
+  /**
+   * A page of the mailbox's history comes empty, with a link to the next: only the page asked for
+   * first, however often it's asked for, so that only its link leads on, or every page, links'
+   * too. Or as it was again, without a mode.
+   */
+  emptyPages(account: Account, mode?: 'first' | 'always') {
+    this.mailboxOf(account).empty = mode;
+  }
+
+  /** The account's owner makes a folder, by its path, such as Clients/Northwind. */
+  folder(account: Account, path: string) {
+    this.folderOf(this.mailboxOf(account), path);
+  }
+
   /** Graph fails whenever it's asked for this email's text, in a list or by its id, as it does for one it can't convert. */
   poison(account: Account, id: string, poisoned = true) {
     const { poisoned: set } = this.mailboxOf(account);
@@ -301,6 +318,9 @@ export class MicrosoftStandIn {
 
   /** What Homing asked of a mailbox's history by date, as Graph got each filter. */
   readonly history: string[] = [];
+
+  /** The folders Homing asked for their changes, in order, by name. */
+  readonly deltasOf: string[] = [];
 
   private mailboxOf(account: Account): Mailbox {
     let mailbox = this.mailboxes.get(account.oid);
@@ -485,11 +505,20 @@ export class MicrosoftStandIn {
       this.history.push(filter);
       const sorted = order ? [...within].sort((a, b) => second(a) - second(b) || a.id.localeCompare(b.id)) : within;
       const skip = Number(url.searchParams.get('$skip') ?? 0);
+      const linked = (change: (params: URLSearchParams) => void) => {
+        const next = new URL(url);
+        change(next.searchParams);
+        return next.toString();
+      };
+      // As Graph: a page may hold nothing and still not be the last. Asked for again, it's as empty: only its link leads on.
+      if (mailbox.empty === 'always' || (mailbox.empty === 'first' && !url.searchParams.has('$skiptoken'))) {
+        return { status: 200, body: { value: [], '@odata.nextLink': linked((params) => params.set('$skiptoken', String(Number(params.get('$skiptoken') ?? 0) + 1))) } };
+      }
       // As Graph: a page may hold fewer than asked for, and the next link says whether there's more.
       const size = Math.min(top, mailbox.pageCap ?? top);
       const page = sorted.slice(skip, skip + size);
       if (failing(page)) return broken;
-      return { status: 200, body: { value: page.map(fields), ...(sorted.length > skip + size && { '@odata.nextLink': `${this.url}/next` }) } };
+      return { status: 200, body: { value: page.map(fields), ...(sorted.length > skip + size && { '@odata.nextLink': linked((params) => params.set('$skip', String(skip + size))) }) } };
     }
     return { status: 400, body: { error: { code: 'BadRequest' } } };
   }
@@ -497,10 +526,19 @@ export class MicrosoftStandIn {
   /** Graph's mail folders: the top ones, those in a folder, one by its id or well-known name, and the changes in one, by delta. */
   private folders(account: Account, url: URL, prefer: string): { status: number; body: unknown } {
     const mailbox = this.mailboxOf(account);
-    const listed = (folders: Folder[]) => ({
-      status: 200,
-      body: { value: folders.map((folder) => ({ id: folder.id, displayName: folder.name, childFolderCount: mailbox.folders.filter((child) => child.parent === folder.id).length })) },
-    });
+    // A page at a time, as many as asked for, with a link to the next.
+    const listed = (folders: Folder[]) => {
+      const [top, skip] = [Number(url.searchParams.get('$top') ?? 10), Number(url.searchParams.get('$skip') ?? 0)];
+      const next = new URL(url);
+      next.searchParams.set('$skip', String(skip + top));
+      return {
+        status: 200,
+        body: {
+          value: folders.slice(skip, skip + top).map((folder) => ({ id: folder.id, displayName: folder.name, childFolderCount: mailbox.folders.filter((child) => child.parent === folder.id).length })),
+          ...(folders.length > skip + top && { '@odata.nextLink': next.toString() }),
+        },
+      };
+    };
     if (url.pathname === '/v1.0/me/mailFolders') return listed(mailbox.folders.filter((folder) => folder.parent === null));
     const path = /^\/v1\.0\/me\/mailFolders\/([^/]+)(\/childFolders|\/messages\/delta)?$/.exec(url.pathname);
     const folder = path && mailbox.folders.find((one) => one.id === decodeURIComponent(path[1]) || one.wellKnown === decodeURIComponent(path[1]));
@@ -521,6 +559,7 @@ export class MicrosoftStandIn {
    */
   private delta(mailbox: Mailbox, folder: Folder, url: URL, prefer: string): { status: number; body: unknown } {
     this.asked.deltas++;
+    this.deltasOf.push(folder.name);
     type Token = { since: number; from: number | null; select: string[]; offset: number; upTo: number; forgot: number };
     const token = url.searchParams.get('$skiptoken') ?? url.searchParams.get('$deltatoken');
     let state: Token;

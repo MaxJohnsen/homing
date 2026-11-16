@@ -613,7 +613,7 @@ test('what search, read, remember and act say keeps their descriptions short eno
   // `act` does the most, so it says the most. Learning adds one sentence to it, and the rest is in what `read` gives for a learning:… reference.
   const act = tools.find((tool) => tool.name === 'act')!;
   assert.ok((act.description ?? '').length < 4_200, `act: ${act.description?.length}`);
-  assert.equal((act.description ?? '').match(/learning\.\w+/g)?.length, 5, 'each of learning’s actions is named once');
+  assert.equal((act.description ?? '').match(/learning\.\w+/g)?.length, 6, 'each of learning’s actions is named once');
   await claude.close();
 });
 

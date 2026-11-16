@@ -14,11 +14,12 @@ export interface Asked {
   authorization?: string;
 }
 
-/** How the stand-in answers a request: a status and JSON, or raw text, after a while if it says. */
+/** How the stand-in answers a request: a status and JSON, or raw text, with headers such as Retry-After, after a while if it says. */
 export interface Reply {
   status?: number;
   json?: unknown;
   raw?: string;
+  headers?: Record<string, string>;
   delayMs?: number;
 }
 
@@ -51,7 +52,7 @@ export class ModelStandIn {
       const reply = await this.reply(body);
       if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
       if (res.destroyed) return;
-      res.writeHead(reply.status ?? 200, { 'content-type': 'application/json' });
+      res.writeHead(reply.status ?? 200, { 'content-type': 'application/json', ...reply.headers });
       res.end(reply.raw ?? JSON.stringify(reply.json));
     });
     await new Promise<void>((resolve) => this.server!.listen(0, '127.0.0.1', resolve));
