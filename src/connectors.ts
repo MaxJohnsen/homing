@@ -125,6 +125,8 @@ export interface Changes {
   next: string;
   /** Nothing newer for now, or, for a scope with an end, the end reached. */
   caughtUp: boolean;
+  /** The place holds more than the connector follows, such as a mailbox with more folders than it reads: what arrives in the rest isn't given. */
+  partly?: true;
 }
 
 /** An item as it is now in a followed place. */

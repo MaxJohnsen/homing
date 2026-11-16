@@ -386,6 +386,8 @@ interface Tree {
   folders: [id: string, name: string, parent: string | null][];
   aside: Record<string, SetAside>;
   own: string[];
+  /** The mailbox has more folders than Homing read, so those beyond aren't followed. */
+  more?: true;
 }
 
 /**
@@ -394,11 +396,12 @@ interface Tree {
  * already given, and how many of them to pass over once a page holds nothing new; then, once that
  * caught up, onward by Graph's delta for each folder, with the time the filters start at, and for
  * each folder its next link, the latest email it gave in the rounds it finished, and in the one
- * under way, and which folder a look stopped at. Either way, the folders as they were when last read.
+ * under way, how many emails its delta gave since the first round from where its filter starts
+ * now, and which folder a look stopped at. Either way, the folders as they were when last read.
  */
 type Walk =
   | { v: 2; by: 'date'; after: string | null; seen: string[]; skip?: number; tree: Tree }
-  | { v: 2; by: 'delta'; from: string; links: Record<string, string>; reached?: Record<string, string>; seen?: Record<string, string>; at?: string; tree: Tree };
+  | { v: 2; by: 'delta'; from: string; links: Record<string, string>; reached?: Record<string, string>; seen?: Record<string, string>; given?: Record<string, number>; at?: string; tree: Tree };
 
 /** What following reads of each email: what reading one does, with its folder and headers, and without its attachments. */
 const followFields = `${summaryFields},parentFolderId,toRecipients,ccRecipients,body,uniqueBody,internetMessageHeaders,isDraft`;
@@ -419,6 +422,13 @@ const emptyPages = 5;
 /** How many folders one look asks for their changes, and for how long, before the next look carries on from there. */
 const foldersAtOnce = 50;
 const lookTime = 30_000;
+/**
+ * How many emails a folder's delta gives before Homing starts it again from a later time. Graph's
+ * documentation says a delta with a filter returns only up to 5,000 messages, and not what happens
+ * after that, so Homing stays well below it. This is from the documentation: no real mailbox has
+ * shown it yet.
+ */
+const startAgainAfter = 2_000;
 /** How Graph says, beside answering 410, that it no longer knows where a folder's changes stood. */
 const forgotten = ['SyncStateNotFound', 'syncStateNotFound', 'SyncStateInvalid', 'syncStateInvalid', 'resyncRequired', 'ResyncRequired'];
 const day = 24 * 60 * 60_000;
@@ -435,19 +445,21 @@ interface Fetched {
  * One page of the mailbox's changes (connectors.ts). Its history comes by the date each email
  * arrived, across all its folders, oldest first, from the start of the scope, up to its end if it
  * has one, and is done only when Graph says there is no more, since a page may hold fewer than
- * asked for, or none. Without an end, it then follows each folder with Graph's delta from the last
- * email given, some folders each look, carrying on where the last one stopped. Delta says only
- * which emails arrived or changed, in no promised order, and not always with more than their id,
- * so each is read by its id, and one that arrived before the scope is dropped. Each email comes
- * with its thread, unless it's set aside: by its folder, as a draft, or by its own headers. Asked
- * for one at a time, it reads each email by its id, and gives one Graph can't give as set aside.
+ * asked for, or none. Without an end, it then follows each folder with Graph's delta from a day
+ * before the last email given, some folders each look, for so long, carrying on where the last one
+ * stopped. Delta says only which emails arrived or changed, in no promised order, and not always
+ * with more than their id, so each is read by its id, unless delta itself says it arrived before
+ * the scope, and one that did is dropped. Each email comes with its thread, unless it's set aside:
+ * by its folder, as a draft, or by its own headers. Asked for one at a time, it reads each email by
+ * its id, and gives one Graph can't give as set aside. A look may take a time of its own, which
+ * tests set shorter.
  */
 export async function followMail(
   settings: MicrosoftSettings,
   access: string,
   from: string | null,
   scope: Scope,
-  options: { size?: number; related?: boolean } = {},
+  options: { size?: number; related?: boolean; lookMs?: number } = {},
   signal?: AbortSignal,
 ): Promise<Changes> {
   const kept: Walk = from ? walkOf(from) : { v: 2, by: 'date', after: null, seen: [], tree: await treeOf(settings, access, signal) };
@@ -455,6 +467,8 @@ export async function followMail(
   const size = Math.max(1, Math.min(Math.floor(options.size ?? pageSize), pageSize));
   const careful = size === 1;
   const given = { related: options.related ?? true, signal };
+  // More folders than Homing follows: what arrives in the rest isn't given, which the run says.
+  const partly = tree.more ? { partly: true as const } : {};
   if (kept.by === 'date') {
     const walk = kept;
     const start = walk.after ?? scope.since.toISOString();
@@ -487,28 +501,39 @@ export async function followMail(
     // so do those after it, until the walk is past that moment.
     const pass = fresh.length === 0 && more ? skip + page.length : same && skip ? skip + page.length : 0;
     const there: Walk = { v: 2, by: 'date', after, seen, ...(pass && { skip: pass }), tree };
-    if (more) return { changes, next: JSON.stringify(there), caughtUp: false };
-    // History caught up. With an end, that's all; without one, Graph's delta carries on from the last email.
-    const next: Walk = scope.until ? there : { v: 2, by: 'delta', from: after ?? scope.since.toISOString(), links: {}, reached: {}, tree };
-    return { changes, next: JSON.stringify(next), caughtUp: true };
+    if (more) return { changes, next: JSON.stringify(there), caughtUp: false, ...partly };
+    // History caught up. With an end, that's all; without one, Graph's delta carries on from a day
+    // before the last email, since one that arrived around then may show in the mailbox only later.
+    // What that gives again, Homing skips.
+    const margin = after ? new Date(Math.max(Date.parse(after) - day, scope.since.getTime())).toISOString() : scope.since.toISOString();
+    const next: Walk = scope.until ? there : { v: 2, by: 'delta', from: margin, links: {}, reached: {}, tree };
+    return { changes, next: JSON.stringify(next), caughtUp: true, ...partly };
   }
 
   // Each folder in turn, but those left out, from where the last look stopped, until one has
-  // something new, or the look has asked its share of folders.
+  // something new, or the look has asked its share of folders, or taken its time.
   const walk = kept;
   const followed = tree.folders.map(([id]) => id).filter((id) => !tree.aside[id]).sort();
   const inTree = new Set(tree.folders.map(([id]) => id));
-  const still = (by: Record<string, string> | undefined) => Object.fromEntries(Object.entries(by ?? {}).filter(([id]) => inTree.has(id)));
-  const [links, reached, seen] = [still(walk.links), still(walk.reached), still(walk.seen)];
-  const there = (at?: string): string => JSON.stringify({ v: 2, by: 'delta', from: walk.from, links, reached, ...(Object.keys(seen).length > 0 && { seen }), ...(at && { at }), tree } satisfies Walk);
+  const still = <T>(by: Record<string, T> | undefined) => Object.fromEntries(Object.entries(by ?? {}).filter(([id]) => inTree.has(id)));
+  const [links, reached, seen, counted] = [still(walk.links), still(walk.reached), still(walk.seen), still(walk.given)];
+  const there = (at?: string): string =>
+    JSON.stringify({ v: 2, by: 'delta', from: walk.from, links, reached, ...(Object.keys(seen).length > 0 && { seen }), ...(Object.keys(counted).length > 0 && { given: counted }), ...(at && { at }), tree } satisfies Walk);
   const resumed = walk.at === undefined ? 0 : followed.findIndex((id) => id >= walk.at!);
   const start = resumed < 0 ? followed.length : resumed;
-  const until = Date.now() + lookTime;
+  const until = Date.now() + (options.lookMs ?? lookTime);
   for (let index = start; index < followed.length; index++) {
     const id = followed[index];
     // A mailbox with hundreds of folders takes several looks: the next carries on from this folder.
-    if (index - start >= foldersAtOnce || Date.now() > until) return { changes: [], next: there(id), caughtUp: false };
+    if (index - start >= foldersAtOnce || Date.now() > until) return { changes: [], next: there(id), caughtUp: false, ...partly };
     const first = (from: string) => `${settings.graph}/v1.0/me/mailFolders/${encodeURIComponent(id)}/messages/delta?$select=${lightFields}&$filter=${encodeURIComponent(`receivedDateTime ge ${from}`)}`;
+    // Where this folder starts again: a day before the latest email this very folder gave in a round
+    // it finished, since another folder's says nothing of what this one missed, and never before
+    // where following began. What comes again, Homing skips.
+    const again = () => {
+      const back = reached[id] ? new Date(Date.parse(reached[id]) - day).toISOString() : walk.from;
+      return first(back > walk.from ? back : walk.from);
+    };
     let link = links[id] ?? first(walk.from);
     let begun = Boolean(links[id]);
     for (let pages = 0; pages < 100; pages++) {
@@ -522,15 +547,13 @@ export async function followMail(
           delete links[id];
           break;
         }
-        // Graph forgot where this folder stood: it's followed again, from a day before the latest
-        // email this very folder gave in a round it finished, since another folder's says nothing
-        // of what this one missed. So what it has to give again stays far below the most a
-        // filtered delta gives, and what comes again, Homing skips.
+        // Graph forgot where this folder stood: it's followed again, from a day before its own
+        // latest email, so what it has to give again stays far below the most a filtered delta gives.
         if (error.status !== 410 && !forgotten.includes(error.detail ?? '')) throw error;
         delete links[id];
         delete seen[id];
-        const back = reached[id] ? new Date(Date.parse(reached[id]) - day).toISOString() : walk.from;
-        link = first(back > walk.from ? back : walk.from);
+        delete counted[id];
+        link = again();
         begun = false;
         continue;
       }
@@ -540,10 +563,15 @@ export async function followMail(
       const deltaLink = typeof body['@odata.deltaLink'] === 'string' ? body['@odata.deltaLink'] : undefined;
       if (!nextLink && !deltaLink) throw new MicrosoftRefused('graph_refused', 'no_delta_link');
       links[id] = (nextLink ?? deltaLink)!;
+      // Counted from the folder's second round on: the first gives what was there already.
+      if (counted[id] !== undefined) counted[id] += entries.length;
       // Delta may give no more of an email than its id and what changed, and may give one that
-      // doesn't fit the filter when it's only marked read. So each is read as it is now, by its id,
-      // and what arrived before the scope is none of the run's.
-      const read = (await readEach(settings, access, entries, careful, signal)).filter((one) => {
+      // doesn't fit the filter when it's only marked read. One it gives with the time it arrived,
+      // before the scope, is none of the run's, and needs no reading: hundreds of old emails marked
+      // read at once come that way. Each of the others is read as it is now, by its id, and dropped
+      // if it arrived before the scope.
+      const within = entries.filter((entry) => !(typeof entry.receivedDateTime === 'string' && Date.parse(entry.receivedDateTime) < scope.since.getTime()));
+      const read = (await readEach(settings, access, within, careful, signal)).filter((one) => {
         const at = summaryOf(one.message).at;
         return at === null || at.getTime() >= scope.since.getTime();
       });
@@ -556,19 +584,28 @@ export async function followMail(
       if (!nextLink) {
         if (seen[id] && (!reached[id] || seen[id] > reached[id])) reached[id] = seen[id];
         delete seen[id];
+        // After so many emails, the folder's delta starts again from a day before its latest, as
+        // when Graph forgot it, so no filtered delta comes near the most Graph says one returns.
+        if ((counted[id] ?? 0) >= startAgainAfter) {
+          links[id] = again();
+          delete counted[id];
+        } else counted[id] ??= 0;
       }
       if (read.length) {
         const changes = await changesOf(settings, access, read, tree, given);
         // In no order Graph promises, so oldest first here.
         changes.sort((a, b) => (a.item.envelope.at?.getTime() ?? 0) - (b.item.envelope.at?.getTime() ?? 0));
-        return { changes, next: there(id), caughtUp: false };
+        return { changes, next: there(id), caughtUp: false, ...partly };
       }
       if (!nextLink) break;
+      // Pages that gave nothing the run wants, such as old emails marked read, each read by its id:
+      // once the look has taken its time, the next carries on from this folder's link.
+      if (Date.now() > until) return { changes: [], next: there(id), caughtUp: false, ...partly };
       link = nextLink;
       begun = true;
     }
   }
-  return { changes: [], next: there(), caughtUp: true };
+  return { changes: [], next: there(), caughtUp: true, ...partly };
 }
 
 /** These emails as they are now, by their ids, each with its thread. One that's gone is left out, and one Graph can't give comes set aside. */
@@ -684,8 +721,9 @@ function headersOf(headers: unknown): Map<string, string> {
 
 /**
  * The mailbox's folders: the top ones and those in them, as far as Homing follows, each with its
- * name and the folder it's in. Junk, deleted mail, drafts and the outbox are left out with every
- * folder in them, and sent mail's folders hold what the owner wrote.
+ * name and the folder it's in, and whether there are more than that. Junk, deleted mail, drafts
+ * and the outbox are left out with every folder in them, and sent mail's folders hold what the
+ * owner wrote.
  */
 async function treeOf(settings: MicrosoftSettings, access: string, signal?: AbortSignal): Promise<Tree> {
   const folders: Tree['folders'] = [];
@@ -720,7 +758,7 @@ async function treeOf(settings: MicrosoftSettings, access: string, signal?: Abor
     if (id) for (const folder of under(id)) aside[folder] = why;
   }
   const sent = await known('sentitems');
-  return { at: new Date().toISOString(), folders, aside, own: sent ? under(sent) : [] };
+  return { at: new Date().toISOString(), folders, aside, own: sent ? under(sent) : [], ...(waiting.length > 0 && { more: true as const }) };
 }
 
 function listOf(body: Record<string, unknown> | undefined): Record<string, unknown>[] {

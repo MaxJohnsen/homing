@@ -1256,7 +1256,7 @@ function connectionData(connectors: Connectors, connection: Connection) {
 
 /** A learning run as the app shows it to its owner: where it stands, what it learned from, what it set aside and from whom, and what it spent against its limit. */
 function learningData(run: Run, progress: Progress, words: { item: string; items: string }) {
-  const { state, reason, waitingFor, waitingAtLimit, since, learnedUpTo, caughtUpAt, extending, limit, estimate, proposed, leftOut } = run;
+  const { state, reason, waitingFor, waitingAtLimit, since, learnedUpTo, caughtUpAt, followedPartly, extending, limit, estimate, proposed, leftOut } = run;
   return {
     state,
     reason,
@@ -1265,6 +1265,7 @@ function learningData(run: Run, progress: Progress, words: { item: string; items
     since,
     learnedUpTo,
     caughtUp: caughtUpAt !== null,
+    followedPartly,
     extending,
     limit,
     estimate,

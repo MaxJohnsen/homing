@@ -147,6 +147,9 @@ create table learning_runs (
   learned_up_to timestamptz,
   caught_up_at timestamptz,
   polled_at timestamptz,
+  -- The place holds more than Homing follows, such as a mailbox with more
+  -- folders than it reads, so what arrives in the rest isn't learned from.
+  followed_partly boolean not null default false,
   -- In USD, for what it learns from history, extensions included.
   spending_limit numeric(12, 2) not null default 0 check (spending_limit between 0 and 1000000),
   -- The last estimate, as Homing made it: what's there and what it may cost.
@@ -244,6 +247,12 @@ alter table model_calls
   add column run_history boolean not null default false;
 
 create index model_calls_run on model_calls (run_id) where run_id is not null;
+
+-- A call that never reached the provider, since no connection to it could
+-- be made, cost nothing, and says so.
+alter table model_calls
+  drop constraint model_calls_cost_from_check,
+  add constraint model_calls_cost_from_check check (cost_from in ('provider', 'prices', 'worst case', 'refused', 'not sent'));
 
 -- The state a run carries on in: history until it first caught up, and
 -- following what arrives from then on, whatever older material it still has.
@@ -751,14 +760,15 @@ $$;
 
 -- Moves a run on after a page of a walk, for the scope the page was fetched
 -- for: a page for a scope that changed meanwhile is refused. The main walk
--- takes the connector's new checkpoint, how far history reached, and whether
--- it caught up, which takes the run from history to following. A walk of an
--- extension ends it once it caught up. A page of items learned from again
--- moves nothing. The claim ends, what the provider failed on is forgotten
--- for this walk, whose page is done, and the run is due at once while it has
--- history or older material to learn from, and otherwise when it's time to
--- look again. The state now.
-create function learning_walked(run uuid, claim uuid, walk text, walked_since timestamptz, checkpoint text, caught_up boolean, reached timestamptz, poll_seconds integer)
+-- takes the connector's new checkpoint, how far history reached, whether
+-- it caught up, which takes the run from history to following, and whether
+-- the connector follows only part of the place. A walk of an extension ends
+-- it once it caught up. A page of items learned from again moves nothing.
+-- The claim ends, what the provider failed on is forgotten for this walk,
+-- whose page is done, and the run is due at once while it has history or
+-- older material to learn from, and otherwise when it's time to look again.
+-- The state now.
+create function learning_walked(run uuid, claim uuid, walk text, walked_since timestamptz, checkpoint text, caught_up boolean, reached timestamptz, poll_seconds integer, partly boolean default false)
 returns text
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -785,7 +795,8 @@ begin
     set checkpoint = learning_walked.checkpoint,
         learned_up_to = case when reached is null then learned_up_to else greatest(learned_up_to, reached) end,
         caught_up_at = case when caught_up then coalesce(caught_up_at, clock_timestamp()) else caught_up_at end,
-        polled_at = case when caught_up then clock_timestamp() else polled_at end
+        polled_at = case when caught_up then clock_timestamp() else polled_at end,
+        followed_partly = coalesce(partly, false)
     where id = r.id;
   elsif walk <> 'again' then
     raise exception 'a walk is the main one, an extension, or what''s learned from again' using errcode = 'check_violation';
@@ -847,7 +858,9 @@ $$;
 -- that's still there, in a space they can open, and carry that space. A run
 -- that isn't learning now is refused, and so is a call under a claim the
 -- run no longer has, for a page begun before the run was claimed again:
--- nothing more is sent for it. What it learns from history, until it
+-- nothing more is sent for it. A call under the run's claim keeps the claim
+-- for as long again, so a page of slow calls with nothing marked between
+-- them isn't taken over while it's worked on. What it learns from history, until it
 -- first caught up and in the other walks after that, is held to its own
 -- limit, or the ceiling if that's lower: what it spent and this call's worst
 -- case past it pause the run, which setting its limit resumes, or, once it
@@ -960,6 +973,9 @@ begin
       return query select null::uuid, 'busy', used, held, limits.monthly_limit;
       return;
     end if;
+  end if;
+  if learning.id is not null and reserve_model_call.claim is not null then
+    update learning_runs set claimed_until = greatest(claimed_until, now() + make_interval(secs => coalesce(lease_seconds, 60))) where id = learning.id;
   end if;
   insert into model_calls (person_id, purpose, model, spaces, reserved, run_id, run_history)
   values (me, reserve_model_call.purpose, reserve_model_call.model, reserve_model_call.spaces, worst, learning.id, history)

@@ -71,6 +71,8 @@ export interface Run {
   learnedUpTo: Date | null;
   /** When it first caught up with what's there. */
   caughtUpAt: Date | null;
+  /** Whether the place holds more than Homing follows, such as a mailbox with more folders than it reads, so what arrives in the rest isn't learned from. */
+  followedPartly: boolean;
   /** A scope extended further back that it's walking now: from when, up to when. */
   extending: { since: Date; until: Date } | null;
   /** In USD, for what it learns from history. */
@@ -132,6 +134,7 @@ interface RunRow {
   since: Date;
   learnedUpTo: Date | null;
   caughtUpAt: Date | null;
+  followedPartly: boolean;
   extensionSince: Date | null;
   extensionUntil: Date | null;
   extensionEstimate: Estimate | null;
@@ -163,7 +166,7 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
   if (!person || places.length === 0) return new Map();
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
-           r.since, r.learned_up_to, r.caught_up_at, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
+           r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
            r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at
     from learning_runs r
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid

@@ -10,6 +10,9 @@ import { ProviderFailed, ProviderRefused, type Provider } from './provider.ts';
 /** The most of an answer Homing reads. A model writes far less within its limit. */
 const mostBytes = 8 * 1024 * 1024;
 
+/** How a request fails when no connection could be made at all: refused, no such host, no route, or no answer to connecting. Nothing was sent. */
+const neverConnected = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT'];
+
 /** An adapter for the provider at this address, with its key if it takes one. */
 export function chatCompletions({ url, key }: { url: URL; key?: string }): Provider {
   const endpoint = new URL(`${url.pathname.replace(/\/$/, '')}/chat/completions`, url);
@@ -36,8 +39,11 @@ export function chatCompletions({ url, key }: { url: URL; key?: string }): Provi
           redirect: 'error',
           signal,
         });
-      } catch {
-        throw new ProviderFailed(signal.aborted ? 'it took too long' : 'the provider couldn’t be reached');
+      } catch (error) {
+        if (signal.aborted) throw new ProviderFailed('it took too long');
+        // A connection that was never made carried nothing to the provider. One that broke on the way may have.
+        const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+        throw new ProviderFailed('the provider couldn’t be reached', undefined, undefined, undefined, typeof code === 'string' && neverConnected.includes(code));
       }
       let json: any;
       try {

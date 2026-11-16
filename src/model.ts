@@ -340,7 +340,7 @@ export function usd(value: number): string {
  * Calls the model for a person: the one place Homing does. The call is refused, and nothing sent,
  * unless the database reserves its worst case first. It's sent with a time limit, and settled at
  * what the provider says it cost, or what its tokens cost by its prices, or else its worst case,
- * unless the provider refused it before any model ran.
+ * unless the provider refused it before any model ran, or it never reached the provider.
  */
 export async function callModel(homing: { sql: Sql; model?: Model }, person: string, call: ModelCall): Promise<ModelAnswer> {
   const model = homing.model;
@@ -372,10 +372,16 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
   try {
     answer = await provider.chat(request, AbortSignal.timeout(timeoutMs));
   } catch (error) {
-    // Refused before any model ran costs nothing; anything else may have been charged, so it counts at its worst case.
+    // Refused before any model ran, or never sent because no connection could be made, costs nothing;
+    // anything else may have been charged, so it counts at its worst case.
     const said = error instanceof ProviderRefused || error instanceof ProviderFailed ? plausibleCost(error.cost) : undefined;
     const before = error instanceof ProviderRefused;
-    await settle(homing.sql, person, reserved, worst, { outcome: 'failed', cost: said ?? (before ? 0 : worst), from: said !== undefined ? 'provider' : before ? 'refused' : 'worst case' });
+    const unsent = error instanceof ProviderFailed && error.unsent;
+    await settle(homing.sql, person, reserved, worst, {
+      outcome: 'failed',
+      cost: said ?? (before || unsent ? 0 : worst),
+      from: said !== undefined ? 'provider' : before ? 'refused' : unsent ? 'not sent' : 'worst case',
+    });
     const reason = error instanceof ProviderRefused || error instanceof ProviderFailed ? hidden(error.message, key) : 'something went wrong on the way';
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: ${reason}`);
     const answered = error instanceof ProviderRefused || error instanceof ProviderFailed ? error : undefined;

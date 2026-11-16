@@ -18,7 +18,7 @@ import type { Change, Changes } from './connectors.ts';
 import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } from './db.ts';
 import { Unusable, type Ask, type Learned } from './interpret.ts';
 import { addSource, cite, createPage, insertItem, updateItem, visible } from './knowledge.ts';
-import { asOwner, batchesOf, leftOutIn, senderOf, setAside, type Learning, type Run } from './learning.ts';
+import { asOwner, batchesOf, leftOutIn, retryable, senderOf, setAside, type Learning, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused } from './model.ts';
 import { ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
 
@@ -51,8 +51,8 @@ const againAtOnce = 20;
 const triesForThread = 3;
 /**
  * How many threads in a row the provider refuses or fails on, with none answered between, before
- * that says something about the provider and nothing about the threads. And how many more a page
- * then asks about before it stops asking.
+ * that says something about the provider and nothing about the threads, but for the first of them,
+ * which is counted against alone. And how many more a page then asks about before it stops asking.
  */
 const several = 3;
 
@@ -121,8 +121,10 @@ export async function claim(sql: Sql, worker: string, leaseSeconds = defaults.le
   return claimed;
 }
 
-/** A thread the provider failed on, on the page of a walk: how often, and when last. */
-type Failure = [walk: Walk, key: string, count: number, at: number];
+/** A thread the provider failed on, on the page of a walk: how often, when last, and whether as the first of several in a row. */
+type Failure = [walk: Walk, key: string, count: number, at: number, row?: true];
+/** How often a thread was counted against, when last, and whether as the first of several in a row. */
+type Tries = { count: number; at: number; row?: true };
 
 interface Claim extends Run {
   /** The person it learns for, on whose private side it writes. */
@@ -137,6 +139,8 @@ interface Claim extends Run {
   /** How many items it asks for at once, after a page that failed. */
   pageSize: number | null;
   polledAt: Date | null;
+  /** Whether its place held more than the connector follows, when it last looked. */
+  followedPartly: boolean;
 }
 
 type Trouble = 'provider' | 'system' | 'error' | 'throttled' | 'limited' | 'sign in again' | 'not set up' | 'monthly limit' | 'model processing off';
@@ -164,12 +168,13 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
         since: Date; learnedUpTo: Date | null; caughtUpAt: Date | null; extensionSince: Date | null; extensionUntil: Date | null; spendingLimit: string;
         excludedSenders: string[]; excludedFolders: string[]; keptSenders: string[]; startedAt: Date | null;
         checkpoint: string | null; extensionCheckpoint: string | null; attempts: number; failures: Failure[] | null; refused: number; pageSize: number | null; polledAt: Date | null;
+        followedPartly: boolean;
       }[]
     >`
       select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
              r.since, r.learned_up_to, r.caught_up_at, r.extension_since, r.extension_until, r.spending_limit,
              r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
-             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at
+             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at, r.followed_partly
       from learning_runs r
       where r.id = ${claimed.run}::uuid and r.claim = ${claim}::uuid
     `;
@@ -195,14 +200,15 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
   const later = async (waitSeconds: number, trouble: Trouble | null = null, keep: { failures?: Failure[]; pageSize?: number } = {}) => {
     try {
       await withPrincipal(sql, principal, (s) => s.tx`
-        select learning_later(${run.id}::uuid, ${claim}::uuid, ${Math.round(waitSeconds)}::integer, ${trouble}, ${keep.failures ? s.tx.json(keep.failures) : null}::jsonb, ${keep.pageSize ?? null}::integer)
+        select learning_later(${run.id}::uuid, ${claim}::uuid, ${Math.round(waitSeconds)}::integer, ${trouble}, ${keep.failures ? s.tx.json(keep.failures as never) : null}::jsonb, ${keep.pageSize ?? null}::integer)
       `);
     } catch (error) {
       if (!lost(error)) throw error;
     }
   };
-  /** Waits longer each time, up to an hour, and keeps trying. */
-  const backoff = (trouble: 'provider' | 'system' | 'error', keep: Parameters<typeof later>[2] = {}) => later(Math.min(pace.backoffSeconds * 2 ** run.attempts, 3600), trouble, keep);
+  /** Waits longer each time, up to an hour, or as long as it was asked to if that's longer, and keeps trying. */
+  const backoff = (trouble: 'provider' | 'system' | 'error', keep: Parameters<typeof later>[2] = {}, atLeast = 0) =>
+    later(Math.max(Math.min(pace.backoffSeconds * 2 ** run.attempts, 3600), atLeast), trouble, keep);
 
   try {
     // Removed meanwhile, or its account revoked: the next look ends the run. And Homing stopping asks nothing more.
@@ -249,12 +255,12 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     const changes = [...new Map(page.changes.map((change) => [change.item.envelope.id, change])).values()].filter(
       ({ item }) => walk === 'again' || item.envelope.at === null || item.envelope.at.getTime() >= run.since.getTime(),
     );
-    type Marked = { version: string; again: boolean; outcome: string; interpretation: string | null; folder: string | null };
+    type Marked = { version: string; again: boolean; outcome: string; reason: string | null; interpretation: string | null; folder: string | null };
     const marked = changes.length
       ? new Map(
           (
             await withPrincipal(sql, principal, (s) => s.tx<({ item: string } & Marked)[]>`
-              select item, version, again, outcome, interpretation, folder from learned_items where run_id = ${run.id}::uuid and item in ${s.tx(changes.map((change) => change.item.envelope.id))}
+              select item, version, again, outcome, reason, interpretation, folder from learned_items where run_id = ${run.id}::uuid and item in ${s.tx(changes.map((change) => change.item.envelope.id))}
             `)
           ).map((mark) => [mark.item, mark]),
         )
@@ -292,9 +298,10 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
 
     const read = `${l.interpretation.name} ${l.interpretation.version}`;
     // How many of this page's calls a model answered, in this try, and how many threads in a row the
-    // provider refused or failed on since it last answered one.
+    // provider refused or failed on since it last answered one. However many it set aside in a row
+    // before, a page still asks about a few.
     let answered = 0;
-    let inARow = run.refused;
+    let inARow = Math.min(run.refused, several);
     const call: Ask = (asked) => callModel({ sql, model: l.model }, claimed.person, { ...asked, run: run.id, walk, claim });
     const ask: Ask = async (asked) => {
       const answer = await call(asked);
@@ -307,37 +314,60 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     const answersOtherwise = async () => answered > 0 || (await (pinged ??= answers(call, place.space)));
     const words = wordsOf(connector, place.kind);
     // The threads the provider failed on before, on this walk's page, and when each is tried next.
-    const before = new Map(run.failures.filter(([of]) => of === walk).map(([, key, count, at]) => [key, { count, at }]));
+    const before = new Map(run.failures.filter(([of]) => of === walk).map(([, key, count, at, row]): [string, Tries] => [key, { count, at, ...(row && { row }) }]));
     const elsewhere = run.failures.filter(([of]) => of !== walk);
-    const next = ({ count, at }: { count: number; at: number }) => at + pace.retrySeconds[Math.min(count, pace.retrySeconds.length) - 1] * 1000;
+    const next = ({ count, at }: Tries) => at + pace.retrySeconds[Math.min(count, pace.retrySeconds.length) - 1] * 1000;
     const batches = batchesOf(kept, l.interpretation.most);
     const keyOf = (batch: { changes: Change[] }) => batch.changes[0].item.envelope.id;
     // Still to be tried again, of those on this page, until each is learned from or set aside.
     const pending = new Map(batches.flatMap((batch) => (before.has(keyOf(batch)) ? [[keyOf(batch), before.get(keyOf(batch))!] as const] : [])));
-    const stillFailing = (): Failure[] => [...elsewhere, ...[...pending].map(([key, { count, at }]): Failure => [walk, key, count, at])];
+    const stillFailing = (): Failure[] => [...elsewhere, ...[...pending].map(([key, { count, at, row }]): Failure => (row ? [walk, key, count, at, true] : [walk, key, count, at]))];
+    const asideFor = (changes: Change[], reason: string) => withPrincipal(sql, principal, (s) => mark(s, run, claim, changes.map((change) => markOf(change, 'set aside', reason, null, read)), null));
     // Those it failed on in this try: followed by a call it answered, which shows the fault was with
     // them, or since the last one it answered, which doesn't yet.
     const counted: { key: string; changes: Change[] }[] = [];
     let streak: { key: string; changes: Change[] }[] = [];
     // The provider refused or failed on several in a row, or wouldn't say whether it answers: the page isn't done, and the run waits for it.
     let trouble = false;
+    /**
+     * A thread refused or failed on as one of several in a row. That's the provider's trouble, and
+     * the run waits. But the run would wait for good behind threads the provider really won't take,
+     * so the first of them is counted against, alone, like a thread that fails by itself: on tries
+     * hours apart, each only while the provider answers otherwise. After the last it's set aside,
+     * and the next one is the first.
+     */
+    const inRow = async (key: string, changes: Change[], reason: 'provider refused' | 'provider failed'): Promise<void> => {
+      const first = [...pending].find(([, tries]) => tries.row)?.[0];
+      const earlier = before.get(key);
+      if ((first === undefined || first === key) && !(earlier && next(earlier) > Date.now()) && (await answersOtherwise())) {
+        const count = (earlier?.count ?? 0) + 1;
+        if (count >= triesForThread) {
+          pending.delete(key);
+          return void (await asideFor(changes, reason));
+        }
+        pending.set(key, { count, at: Date.now(), row: true });
+      }
+      trouble = true;
+    };
     for (const batch of batches) {
       if (signal.aborted) return await later(0);
       const key = keyOf(batch);
-      // Failed on before, a thread is tried again hours later, so its tries never all fall within one passing fault.
+      // Failed on before, a thread is tried again hours later, so its tries never all fall within one
+      // passing fault. The first of several in a row is asked with the rest, and only counted hours apart.
       const earlierTry = before.get(key);
-      if (earlierTry && next(earlierTry) > Date.now()) continue;
+      if (earlierTry && !earlierTry.row && next(earlierTry) > Date.now()) continue;
       // Nothing was answered for so many in a row that asking on says nothing more.
       if (inARow >= 2 * several) {
         trouble = true;
         break;
       }
-      const off = (reason: string) => withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => markOf(change, 'set aside', reason, null, read)), null));
       const earlier = await withPrincipal(sql, principal, (s) => earlierNote(s, run, batch.thread));
+      // Emails the provider or the system failed on before, now tried again: no model has read them.
+      const retry = earlierTry !== undefined || batch.changes.some((change) => retryable.includes(marked.get(change.item.envelope.id)?.reason ?? ''));
       let learned: Learned;
       try {
         learned = await l.interpretation.learn(
-          { space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: earlier?.text ?? null, earlierUpTo: earlier?.upTo ?? null },
+          { space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: earlier?.text ?? null, earlierUpTo: earlier?.upTo ?? null, retry },
           ask,
         );
       } catch (error) {
@@ -357,24 +387,29 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
         // The model answered, and its answer can't be used: asking again would give the same. It's set aside, saying so, and the run moves on.
         if (error instanceof Unusable || (error instanceof ModelFailed && error.unusable)) {
           pending.delete(key);
-          await off('no usable answer');
+          await asideFor(batch.changes, 'no usable answer');
           continue;
         }
         if (!(error instanceof ModelFailed)) throw error;
         // Asked too often, or asked to wait: that's about every request, so it never counts against a
-        // thread, and the run waits as long as the provider said.
+        // thread. Asked too often, the run waits as long as the provider said, and that's no failure.
+        // A provider that fails and says when to come back is still failing: the run waits that long
+        // or as long as after any failure, whichever is longer, so a short wait is never asked again
+        // at once, call after call.
         if (error.limited || error.retryAfter !== undefined) {
-          return await (error.retryAfter !== undefined ? later(error.retryAfter, 'limited', { failures: stillFailing() }) : backoff('provider', { failures: stillFailing() }));
+          return await (error.limited && error.retryAfter !== undefined
+            ? later(error.retryAfter, 'limited', { failures: stillFailing() })
+            : backoff('provider', { failures: stillFailing() }, error.retryAfter));
         }
         inARow++;
         if (error.refused) {
           // The provider refused the request as it was. That's about this thread only when the provider
           // answers otherwise, and when it isn't one of several in a row, which is how a refusal of
-          // everything looks, such as for a model it no longer has. Otherwise it's waited for.
+          // everything looks, such as for a model it no longer has.
           if (inARow < several && (await answersOtherwise())) {
             pending.delete(key);
-            await off('provider refused');
-          } else trouble = true;
+            await asideFor(batch.changes, 'provider refused');
+          } else await inRow(key, batch.changes, 'provider refused');
           continue;
         }
         // The provider failed on this one: the rest of the page is tried all the same, so one thread never holds up the others.
@@ -390,17 +425,23 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
 
     // What it failed on last counts against those threads only when there were few and the provider
     // answers otherwise. Several in a row, or a provider that answers nothing, is the provider's
-    // trouble: nothing is counted or set aside, and the run waits.
+    // trouble: only the first of them is counted against, and the run waits.
     if (streak.length) {
       if (inARow < several && (await answersOtherwise())) counted.push(...streak);
-      else trouble = true;
+      else {
+        await inRow(streak[0].key, streak[0].changes, 'provider failed');
+        if (streak.length > 1) trouble = true;
+      }
     }
     for (const { key, changes } of counted) {
-      const count = (before.get(key)?.count ?? 0) + 1;
+      const earlier = before.get(key);
+      // Asked before its next try was due, as the first of several in a row is: not another try.
+      if (earlier && next(earlier) > Date.now()) continue;
+      const count = (earlier?.count ?? 0) + 1;
       // Failed on three times, hours apart, while the provider answers otherwise, a thread is one it won't read: it's set aside, saying so.
       if (count >= triesForThread) {
         pending.delete(key);
-        await withPrincipal(sql, principal, (s) => mark(s, run, claim, changes.map((change) => markOf(change, 'set aside', 'provider failed', null, read)), null));
+        await asideFor(changes, 'provider failed');
       } else pending.set(key, { count, at: Date.now() });
     }
     if (trouble) return await backoff('provider', { failures: stillFailing() });
@@ -411,9 +452,13 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       return await later(run.caughtUpAt === null ? wait : Math.min(wait, pace.pollSeconds), 'limited', { failures: stillFailing() });
     }
 
+    // Never silently: the person is told on the run, and whoever looks after Homing here, once.
+    if (walk === 'main' && page.partly && !run.followedPartly) {
+      console.warn(`learning: a ${words.place} holds more than Homing follows, so what arrives in the rest of it isn’t learned from`);
+    }
     const reached = walk === 'main' ? changes.reduce<Date | null>((latest, { item }) => (item.envelope.at && (!latest || item.envelope.at > latest) ? item.envelope.at : latest), null) : null;
     await withPrincipal(sql, principal, (s) => s.tx`
-      select learning_walked(${run.id}::uuid, ${claim}::uuid, ${walk}, ${walk === 'again' ? null : scope.since}, ${walk === 'again' ? null : page.next}, ${page.caughtUp}, ${reached}, ${Math.round(pace.pollSeconds)}::integer)
+      select learning_walked(${run.id}::uuid, ${claim}::uuid, ${walk}, ${walk === 'again' ? null : scope.since}, ${walk === 'again' ? null : page.next}, ${page.caughtUp}, ${reached}, ${Math.round(pace.pollSeconds)}::integer, ${page.partly === true})
     `);
   } catch (error) {
     if (lost(error)) return;

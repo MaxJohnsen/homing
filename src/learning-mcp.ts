@@ -184,6 +184,7 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
     where,
     '',
     `It is ${standing(run, vendor, service)}.`,
+    ...(run.followedPartly && run.state === 'following' ? [`The ${words.place} has more folders than Homing follows, so what arrives in some of them isn’t learned from.`] : []),
     ...(run.state !== 'estimating'
       ? [
           progress.learned

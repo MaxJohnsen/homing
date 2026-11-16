@@ -28,6 +28,11 @@ export interface Batch {
    * comes late, as when a scope is extended further back, and must not undo what came after it.
    */
   earlierUpTo: Date | null;
+  /**
+   * Whether these are items learning failed to get read before, and tries again. No model has read
+   * them, so they're read now even when all are older than what the earlier note rests on.
+   */
+  retry?: boolean;
 }
 
 /**
@@ -79,7 +84,7 @@ export const notes: Interpretation = {
   most: 10,
   calls: (batch) => (stands(batch) ? [] : [request(batch)]),
   learn: async (batch, ask) => {
-    // Only older than what the note already rests on: the note stands, and no model is asked.
+    // Only older than what the note already rests on, and not tried again after a failure: the note stands, and no model is asked.
     if (stands(batch)) return { stands: true };
     const said = answer.safeParse((await ask(request(batch))).json);
     if (!said.success) throw new Unusable('The model’s answer wasn’t a note.');
@@ -93,8 +98,8 @@ export const notes: Interpretation = {
 /** Whether an item came before the latest the earlier note rests on. */
 const older = (batch: Batch, item: Item) => batch.earlierUpTo !== null && item.envelope.at !== null && item.envelope.at.getTime() < batch.earlierUpTo.getTime();
 
-/** Whether every item of the batch is older than what the earlier note rests on, so that note stands. */
-const stands = (batch: Batch) => batch.earlier !== null && batch.items.length > 0 && batch.items.every((item) => older(batch, item));
+/** Whether every item of the batch is older than what the earlier note rests on, so that note stands, unless they're tried again after a failure. */
+const stands = (batch: Batch) => !batch.retry && batch.earlier !== null && batch.items.length > 0 && batch.items.every((item) => older(batch, item));
 
 function request(batch: Batch): Omit<ModelCall, 'run'> {
   const { words } = batch;
