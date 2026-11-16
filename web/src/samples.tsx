@@ -6,7 +6,7 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleLearning, sampleLearningConnections, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
+import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleLearning, sampleLearningConnections, sampleSenders, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
 import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, learningProposal, learningFurtherProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
@@ -297,6 +297,11 @@ const sampleConnectionActions: ConnectionActions = {
     extend: async () => 'Samples don’t reach a mailbox.',
     setLimit: async () => 'Samples don’t save anything.',
     leaveOut: async () => 'Samples don’t save anything.',
+    tryAgain: async () => 'Samples don’t learn from anything.',
+    senders: async (_place, _reason, search, from) => {
+      const found = sampleSenders.filter((one) => one.sender.includes(search.trim().toLowerCase()));
+      return { senders: found.slice(from, from + 50), total: found.length };
+    },
   },
 };
 

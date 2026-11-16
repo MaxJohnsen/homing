@@ -30,6 +30,14 @@ export interface EstimateData {
   limit: number;
   /** How many items the sample held. */
   sampled: number;
+  /** When Homing made it, which starting sends back, so only the estimate you saw starts. */
+  at: string;
+}
+
+/** Who sent what a run set aside, and how many. */
+export interface SenderData {
+  sender: string;
+  items: number;
 }
 
 /** How far Homing has learned from something of yours, such as your mailbox. Only you see it. */
@@ -59,9 +67,12 @@ export interface LearningData {
   /** How many threads it learned from, and the items in them. */
   threads: number;
   learned: number;
-  /** What it set aside, by why, most first, each in words, such as "240 newsletters", with who sent them, most first. */
-  setAside: { reason: string; items: number; words: string; senders: { sender: string; items: number }[] }[];
-  /** How many set aside before it now learns from after all, since you said so. */
+  /**
+   * What it set aside, by why, most first, each in words, such as "240 newsletters", with who sent
+   * the most of it, how many senders there are beside those, and whether Homing can try it again.
+   */
+  setAside: { reason: string; items: number; words: string; senders: SenderData[]; more?: number; retry?: boolean }[];
+  /** How many set aside before it now learns from after all, since you said so, or tries again. */
   again?: number;
 }
 

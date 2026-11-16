@@ -305,7 +305,7 @@ function connectionActions(spaceId: string): ConnectionActions {
   return {
     learning: {
       estimate: (placeId, since) => learning(placeId, 'estimate', { since }),
-      start: (placeId, limit) => learning(placeId, 'start', { limit }),
+      start: (placeId, limit, since, estimated) => learning(placeId, 'start', { limit, since, estimated }),
       pause: (placeId) => learning(placeId, 'pause'),
       resume: (placeId) => learning(placeId, 'resume'),
       estimateExtension: (placeId, since) => learning(placeId, 'extend/estimate', { since }),
@@ -313,6 +313,14 @@ function connectionActions(spaceId: string): ConnectionActions {
       extend: (placeId, since) => learning(placeId, 'extend', { since }),
       setLimit: (placeId, limit) => learning(placeId, 'limit', { limit }),
       leaveOut: (placeId, senders, folders, kept) => learning(placeId, 'left-out', { senders, folders, kept }),
+      tryAgain: (placeId, reason) => learning(placeId, 'again', { reason }),
+      senders: async (placeId, reason, search, from) => {
+        try {
+          return await api(`/api/places/${placeId}/learning/set-aside?${new URLSearchParams({ reason, q: search, from: String(from) })}`);
+        } catch (error) {
+          return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+        }
+      },
     },
     connect: async (again) => {
       try {

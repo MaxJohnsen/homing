@@ -1,4 +1,4 @@
-import type { ConnectedAccountsData, ConnectionData, EstimateData, LearningData, SpaceConnectionsData } from '@/lib/connections';
+import type { ConnectedAccountsData, ConnectionData, EstimateData, LearningData, SenderData, SpaceConnectionsData } from '@/lib/connections';
 import type { AccountData } from '@/screens/account';
 import type { ChangeData, OverviewData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
@@ -116,7 +116,15 @@ export const sampleConnections: SpaceConnectionsData = {
 };
 
 // What learning from Ana's mailbox two years back may cost, and the run at each point on its way.
-export const sampleEstimate: EstimateData = { since: '2024-11-15T00:00:00Z', until: null, items: 18240, threads: 5120, setAside: 7410, low: 0.86, high: 2.94, limit: 5, sampled: 100 };
+export const sampleEstimate: EstimateData = { since: '2024-11-15T00:00:00Z', until: null, items: 18240, threads: 5120, setAside: 7410, low: 0.86, high: 2.94, limit: 5, sampled: 100, at: '2026-11-14T09:12:00Z' };
+
+/** Everyone whose mail was set aside as a newsletter, most first: far more than a first look lists. */
+export const sampleSenders: SenderData[] = [
+  { sender: 'news@weekly-digest.no', items: 610 }, { sender: 'prosjekt@grupper.acme.no', items: 204 }, { sender: 'hello@designmonthly.com', items: 196 },
+  { sender: 'updates@fjordsoftware.no', items: 188 }, { sender: 'nyhetsbrev@dnb.no', items: 171 }, { sender: 'digest@linkedin.com', items: 164 },
+  { sender: 'info@konferanse.no', items: 152 }, { sender: 'no-reply@medium.com', items: 149 },
+  ...Array.from({ length: 212 }, (_, at) => ({ sender: at === 40 ? 'kari.nilsen@grupper.acme.no' : `list-${at + 1}@${['northwind.no', 'acme.no', 'fjordsoftware.no', 'example.org'][at % 4]}`, items: Math.max(1, 140 - at) })),
+];
 
 const sampleRun: LearningData = {
   state: 'learning history',
@@ -145,7 +153,14 @@ export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'pause
   history: sampleRun,
   atLimit: { ...sampleRun, state: 'paused', reason: 'limit', limit: 1, spent: 0.9984 },
   paused: { ...sampleRun, state: 'paused', reason: 'person' },
-  following: { ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712 },
+  following: {
+    ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712,
+    setAside: [
+      { ...sampleRun.setAside[0], items: 4812, words: '4,812 newsletters', senders: sampleSenders.slice(0, 8), more: sampleSenders.length - 8 },
+      ...sampleRun.setAside.slice(1),
+      { reason: 'provider failed', items: 7, words: '7 the model’s provider kept failing on', senders: [{ sender: 'gunnar@northwind.no', items: 4 }, { sender: 'kari.nilsen@acme.no', items: 3 }], retry: true },
+    ],
+  },
   extending: { ...sampleRun, state: 'following', caughtUp: true, extending: { since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z' }, spent: 2.31 },
   proposed: { ...sampleRun, state: 'following', caughtUp: true, spent: 2.31, proposed: { ...sampleEstimate, since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z', items: 26020, threads: 7300, setAside: 10400, low: 1.2, high: 4.1 } },
   waiting: { ...sampleRun, waitingFor: 'provider' },

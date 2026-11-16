@@ -1,19 +1,20 @@
-import { useId, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { cn } from 'cn';
 import { capitalize, count, dateOf, focusRing } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import type { EstimateData, LearningData, PlaceData } from '@/lib/connections';
+import type { EstimateData, LearningData, PlaceData, SenderData } from '@/lib/connections';
 import { usd, type ModelStatement } from '@/lib/model';
+import { Pager, pageSize } from '@/screens/pages';
 
 /** What you do about learning from something of yours. Each resolves to a message to show, or nothing when it worked. */
 export interface LearningActions {
   /** Works out what learning back to a day may cost. Nothing is learned yet. */
   estimate: (placeId: string, since: string) => Promise<string | undefined>;
-  /** Starts what was estimated, with its limit in dollars. */
-  start: (placeId: string, limit: string) => Promise<string | undefined>;
+  /** Starts what was estimated, with its limit in dollars: that far back, with the estimate that was shown, and nothing else. */
+  start: (placeId: string, limit: string, since: string, estimated: string) => Promise<string | undefined>;
   pause: (placeId: string) => Promise<string | undefined>;
   resume: (placeId: string) => Promise<string | undefined>;
   /** Works out what learning further back would add. Nothing changes yet. */
@@ -26,6 +27,10 @@ export interface LearningActions {
   setLimit: (placeId: string, limit: string) => Promise<string | undefined>;
   /** Sets the senders and folders it leaves out, and the senders it learns from whatever their mail says about itself. */
   leaveOut: (placeId: string, senders: string[], folders: string[], kept: string[]) => Promise<string | undefined>;
+  /** Tries again what was set aside for something that may pass, such as the provider failing on it. */
+  tryAgain: (placeId: string, reason: string) => Promise<string | undefined>;
+  /** Everyone who sent what was set aside for a reason, most first, fifty at a time, or those whose address holds the search. A message when it couldn't be read. */
+  senders: (placeId: string, reason: string, search: string, from: number) => Promise<{ senders: SenderData[]; total: number } | string>;
 }
 
 /** How far back learning can go, by how many months, with everything last. */
@@ -105,7 +110,7 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
             primary
             busy={busy}
             hint={`Homing pauses the run before a call could take it past the limit. You can raise it later, and it carries on from where it paused.${most}`}
-            onSave={(limit) => act(() => actions.start(place.id, limit))}
+            onSave={(limit) => act(() => actions.start(place.id, limit, run.since, run.estimate!.at))}
             aside={
               <>
                 <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => setOpen('scope')}>Change how far back</Button>
@@ -185,7 +190,14 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
         {open === 'leave out' && leaveOut}
         {actions && open === 'set aside' && (
           <Panel label="What was set aside">
-            <SetAside run={run} busy={busy} onKeep={(sender) => act(() => actions.leaveOut(place.id, run.leftOut.senders, run.leftOut.folders, [...run.leftOut.kept, sender]), 'set aside')} onClose={() => setOpen(undefined)} />
+            <SetAside
+              run={run}
+              busy={busy}
+              onKeep={(sender) => act(() => actions.leaveOut(place.id, run.leftOut.senders, run.leftOut.folders, [...run.leftOut.kept, sender]), 'set aside')}
+              onRetry={(reason) => act(() => actions.tryAgain(place.id, reason), 'set aside')}
+              load={(reason, search, from) => actions.senders(place.id, reason, search, from)}
+              onClose={() => setOpen(undefined)}
+            />
           </Panel>
         )}
       </>
@@ -414,31 +426,110 @@ function LeaveOut({ run, words, busy, onSave, onCancel }: {
   );
 }
 
-/** What was set aside, by why, with who sent it, and a way to learn from a sender whose mail only looked like a newsletter. */
-function SetAside({ run, busy, onKeep, onClose }: { run: LearningData; busy: boolean; onKeep: (sender: string) => void; onClose: () => void }) {
+type Senders = (reason: string, search: string, from: number) => Promise<{ senders: SenderData[]; total: number } | string>;
+
+/**
+ * What was set aside, by why, with who sent it, a way to learn from a sender whose mail only looked
+ * like a newsletter, and a way to try again what the provider or the service failed on.
+ */
+function SetAside({ run, busy, onKeep, onRetry, load, onClose }: {
+  run: LearningData;
+  busy: boolean;
+  onKeep: (sender: string) => void;
+  onRetry: (reason: string) => void;
+  load: Senders;
+  onClose: () => void;
+}) {
   return (
     <div className="flex flex-col gap-3">
-      <p className="text-sm">What Homing set aside without sending it to a model, and who it was from. If a sender’s mail only looks like a newsletter, Homing can learn from them all the same.</p>
+      <p className="text-sm">What Homing set aside without learning from it, and who it was from. If a sender’s mail only looks like a newsletter, Homing can learn from them all the same.</p>
       <ul className="flex flex-col gap-3">
-        {run.setAside.map((aside) => (
-          <li key={aside.reason} className="flex flex-col gap-1">
-            <span className="text-base font-semibold">{capitalize(aside.words)}</span>
-            {aside.senders.length > 0 && (
-              <ul className="flex flex-col gap-1">
-                {aside.senders.map((one) => (
-                  <li key={one.sender} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
-                    <span className="min-w-0 [overflow-wrap:anywhere]">{one.sender}, {thousands(one.items)}</span>
-                    {(aside.reason === 'newsletter' || aside.reason === 'automated') && (
-                      <Button variant="outline" size="sm" disabled={busy} onClick={() => onKeep(one.sender)}>Learn from this sender</Button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
+        {run.setAside.map((aside) => <Reason key={aside.reason} aside={aside} busy={busy} onKeep={onKeep} onRetry={onRetry} load={load} />)}
       </ul>
       <div><Button variant="outline" size="sm" disabled={busy} onClick={onClose}>Close</Button></div>
     </div>
+  );
+}
+
+/**
+ * What was set aside for one reason: who sent the most of it, and on request everyone who did,
+ * fifty at a time, with a field that finds a sender among them.
+ */
+function Reason({ aside, busy, onKeep, onRetry, load }: {
+  aside: LearningData['setAside'][number];
+  busy: boolean;
+  onKeep: (sender: string) => void;
+  onRetry: (reason: string) => void;
+  load: Senders;
+}) {
+  const [all, setAll] = useState(false);
+  const [search, setSearch] = useState('');
+  const [from, setFrom] = useState(0);
+  const [found, setFound] = useState<{ senders: SenderData[]; total: number; search: string }>();
+  const [problem, setProblem] = useState<string>();
+  const loading = useRef(load);
+  loading.current = load;
+  // Read again when what's set aside changes, such as after learning from a sender.
+  useEffect(() => {
+    if (!all) return;
+    let stale = false;
+    const timer = setTimeout(async () => {
+      const answer = await loading.current(aside.reason, search, from);
+      if (stale) return;
+      if (typeof answer === 'string') return setProblem(answer);
+      setProblem(undefined);
+      setFound({ ...answer, search });
+    }, search === found?.search ? 0 : 250);
+    return () => {
+      stale = true;
+      clearTimeout(timer);
+    };
+  }, [all, search, from, aside.reason, aside.items]);
+  const keeps = aside.reason === 'newsletter' || aside.reason === 'automated';
+  const senders = all && found ? found.senders : aside.senders;
+  const more = aside.more ?? 0;
+  return (
+    <li className="flex flex-col gap-2">
+      <span className="text-base font-semibold">{capitalize(aside.words)}</span>
+      {aside.retry && (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
+          <span className="min-w-0 text-muted-foreground">Homing tries these again by itself, once, a day after it set them aside.</span>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => onRetry(aside.reason)}>Try again</Button>
+        </div>
+      )}
+      {all && (
+        <Input
+          type="search"
+          aria-label={`Find a sender among the ${aside.words}`}
+          placeholder="Find a sender"
+          className="h-11 text-base md:text-base sm:max-w-xs"
+          value={search}
+          onChange={(event) => {
+            setSearch(event.target.value);
+            setFrom(0);
+          }}
+        />
+      )}
+      {all && found && found.total > 0 && <Pager total={found.total} from={from} onChange={setFrom} noun={['sender', 'senders']} />}
+      {all && found && found.total === 0 && <p className="text-sm text-muted-foreground">No sender here has “{found.search.trim()}” in their address.</p>}
+      {senders.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {senders.map((one) => (
+            <li key={one.sender} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
+              <span className="min-w-0 [overflow-wrap:anywhere]">{one.sender}, {thousands(one.items)}</span>
+              {keeps && <Button variant="outline" size="sm" disabled={busy} onClick={() => onKeep(one.sender)}>Learn from this sender</Button>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {all && found && found.total > pageSize && <Pager total={found.total} from={from} onChange={setFrom} noun={['sender', 'senders']} />}
+      {!all && more > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 text-sm">
+          <span className="min-w-0 text-muted-foreground">And {count(more, 'more sender', 'more senders')}.</span>
+          <Button variant="outline" size="sm" onClick={() => setAll(true)}>Show all senders</Button>
+        </div>
+      )}
+      {problem && <FieldError>{problem}</FieldError>}
+    </li>
   );
 }
