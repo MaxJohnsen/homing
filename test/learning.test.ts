@@ -19,7 +19,7 @@ import { claim, learnPage, type LearnerOptions } from '../src/learner.ts';
 import { estimateExtension, estimateLearning, extendLearning, forgetExtension, leftOutIn, LearningRefused, pauseLearning, progressOf, resumeLearning, retryLearning, runsFor, setAside, setAsideSenders, setLeftOut, setLearningLimit, startLearning, suggestedLimit, type Learning } from '../src/learning.ts';
 import { learningRef, readLearning } from '../src/learning-mcp.ts';
 import { automatedEmail } from '../src/mail.ts';
-import { microsoftConnector } from '../src/microsoft.ts';
+import { followMail, microsoftConnector } from '../src/microsoft.ts';
 import { modelStatement, monthlyLimit, setModelProcessing, setRunCeiling, type Model } from '../src/model.ts';
 import { decide, proposeLearning, readProposal } from '../src/proposals.ts';
 import { developmentSecret, startServer, type Homing } from '../src/server.ts';
@@ -58,7 +58,7 @@ after(async () => {
 });
 
 interface Sent {
-  emails: { From: string; Date: string; Subject: string; text: string; quotes?: string }[];
+  emails: { From: string; Date: string; Subject: string; text: string; quotes?: string; older?: boolean }[];
   earlierNote?: string;
 }
 /** A call that carries nothing, which Homing makes to see whether the provider answers at all. */
@@ -444,6 +444,134 @@ test('a mailbox with hundreds of folders is looked through over several looks, e
   assert.equal((await marks()).length, 4);
   // A folder that had something is asked once more, for the rest of it. No other folder is asked twice.
   assert.deepEqual([times(second.folders).size, twice(second.folders)], [303, ['Client 0', 'Client 150', 'Client 299']]);
+});
+
+test('a mailbox with more folders than Homing follows says so, to its owner, their assistant and in the log, once', async () => {
+  const { ana, acme, account, begin, run, place } = await world([email('Budget', 30)]);
+  for (let at = 0; at < 520; at++) microsoft.folder(account, `Client ${at}`);
+  const warned: string[] = [];
+  const warn = console.warn;
+  console.warn = (line: unknown) => void warned.push(String(line));
+  try {
+    await begin();
+    // History, and then a look at every folder Homing follows, over several looks.
+    for (let looks = 0; looks < 3; looks++) {
+      await lookAgain(place);
+      await through();
+    }
+    assert.deepEqual([(await run()).state, (await run()).followedPartly], ['following', true]);
+    // Mail that arrives in a folder Homing follows is learned from. In one past the five hundredth it isn't, which is what the run says.
+    const asked = provider.asked.length;
+    for (const folder of ['Client 10', 'Client 519']) microsoft.deliver(account, email(`In ${folder}`, 0, { folder }));
+    await lookAgain(place);
+    await through();
+    assert.deepEqual(subjectsSince(asked), ['In Client 10']);
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(warned.filter((line) => /holds more than Homing follows/.test(line)).length, 1, warned.join('\n'));
+  const shown = (await ana.browser.json(`/api/spaces/${acme}/connections`)).body.places[0].learning;
+  assert.equal(shown.followedPartly, true);
+  const links = { connections: (space: string) => `https://homing.test/spaces/${space}/connections`, proposal: (proposal: string) => `https://homing.test/proposals/${proposal}`, connectors: learning.broker.connectors };
+  const told = await withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => readLearning(s, learning, links, learningRef(place)));
+  assert.match(told, /\nThe mailbox has more folders than Homing follows, so what arrives in some of them isn’t learned from\.\n/);
+
+  // A mailbox Homing follows whole says nothing of the kind.
+  const small = await world([email('Budget', 30)]);
+  await small.begin();
+  await through();
+  assert.equal((await small.run()).followedPartly, false);
+  assert.doesNotMatch(await withPrincipal(sql, { person: small.ana.id, agent: 'Claude' }, (s) => readLearning(s, learning, links, learningRef(small.place))), /more folders/);
+});
+
+test('hundreds of old emails marked read at once never stall following: each look takes its time and the next carries on from there, and those Microsoft gives with the time they arrived aren’t read at all', async () => {
+  const old = Array.from({ length: 120 }, (_, at) => email(`Old ${at}`, 800 + at));
+  const { ana, account, connection, ids } = await world([...old, email('Recent', 10)]);
+  const { access, scope, onward } = await following(ana, account, connection);
+  let from = (await onward(null)).next;
+  from = (await onward(from)).next;
+  /** One look, as long as Homing gives it, and how many emails it read by their ids. */
+  const look = async (checkpoint: string, lookMs: number) => {
+    const reads = microsoft.asked.reads;
+    const next = await followMail(microsoft.settings(), await access.token(), checkpoint, scope, { lookMs }, access.signal);
+    return { ...next, reads: microsoft.asked.reads - reads };
+  };
+
+  // Ana marks every old email read, which Microsoft's delta gives though none fits the filter, each with no more than its id. So Homing has to
+  // read each by its id to see that it's from before the scope, and Microsoft answers slowly.
+  const arrives = microsoft.deliver(account, email('Arrives', 0));
+  for (const id of ids.slice(0, 120)) microsoft.change(account, id);
+  microsoft.slow(account, 20);
+  try {
+    // A look that has taken its time stops after the page it's on, with nothing to give, not caught up, and where it got to in the checkpoint.
+    const first = await look(from, 300);
+    assert.deepEqual([first.reads, first.changes.length, first.caughtUp, first.next !== from], [20, 0, false, true]);
+    // The looks after it carry on from there: each old email is read once, never again, and what arrived is given.
+    const given: string[] = [];
+    let [reads, looks, at] = [first.reads, 1, first.next];
+    for (; looks < 40; looks++) {
+      const next = await look(at, 300);
+      given.push(...idsOf(next.changes));
+      [reads, at] = [reads + next.reads, next.next];
+      if (next.caughtUp) break;
+    }
+    assert.deepEqual(given, [arrives]);
+    assert.equal(reads, 121);
+    assert.ok(looks >= 6 && looks < 40, `${looks} looks`);
+    from = at;
+  } finally {
+    microsoft.slow(account, 0);
+  }
+
+  // Marked unread again, with Microsoft giving each changed email with what was asked for, as its own example of one marked read shows:
+  // the time each arrived says it's from before the scope, so none of them is read.
+  const second = microsoft.deliver(account, email('Arrives too', 0));
+  for (const id of ids.slice(0, 120)) microsoft.change(account, id);
+  microsoft.updatesWithFields = true;
+  try {
+    const whole = await look(from, 30_000);
+    assert.deepEqual([idsOf(whole.changes), whole.reads], [[second], 1]);
+  } finally {
+    microsoft.updatesWithFields = false;
+  }
+});
+
+test('following starts a day before the last email of its history, so one that shows in the mailbox late is still learned from, and what comes again is skipped', async () => {
+  const { account, begin, marks, place } = await world([email('Budget', 30), email('Workshop', 10)]);
+  await begin(60);
+  await through();
+  const asked = provider.asked.length;
+  // An email that arrived an hour before the last one history gave shows in the mailbox only now, as mail does that was held back on the way.
+  const late = microsoft.deliver(account, email('Held back', 10 + 1 / 24));
+  await lookAgain(place);
+  await through();
+  assert.deepEqual(subjectsSince(asked), ['Held back'], 'and the last of its history, which comes again, isn’t read twice');
+  assert.deepEqual((await marks()).map((mark) => [mark.item === late, mark.outcome]), [[false, 'learned'], [false, 'learned'], [true, 'learned']]);
+});
+
+test('a folder that got thousands of emails is followed again from a day before its latest, so no filtered delta comes near the 5,000 emails Microsoft returns for one', async () => {
+  const { ana, account, connection } = await world([email('Before', 40)]);
+  const { follow, access, scope, onward } = await following(ana, account, connection);
+  let from = (await onward(null)).next;
+  from = (await onward(from)).next;
+  // 5,400 emails arrive over four weeks, two hundred a day, and Homing looks after each third of them. Microsoft's delta with a filter
+  // returns 5,000 emails in all, as it documents, and nothing after that.
+  const delivered: string[] = [];
+  const given = new Map<string, number>();
+  for (let third = 0; third < 3; third++) {
+    for (let at = third * 1800; at < (third + 1) * 1800; at++) delivered.push(microsoft.deliver(account, email(`Email ${at}`, 28 - at / 200)));
+    for (let pages = 0; ; pages++) {
+      assert.ok(pages < 400, 'still following after 400 pages');
+      const next = await follow.changes(access, from, scope, { related: false });
+      for (const id of idsOf(next.changes)) given.set(id, (given.get(id) ?? 0) + 1);
+      from = next.next;
+      if (next.caughtUp) break;
+    }
+  }
+  assert.deepEqual(delivered.filter((id) => !given.has(id)).length, 0, 'every email was given');
+  // Starting again gives a day of the folder's mail once more, which Homing skips by its marks, and no more than that.
+  const again = [...given.values()].filter((times) => times > 1).length;
+  assert.ok(again > 0 && again <= 250, `${again} came again`);
 });
 
 test('mail that needs no model is told by its headers and its sender, and what its owner left out or keeps by sender, domain or folder', () => {
@@ -965,6 +1093,36 @@ test('one worker works on a run at a time, and one whose claim was taken over wr
   }
 });
 
+test('a page of slow calls with nothing to mark between them keeps its claim: each call keeps it for as long again, so no other worker takes the run mid-page', async () => {
+  const { begin, run } = await world([email('Alpha', 30), email('Bravo', 20), email('Charlie', 10)]);
+  const id = await begin();
+  // The provider takes most of a claim's time to fail on each thread, so the page outlasts the claim it began with.
+  provider.reply = () => ({ ...failing, delayMs: 600 });
+  try {
+    const claimed = await claim(sql, randomUUID(), 1);
+    assert.equal(claimed?.run, id);
+    const working = quietly(() => learnPage(sql, learning, claimed!, { backoffSeconds: 30 }));
+    let done = false;
+    void working.finally(() => (done = true));
+    // Another worker keeps looking for a run to take over, as Homing's does every few seconds.
+    const taken: unknown[] = [];
+    while (!done) {
+      const other = await claim(sql, randomUUID(), 30);
+      if (other) taken.push(other);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await working;
+    assert.deepEqual(taken, [], 'nobody else got the run while its page was worked on');
+    // So the page ends as a failure of the provider's, which the run backs off from, rather than being started over and over.
+    const now = await run();
+    assert.deepEqual([now.state, now.waitingFor, now.attempts, now.claimedBy], ['learning history', 'provider', 1, null]);
+    // Three threads, and the call that carries nothing, which asks whether the provider answers at all.
+    assert.equal((await owner`select count(*)::integer as calls from model_calls where run_id = ${id}`)[0].calls, 4);
+  } finally {
+    provider.reply = noteReply;
+  }
+});
+
 test('pausing stops a run at once: the thread under way is finished, and nothing more is sent until it’s resumed', async () => {
   const { ana, begin, marks, run, place } = await world([email('Alpha', 50), email('Bravo', 40), email('Charlie', 30), email('Delta', 20)]);
   await begin();
@@ -1214,7 +1372,7 @@ test('a provider that refuses every request sets nothing aside: with whatever it
   }
 });
 
-test('several threads refused in a row are the provider’s trouble, even while a call that carries nothing is answered: after two, nothing more is set aside, on one page or one after another', async () => {
+test('several threads refused in a row are the provider’s trouble, even while a call that carries nothing is answered: after two, the run waits, on one page or one after another', async () => {
   // The provider refuses every real request, as when credit runs low, and still answers one that carries nothing.
   const lowCredit = (body: any) => (carriesNothing(body) ? answerWith('yes') : refusing(400));
   const subjects = Array.from({ length: 12 }, (_, at) => `Thread ${at + 1}`);
@@ -1226,6 +1384,8 @@ test('several threads refused in a row are the provider’s trouble, even while 
       const { now } = await tryPage(history.place);
       assert.deepEqual([now.state, now.waitingFor, now.checkpoint, now.refused], ['learning history', 'provider', null, 2], `try ${tries}`);
       assert.deepEqual((await history.marks()).map((mark) => mark.reason), ['provider refused', 'provider refused'], `try ${tries}: two, and no more`);
+      // Of those it waits behind, only the first is counted against, once, however many were asked about.
+      assert.deepEqual(now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', history.ids[2], 1]], `try ${tries}`);
     }
   } finally {
     provider.reply = noteReply;
@@ -1239,7 +1399,7 @@ test('several threads refused in a row are the provider’s trouble, even while 
   await through();
   assert.deepEqual((await history.marks()).map((mark) => mark.outcome), subjects.map(() => 'learned'));
 
-  // Failing on every real request instead, hour after hour, while the one that carries nothing is answered, is no different: nothing counts against a thread, and nothing is set aside.
+  // Failing on every real request instead, while the one that carries nothing is answered, is no different: nothing is set aside, and only the first of them is counted against, once.
   const failed = await world(subjects.map((subject, at) => email(subject, 50 - at)));
   await failed.begin();
   provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : failing);
@@ -1247,9 +1407,8 @@ test('several threads refused in a row are the provider’s trouble, even while 
     for (let tries = 1; tries <= 4; tries++) {
       const before = provider.asked.length;
       const { now } = await tryPage(failed.place);
-      assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures, (await failed.marks()).length], ['learning history', 'provider', tries, [], 0], `try ${tries}`);
+      assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await failed.marks()).length], ['learning history', 'provider', tries, [['main', failed.ids[0], 1]], 0], `try ${tries}`);
       assert.ok(provider.asked.length - before <= 7, `${provider.asked.length - before} requests in a try`);
-      await hoursPass(failed.place, 3);
     }
   } finally {
     provider.reply = noteReply;
@@ -1282,7 +1441,81 @@ test('several threads refused in a row are the provider’s trouble, even while 
   assert.equal((await following.run()).refused, 0, 'answered again, the count starts over');
 });
 
-test('asked too often, a run waits as long as the provider says, and that never counts against a thread, however long it lasts', async () => {
+test('a run never waits for good behind threads the provider really won’t take: the first of several in a row is set aside after three tries hours apart, while the provider answers otherwise, and then the next', async () => {
+  // The last seven threads of a full page of history are ones the provider refuses, whatever else it answers, and more history follows.
+  const fine = Array.from({ length: 43 }, (_, at) => `Fine ${at + 1}`);
+  const bad = Array.from({ length: 7 }, (_, at) => `Bad ${at + 1}`);
+  const later = Array.from({ length: 5 }, (_, at) => `Later ${at + 1}`);
+  const { begin, run, marks, place, ids } = await world([...fine.map((subject, at) => email(subject, 300 - at)), ...bad.map((subject, at) => email(subject, 200 - at)), ...later.map((subject, at) => email(subject, 100 - at))]);
+  await begin();
+  const asked = provider.asked.length;
+  provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Bad')) ? refusing() : noteReply(body));
+  const aside = async () => (await marks()).filter((mark) => mark.reason).map((mark) => [bad[ids.indexOf(mark.item) - fine.length], mark.reason]);
+  try {
+    // The first two are set aside at once. The third is one of several in a row, which is the provider's trouble: the run waits, and counts a try against that one thread.
+    const first = await tryPage(place);
+    assert.deepEqual(await aside(), [['Bad 1', 'provider refused'], ['Bad 2', 'provider refused']]);
+    assert.deepEqual([first.now.state, first.now.waitingFor, first.now.checkpoint, first.now.failures.map((failure: unknown[]) => failure.slice(0, 3))], ['learning history', 'provider', null, [['main', ids[fine.length + 2], 1]]]);
+    // Tried again before an hour has passed, it's asked about like the rest, and that counts nothing more against it.
+    for (let tries = 0; tries < 3; tries++) {
+      const { now } = await tryPage(place);
+      assert.deepEqual([now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await marks()).filter((mark) => mark.reason).length], [[['main', ids[fine.length + 2], 1]], 2]);
+    }
+    // An hour on it's refused again, and two hours after that a third time, each while a call that carries nothing is answered: it's one the provider won't take, and is set aside like the first two.
+    await hoursPass(place, 1);
+    assert.deepEqual((await tryPage(place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', ids[fine.length + 2], 2]]);
+    await hoursPass(place, 2);
+    await tryPage(place);
+    assert.deepEqual((await aside()).slice(2), [['Bad 3', 'provider refused']]);
+    // The fourth is the first of the row now, and so on, one at a time, however many were set aside before it. Then the rest of its history is learned from.
+    for (let hours = 0; hours < 40 && (await run()).state !== 'following'; hours++) {
+      await hoursPass(place, 2);
+      await tryPage(place);
+    }
+    assert.deepEqual(await aside(), bad.map((subject) => [subject, 'provider refused']));
+    assert.deepEqual(subjectsSince(asked).filter((subject) => subject.startsWith('Later')), later);
+    assert.deepEqual([(await run()).state, (await run()).failures, (await marks()).length], ['following', null, 55]);
+    // Each is tried again a day later, as anything set aside for the provider is.
+    assert.ok((await marks()).filter((mark) => mark.reason).every((mark) => mark.retryAt !== null));
+  } finally {
+    provider.reply = noteReply;
+  }
+
+  // The same for threads the provider fails on, with nothing after them on their page to show it answers: the first is counted against alone, the others once it's set aside.
+  const failed = await world([email('Fine', 50), ...['Fails 1', 'Fails 2', 'Fails 3', 'Fails 4'].map((subject, at) => email(subject, 40 - at))]);
+  await failed.begin();
+  provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Fails')) ? failing : noteReply(body));
+  try {
+    const first = await tryPage(failed.place);
+    assert.deepEqual([first.now.waitingFor, first.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await failed.marks()).length], ['provider', [['main', failed.ids[1], 1]], 1]);
+    for (let hours = 0; hours < 40 && (await failed.run()).state !== 'following'; hours++) {
+      await hoursPass(failed.place, 2);
+      await tryPage(failed.place);
+    }
+    assert.deepEqual((await failed.marks()).map((mark) => mark.reason ?? mark.outcome), ['learned', 'provider failed', 'provider failed', 'provider failed', 'provider failed']);
+    assert.equal((await failed.run()).state, 'following');
+  } finally {
+    provider.reply = noteReply;
+  }
+
+  // Once the provider answers for the others, the first is asked with them, before its next try is due. Failing again there is no new try:
+  // its tries stay hours apart, so they never all fall within one passing fault.
+  const passing = await world([email('Fine', 50), ...['Fails 1', 'Fails 2', 'Fails 3'].map((subject, at) => email(subject, 40 - at))]);
+  await passing.begin();
+  provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Fails')) ? failing : noteReply(body));
+  try {
+    await tryPage(passing.place);
+    provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Fails 1' ? failing : noteReply(body));
+    const early = await tryPage(passing.place);
+    assert.deepEqual([early.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await passing.marks()).map((mark) => mark.outcome)], [[['main', passing.ids[1], 1]], ['learned', 'learned', 'learned']]);
+    await hoursPass(passing.place, 1);
+    assert.deepEqual((await tryPage(passing.place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', passing.ids[1], 2]]);
+  } finally {
+    provider.reply = noteReply;
+  }
+});
+
+test('asked too often, a run waits as long as the provider says, and that never counts against a thread, however long it lasts, while a provider that fails and says when to come back is waited for at least as long as after any failure', async () => {
   const subjects = Array.from({ length: 12 }, (_, at) => `Thread ${at + 1}`);
   const { begin, run, marks, place } = await world(subjects.map((subject, at) => email(subject, 50 - at)));
   await begin();
@@ -1300,14 +1533,11 @@ test('asked too often, a run waits as long as the provider says, and that never 
       assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures ?? [], now.refused], ['learning history', 'provider', 0, [], 0], `try ${tries}`);
       assert.equal(provider.asked.length - before, 1);
     }
-    // As a time, the same. And a provider that's busy and says how long is waited for as long.
+    // As a time, the same.
     provider.reply = limited(new Date(Date.now() + 300_000).toUTCString());
     const dated = await tryPage(place);
     assert.ok(Math.abs(dated.wait - 300) <= 3, `waits ${dated.wait}s`);
-    provider.reply = () => ({ ...failing, headers: { 'retry-after': '45' } });
-    const busy = await tryPage(place);
-    assert.ok(Math.abs(busy.wait - 45) <= 2, `waits ${busy.wait}s`);
-    assert.deepEqual([busy.now.attempts, busy.now.failures ?? []], [0, []]);
+    assert.equal(dated.now.attempts, 0);
     // Without saying how long, it waits longer each time, and still counts nothing against a thread.
     provider.reply = limited();
     for (let tries = 1; tries <= 4; tries++) {
@@ -1324,6 +1554,32 @@ test('asked too often, a run waits as long as the provider says, and that never 
   assert.deepEqual(subjectsSince(back), subjects);
   assert.deepEqual([(await run()).state, (await marks()).every((mark) => mark.outcome === 'learned')], ['following', true]);
   void asked;
+
+  // A provider that's down and says to come back in a second is failing all the same. Each try is a failure, and waits as long as after any
+  // failure, twice as long each time, so a long outage is a handful of calls an hour, not one a second, each counted at what it may have cost.
+  const down = await world([email('Echo', 30), email('Foxtrot', 20)]);
+  const id = await down.begin();
+  try {
+    provider.reply = () => ({ ...failing, headers: { 'retry-after': '1' } });
+    for (let tries = 1; tries <= 5; tries++) {
+      const before = provider.asked.length;
+      const { now, wait } = await tryPage(down.place);
+      assert.ok(Math.abs(wait - 30 * 2 ** (tries - 1)) <= 2, `try ${tries} waits ${wait}s`);
+      assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures ?? []], ['learning history', 'provider', tries, []], `try ${tries}`);
+      assert.equal(provider.asked.length - before, 1, 'and the page isn’t asked on about');
+    }
+    // Asked to wait longer than that, it waits as long as it was asked.
+    provider.reply = () => ({ ...failing, headers: { 'retry-after': '3000' } });
+    const long = await tryPage(down.place);
+    assert.ok(Math.abs(long.wait - 3000) <= 2, `waits ${long.wait}s`);
+    assert.equal(long.now.attempts, 6);
+    assert.equal((await owner`select count(*)::integer as calls from model_calls where run_id = ${id}`)[0].calls, 6);
+    assert.equal((await down.marks()).length, 0, 'nothing was set aside');
+  } finally {
+    provider.reply = noteReply;
+  }
+  await through();
+  assert.deepEqual((await down.marks()).map((mark) => mark.outcome), ['learned', 'learned']);
 });
 
 test('what was set aside because the provider or Microsoft failed on it is tried again: by Homing itself once, a day later, and whenever Ana or her assistant asks', async () => {
@@ -1759,6 +2015,53 @@ test('an older email never writes over a note that rests on newer mail: the note
   const [mixed] = notes.calls(batch([old, newer], recent));
   assert.deepEqual(JSON.parse(mixed.messages[1].content as string).emails.map((one: { older?: boolean }) => one.older ?? false), [true, false]);
   assert.match(mixed.messages[0].content as string, /marked older came before what the earlier note already holds: it is background/);
+});
+
+test('emails the provider failed on are read when they’re tried again, even after the rest of their thread was learned from: never added to the note’s sources unread', async () => {
+  // A thread of twelve emails is read in two calls. The provider fails on the first, with the ten oldest, and answers the second.
+  const thread = `AAQk${randomUUID()}=`;
+  const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
+  const { begin, marks, place, mine, me } = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })));
+  await begin();
+  const asked = provider.asked.length;
+  const sentSince = (from: number) => provider.asked.slice(from).filter((call) => !carriesNothing(call.body)).map((call) => sentIn(call.body));
+  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? failing : noteReply(body));
+  try {
+    await tryPage(place);
+    assert.deepEqual((await marks()).map((mark) => mark.outcome), ['learned', 'learned'], 'the two newest');
+  } finally {
+    provider.reply = noteReply;
+  }
+  // An hour later the ten are tried again. The note rests on newer mail by now, and they're read all the same, as background to it.
+  await hoursPass(place, 1);
+  const again = provider.asked.length;
+  await through();
+  const [retried] = sentSince(again);
+  assert.deepEqual(retried.emails.map((one) => [one.Subject, one.older]), plans.slice(0, 10).map((subject) => [subject, true]));
+  assert.equal(retried.earlierNote, 'Plan 12: noted.');
+  const all = await marks();
+  assert.deepEqual([all.length, all.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'), new Set(all.map((mark) => mark.note)).size], [12, true, 1]);
+  assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${all[0].note}`)[0].sources, 12);
+
+  // The same when the provider refuses them, they're set aside, and Ana has them tried again.
+  const other = `AAQk${randomUUID()}=`;
+  const set = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: other })));
+  await set.begin();
+  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? refusing() : noteReply(body));
+  try {
+    await through();
+    assert.deepEqual((await set.marks()).map((mark) => mark.reason ?? mark.outcome), [...plans.slice(0, 10).map(() => 'provider refused'), 'learned', 'learned']);
+  } finally {
+    provider.reply = noteReply;
+  }
+  const tried = provider.asked.length;
+  assert.equal(await withPrincipal(sql, set.me, async (s) => retryLearning(s, await set.mine())), 10);
+  await through();
+  assert.deepEqual(sentSince(tried).map((call) => call.emails.map((one) => one.Subject)), [plans.slice(0, 10)]);
+  assert.ok((await set.marks()).every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'));
+  void asked;
+  void mine;
+  void me;
 });
 
 test('learning that an assistant proposes starts only when the person approves it, with the provider and model it showed, and a proposal is only ever about their own mailbox', async () => {

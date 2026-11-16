@@ -9,6 +9,7 @@
 
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
+import { createServer, type AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
 import { connect, withPrincipal, type Sql } from '../src/db.ts';
 import { callModel, inputTokensOf, ModelFailed, ModelRefused, worstCase, type Message, type Model, type ModelCall } from '../src/model.ts';
@@ -186,6 +187,31 @@ test('a call the provider refuses costs nothing, and one that fails may have, so
     assert.equal(Number(recorded.cost), from === 'refused' ? 0 : Number(recorded.reserved));
   }
   provider.reply = () => plainReply();
+});
+
+test('a call that never reached the provider, because no connection to it could be made, costs nothing, while one cut off on the way counts at its worst case', async () => {
+  // A provider that's gone: nothing listens at its address any more, so the request is never sent.
+  const gone = await new ModelStandIn().start();
+  const unreachable = gone.model();
+  await gone.close();
+  await assert.rejects(callModel({ sql, model: unreachable }, ana.id, { purpose: 'understand', spaces: [acme], messages }), (error: Error) => error instanceof ModelFailed && /couldn’t be reached/.test(error.message));
+  const unsent = (await calls(ana)).at(-1)!;
+  assert.deepEqual([unsent.state, unsent.costFrom, Number(unsent.cost)], ['failed', 'not sent', 0]);
+
+  // One that takes the request and hangs up without answering may have run a model, so it counts.
+  const hangsUp = createServer((socket) => socket.once('data', () => socket.destroy()));
+  await new Promise<void>((resolve) => hangsUp.listen(0, '127.0.0.1', resolve));
+  try {
+    const cut = new ModelStandIn();
+    cut.url = `http://127.0.0.1:${(hangsUp.address() as AddressInfo).port}`;
+    await assert.rejects(callModel({ sql, model: cut.model() }, ana.id, { purpose: 'understand', spaces: [acme], messages }), (error: Error) => error instanceof ModelFailed && /couldn’t be reached/.test(error.message));
+    const recorded = (await calls(ana)).at(-1)!;
+    assert.deepEqual([recorded.state, recorded.costFrom, Number(recorded.cost)], ['failed', 'worst case', Number(recorded.reserved)]);
+    // The month's spending is the whole Homing's, and the tests after this one count from it.
+    await owner`delete from model_calls where id in ${owner([unsent.id, recorded.id])}`;
+  } finally {
+    await new Promise((resolve) => hangsUp.close(resolve));
+  }
 });
 
 test('a model Homing has no prices for is never called', async () => {

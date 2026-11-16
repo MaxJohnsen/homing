@@ -10,10 +10,12 @@
 // changes with delta links, as Graph documents them: a page may hold fewer
 // than asked for and still have a next link; delta gives changes in no
 // promised order, an email that changed with no more than its id and what
-// changed, and one that was only marked read even when it doesn't fit the
-// filter; a link it forgot answers 410; a page of history may come empty
-// with a link to the next; a mailbox may hold hundreds of folders, listed a
-// page at a time; and when it's asked too often it says how long to wait.
+// changed, or with what was asked for as well, and one that was only marked
+// read even when it doesn't fit the filter; a delta with a filter returns
+// only up to 5,000 emails; a link it forgot answers 410; a page of history
+// may come empty with a link to the next; a mailbox may hold hundreds of
+// folders, listed a page at a time; and when it's asked too often it says
+// how long to wait.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, X509Certificate } from 'node:crypto';
@@ -316,6 +318,16 @@ export class MicrosoftStandIn {
   /** Whether lists and delta give an email's headers when asked, which Graph documents only for one email by its id. On by default. */
   headersInLists = true;
 
+  /**
+   * Whether delta gives an email that only changed with what was asked for too, as in Graph's own
+   * example of one marked read, or with no more than its id and what changed, which is all Graph
+   * promises. Off by default.
+   */
+  updatesWithFields = false;
+
+  /** The most emails a delta with a filter returns in all, from its first request through every link after it, as Graph documents. */
+  filteredDeltaMost = 5_000;
+
   /** What Homing asked of a mailbox's history by date, as Graph got each filter. */
   readonly history: string[] = [];
 
@@ -552,15 +564,16 @@ export class MicrosoftStandIn {
    * A folder's changes, as Graph's delta gives them: first what's in it, from a time on if asked,
    * then, from each delta link, what arrived in it or changed since, and what left it, newest
    * change first, since Graph promises no order. An email that came into the folder comes with what
-   * was asked for; one that only changed there comes with its id and what changed, and one only
-   * marked read comes even when it arrived before the filter's time. A page at a time, with a next
-   * link, and a delta link at the end. A link keeps what was asked for, and one Graph forgot is
-   * refused with 410.
+   * was asked for; one that only changed there comes with its id and what changed, or with what
+   * was asked for too, and one only marked read comes even when it arrived before the filter's
+   * time. With a filter, it returns only so many emails in all, and none after that. A page at a
+   * time, with a next link, and a delta link at the end. A link keeps what was asked for, and one
+   * Graph forgot is refused with 410.
    */
   private delta(mailbox: Mailbox, folder: Folder, url: URL, prefer: string): { status: number; body: unknown } {
     this.asked.deltas++;
     this.deltasOf.push(folder.name);
-    type Token = { since: number; from: number | null; select: string[]; offset: number; upTo: number; forgot: number };
+    type Token = { since: number; from: number | null; select: string[]; offset: number; upTo: number; forgot: number; given: number };
     const token = url.searchParams.get('$skiptoken') ?? url.searchParams.get('$deltatoken');
     let state: Token;
     if (token) {
@@ -576,7 +589,7 @@ export class MicrosoftStandIn {
       const filter = url.searchParams.get('$filter');
       const from = filter && /^receivedDateTime ge (\S+)$/.exec(filter)?.[1];
       if (filter && !from) return { status: 400, body: { error: { code: 'BadRequest' } } };
-      state = { since: -1, from: from ? Date.parse(from) : null, select: (url.searchParams.get('$select') ?? '').split(',').filter(Boolean), offset: 0, upTo: mailbox.changes, forgot: mailbox.forgot };
+      state = { since: -1, from: from ? Date.parse(from) : null, select: (url.searchParams.get('$select') ?? '').split(',').filter(Boolean), offset: 0, upTo: mailbox.changes, forgot: mailbox.forgot, given: 0 };
     }
     const size = Number(/odata\.maxpagesize=(\d+)/.exec(prefer)?.[1] ?? 10);
     const fits = (email: Kept) => state.from === null || email.at.getTime() >= state.from;
@@ -584,13 +597,15 @@ export class MicrosoftStandIn {
     const onlyFlagged = (email: Kept) => state.since >= 0 && email.arrived <= state.since && email.flagged === true;
     const here = mailbox.emails
       .filter((email) => email.folder === folder.id && email.changed > state.since && email.changed <= state.upTo && (fits(email) || onlyFlagged(email)))
-      .sort((a, b) => b.changed - a.changed);
+      .sort((a, b) => b.changed - a.changed)
+      // With a filter, only so many in all: what's past that never comes.
+      .slice(0, state.from === null ? undefined : Math.max(0, this.filteredDeltaMost - state.given));
     const gone = state.since < 0 ? [] : mailbox.left.filter((left) => left.folder === folder.id && left.at > state.since && left.at <= state.upTo && !here.some((email) => email.id === left.id));
     const immutable = /IdType="ImmutableId"/.test(prefer);
     const entry = (email: Kept): Record<string, unknown> => {
       // New in the folder since the last round, it comes with what was asked for. Changed there, with its id and what changed.
       if (state.since < 0 || email.arrived > state.since) return this.fieldsOf(mailbox, email, state.select, prefer, true);
-      return { '@odata.type': '#microsoft.graph.message', id: immutable ? email.id : ordinaryId(email), ...(email.flagged ? { isRead: true } : { subject: email.subject }) };
+      return { ...(this.updatesWithFields && this.fieldsOf(mailbox, email, state.select, prefer, true)), '@odata.type': '#microsoft.graph.message', id: immutable ? email.id : ordinaryId(email), ...(email.flagged ? { isRead: true } : { subject: email.subject }) };
     };
     const page = [...here, ...gone].slice(state.offset, state.offset + size);
     if ((state.select.length === 0 || state.select.some((name) => ['body', 'uniqueBody'].includes(name))) && page.some((one) => 'conversation' in one && mailbox.poisoned.has(one.id))) {
@@ -605,7 +620,7 @@ export class MicrosoftStandIn {
         value: page.map((one) => ('conversation' in one ? entry(one) : { id: one.id, '@removed': { reason: 'deleted' } })),
         ...(more
           ? { '@odata.nextLink': link('$skiptoken', { ...state, offset: state.offset + size }) }
-          : { '@odata.deltaLink': link('$deltatoken', { ...state, since: state.upTo, offset: 0 }) }),
+          : { '@odata.deltaLink': link('$deltatoken', { ...state, since: state.upTo, offset: 0, given: state.given + here.length }) }),
       },
     };
   }
