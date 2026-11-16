@@ -1582,6 +1582,66 @@ test('asked too often, a run waits as long as the provider says, and that never 
   assert.deepEqual((await down.marks()).map((mark) => mark.outcome), ['learned', 'learned']);
 });
 
+test('asked too often in an answer Homing can’t read, the call may have cost and counts at its worst case, so that’s a failure: the run waits longer each time, however short a wait it was told', async () => {
+  const { begin, run, marks, place } = await world([email('Golf', 30), email('Hotel', 20)]);
+  const id = await begin();
+  try {
+    // As from a proxy in front of the provider: 429, a second to wait, and text that isn't the provider's own answer.
+    provider.reply = () => ({ status: 429, raw: 'error code: 1015', headers: { 'retry-after': '1' } });
+    for (let tries = 1; tries <= 4; tries++) {
+      const before = provider.asked.length;
+      const { now, wait } = await tryPage(place);
+      assert.ok(Math.abs(wait - 30 * 2 ** (tries - 1)) <= 2, `try ${tries} waits ${wait}s`);
+      assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures ?? []], ['learning history', 'provider', tries, []], `try ${tries}`);
+      assert.equal(provider.asked.length - before, 1, 'and the page isn’t asked on about');
+    }
+    const calls = await owner`select cost_from, cost = reserved as whole from model_calls where run_id = ${id}`;
+    assert.deepEqual(calls.map((call) => [call.costFrom, call.whole]), Array.from({ length: 4 }, () => ['worst case', true]));
+    // Asked to wait longer than that, it waits as long as it was asked.
+    provider.reply = () => ({ status: 429, raw: 'error code: 1015', headers: { 'retry-after': '3000' } });
+    const long = await tryPage(place);
+    assert.ok(Math.abs(long.wait - 3000) <= 2, `waits ${long.wait}s`);
+    assert.equal((await marks()).length, 0, 'nothing was set aside');
+  } finally {
+    provider.reply = noteReply;
+  }
+  await through();
+  assert.deepEqual([(await run()).state, (await marks()).map((mark) => mark.outcome)], ['following', ['learned', 'learned']]);
+});
+
+test('the first of several in a row that then fails while the provider answers for the others waits for its next try like any other: it isn’t asked about again on every look at what arrived', async () => {
+  const { account, begin, run, marks, place } = await world([email('Budget', 30)]);
+  const id = await begin();
+  await through();
+  assert.equal((await run()).state, 'following');
+  // Four emails arrive, and the provider fails on each while a call that carries nothing is answered: the first is counted against, alone.
+  const arrived = ['Fails 1', 'Fails 2', 'Fails 3', 'Fails 4'].map((subject, at) => microsoft.deliver(account, email(subject, (10 - at) / 1440)));
+  provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Fails')) ? failing : noteReply(body));
+  try {
+    await lookAgain(place);
+    const first = await tryPage(place);
+    assert.deepEqual(first.now.failures, [['main', arrived[0], 1, first.now.failures[0][3], true]]);
+    // The provider answers for the others again, and still fails on the first, which was asked with them before its next try was due.
+    provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Fails 1' ? failing : noteReply(body));
+    const from = provider.asked.length;
+    const failed = async () => (await owner`select count(*)::integer as calls from model_calls where run_id = ${id} and state = 'failed'`)[0].calls;
+    const before = await failed();
+    // That was no new try, and it's the last time it's asked early: look after look, it waits for its next try, an hour after the first.
+    for (let looks = 1; looks <= 6; looks++) {
+      const { now } = await tryPage(place);
+      assert.deepEqual([now.state, now.failures.map((failure: unknown[]) => failure.slice(0, 3)), now.failures[0].length], ['following', [['main', arrived[0], 1]], 4], `look ${looks}`);
+    }
+    assert.deepEqual([askedAbout('Fails 1', from), (await failed()) - before], [1, 1]);
+    assert.deepEqual((await marks()).map((mark) => mark.outcome), ['learned', 'learned', 'learned', 'learned']);
+    // An hour on it's tried again, and that counts.
+    await hoursPass(place, 1);
+    assert.deepEqual((await tryPage(place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', arrived[0], 2]]);
+    assert.equal(askedAbout('Fails 1', from), 2);
+  } finally {
+    provider.reply = noteReply;
+  }
+});
+
 test('what was set aside because the provider or Microsoft failed on it is tried again: by Homing itself once, a day later, and whenever Ana or her assistant asks', async () => {
   const { ana, cara, account, begin, marks, mine, me, place, ids } = await world([email('Alpha', 50), email('No answer', 40), email('Refused', 30), email('Broken', 20), email('This week', 10, { headers: { 'List-Unsubscribe': '<https://x.test/u>' } })]);
   const id = await begin();
@@ -2027,6 +2087,9 @@ test('emails the provider failed on are read when they’re tried again, even af
   const sentSince = (from: number) => provider.asked.slice(from).filter((call) => !carriesNothing(call.body)).map((call) => sentIn(call.body));
   provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? failing : noteReply(body));
   try {
+    // The two newest wait until the run knows the ten failed, which it does when the page is handed back, and are asked about at once then.
+    const first = await tryPage(place);
+    assert.deepEqual([(await marks()).length, first.wait, first.now.failures.length, subjectsSince(asked)], [0, 0, 1, plans.slice(0, 10)]);
     await tryPage(place);
     assert.deepEqual((await marks()).map((mark) => mark.outcome), ['learned', 'learned'], 'the two newest');
   } finally {
@@ -2062,6 +2125,69 @@ test('emails the provider failed on are read when they’re tried again, even af
   void asked;
   void mine;
   void me;
+});
+
+test('emails the provider failed on are never added to a note’s sources unread, however their page ended: asked too often, at the run’s limit, with Homing stopping, or with the provider in doubt, the rest of their thread waits until the run knows they failed', async () => {
+  const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
+  const tenOldest = (body: any) => !carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1';
+  const about = (body: any, subject: string) => !carriesNothing(body) && sentIn(body).emails[0].Subject === subject;
+  /**
+   * A thread of twelve emails, read in two calls, and two threads after it. The provider doesn't take the ten oldest, and the page ends
+   * early in the way given, before anything says on the run that they failed. Then the provider is back, and the run carries on.
+   */
+  const ended = async (replies: (at: { id: string; stop: AbortController }) => (body: any) => Reply | Promise<Reply>, carryOn?: (id: string) => Promise<unknown>) => {
+    const thread = `AAQk${randomUUID()}=`;
+    const { begin, marks, place, ids } = await world([...plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })), email('Other', 20), email('Last', 10)]);
+    const id = await begin();
+    const stop = new AbortController();
+    const from = provider.asked.length;
+    provider.reply = replies({ id, stop });
+    try {
+      const claimed = await claim(sql, randomUUID(), 30);
+      await quietly(() => learnPage(sql, learning, claimed!, { backoffSeconds: 0, pollSeconds: 3600 }, stop.signal));
+    } finally {
+      provider.reply = noteReply;
+    }
+    // The two newest weren't sent: a note from them alone would make the ten look like mail that turned up late.
+    assert.deepEqual(subjectsSince(from).filter((subject) => subject.startsWith('Plan')), plans.slice(0, 10));
+    assert.ok((await marks()).every((mark) => !ids.slice(0, 12).includes(mark.item)), 'nothing of the thread is marked yet');
+    await carryOn?.(id);
+    await lookAgain(place);
+    const again = provider.asked.length;
+    await through();
+    // Every email of the thread went to the model, oldest first, and none was added to its note unread.
+    assert.deepEqual(subjectsSince(again).filter((subject) => subject.startsWith('Plan')), plans);
+    const all = await marks();
+    assert.deepEqual([all.length, all.filter((mark) => mark.outcome !== 'learned' || mark.interpretation !== 'notes 1')], [14, []]);
+    const notes = new Set(all.filter((mark) => ids.slice(0, 12).includes(mark.item)).map((mark) => mark.note));
+    assert.equal(notes.size, 1);
+    assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${[...notes][0]}`)[0].sources, 12);
+  };
+
+  // A later thread is answered 429, and the run waits as long as the provider says.
+  await ended(() => (body) =>
+    tenOldest(body) ? failing : about(body, 'Other') ? { status: 429, json: { error: { message: 'Rate limit reached.', code: 'rate_limit_exceeded' } }, headers: { 'retry-after': '5' } } : noteReply(body),
+  );
+  // The run reaches its limit at a later thread, and pauses there until the limit is raised.
+  await ended(
+    ({ id }) => async (body) => {
+      if (tenOldest(body)) return failing;
+      if (about(body, 'Other')) await owner`update learning_runs set spending_limit = 0 where id = ${id}`;
+      return noteReply(body);
+    },
+    async (id) => {
+      assert.deepEqual((await owner`select state, reason from learning_runs where id = ${id}`)[0], { state: 'paused', reason: 'limit' });
+      await owner`update learning_runs set spending_limit = 5, state = 'learning history', reason = null where id = ${id}`;
+    },
+  );
+  // Homing stops while a later thread is read: that one is finished, and the page is handed back.
+  await ended(({ stop }) => (body) => {
+    if (tenOldest(body)) return failing;
+    if (about(body, 'Other')) stop.abort();
+    return noteReply(body);
+  });
+  // The provider refuses the ten and won't say whether it answers otherwise, so nothing is counted against them, and the run waits for it.
+  await ended(() => (body) => (carriesNothing(body) ? failing : tenOldest(body) ? refusing() : noteReply(body)));
 });
 
 test('learning that an assistant proposes starts only when the person approves it, with the provider and model it showed, and a proposal is only ever about their own mailbox', async () => {

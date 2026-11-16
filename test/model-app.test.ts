@@ -189,7 +189,7 @@ test('a call the provider refuses costs nothing, and one that fails may have, so
   provider.reply = () => plainReply();
 });
 
-test('a call that never reached the provider, because no connection to it could be made, costs nothing, while one cut off on the way counts at its worst case', async () => {
+test('a call that never reached the provider, because no connection to it could be made, costs nothing, while one cut off on the way, or that lost its route to the provider, counts at its worst case', async () => {
   // A provider that's gone: nothing listens at its address any more, so the request is never sent.
   const gone = await new ModelStandIn().start();
   const unreachable = gone.model();
@@ -211,6 +211,20 @@ test('a call that never reached the provider, because no connection to it could 
     await owner`delete from model_calls where id in ${owner([unsent.id, recorded.id])}`;
   } finally {
     await new Promise((resolve) => hangsUp.close(resolve));
+  }
+
+  // No route to the host, or to its network, can also end a connection the request already went out on, so that counts too.
+  const fetching = globalThis.fetch;
+  for (const code of ['EHOSTUNREACH', 'ENETUNREACH']) {
+    globalThis.fetch = () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error(`read ${code}`), { code }) }));
+    try {
+      await assert.rejects(callModel({ sql, model }, ana.id, { purpose: 'understand', spaces: [acme], messages }), (error: Error) => error instanceof ModelFailed && /couldn’t be reached/.test(error.message));
+    } finally {
+      globalThis.fetch = fetching;
+    }
+    const lost = (await calls(ana)).at(-1)!;
+    assert.deepEqual([lost.state, lost.costFrom, Number(lost.cost)], ['failed', 'worst case', Number(lost.reserved)], code);
+    await owner`delete from model_calls where id = ${lost.id}`;
   }
 });
 
