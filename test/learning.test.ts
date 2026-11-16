@@ -1160,7 +1160,8 @@ async function tryPage(place: string, backoffSeconds = 30) {
   assert.ok(claimed, 'a run is due');
   await quietly(() => learnPage(sql, learning, claimed, { backoffSeconds, pollSeconds: 3600 }));
   const [now] = await owner`select * from learning_runs where place_id = ${place}`;
-  const wait = Math.round((now.nextAt.getTime() - Date.now()) / 1000);
+  // A try that's due at once may already be a moment past by the time it's read here: that's no wait, never less than none.
+  const wait = Math.max(0, Math.round((now.nextAt.getTime() - Date.now()) / 1000));
   await owner`update learning_runs set next_at = now() where id = ${now.id}`;
   return { now, wait };
 }
