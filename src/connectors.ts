@@ -32,6 +32,8 @@ export interface Connector {
   kinds: Record<string, PlaceKind>;
   /** What an error from any of the above means, when it's the system's refusal or silence; undefined when it isn't. */
   refused(error: unknown): Refusal | undefined;
+  /** How many seconds the system asked Homing to wait before trying again, when its answer said so. */
+  retryAfter?(error: unknown): number | undefined;
 }
 
 /**
@@ -97,11 +99,15 @@ export interface PlaceKind {
  */
 export interface Follow {
   /**
-   * One page of changes, oldest first, from a checkpoint it gave before, or from the start of the
-   * scope without one. A scope with an end, such as one extended further back, is walked only up
-   * to it; one without carries on with what arrives.
+   * One page of changes, oldest first as far as the system gives them so, from a checkpoint it gave
+   * before, or from the start of the scope without one. A scope with an end, such as one extended
+   * further back, is walked only up to it; one without carries on with what arrives. Nothing from
+   * before the scope is given. Asked for fewer at once, after a page the system couldn't serve, it
+   * gives fewer, and asked for one, it gives an item it can't read as set aside, so the walk moves on.
    */
-  changes(access: Access, from: string | null, scope: Scope): Promise<Changes>;
+  changes(access: Access, from: string | null, scope: Scope, options?: { size?: number; related?: boolean }): Promise<Changes>;
+  /** These items as they are now, by their ids, for ones learned from again. One that's gone is left out. */
+  items(access: Access, ids: string[]): Promise<Change[]>;
   /** How many items the scope holds, as the system counts them, for an estimate. */
   count(access: Access, scope: Scope): Promise<number>;
 }
@@ -135,8 +141,12 @@ export interface Change {
   setAside?: SetAside;
 }
 
-/** What a connector sets aside on its own: newsletters, automated mail, junk, drafts and what was deleted. */
-export type SetAside = 'newsletter' | 'automated' | 'junk' | 'draft' | 'deleted';
+/**
+ * What a connector sets aside on its own: newsletters and automated mail, by what they say about
+ * themselves, which their owner can overrule for a sender; and junk, drafts, what was deleted, and
+ * what the system couldn't give, which nobody can.
+ */
+export type SetAside = 'newsletter' | 'automated' | 'junk' | 'draft' | 'deleted' | 'unreadable';
 
 /** What Homing hands a connector for one use of a place. */
 export interface Access {

@@ -212,11 +212,14 @@ export interface ModelCall {
   /** How long it may take, by default and at most two minutes. */
   timeoutMs?: number;
   /**
-   * The learning run it's for, which the database checks is the person's own. While the run learns
-   * history, its own limit holds the call, and at that limit the run pauses. Once it follows what
-   * arrives, the monthly limit does.
+   * The learning run it's for, which the database checks is the person's own, and which of its
+   * walks: the main one, an extension of its scope, or items learned from again. What the run
+   * learns from history, the main walk until it first caught up and the others always, its own
+   * limit holds, and at that limit the run pauses, or, once it follows, its older material waits.
+   * What arrives once it follows, the monthly limit holds.
    */
   run?: string;
+  walk?: 'main' | 'extension' | 'again';
 }
 
 /** What the model answered, and what it cost. Everything it wrote is untrusted input, never instructions. */
@@ -257,9 +260,16 @@ export class ModelFailed extends Error {
   override name = 'ModelFailed';
   /** The model answered, but not with what was asked for, so asking again would likely give the same. */
   readonly unusable: boolean;
-  constructor(message: string, unusable = false) {
+  /**
+   * The provider wouldn't take this very request, such as for what it holds, so asking again would
+   * give the same: it answered 4xx, other than for the key (401), the account's credit (402) or
+   * being asked too often (429), which are about every request.
+   */
+  readonly refused: boolean;
+  constructor(message: string, unusable = false, refused = false) {
     super(message);
     this.unusable = unusable;
+    this.refused = refused;
   }
 }
 
@@ -347,7 +357,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
   const worst = worstCase(prices, inputTokensOf(request), maxTokens);
 
   if (call.run !== undefined && !uuid.test(call.run)) throw new ModelRefused('no access', 'A learning run’s call names the run, so nothing was sent.');
-  const reserved = await reserve(homing.sql, person, { purpose: call.purpose, model: id, spaces, worst, run: call.run });
+  const reserved = await reserve(homing.sql, person, { purpose: call.purpose, model: id, spaces, worst, run: call.run, walk: call.walk });
 
   let answer: ProviderAnswer;
   try {
@@ -359,7 +369,8 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
     await settle(homing.sql, person, reserved, worst, { outcome: 'failed', cost: said ?? (before ? 0 : worst), from: said !== undefined ? 'provider' : before ? 'refused' : 'worst case' });
     const reason = error instanceof ProviderRefused || error instanceof ProviderFailed ? hidden(error.message, key) : 'something went wrong on the way';
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: ${reason}`);
-    throw new ModelFailed(`The model call failed: ${reason}.`);
+    const status = error instanceof ProviderRefused || error instanceof ProviderFailed ? error.status : undefined;
+    throw new ModelFailed(`The model call failed: ${reason}.`, false, status !== undefined && status >= 400 && status < 500 && ![401, 402, 429].includes(status));
   }
 
   // A provider's counts are believed only when they could be right: no more tokens in than the
@@ -409,11 +420,11 @@ function hidden(reason: string, key: string | undefined): string {
 }
 
 /** Reserves the call's worst case for the person, or throws why it was refused. */
-async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model: string; spaces: string[]; worst: number; run?: string }): Promise<string> {
+async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model: string; spaces: string[]; worst: number; run?: string; walk?: string }): Promise<string> {
   let row: { call: string | null; refused: string | null; spent: string; underWay: string; cap: string };
   try {
     [row] = await withPrincipal(sql, { person }, ({ tx }) => tx<(typeof row)[]>`
-      select * from reserve_model_call(${call.purpose}, ${call.model}, ${tx.array(call.spaces)}::uuid[], ${call.worst}::numeric, ${call.run ?? null}::uuid)
+      select * from reserve_model_call(${call.purpose}, ${call.model}, ${tx.array(call.spaces)}::uuid[], ${call.worst}::numeric, ${call.run ?? null}::uuid, ${call.walk ?? 'main'})
     `);
   } catch (error) {
     if (error instanceof postgres.PostgresError && error.code === '42501') {
@@ -431,7 +442,7 @@ async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model
   if (row.refused === 'run limit') {
     throw new ModelRefused(
       'run limit',
-      `That learning run has ${usd(spent)} spent, and this call could cost up to ${usd(call.worst)}, past its limit of ${usd(cap)}, so nothing was sent. It’s paused until its owner raises the limit.`,
+      `That learning run has ${usd(spent)} spent, and this call could cost up to ${usd(call.worst)}, past its limit of ${usd(cap)}, so nothing was sent. What it learns from history waits until its limit is raised.`,
     );
   }
   if (row.refused === 'busy' && call.run) {
@@ -507,14 +518,19 @@ export async function setModelProcessing(s: Session, spaceId: string, on: boolea
   return changed;
 }
 
-/** This Homing's monthly limit, and since when work has been paused at it, if it is. */
-export async function monthlyLimit(s: Session): Promise<{ limit: number; pausedAt: Date | null }> {
-  const [row] = await s.tx<{ monthlyLimit: string; pausedAt: Date | null }[]>`
-    select monthly_limit,
+/** This Homing's monthly limit, since when work has been paused at it, if it is, and the most a learning run may spend on history. */
+export async function monthlyLimit(s: Session): Promise<{ limit: number; pausedAt: Date | null; runCeiling: number }> {
+  const [row] = await s.tx<{ monthlyLimit: string; pausedAt: Date | null; runCeiling: string }[]>`
+    select monthly_limit, run_ceiling,
            case when paused_at >= date_trunc('month', now(), 'UTC') and (changed_at is null or paused_at > changed_at) then paused_at end as paused_at
     from model_spending
   `;
-  return { limit: Number(row.monthlyLimit), pausedAt: row.pausedAt };
+  return { limit: Number(row.monthlyLimit), pausedAt: row.pausedAt, runCeiling: Number(row.runCeiling) };
+}
+
+/** Sets the most a learning run may spend on history here. Only whoever looks after Homing does. */
+export async function setRunCeiling(s: Session, ceiling: number): Promise<void> {
+  await s.tx`select set_run_ceiling(${ceiling}::numeric)`;
 }
 
 /** Sets this Homing's monthly limit, which resumes work paused at the old one. Only whoever looks after Homing does. */

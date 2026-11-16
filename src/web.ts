@@ -13,7 +13,7 @@ import { createInvite, findInvite, newTicket } from './invites.ts';
 import { handleAppApi } from './app-api.ts';
 import type { Connectors } from './connectors.ts';
 import type { Learning } from './learning.ts';
-import type { Model } from './model.ts';
+import { modelStatement, type Model } from './model.ts';
 import { afterDecision } from './notify.ts';
 import { decide, proposalData, readProposal, Undecidable, withdraw } from './proposals.ts';
 import { accountFinder } from './people.ts';
@@ -218,6 +218,7 @@ export async function handleApi(app: App, req: IncomingMessage, res: ServerRespo
           space: spaceAsSet(body.space),
           share: shareAsSet(body.share),
           findAccount: accountFinder(app.authPool),
+          model: modelStatement(app.model),
         }),
       );
       if (!decided) return json(res, 404, missing);

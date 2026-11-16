@@ -42,9 +42,12 @@ export class ProviderRefused extends Error {
   override name = 'ProviderRefused';
   /** In USD, if the provider said it charged anything. */
   readonly cost?: number;
-  constructor(reason: string, cost?: number) {
+  /** The status it answered with. */
+  readonly status?: number;
+  constructor(reason: string, cost?: number, status?: number) {
     super(reason);
     this.cost = cost;
+    this.status = status;
   }
 }
 
@@ -53,8 +56,11 @@ export class ProviderFailed extends Error {
   override name = 'ProviderFailed';
   /** In USD, if the provider said what it charged. */
   readonly cost?: number;
-  constructor(reason: string, cost?: number) {
+  /** The status it answered with, if it answered. */
+  readonly status?: number;
+  constructor(reason: string, cost?: number, status?: number) {
     super(reason);
     this.cost = cost;
+    this.status = status;
   }
 }

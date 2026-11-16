@@ -1311,7 +1311,8 @@ async function copyOf(s: Session, itemId: string): Promise<string | undefined> {
   return copy?.id;
 }
 
-async function cite(s: Session, itemId: string, sourceIds: string[] = []) {
+/** Has an item rest on these sources too, each one the viewer can see. */
+export async function cite(s: Session, itemId: string, sourceIds: string[] = []) {
   if (sourceIds.length === 0) return;
   const found = await s.tx`select id from sources where id in ${s.tx(sourceIds)} and ${visible(s, 'sources')}`;
   if (found.length !== new Set(sourceIds).size) {

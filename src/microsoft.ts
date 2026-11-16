@@ -107,12 +107,15 @@ export class MicrosoftRefused extends Error {
   readonly code: string;
   /** Microsoft's own number for the reason, such as AADSTS70008, when it gave one. */
   readonly detail?: string;
-  constructor(code: string, detail?: string) {
+  /** The HTTP status Graph answered with, when it was Graph. */
+  readonly status?: number;
+  constructor(code: string, detail?: string, status?: number) {
     // Only what Microsoft's codes are made of, so nothing it sent can shape a log line.
     const plain = (text: string) => text.replace(/[^\w.-]/g, '').slice(0, 60);
     super(`Microsoft refused: ${plain(code)}${detail ? ` (${plain(detail)})` : ''}`);
     this.code = plain(code);
     this.detail = detail && plain(detail);
+    this.status = status;
   }
 
   /**
@@ -134,8 +137,11 @@ export class MicrosoftRefused extends Error {
 /** Microsoft didn't answer, or not in time. Trying again later may work. */
 export class MicrosoftUnreachable extends Error {
   override name = 'MicrosoftUnreachable';
-  constructor(what: string) {
+  /** How many seconds Microsoft asked Homing to wait, when it was asked too often or was busy and said so. */
+  readonly retryAfter?: number;
+  constructor(what: string, retryAfter?: number) {
     super(`Microsoft didn’t answer ${what}.`);
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -187,7 +193,8 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
           return read && emailItem(read.mail, read.thread, read.moreInThread);
         },
         follow: {
-          changes: async (access, from, scope) => followMail(set(), await access.token(), from, scope, access.signal),
+          changes: async (access, from, scope, options) => followMail(set(), await access.token(), from, scope, options, access.signal),
+          items: async (access, ids) => mailItems(set(), await access.token(), ids, access.signal),
           count: async (access, scope) => countMail(set(), await access.token(), scope, access.signal),
         },
       },
@@ -201,6 +208,7 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
       if (error.detail === 'InvalidAuthenticationToken') return 'renew';
       return 'refused';
     },
+    retryAfter: (error) => (error instanceof MicrosoftUnreachable ? error.retryAfter : undefined),
   };
 }
 
@@ -372,100 +380,173 @@ function textIn(body: unknown): string | null {
   return contentType === 'html' ? textOf(content) : content;
 }
 
+/** The mailbox's folders as following keeps them for a while: each with its name and the folder it's in, those it leaves out and why, and those that hold what the owner sent. */
+interface Tree {
+  at: string;
+  folders: [id: string, name: string, parent: string | null][];
+  aside: Record<string, SetAside>;
+  own: string[];
+}
+
 /**
  * Where following a mailbox stands, as its checkpoint keeps it: through its history by the date
  * each email arrived, from the time the next page starts at, with the emails at that very time
- * already given, and how many of them to pass over once they fill a page; then, once that caught
- * up, onward by Graph's delta for each folder, with each folder's next link. Either way, the
- * folders it leaves out.
+ * already given, and how many of them to pass over once a page holds nothing new; then, once that
+ * caught up, onward by Graph's delta for each folder, with each folder's next link, the time its
+ * filter starts at, and the latest email seen. Either way, the folders as they were when last read.
  */
 type Walk =
-  | { v: 1; by: 'date'; after: string | null; seen: string[]; skip?: number; aside: Record<string, SetAside> }
-  | { v: 1; by: 'delta'; from: string; links: Record<string, string>; aside: Record<string, SetAside> };
+  | { v: 2; by: 'date'; after: string | null; seen: string[]; skip?: number; tree: Tree }
+  | { v: 2; by: 'delta'; from: string; latest: string | null; links: Record<string, string>; tree: Tree };
 
 /** What following reads of each email: what reading one does, with its folder and headers, and without its attachments. */
 const followFields = `${summaryFields},parentFolderId,toRecipients,ccRecipients,body,uniqueBody,internetMessageHeaders,isDraft`;
-/** How many emails a page holds. */
+/** What it asks delta for, and a list it reads an item at a time: enough to know which email, when, and where. */
+const lightFields = 'id,conversationId,receivedDateTime,parentFolderId,isDraft';
+/** How many emails a page of history holds at most, and how many changes a page of delta, each of which is read by its id. */
 const pageSize = 50;
-/** The folders following leaves out, by their well-known names, and why. */
+const deltaSize = 20;
+/** How many emails of a thread following reads, by sender, date and subject. */
+const threadLength = 100;
+/** The folders following leaves out, with everything in them, by their well-known names, and why. */
 const asideFolders: Record<string, SetAside> = { junkemail: 'junk', deleteditems: 'deleted', drafts: 'draft', outbox: 'draft' };
-/** The most folders Homing follows in a mailbox. */
+/** The most folders Homing follows in a mailbox, and how long it keeps what it read of them. */
 const mostFolders = 500;
-/** How Graph says it no longer knows where a folder's changes stood, so they're asked for again from the start. */
-const forgotten = ['SyncStateNotFound', 'syncStateNotFound', 'SyncStateInvalid', 'resyncRequired', 'http_410'];
+const treeKept = 10 * 60_000;
+/** How Graph says, beside answering 410, that it no longer knows where a folder's changes stood. */
+const forgotten = ['SyncStateNotFound', 'syncStateNotFound', 'SyncStateInvalid', 'syncStateInvalid', 'resyncRequired', 'ResyncRequired'];
+const day = 24 * 60 * 60_000;
+
+/** An email as Graph gave it, read whole, or one Graph couldn't give, with what's known of it. */
+interface Fetched {
+  message: Record<string, unknown>;
+  unreadable?: true;
+  /** Read by its id, where Graph gives an email's headers if it has any. */
+  byId?: true;
+}
 
 /**
- * One page of the mailbox's changes, oldest first (connectors.ts). Its history comes by the date
- * each email arrived, across all its folders, from the start of the scope, up to its end if it has
- * one. Without an end, once that catches up, it follows each folder with Graph's delta from the
- * last email given, so what arrives, or changes, comes next, and what came by date before comes
- * again only where it's still new to the delta, for Homing to skip. Each email comes with its
- * thread, unless it's set aside: by its folder, as a draft, or by its own headers.
+ * One page of the mailbox's changes (connectors.ts). Its history comes by the date each email
+ * arrived, across all its folders, oldest first, from the start of the scope, up to its end if it
+ * has one, and is done only when Graph says there is no more, since a page may hold fewer than
+ * asked for. Without an end, it then follows each folder with Graph's delta from the last email
+ * given. Delta says only which emails arrived or changed, in no promised order, and not always
+ * with more than their id, so each is read by its id, and one that arrived before the scope is
+ * dropped. Each email comes with its thread, unless it's set aside: by its folder, as a draft, or
+ * by its own headers. Asked for one at a time, it reads each email by its id, and gives one Graph
+ * can't give as set aside.
  */
-export async function followMail(settings: MicrosoftSettings, access: string, from: string | null, scope: Scope, signal?: AbortSignal): Promise<Changes> {
-  const walk: Walk = from ? walkOf(from) : { v: 1, by: 'date', after: null, seen: [], aside: await asideFoldersOf(settings, access, signal) };
-  const folders = await foldersOf(settings, access, signal);
-  if (walk.by === 'date') {
+export async function followMail(
+  settings: MicrosoftSettings,
+  access: string,
+  from: string | null,
+  scope: Scope,
+  options: { size?: number; related?: boolean } = {},
+  signal?: AbortSignal,
+): Promise<Changes> {
+  const kept: Walk = from ? walkOf(from) : { v: 2, by: 'date', after: null, seen: [], tree: await treeOf(settings, access, signal) };
+  const tree = Date.now() - Date.parse(kept.tree.at) > treeKept ? await treeOf(settings, access, signal) : kept.tree;
+  const size = Math.max(1, Math.min(Math.floor(options.size ?? pageSize), pageSize));
+  const careful = size === 1;
+  const given = { related: options.related ?? true, signal };
+  if (kept.by === 'date') {
+    const walk = kept;
     const start = walk.after ?? scope.since.toISOString();
     const skip = walk.skip ?? 0;
     const filter = `receivedDateTime ge ${start}${scope.until ? ` and receivedDateTime lt ${scope.until.toISOString()}` : ''}`;
-    const page = listOf(
-      await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime%20asc&$top=${pageSize}${skip ? `&$skip=${skip}` : ''}&$select=${followFields}`, {
-        prefer: [immutableIds, textBodies],
-        signal,
-      }),
+    const body = await graph(
+      settings,
+      access,
+      `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime%20asc&$top=${size}${skip ? `&$skip=${skip}` : ''}&$select=${careful ? lightFields : followFields}`,
+      { prefer: [immutableIds, textBodies], signal },
     );
+    const page = listOf(body);
+    // Graph says whether there's more: a page may hold fewer than asked for, and still not be the last.
+    const more = typeof body['@odata.nextLink'] === 'string';
     const fresh = page.filter((message) => !walk.seen.includes(String(message.id ?? '')));
-    const changes = await changesOf(settings, access, fresh, folders, walk.aside, signal);
-    const last = changes.at(-1)?.item.envelope.at?.toISOString() ?? null;
+    const fetched: Fetched[] = careful ? await readEach(settings, access, fresh, true, signal) : fresh.map((message) => ({ message }));
+    const changes = await changesOf(settings, access, fetched, tree, given);
+    const received = (message: Record<string, unknown>) => summaryOf(message).at?.toISOString() ?? null;
+    const last = fresh.length ? received(fresh.at(-1)!) : null;
     const same = last !== null && last === walk.after;
     const after = last ?? walk.after;
-    const seen = last ? [...(same ? walk.seen : []), ...changes.filter((change) => change.item.envelope.at?.toISOString() === last).map((change) => change.item.envelope.id)] : walk.seen;
-    // So many arrived at one moment that a page held only what was given before: the next page
-    // passes over them, and so do those after it, until the walk is past that moment.
-    const pass = page.length === pageSize && fresh.length === 0 ? skip + pageSize : same && skip ? skip + page.length : 0;
-    const there: Walk = { v: 1, by: 'date', after, seen, ...(pass && { skip: pass }), aside: walk.aside };
-    if (page.length < pageSize) {
-      // History caught up. With an end, that's all; without one, Graph's delta carries on from the last email.
-      const next: Walk = scope.until ? there : { v: 1, by: 'delta', from: after ?? scope.since.toISOString(), links: {}, aside: walk.aside };
-      return { changes, next: JSON.stringify(next), caughtUp: true };
-    }
-    return { changes, next: JSON.stringify(there), caughtUp: false };
+    const seen = last ? [...(same ? walk.seen : []), ...fresh.filter((message) => received(message) === last).map((message) => String(message.id ?? ''))] : walk.seen;
+    // A page that held only what was given before, with more to come: the next passes over it, and
+    // so do those after it, until the walk is past that moment.
+    const pass = fresh.length === 0 && more ? skip + page.length : same && skip ? skip + page.length : 0;
+    const there: Walk = { v: 2, by: 'date', after, seen, ...(pass && { skip: pass }), tree };
+    if (more) return { changes, next: JSON.stringify(there), caughtUp: false };
+    // History caught up. With an end, that's all; without one, Graph's delta carries on from the last email.
+    const next: Walk = scope.until ? there : { v: 2, by: 'delta', from: after ?? scope.since.toISOString(), latest: after, links: {}, tree };
+    return { changes, next: JSON.stringify(next), caughtUp: true };
   }
 
   // Each folder in turn, but those left out, until one has something new.
+  const walk = kept;
   const links: Record<string, string> = {};
-  for (const [id] of folders) if (walk.links[id]) links[id] = walk.links[id];
-  for (const [id] of [...folders].sort(([a], [b]) => a.localeCompare(b))) {
-    if (walk.aside[id]) continue;
-    const first = `${settings.graph}/v1.0/me/mailFolders/${encodeURIComponent(id)}/messages/delta?$select=${followFields}&$filter=${encodeURIComponent(`receivedDateTime ge ${walk.from}`)}`;
-    let link = links[id] ?? first;
+  for (const [id] of tree.folders) if (walk.links[id]) links[id] = walk.links[id];
+  let { from: starts, latest } = walk;
+  const there = (): string => JSON.stringify({ v: 2, by: 'delta', from: starts, latest, links, tree } satisfies Walk);
+  for (const id of tree.folders.map(([id]) => id).filter((id) => !tree.aside[id]).sort()) {
+    const first = () => `${settings.graph}/v1.0/me/mailFolders/${encodeURIComponent(id)}/messages/delta?$select=${lightFields}&$filter=${encodeURIComponent(`receivedDateTime ge ${starts}`)}`;
+    let link = links[id] ?? first();
+    let begun = Boolean(links[id]);
     for (let pages = 0; pages < 100; pages++) {
       let body: Record<string, unknown>;
       try {
-        body = await graph(settings, access, link, { prefer: [immutableIds, textBodies, `odata.maxpagesize=${pageSize}`], signal });
+        body = await graph(settings, access, link, { prefer: [immutableIds, `odata.maxpagesize=${Math.min(size, deltaSize)}`], signal });
       } catch (error) {
-        // Graph forgot where this folder stood: it's followed again from where history ended, and what comes again, Homing skips.
-        if (!(error instanceof MicrosoftRefused && link !== first && forgotten.includes(error.detail ?? ''))) throw error;
+        if (!(error instanceof MicrosoftRefused) || !begun) throw error;
+        // The folder is gone: there's nothing left in it to follow.
+        if (error.status === 404) {
+          delete links[id];
+          break;
+        }
+        // Graph forgot where this folder stood: it's followed again, from a day before the latest
+        // email seen, so what it has to give again stays far below the most a filtered delta gives,
+        // and what comes again, Homing skips.
+        if (error.status !== 410 && !forgotten.includes(error.detail ?? '')) throw error;
         delete links[id];
-        link = first;
+        if (latest && Date.parse(latest) - day > Date.parse(starts)) starts = new Date(Date.parse(latest) - day).toISOString();
+        link = first();
+        begun = false;
         continue;
       }
       // Removed from the folder, or moved out of it: what Homing learned from it stays.
-      const messages = listOf(body).filter((message) => !('@removed' in message));
+      const entries = listOf(body).filter((message) => !('@removed' in message) && typeof message.id === 'string');
       const nextLink = typeof body['@odata.nextLink'] === 'string' ? body['@odata.nextLink'] : undefined;
       const deltaLink = typeof body['@odata.deltaLink'] === 'string' ? body['@odata.deltaLink'] : undefined;
       if (!nextLink && !deltaLink) throw new MicrosoftRefused('graph_refused', 'no_delta_link');
       links[id] = (nextLink ?? deltaLink)!;
-      if (messages.length) {
-        const changes = await changesOf(settings, access, messages, folders, walk.aside, signal);
-        return { changes, next: JSON.stringify({ ...walk, links }), caughtUp: false };
+      // Delta may give no more of an email than its id and what changed, and may give one that
+      // doesn't fit the filter when it's only marked read. So each is read as it is now, by its id,
+      // and what arrived before the scope is none of the run's.
+      const read = (await readEach(settings, access, entries, careful, signal)).filter((one) => {
+        const at = summaryOf(one.message).at;
+        return at === null || at.getTime() >= scope.since.getTime();
+      });
+      for (const one of read) {
+        const at = summaryOf(one.message).at?.toISOString();
+        if (at && (!latest || at > latest)) latest = at;
+      }
+      if (read.length) {
+        const changes = await changesOf(settings, access, read, tree, given);
+        // In no order Graph promises, so oldest first here.
+        changes.sort((a, b) => (a.item.envelope.at?.getTime() ?? 0) - (b.item.envelope.at?.getTime() ?? 0));
+        return { changes, next: there(), caughtUp: false };
       }
       if (!nextLink) break;
       link = nextLink;
+      begun = true;
     }
   }
-  return { changes: [], next: JSON.stringify({ ...walk, links }), caughtUp: true };
+  return { changes: [], next: there(), caughtUp: true };
+}
+
+/** These emails as they are now, by their ids, each with its thread. One that's gone is left out, and one Graph can't give comes set aside. */
+export async function mailItems(settings: MicrosoftSettings, access: string, ids: string[], signal?: AbortSignal): Promise<Change[]> {
+  const tree = await treeOf(settings, access, signal);
+  return changesOf(settings, access, await readEach(settings, access, ids.map((id) => ({ id })), true, signal), tree, { related: true, signal });
 }
 
 /** How many emails arrived in the mailbox within the scope, as Graph counts them. */
@@ -484,36 +565,81 @@ function walkOf(checkpoint: string): Walk {
   } catch {
     throw new MicrosoftRefused('bad_checkpoint');
   }
-  if (walk?.v !== 1 || !['date', 'delta'].includes(walk.by) || typeof walk.aside !== 'object') throw new MicrosoftRefused('bad_checkpoint');
+  if (walk?.v !== 2 || !['date', 'delta'].includes(walk.by) || typeof walk.tree !== 'object' || !Array.isArray(walk.tree?.folders)) throw new MicrosoftRefused('bad_checkpoint');
   return walk;
 }
 
-/** The emails as changes, each with its thread, read once for each conversation, unless it's set aside. */
+/**
+ * Each of these emails read whole, by its id, as it is now. One that's gone is left out. One Graph
+ * can't give stops the page, or, when reading carefully, comes as unreadable, with what was known of it.
+ */
+async function readEach(settings: MicrosoftSettings, access: string, entries: Record<string, unknown>[], careful: boolean, signal?: AbortSignal): Promise<Fetched[]> {
+  const read: Fetched[] = [];
+  const whole = (entry: Record<string, unknown>) =>
+    graph(settings, access, `/v1.0/me/messages/${encodeURIComponent(String(entry.id))}?$select=${followFields}`, { prefer: [immutableIds, textBodies], signal });
+  for (const entry of entries) {
+    try {
+      read.push({ message: await whole(entry), byId: true });
+    } catch (error) {
+      if (error instanceof MicrosoftRefused && ['ErrorItemNotFound', 'ErrorInvalidIdMalformed', 'http_404'].includes(error.detail ?? '')) continue;
+      // Not what an account or Homing's settings need fixed for, and not Homing stopping: this one email.
+      const thisOne = !signal?.aborted && (error instanceof MicrosoftUnreachable || (error instanceof MicrosoftRefused && error.code === 'graph_refused' && ![401, 403, 429].includes(error.status ?? 0)));
+      if (!careful || !thisOne || (error instanceof MicrosoftUnreachable && error.retryAfter !== undefined)) throw error;
+      // Once more, in case it was a passing fault, before it's given up as one Graph can't give.
+      try {
+        read.push({ message: await whole(entry), byId: true });
+      } catch (second) {
+        if (signal?.aborted || !(second instanceof MicrosoftUnreachable || second instanceof MicrosoftRefused)) throw second;
+        read.push({ message: entry, unreadable: true });
+      }
+    }
+  }
+  return read;
+}
+
+/**
+ * The emails as changes, each with its thread, read once for each conversation, unless it's set
+ * aside. An email that came without its headers, in a list, is asked for them by its id before it's
+ * taken for a person's mail; what its owner sent has none.
+ */
 async function changesOf(
   settings: MicrosoftSettings,
   access: string,
-  messages: Record<string, unknown>[],
-  folders: Map<string, string>,
-  aside: Record<string, SetAside>,
-  signal?: AbortSignal,
+  fetched: Fetched[],
+  tree: Tree,
+  { related, signal }: { related: boolean; signal?: AbortSignal },
 ): Promise<Change[]> {
-  const found = messages.map((message) => {
+  const names = new Map(tree.folders.map(([id, name]) => [id, name]));
+  let headerless = 0;
+  const found: { mail: Mail; folder: string | null; setAside?: SetAside }[] = [];
+  for (const { message, unreadable, byId } of fetched) {
     const summary = summaryOf(message);
     const folder = typeof message.parentFolderId === 'string' ? message.parentFolderId : null;
-    const setAside = message.isDraft === true ? 'draft' : ((folder && aside[folder]) || automatedEmail(headersOf(message.internetMessageHeaders), summary.from));
     const mail: Mail = { ...summary, to: addressesOf(message.toRecipients), cc: addressesOf(message.ccRecipients), body: textIn(message.body) ?? '', unique: textIn(message.uniqueBody), attachments: [] };
-    return { mail, folder, setAside: setAside || undefined };
-  });
-  const conversations = [...new Set(found.filter((one) => !one.setAside && one.mail.conversationId).map((one) => one.mail.conversationId!))];
+    let setAside: SetAside | undefined = unreadable ? 'unreadable' : message.isDraft === true ? 'draft' : ((folder && tree.aside[folder]) || undefined);
+    if (!setAside && !(folder && tree.own.includes(folder))) {
+      let headers = headersOf(message.internetMessageHeaders);
+      if (headers.size === 0 && !byId) {
+        const again = await graph(settings, access, `/v1.0/me/messages/${encodeURIComponent(summary.id)}?$select=internetMessageHeaders`, { prefer: [immutableIds], signal });
+        headers = headersOf(again.internetMessageHeaders);
+      }
+      if (headers.size === 0) headerless++;
+      setAside = automatedEmail(headers, summary.from);
+    }
+    found.push({ mail, folder, setAside });
+  }
+  // Never silently: without its headers an email can't be told from a newsletter, so it's read as a person's.
+  if (headerless) console.warn(`microsoft: ${headerless} ${headerless === 1 ? 'email' : 'emails'} came without headers, even by id, so Homing couldn’t check them for newsletters`);
+  const conversations = related ? [...new Set(found.filter((one) => !one.setAside && one.mail.conversationId).map((one) => one.mail.conversationId!))] : [];
   const threads = new Map<string, { thread: MailSummary[]; more: boolean }>();
   for (const conversation of conversations) {
-    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${listLength}&$select=${summaryFields}`, { prefer: [immutableIds], signal });
+    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields}`, { prefer: [immutableIds], signal });
     threads.set(conversation, { thread: listOf(body).map(summaryOf).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)), more: typeof body['@odata.nextLink'] === 'string' });
   }
   return found.map(({ mail, folder, setAside }) => {
     const thread = (!setAside && mail.conversationId && threads.get(mail.conversationId)) || { thread: [], more: false };
     const item = emailItem(mail, thread.thread, thread.more);
-    return { item, version: contentVersion(item), thread: mail.conversationId, folder: folder ? (folders.get(folder) ?? null) : null, ...(setAside && { setAside }) };
+    return { item, version: setAside === 'unreadable' ? 'unreadable' : contentVersion(item), thread: mail.conversationId, folder: folder ? (names.get(folder) ?? null) : null, ...(setAside && { setAside }) };
   });
 }
 
@@ -528,34 +654,45 @@ function headersOf(headers: unknown): Map<string, string> {
   return found;
 }
 
-/** The mailbox's folders, by id, with their names: the top ones and those in them, as far as Homing follows. */
-async function foldersOf(settings: MicrosoftSettings, access: string, signal?: AbortSignal): Promise<Map<string, string>> {
-  const folders = new Map<string, string>();
-  const waiting = ['/v1.0/me/mailFolders'];
-  while (waiting.length && folders.size < mostFolders) {
-    const body = await graph(settings, access, `${waiting.shift()}?$top=250&$select=id,displayName,childFolderCount`, { signal });
+/**
+ * The mailbox's folders: the top ones and those in them, as far as Homing follows, each with its
+ * name and the folder it's in. Junk, deleted mail, drafts and the outbox are left out with every
+ * folder in them, and sent mail's folders hold what the owner wrote.
+ */
+async function treeOf(settings: MicrosoftSettings, access: string, signal?: AbortSignal): Promise<Tree> {
+  const folders: Tree['folders'] = [];
+  const waiting: [path: string, parent: string | null][] = [['/v1.0/me/mailFolders?$top=250&$select=id,displayName,childFolderCount', null]];
+  while (waiting.length && folders.length < mostFolders) {
+    const [path, parent] = waiting.shift()!;
+    const body = await graph(settings, access, path, { signal });
     for (const folder of listOf(body)) {
-      if (typeof folder.id !== 'string' || folders.has(folder.id)) continue;
-      folders.set(folder.id, typeof folder.displayName === 'string' ? folder.displayName : '');
-      if (typeof folder.childFolderCount === 'number' && folder.childFolderCount > 0) waiting.push(`/v1.0/me/mailFolders/${encodeURIComponent(folder.id)}/childFolders`);
+      if (typeof folder.id !== 'string' || folders.some(([id]) => id === folder.id)) continue;
+      folders.push([folder.id, typeof folder.displayName === 'string' ? folder.displayName : '', parent]);
+      if (typeof folder.childFolderCount === 'number' && folder.childFolderCount > 0) {
+        waiting.push([`/v1.0/me/mailFolders/${encodeURIComponent(folder.id)}/childFolders?$top=250&$select=id,displayName,childFolderCount`, folder.id]);
+      }
     }
+    if (typeof body['@odata.nextLink'] === 'string') waiting.push([body['@odata.nextLink'], parent]);
   }
-  return folders;
-}
-
-/** The folders following leaves out, by id: junk, deleted mail, drafts and the outbox, as far as the mailbox has them. */
-async function asideFoldersOf(settings: MicrosoftSettings, access: string, signal?: AbortSignal): Promise<Record<string, SetAside>> {
-  const aside: Record<string, SetAside> = {};
-  for (const [name, why] of Object.entries(asideFolders)) {
+  const known = async (name: string): Promise<string | undefined> => {
     try {
       const folder = await graph(settings, access, `/v1.0/me/mailFolders/${name}?$select=id`, { signal });
-      if (typeof folder.id === 'string') aside[folder.id] = why;
+      return typeof folder.id === 'string' ? folder.id : undefined;
     } catch (error) {
       // A mailbox without one, such as without an outbox, has nothing there to leave out.
       if (!(error instanceof MicrosoftRefused && error.code === 'no_mailbox')) throw error;
+      return undefined;
     }
+  };
+  /** A folder and every folder in it. */
+  const under = (top: string): string[] => [top, ...folders.filter(([, , parent]) => parent === top).flatMap(([id]) => under(id))];
+  const aside: Record<string, SetAside> = {};
+  for (const [name, why] of Object.entries(asideFolders)) {
+    const id = await known(name);
+    if (id) for (const folder of under(id)) aside[folder] = why;
   }
-  return aside;
+  const sent = await known('sentitems');
+  return { at: new Date().toISOString(), folders, aside, own: sent ? under(sent) : [] };
 }
 
 function listOf(body: Record<string, unknown> | undefined): Record<string, unknown>[] {
@@ -634,11 +771,18 @@ async function graph(
   // A body that didn't finish arriving in time is no answer.
   if (signal?.aborted) throw new MicrosoftUnreachable('Graph');
   if (response.ok) return body;
-  if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('Graph');
+  if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('Graph', waitOf(response.headers.get('retry-after')));
   const code = typeof body.error?.code === 'string' ? body.error.code : `http_${response.status}`;
   // An account without an Exchange Online mailbox, such as one only for signing in.
-  if (path.includes('/mailFolders/') && (response.status === 404 || code === 'MailboxNotEnabledForRESTAPI')) throw new MicrosoftRefused('no_mailbox', code);
-  throw new MicrosoftRefused('graph_refused', code);
+  if (path.includes('/mailFolders/') && (response.status === 404 || code === 'MailboxNotEnabledForRESTAPI')) throw new MicrosoftRefused('no_mailbox', code, response.status);
+  throw new MicrosoftRefused('graph_refused', code, response.status);
+}
+
+/** How long Microsoft asked Homing to wait, from its Retry-After, in seconds or as a time: at most an hour. */
+function waitOf(retryAfter: string | null): number | undefined {
+  if (!retryAfter?.trim()) return undefined;
+  const seconds = /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter) : (Date.parse(retryAfter) - Date.now()) / 1000;
+  return Number.isFinite(seconds) ? Math.min(Math.max(Math.ceil(seconds), 1), 3600) : undefined;
 }
 
 interface TokenAnswer {
