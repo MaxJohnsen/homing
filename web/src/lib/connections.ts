@@ -53,6 +53,8 @@ export interface LearningData {
   since: string;
   learnedUpTo: string | null;
   caughtUp: boolean;
+  /** Whether it has more folders than Homing follows, so what arrives in some of them isn't learned from. */
+  followedPartly?: boolean;
   /** A range further back that it's learning from now. */
   extending: { since: string; until: string } | null;
   /** In dollars: its limit for history, what that cost so far, and what it cost since, which the monthly limit holds. */

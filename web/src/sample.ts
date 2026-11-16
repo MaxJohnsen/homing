@@ -148,7 +148,7 @@ const sampleRun: LearningData = {
   ],
 };
 
-export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'paused' | 'following' | 'extending' | 'proposed' | 'waiting' | 'off', LearningData> = {
+export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'paused' | 'following' | 'partly' | 'extending' | 'proposed' | 'waiting' | 'off', LearningData> = {
   estimated: { ...sampleRun, state: 'estimating', learnedUpTo: null, spent: 0, threads: 0, learned: 0, setAside: [], leftOut: { senders: [], folders: [], kept: [] } },
   history: sampleRun,
   atLimit: { ...sampleRun, state: 'paused', reason: 'limit', limit: 1, spent: 0.9984 },
@@ -161,6 +161,7 @@ export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'pause
       { reason: 'provider failed', items: 7, words: '7 the model’s provider kept failing on', senders: [{ sender: 'gunnar@northwind.no', items: 4 }, { sender: 'kari.nilsen@acme.no', items: 3 }], retry: true },
     ],
   },
+  partly: { ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, followedPartly: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712 },
   extending: { ...sampleRun, state: 'following', caughtUp: true, extending: { since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z' }, spent: 2.31 },
   proposed: { ...sampleRun, state: 'following', caughtUp: true, spent: 2.31, proposed: { ...sampleEstimate, since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z', items: 26020, threads: 7300, setAside: 10400, low: 1.2, high: 4.1 } },
   waiting: { ...sampleRun, waitingFor: 'provider' },

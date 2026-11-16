@@ -234,6 +234,7 @@ function standing(run: LearningData, words: { place: string }, service: string):
         : run.waitingFor === 'error'
           ? ' Right now something in Homing keeps failing. It tries again by itself, and whoever looks after Homing can see why in its log.'
           : '';
+  const partly = run.followedPartly ? ` This ${words.place} has more folders than Homing follows, so what arrives in some of them isn’t learned from.` : '';
   const added = run.extending
     ? run.waitingAtLimit
       ? ` What you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}, waits at its limit of ${usd(run.limit)}. Raise the limit to learn from it.`
@@ -247,7 +248,7 @@ function standing(run: LearningData, words: { place: string }, service: string):
           : `Homing is learning from its history, ${back}.${run.learnedUpTo ? ` So far it’s up to ${dateOf(run.learnedUpTo)}.` : ''}`) + waiting
       );
     case 'following':
-      return `Homing has learned from its history${run.extending ? '' : `, ${back}`}, and keeps learning from what arrives.${added}${waiting}`;
+      return `Homing has learned from its history${run.extending ? '' : `, ${back}`}, and keeps learning from what arrives.${partly}${added}${waiting}`;
     case 'paused':
       if (run.reason === 'limit') return `Paused at its limit of ${usd(run.limit)}.${upTo} Raise the limit to carry on from there.`;
       if (run.reason === 'monthly limit') return 'Paused, because Homing’s monthly limit for learning is reached. It carries on when whoever looks after Homing raises it, or next month.';
