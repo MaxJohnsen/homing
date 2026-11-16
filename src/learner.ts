@@ -7,7 +7,8 @@
 // its items processed, so a crash repeats only what wasn't marked. Only then does the run's
 // checkpoint move on. It sends nothing more once its owner pauses the run, waits and tries again
 // by itself when the system or the model's provider fails, moves on past a thread or an item
-// neither will take, and never acts in the place it reads.
+// neither will take once it's clear that the fault is with that one, and never acts in the place
+// it reads.
 
 import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
@@ -31,11 +32,13 @@ export interface LearnerOptions {
   leaseSeconds?: number;
   /** How long a run waits after a first failure, in seconds, doubling each time up to an hour. */
   backoffSeconds?: number;
+  /** How long a thread the provider failed on waits before its second try, and before its third, in seconds. */
+  retrySeconds?: [number, number];
   /** How many runs it works on at once. */
   atOnce?: number;
 }
 
-const defaults = { tickMs: 5_000, pollSeconds: 5 * 60, leaseSeconds: 5 * 60, backoffSeconds: 30, atOnce: 2 };
+const defaults = { tickMs: 5_000, pollSeconds: 5 * 60, leaseSeconds: 5 * 60, backoffSeconds: 30, retrySeconds: [60 * 60, 2 * 60 * 60] as [number, number], atOnce: 2 };
 /** How long fetching one page of a place's changes may take. */
 const pageTimeLimit = 90_000;
 /** How long a run waits when calls under way leave no room, or the person can't open its space for now. */
@@ -44,8 +47,14 @@ const busyWait = 60;
 const pageSizes = [50, 10, 1];
 /** How many items set aside before are learned from again at once. */
 const againAtOnce = 20;
-/** How often the provider may fail on one thread, while it answers otherwise, before the thread is set aside. */
+/** How often the provider may fail on one thread, hours apart, while it answers otherwise, before the thread is set aside. */
 const triesForThread = 3;
+/**
+ * How many threads in a row the provider refuses or fails on, with none answered between, before
+ * that says something about the provider and nothing about the threads. And how many more a page
+ * then asks about before it stops asking.
+ */
+const several = 3;
 
 /** How a routine of learning acts for the person: as an agent, named as Homing's own, never their assistant. */
 const routineFor = (person: string): Principal => ({ person, agent: routineAgent, routine: 'learning' });
@@ -58,6 +67,7 @@ const routineFor = (person: string): Principal => ({ person, agent: routineAgent
  */
 export function startLearner(sql: Sql, l: Learning, options: LearnerOptions = {}): { stop(): Promise<void> } {
   const pace = { ...defaults, ...options };
+  // Which of Homing's processes this is. Each claim it gets is one of its own.
   const worker = randomUUID();
   const stopping = new AbortController();
   const working = new Set<Promise<void>>();
@@ -71,7 +81,7 @@ export function startLearner(sql: Sql, l: Learning, options: LearnerOptions = {}
       while (!stopping.signal.aborted && working.size < pace.atOnce) {
         const claimed = await claim(sql, worker, pace.leaseSeconds);
         if (!claimed) break;
-        const work: Promise<void> = learnPage(sql, l, worker, claimed, pace, stopping.signal)
+        const work: Promise<void> = learnPage(sql, l, claimed, pace, stopping.signal)
           .catch((error: unknown) => console.error('learning: a run stopped on the way:', error))
           .finally(() => {
             working.delete(work);
@@ -98,17 +108,21 @@ export function startLearner(sql: Sql, l: Learning, options: LearnerOptions = {}
   };
 }
 
-/** A run a worker claimed, and the person it's learned for. */
+/** A run a worker claimed, the person it's learned for, and the claim: one of its own each time, which everything written under it names. */
 export interface Claimed {
   run: string;
   person: string;
+  claim: string;
 }
 
 /** Claims a run that needs work for this worker, if there is one. Homing's own, without anyone's principal. */
 export async function claim(sql: Sql, worker: string, leaseSeconds = defaults.leaseSeconds): Promise<Claimed | undefined> {
-  const [claimed] = await sql<Claimed[]>`select run, person from claim_learning_run(${worker}::uuid, ${leaseSeconds}::integer)`;
+  const [claimed] = await sql<Claimed[]>`select run, person, claim from claim_learning_run(${worker}::uuid, ${leaseSeconds}::integer)`;
   return claimed;
 }
+
+/** A thread the provider failed on, on the page of a walk: how often, and when last. */
+type Failure = [walk: Walk, key: string, count: number, at: number];
 
 interface Claim extends Run {
   /** The person it learns for, on whose private side it writes. */
@@ -116,18 +130,20 @@ interface Claim extends Run {
   checkpoint: string | null;
   extensionCheckpoint: string | null;
   attempts: number;
-  /** How often the provider failed on each thread of the page it's on, by the thread's first item. */
-  failures: Record<string, number>;
+  /** The threads the provider failed on, on the page each walk is on, by the thread's first item. */
+  failures: Failure[];
+  /** How many threads in a row the provider refused, since a model last answered for one. */
+  refused: number;
   /** How many items it asks for at once, after a page that failed. */
   pageSize: number | null;
   polledAt: Date | null;
 }
 
-type Trouble = 'provider' | 'system' | 'error' | 'throttled' | 'sign in again' | 'not set up' | 'monthly limit' | 'model processing off';
+type Trouble = 'provider' | 'system' | 'error' | 'throttled' | 'limited' | 'sign in again' | 'not set up' | 'monthly limit' | 'model processing off';
 type Walk = 'main' | 'extension' | 'again';
 type Mark = ReturnType<typeof markOf>;
 
-/** The claim is no longer this worker's: another took the run over, its scope changed, or its owner can't open its space. */
+/** The claim no longer holds: the run was claimed again, its scope changed, or its owner can't open its space. */
 const lost = (error: unknown) => error instanceof postgres.PostgresError && error.code === '42501';
 
 /**
@@ -137,24 +153,25 @@ const lost = (error: unknown) => error instanceof postgres.PostgresError && erro
  * it to learn from after all. Whatever goes wrong on the way, the claim is handed back and the run
  * waits before it tries again.
  */
-export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: Claimed, options: LearnerOptions = {}, signal: AbortSignal = new AbortController().signal): Promise<void> {
+export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options: LearnerOptions = {}, signal: AbortSignal = new AbortController().signal): Promise<void> {
   const pace = { ...defaults, ...options };
   const principal = routineFor(claimed.person);
+  const { claim } = claimed;
   const found = await withPrincipal(sql, principal, async (s) => {
     const [row] = await s.tx<
       {
         id: string; place: string; space: string; connection: string; state: Run['state']; reason: Run['reason']; waitingFor: Run['waitingFor']; waitingAtLimit: boolean;
         since: Date; learnedUpTo: Date | null; caughtUpAt: Date | null; extensionSince: Date | null; extensionUntil: Date | null; spendingLimit: string;
         excludedSenders: string[]; excludedFolders: string[]; keptSenders: string[]; startedAt: Date | null;
-        checkpoint: string | null; extensionCheckpoint: string | null; attempts: number; failures: [string, number][] | null; pageSize: number | null; polledAt: Date | null;
+        checkpoint: string | null; extensionCheckpoint: string | null; attempts: number; failures: Failure[] | null; refused: number; pageSize: number | null; polledAt: Date | null;
       }[]
     >`
       select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
              r.since, r.learned_up_to, r.caught_up_at, r.extension_since, r.extension_until, r.spending_limit,
              r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
-             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.page_size, r.polled_at
+             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at
       from learning_runs r
-      where r.id = ${claimed.run}::uuid and r.claimed_by = ${worker}::uuid
+      where r.id = ${claimed.run}::uuid and r.claim = ${claim}::uuid
     `;
     if (!row) return undefined;
     const again = await s.tx<{ item: string }[]>`select item from learned_items where run_id = ${row.id}::uuid and again order by at nulls first, item limit ${againAtOnce}`;
@@ -171,14 +188,14 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
     estimate: null,
     proposed: null,
     leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
-    // Kept as pairs, since an item's id is no name for the database's client to reword.
-    failures: Object.fromEntries(row.failures ?? []),
+    // Kept as a list, since an item's id is no name for the database's client to reword.
+    failures: row.failures ?? [],
   };
   /** Hands the claim back with the checkpoint as it was, to carry on after a wait. */
-  const later = async (waitSeconds: number, trouble: Trouble | null = null, keep: { failures?: Record<string, number>; pageSize?: number } = {}) => {
+  const later = async (waitSeconds: number, trouble: Trouble | null = null, keep: { failures?: Failure[]; pageSize?: number } = {}) => {
     try {
       await withPrincipal(sql, principal, (s) => s.tx`
-        select learning_later(${run.id}::uuid, ${worker}::uuid, ${Math.round(waitSeconds)}::integer, ${trouble}, ${keep.failures ? s.tx.json(Object.entries(keep.failures)) : null}::jsonb, ${keep.pageSize ?? null}::integer)
+        select learning_later(${run.id}::uuid, ${claim}::uuid, ${Math.round(waitSeconds)}::integer, ${trouble}, ${keep.failures ? s.tx.json(keep.failures) : null}::jsonb, ${keep.pageSize ?? null}::integer)
       `);
     } catch (error) {
       if (!lost(error)) throw error;
@@ -232,18 +249,22 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
     const changes = [...new Map(page.changes.map((change) => [change.item.envelope.id, change])).values()].filter(
       ({ item }) => walk === 'again' || item.envelope.at === null || item.envelope.at.getTime() >= run.since.getTime(),
     );
+    type Marked = { version: string; again: boolean; outcome: string; interpretation: string | null; folder: string | null };
     const marked = changes.length
       ? new Map(
           (
-            await withPrincipal(sql, principal, (s) => s.tx<{ item: string; version: string; again: boolean }[]>`
-              select item, version, again from learned_items where run_id = ${run.id}::uuid and item in ${s.tx(changes.map((change) => change.item.envelope.id))}
+            await withPrincipal(sql, principal, (s) => s.tx<({ item: string } & Marked)[]>`
+              select item, version, again, outcome, interpretation, folder from learned_items where run_id = ${run.id}::uuid and item in ${s.tx(changes.map((change) => change.item.envelope.id))}
             `)
           ).map((mark) => [mark.item, mark]),
         )
-      : new Map<string, { version: string; again: boolean }>();
+      : new Map<string, Marked>();
+    // What was set aside without a model is looked at again once it's somewhere else, as when it's
+    // taken out of junk: where it is was part of why.
+    const moved = (mark: Marked, change: Change) => mark.outcome === 'set aside' && mark.interpretation === null && mark.folder !== change.folder;
     const fresh = changes.filter((change) => {
       const mark = marked.get(change.item.envelope.id);
-      return walk === 'again' || !mark || mark.again || mark.version !== change.version;
+      return walk === 'again' || !mark || mark.again || mark.version !== change.version || moved(mark, change);
     });
 
     // What needs no model is set aside at once, and counted: by its own signs, by where it is, by who
@@ -264,23 +285,54 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
     // What was asked for again and isn't there any more has nothing left to learn from.
     if (walk === 'again') {
       for (const item of again.filter((id) => !changes.some((change) => change.item.envelope.id === id))) {
-        aside.push({ item, version: 'gone', thread: null, outcome: 'set aside', reason: 'gone', sender: null, at: null, because: null, interpretation: null });
+        aside.push({ item, version: 'gone', thread: null, outcome: 'set aside', reason: 'gone', sender: null, at: null, because: null, interpretation: null, folder: null });
       }
     }
-    if (aside.length) await withPrincipal(sql, principal, (s) => mark(s, run, worker, aside, null));
+    if (aside.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, aside, null));
 
     const read = `${l.interpretation.name} ${l.interpretation.version}`;
+    // How many of this page's calls a model answered, in this try, and how many threads in a row the
+    // provider refused or failed on since it last answered one.
     let answered = 0;
-    const ask: Ask = async (call) => {
-      const answer = await callModel({ sql, model: l.model }, claimed.person, { ...call, run: run.id, walk });
+    let inARow = run.refused;
+    const call: Ask = (asked) => callModel({ sql, model: l.model }, claimed.person, { ...asked, run: run.id, walk, claim });
+    const ask: Ask = async (asked) => {
+      const answer = await call(asked);
       answered++;
+      inARow = 0;
       return answer;
     };
+    /** Whether the provider answers otherwise: a call of this page was answered, or else one that carries nothing is, asked once. */
+    let pinged: Promise<boolean> | undefined;
+    const answersOtherwise = async () => answered > 0 || (await (pinged ??= answers(call, place.space)));
     const words = wordsOf(connector, place.kind);
-    const failed: { key: string; changes: Change[] }[] = [];
-    for (const batch of batchesOf(kept, l.interpretation.most)) {
+    // The threads the provider failed on before, on this walk's page, and when each is tried next.
+    const before = new Map(run.failures.filter(([of]) => of === walk).map(([, key, count, at]) => [key, { count, at }]));
+    const elsewhere = run.failures.filter(([of]) => of !== walk);
+    const next = ({ count, at }: { count: number; at: number }) => at + pace.retrySeconds[Math.min(count, pace.retrySeconds.length) - 1] * 1000;
+    const batches = batchesOf(kept, l.interpretation.most);
+    const keyOf = (batch: { changes: Change[] }) => batch.changes[0].item.envelope.id;
+    // Still to be tried again, of those on this page, until each is learned from or set aside.
+    const pending = new Map(batches.flatMap((batch) => (before.has(keyOf(batch)) ? [[keyOf(batch), before.get(keyOf(batch))!] as const] : [])));
+    const stillFailing = (): Failure[] => [...elsewhere, ...[...pending].map(([key, { count, at }]): Failure => [walk, key, count, at])];
+    // Those it failed on in this try: followed by a call it answered, which shows the fault was with
+    // them, or since the last one it answered, which doesn't yet.
+    const counted: { key: string; changes: Change[] }[] = [];
+    let streak: { key: string; changes: Change[] }[] = [];
+    // The provider refused or failed on several in a row, or wouldn't say whether it answers: the page isn't done, and the run waits for it.
+    let trouble = false;
+    for (const batch of batches) {
       if (signal.aborted) return await later(0);
-      const off = (reason: string) => withPrincipal(sql, principal, (s) => mark(s, run, worker, batch.changes.map((change) => markOf(change, 'set aside', reason, null, read)), null));
+      const key = keyOf(batch);
+      // Failed on before, a thread is tried again hours later, so its tries never all fall within one passing fault.
+      const earlierTry = before.get(key);
+      if (earlierTry && next(earlierTry) > Date.now()) continue;
+      // Nothing was answered for so many in a row that asking on says nothing more.
+      if (inARow >= 2 * several) {
+        trouble = true;
+        break;
+      }
+      const off = (reason: string) => withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => markOf(change, 'set aside', reason, null, read)), null));
       const earlier = await withPrincipal(sql, principal, (s) => earlierNote(s, run, batch.thread));
       let learned: Learned;
       try {
@@ -290,47 +342,78 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
         );
       } catch (error) {
         if (error instanceof ModelRefused) {
+          // The run was claimed again since this page began, as after its scope changed: this page sends and writes nothing more.
+          if (error.reason === 'claim lost') return;
           // Model processing is off where it lands: the one place Homing calls a model refused it before
           // anything was sent. The run waits, with nothing set aside, and carries on once it's turned on.
-          if (error.reason === 'model processing off') return await later(0, 'model processing off');
+          if (error.reason === 'model processing off') return await later(0, 'model processing off', { failures: stillFailing() });
           // At its own limit the database paused the run, or made its older material wait, and its owner pausing it stops it here too.
-          if (error.reason === 'run limit' || error.reason === 'run paused') return await later(0);
-          if (error.reason === 'monthly limit' || error.reason === 'paused') return await later(0, 'monthly limit');
-          if (error.reason === 'busy' || error.reason === 'no access') return await later(busyWait);
+          if (error.reason === 'run limit' || error.reason === 'run paused') return await later(0, null, { failures: stillFailing() });
+          if (error.reason === 'monthly limit' || error.reason === 'paused') return await later(0, 'monthly limit', { failures: stillFailing() });
+          if (error.reason === 'busy' || error.reason === 'no access') return await later(busyWait, null, { failures: stillFailing() });
           console.error(`learning: a run can’t call Homing’s model (${error.reason})`);
-          return await backoff('error');
+          return await backoff('error', { failures: stillFailing() });
         }
-        // Asking again would give the same: the model's answer can't be used, or the provider won't take
-        // this very request. It's set aside, saying which, and the run moves on.
-        if (error instanceof Unusable || (error instanceof ModelFailed && (error.unusable || error.refused))) {
-          await off(error instanceof ModelFailed && error.refused ? 'provider refused' : 'no usable answer');
+        // The model answered, and its answer can't be used: asking again would give the same. It's set aside, saying so, and the run moves on.
+        if (error instanceof Unusable || (error instanceof ModelFailed && error.unusable)) {
+          pending.delete(key);
+          await off('no usable answer');
           continue;
         }
         if (!(error instanceof ModelFailed)) throw error;
+        // Asked too often, or asked to wait: that's about every request, so it never counts against a
+        // thread, and the run waits as long as the provider said.
+        if (error.limited || error.retryAfter !== undefined) {
+          return await (error.retryAfter !== undefined ? later(error.retryAfter, 'limited', { failures: stillFailing() }) : backoff('provider', { failures: stillFailing() }));
+        }
+        inARow++;
+        if (error.refused) {
+          // The provider refused the request as it was. That's about this thread only when the provider
+          // answers otherwise, and when it isn't one of several in a row, which is how a refusal of
+          // everything looks, such as for a model it no longer has. Otherwise it's waited for.
+          if (inARow < several && (await answersOtherwise())) {
+            pending.delete(key);
+            await off('provider refused');
+          } else trouble = true;
+          continue;
+        }
         // The provider failed on this one: the rest of the page is tried all the same, so one thread never holds up the others.
-        failed.push({ key: batch.changes[0].item.envelope.id, changes: batch.changes });
+        streak.push({ key, changes: batch.changes });
         continue;
       }
-      await withPrincipal(sql, principal, (s) => write(s, l, run, worker, place, batch.changes, learned, read));
+      // Answered: what failed before it on this page failed while the provider answers otherwise.
+      counted.push(...streak);
+      streak = [];
+      pending.delete(key);
+      await withPrincipal(sql, principal, (s) => write(s, l, run, claim, place, batch.changes, learned, read));
     }
 
-    if (failed.length) {
-      const failures = Object.fromEntries(failed.map(({ key }) => [key, (run.failures[key] ?? 0) + 1]));
-      // Failed on several times while the provider answers otherwise, a thread is one it won't read:
-      // it's set aside, saying so. With nothing else to go by, a call that carries nothing says whether it answers.
-      const often = failed.filter(({ key }) => failures[key] >= triesForThread);
-      if (often.length && (answered > 0 || (await answers(ask, place.space)))) {
-        for (const { key, changes } of often) {
-          await withPrincipal(sql, principal, (s) => mark(s, run, worker, changes.map((change) => markOf(change, 'set aside', 'provider failed', null, read)), null));
-          delete failures[key];
-        }
-      }
-      if (Object.keys(failures).length) return await backoff('provider', { failures });
+    // What it failed on last counts against those threads only when there were few and the provider
+    // answers otherwise. Several in a row, or a provider that answers nothing, is the provider's
+    // trouble: nothing is counted or set aside, and the run waits.
+    if (streak.length) {
+      if (inARow < several && (await answersOtherwise())) counted.push(...streak);
+      else trouble = true;
+    }
+    for (const { key, changes } of counted) {
+      const count = (before.get(key)?.count ?? 0) + 1;
+      // Failed on three times, hours apart, while the provider answers otherwise, a thread is one it won't read: it's set aside, saying so.
+      if (count >= triesForThread) {
+        pending.delete(key);
+        await withPrincipal(sql, principal, (s) => mark(s, run, claim, changes.map((change) => markOf(change, 'set aside', 'provider failed', null, read)), null));
+      } else pending.set(key, { count, at: Date.now() });
+    }
+    if (trouble) return await backoff('provider', { failures: stillFailing() });
+    if (pending.size) {
+      // Until the first of them is tried again, and no longer than until what arrives is looked at
+      // next. It waits for the provider, and that wait is no failure of the run's.
+      const wait = Math.max(0, Math.min(...[...pending.values()].map(next)) - Date.now()) / 1000;
+      return await later(run.caughtUpAt === null ? wait : Math.min(wait, pace.pollSeconds), 'limited', { failures: stillFailing() });
     }
 
     const reached = walk === 'main' ? changes.reduce<Date | null>((latest, { item }) => (item.envelope.at && (!latest || item.envelope.at > latest) ? item.envelope.at : latest), null) : null;
     await withPrincipal(sql, principal, (s) => s.tx`
-      select learning_walked(${run.id}::uuid, ${worker}::uuid, ${walk}, ${walk === 'again' ? null : scope.since}, ${walk === 'again' ? null : page.next}, ${page.caughtUp}, ${reached}, ${Math.round(pace.pollSeconds)}::integer)
+      select learning_walked(${run.id}::uuid, ${claim}::uuid, ${walk}, ${walk === 'again' ? null : scope.since}, ${walk === 'again' ? null : page.next}, ${page.caughtUp}, ${reached}, ${Math.round(pace.pollSeconds)}::integer)
     `);
   } catch (error) {
     if (lost(error)) return;
@@ -341,22 +424,22 @@ export async function learnPage(sql: Sql, l: Learning, worker: string, claimed: 
 }
 
 /** Whether the model's provider answers at all, by a call that carries nothing of anyone's. */
-async function answers(ask: Ask, space: string): Promise<boolean> {
+async function answers(call: Ask, space: string): Promise<boolean> {
   try {
-    await ask({ purpose: 'sort', spaces: [space], maxTokens: 1, messages: [{ role: 'user', content: 'Answer with the word yes.' }] });
+    await call({ purpose: 'sort', spaces: [space], maxTokens: 1, messages: [{ role: 'user', content: 'Answer with the word yes.' }] });
     return true;
   } catch {
     return false;
   }
 }
 
-/** A processed item as the run marks it: who sent it and when, why it was set aside and for which entry of its owner's, and which interpretation read it. */
-function markOf(change: Change, outcome: 'learned' | 'set aside', reason: string | null, because: string | null = null, interpretation: string | null = null) {
-  return { item: change.item.envelope.id, version: change.version, thread: change.thread, outcome, reason, sender: senderOf(change) ?? null, at: change.item.envelope.at, because, interpretation };
+/** A processed item as the run marks it: who sent it and when, where it was, why it was set aside and for which entry of its owner's, and which interpretation read it. */
+function markOf(change: Change, outcome: 'learned' | 'added as a source' | 'set aside', reason: string | null, because: string | null = null, interpretation: string | null = null) {
+  return { item: change.item.envelope.id, version: change.version, thread: change.thread, outcome, reason, sender: senderOf(change) ?? null, at: change.item.envelope.at, because, interpretation, folder: change.folder };
 }
 
-function mark(s: Session, run: Run, worker: string, marks: Mark[], note: string | null) {
-  return s.tx`select learning_marked(${run.id}::uuid, ${worker}::uuid, ${s.tx.json(marks as never)}, ${note}::uuid)`;
+function mark(s: Session, run: Run, claim: string, marks: Mark[], note: string | null) {
+  return s.tx`select learning_marked(${run.id}::uuid, ${claim}::uuid, ${s.tx.json(marks as never)}, ${note}::uuid)`;
 }
 
 /**
@@ -364,11 +447,12 @@ function mark(s: Session, run: Run, worker: string, marks: Mark[], note: string 
  * its items as a source Homing read, and its items marked processed, all in this one transaction.
  * A thread learning wrote about before gets that note rewritten, while it's still learning's own;
  * what its owner or their assistant changed since stays as it is, which the database sees to, and
- * the note goes beside it. A note that stands as it is only gets the items as sources.
+ * the note goes beside it. A note that stands as it is only gets the items as sources, and they're
+ * marked as that, since no model read them.
  */
-async function write(s: Session, l: Learning, run: Claim, worker: string, place: Place, changes: Change[], learned: Learned, read: string): Promise<void> {
+async function write(s: Session, l: Learning, run: Claim, claim: string, place: Place, changes: Change[], learned: Learned, read: string): Promise<void> {
   if ('nothing' in learned) {
-    await mark(s, run, worker, changes.map((change) => markOf(change, 'set aside', learned.nothing, null, read)), null);
+    await mark(s, run, claim, changes.map((change) => markOf(change, 'set aside', learned.nothing, null, read)), null);
     return;
   }
   const sources: string[] = [];
@@ -380,7 +464,8 @@ async function write(s: Session, l: Learning, run: Claim, worker: string, place:
   let note: string | undefined;
   if ('stands' in learned) {
     if (earlier) await cite(s, earlier.id, sources);
-    note = earlier?.id;
+    await mark(s, run, claim, changes.map((change) => markOf(change, 'added as a source', null)), earlier?.id ?? null);
+    return;
   } else {
     if (earlier) {
       try {
@@ -400,7 +485,7 @@ async function write(s: Session, l: Learning, run: Claim, worker: string, place:
       note = (await insertItem(s, { pageId, spaceId: place.space, privateTo: run.owner, kind: 'text', body: learned.text, sources })).id;
     }
   }
-  await mark(s, run, worker, changes.map((change) => markOf(change, 'learned', null, null, read)), note ?? null);
+  await mark(s, run, claim, changes.map((change) => markOf(change, 'learned', null, null, read)), note ?? null);
 }
 
 /**

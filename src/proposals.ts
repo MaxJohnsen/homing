@@ -1750,9 +1750,10 @@ export async function decide(
       }
       const run = (await runsFor(s, [learning.place])).get(learning.place)!;
       try {
-        // As the person, directly, which the database checks: with the limit shown, or to the day shown.
+        // As the person, directly, which the database checks, as it does that the run still holds the
+        // period and the estimate shown: one estimated again meanwhile, after the check above, starts nothing.
         if (learning.further) await s.tx`select extend_learning(${run.id}::uuid, ${new Date(learning.since)})`;
-        else await s.tx`select start_learning(${run.id}::uuid, ${learning.limit}::numeric)`;
+        else await s.tx`select start_learning(${run.id}::uuid, ${learning.limit}::numeric, ${new Date(learning.since)}, ${learning.estimate.at}::timestamptz)`;
       } catch (error) {
         const why = refusalOf(error);
         if (!why) throw error;

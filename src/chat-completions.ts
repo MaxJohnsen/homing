@@ -52,13 +52,21 @@ export function chatCompletions({ url, key }: { url: URL; key?: string }): Provi
       if (!response.ok || json === undefined || json.error || typeof content !== 'string') {
         const code = [json?.error?.code, json?.error?.type].find((value) => typeof value === 'string' && /^[a-z_]{1,40}$/.test(value));
         const reason = `the provider answered ${response.status}${code ? ` (${code})` : ''}`;
+        const wait = waitOf(response.headers.get('retry-after'));
         // Only the provider's own answer to a request it won't take comes before any model ran.
-        if (response.status >= 400 && response.status < 500 && json !== undefined) throw new ProviderRefused(reason, cost, response.status);
-        throw new ProviderFailed(response.ok && json !== undefined && !json.error ? 'the provider’s answer had no text' : reason, cost, response.status);
+        if (response.status >= 400 && response.status < 500 && json !== undefined) throw new ProviderRefused(reason, cost, response.status, wait);
+        throw new ProviderFailed(response.ok && json !== undefined && !json.error ? 'the provider’s answer had no text' : reason, cost, response.status, wait);
       }
       return { text: content, inputTokens: json.usage?.prompt_tokens, outputTokens: json.usage?.completion_tokens, cost };
     },
   };
+}
+
+/** How long the provider asked Homing to wait, from its Retry-After, in seconds or as a time: at most an hour. */
+function waitOf(retryAfter: string | null): number | undefined {
+  if (!retryAfter?.trim()) return undefined;
+  const seconds = /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter) : (Date.parse(retryAfter) - Date.now()) / 1000;
+  return Number.isFinite(seconds) ? Math.min(Math.max(Math.ceil(seconds), 1), 3600) : undefined;
 }
 
 /** The answer's text, up to the most Homing reads. */

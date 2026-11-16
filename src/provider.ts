@@ -44,10 +44,13 @@ export class ProviderRefused extends Error {
   readonly cost?: number;
   /** The status it answered with. */
   readonly status?: number;
-  constructor(reason: string, cost?: number, status?: number) {
+  /** How many seconds it asked to wait before asking again, when it said. */
+  readonly retryAfter?: number;
+  constructor(reason: string, cost?: number, status?: number, retryAfter?: number) {
     super(reason);
     this.cost = cost;
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -58,9 +61,12 @@ export class ProviderFailed extends Error {
   readonly cost?: number;
   /** The status it answered with, if it answered. */
   readonly status?: number;
-  constructor(reason: string, cost?: number, status?: number) {
+  /** How many seconds it asked to wait before asking again, when it said. */
+  readonly retryAfter?: number;
+  constructor(reason: string, cost?: number, status?: number, retryAfter?: number) {
     super(reason);
     this.cost = cost;
     this.status = status;
+    this.retryAfter = retryAfter;
   }
 }

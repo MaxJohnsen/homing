@@ -157,14 +157,17 @@ create table learning_runs (
   excluded_folders text[] not null default '{}' check (cardinality(excluded_folders) <= 200),
   kept_senders text[] not null default '{}' check (cardinality(kept_senders) <= 200),
   -- When it next needs work, how often in a row it failed, which threads the
-  -- provider failed on and how often, how many items it asks for at once
-  -- after a page that failed, and which of Homing's workers works on it,
-  -- until when.
+  -- provider failed on, how often and when last, how many threads in a row
+  -- the provider refused since it last answered one, how many items it asks
+  -- for at once after a page that failed, and which of Homing's workers works
+  -- on it, until when, under a claim of its own each time.
   next_at timestamptz not null default now(),
   attempts integer not null default 0,
   failures jsonb check (jsonb_typeof(failures) = 'array' and pg_column_size(failures) < 100000),
+  refused integer not null default 0 check (refused >= 0),
   page_size integer check (page_size between 1 and 1000),
   claimed_by uuid,
+  claim uuid,
   claimed_until timestamptz,
   lease_seconds integer,
   created_at timestamptz not null default now(),
@@ -180,10 +183,11 @@ create index learning_runs_space on learning_runs (space_id);
 create index learning_runs_connection on learning_runs (connection_id);
 create index learning_runs_due on learning_runs (next_at) where state in ('learning history', 'following');
 
--- Each item a run processed, by its id and version there: learned from, or
--- set aside and why. A thread is learned from together, and the note
--- learning wrote from it is kept with each of its items. Each says who sent
--- it and when, which left-out sender or folder set it aside, and which
+-- Each item a run processed, by its id and version there: learned from,
+-- added to a note's sources without a model reading it, or set aside and
+-- why. A thread is learned from together, and the note learning wrote from
+-- it is kept with each of its items. Each says who sent it and when, where
+-- it was, which left-out sender or folder set it aside, and which
 -- interpretation read it, so a later one can learn from it again.
 create table learned_items (
   run_id uuid not null references learning_runs (id) on delete cascade,
@@ -192,15 +196,23 @@ create table learned_items (
   item text not null check (length(item) between 1 and 1024),
   version text not null check (length(version) between 1 and 200),
   thread text check (length(thread) between 1 and 1024),
-  outcome text not null check (outcome in ('learned', 'set aside')),
+  outcome text not null check (outcome in ('learned', 'added as a source', 'set aside')),
   reason text check (reason ~ '^[a-z][a-z ]{0,39}$'),
   note uuid references content (id) on delete set null,
   sender text check (length(sender) <= 320),
   at timestamptz,
   because text check (length(because) <= 320),
   interpretation text check (interpretation ~ '^[a-z][a-z0-9 .-]{0,39}$'),
-  -- Its owner asked for it to be learned from after all, which the run does next.
+  -- The folder it was in, by name. Set aside without a model, it's looked at
+  -- again once it's seen in another, as when it's taken out of junk.
+  folder text check (length(folder) <= 1024),
+  -- It's to be learned from after all, which the run does next: its owner
+  -- said so, or it's tried again.
   again boolean not null default false,
+  -- Set aside for something that may pass, such as the provider failing on
+  -- it: when Homing tries it again by itself, which it does once.
+  retry_at timestamptz,
+  retried boolean not null default false,
   processed_at timestamptz not null default clock_timestamp(),
   primary key (run_id, item),
   check ((outcome = 'set aside') = (reason is not null))
@@ -210,6 +222,7 @@ create index learned_items_thread on learned_items (run_id, thread);
 create index learned_items_space on learned_items (space_id);
 create index learned_items_note on learned_items (note);
 create index learned_items_again on learned_items (run_id) where again;
+create index learned_items_retry on learned_items (run_id, retry_at) where retry_at is not null;
 
 alter table learning_runs enable row level security;
 alter table learned_items enable row level security;
@@ -257,6 +270,14 @@ as $$
     else ltrim(entry, '@') <> '' and (address like '%@' || ltrim(entry, '@') or address like '%.' || ltrim(entry, '@'))
   end
 $$;
+
+-- Whether what an item was set aside for may pass: the model's provider
+-- refused it or failed on it, the model's answer couldn't be used, or the
+-- system couldn't give it. Those are tried again, once by Homing itself and
+-- whenever the person or their assistant asks.
+create function learning_retryable(reason text) returns boolean
+language sql immutable
+as $$ select reason in ('provider refused', 'provider failed', 'no usable answer', 'unreadable') $$;
 
 -- The person's own run, for them or their assistant to direct, held until
 -- the transaction ends. Never a routine's or a space's, and the same refusal
@@ -346,10 +367,12 @@ end
 $$;
 
 -- Starts a run that was estimated, with its spending limit, at most the
--- ceiling whoever looks after Homing set. Only the person does, in Homing
--- itself: there, or by approving what their assistant proposed, which runs
--- as them. An assistant never starts one.
-create function start_learning(run uuid, spending_limit numeric) returns void
+-- ceiling whoever looks after Homing set, for the period and the estimate
+-- the person was shown: one estimated again since isn't what they saw, and
+-- doesn't start. Only the person does, in Homing itself: there, or by
+-- approving what their assistant proposed, which runs as them. An assistant
+-- never starts one.
+create function start_learning(run uuid, spending_limit numeric, since timestamptz, estimated timestamptz) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
@@ -364,6 +387,9 @@ begin
   end if;
   if r.estimate is null then
     raise exception 'learning is estimated before it starts' using errcode = 'check_violation';
+  end if;
+  if since is null or estimated is null or r.since is distinct from start_learning.since or (r.estimate ->> 'at')::timestamptz is distinct from estimated then
+    raise exception 'the estimate, or how far back it goes, changed since it was shown, so nothing started' using errcode = 'check_violation';
   end if;
   -- One at a time for each account, so two spaces can't both start.
   perform pg_advisory_xact_lock(hashtext('homing.learning ' || r.connection_id::text));
@@ -479,7 +505,7 @@ begin
   if r.checkpoint is null and r.caught_up_at is null and r.extension_since is null then
     update learning_runs
     set since = extend_learning.since, estimate = r.extension_estimate, extension_estimate = null,
-        claimed_by = null, claimed_until = null, next_at = now(), changed_at = clock_timestamp()
+        claimed_by = null, claim = null, claimed_until = null, next_at = now(), changed_at = clock_timestamp()
     where id = r.id;
     return;
   end if;
@@ -491,7 +517,7 @@ begin
       estimate = r.extension_estimate,
       extension_estimate = null,
       waiting_at_limit = false,
-      claimed_by = null, claimed_until = null,
+      claimed_by = null, claim = null, claimed_until = null,
       next_at = now(),
       changed_at = clock_timestamp()
   where id = r.id;
@@ -572,26 +598,57 @@ begin
 end
 $$;
 
+-- Has a run try again what it set aside for something that may pass: all of
+-- it, or what was set aside for one reason. For the person or their
+-- assistant, since it stays within the run they started and its limit. How
+-- many items it tries again.
+create function retry_learning(run uuid, reason text default null) returns integer
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  r learning_runs := own_learning_run(run);
+  tried integer;
+begin
+  if reason is not null and not learning_retryable(reason) then
+    raise exception 'that isn''t something learning tries again' using errcode = 'check_violation';
+  end if;
+  update learned_items i
+  set again = true
+  where i.run_id = r.id and i.outcome = 'set aside' and not i.again and learning_retryable(i.reason)
+    and (retry_learning.reason is null or i.reason = retry_learning.reason);
+  get diagnostics tried = row_count;
+  if tried > 0 and r.state in ('learning history', 'following') then
+    update learning_runs set next_at = now(), changed_at = clock_timestamp() where id = r.id;
+  end if;
+  return tried;
+end
+$$;
+
 -- For Homing's own worker, without anyone's principal: picks a run that
 -- needs work, and claims it for a while, so one worker works on a run at a
 -- time, across restarts and deploys. A claim that ran out is taken over.
--- Only the run and its owner are named, whom the worker then acts for. On
--- the way, a run whose place was removed, or whose account was revoked, is
--- done, and a run carries on once what it waited for holds again: its owner
--- signed in, the monthly limit was set again or the month ended, or model
--- processing was turned on in its space.
+-- Each claim is one of its own, by a token made here, so a page begun under
+-- an earlier claim writes nothing more, even when the same worker claimed
+-- the run again. Only the run, its owner, whom the worker then acts for,
+-- and the claim are named. On the way, a run whose place was removed, or
+-- whose account was revoked, is done, and a run carries on once what it
+-- waited for holds again: its owner signed in, the monthly limit was set
+-- again or the month ended, or model processing was turned on in its space.
+-- What the run set aside for something that may pass is tried again once
+-- its day has come.
 create function claim_learning_run(worker uuid, lease_seconds integer)
-returns table (run uuid, person uuid)
+returns table (run uuid, person uuid, claim uuid)
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
   picked learning_runs;
+  token uuid := gen_random_uuid();
 begin
   if current_person_id() is not null or current_space_id() is not null or worker is null or not (lease_seconds between 1 and 3600) then
     raise exception 'only Homing''s own worker claims a learning run' using errcode = 'insufficient_privilege';
   end if;
   update learning_runs r
-  set state = 'done', reason = 'removed', claimed_by = null, claimed_until = null, changed_at = clock_timestamp()
+  set state = 'done', reason = 'removed', claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
   from places p join connections c on c.id = p.connection_id
   where p.id = r.place_id and r.state <> 'done' and (p.removed_at is not null or c.revoked_at is not null);
   update learning_runs r
@@ -618,17 +675,20 @@ begin
     return;
   end if;
   update learning_runs r
-  set claimed_by = worker, claimed_until = now() + make_interval(secs => claim_learning_run.lease_seconds), lease_seconds = claim_learning_run.lease_seconds
+  set claimed_by = worker, claim = token, claimed_until = now() + make_interval(secs => claim_learning_run.lease_seconds), lease_seconds = claim_learning_run.lease_seconds
   where r.id = picked.id;
-  return query select picked.id, picked.private_to;
+  update learned_items i set again = true, retried = true, retry_at = null
+  where i.run_id = picked.id and i.retry_at <= now();
+  return query select picked.id, picked.private_to, token;
 end
 $$;
 
--- The owner's run, claimed by this worker, held until the transaction ends,
--- for the routine that learns for them and nobody else: not the owner, nor
--- their assistant, who can read which worker has it. Once another worker
--- took it over, or its scope changed, this one writes nothing more.
-create function claimed_learning_run(run uuid, worker uuid) returns learning_runs
+-- The owner's run, under this claim, held until the transaction ends, for
+-- the routine that learns for them and nobody else: not the owner, nor
+-- their assistant, who can read the claim. Once the run was claimed again,
+-- by another worker or the same, or its scope changed, a page begun under
+-- this claim writes nothing more.
+create function claimed_learning_run(run uuid, claim uuid) returns learning_runs
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
@@ -638,26 +698,29 @@ begin
     raise exception 'only the routine that learns works on a learning run' using errcode = 'insufficient_privilege';
   end if;
   select r.* into found from learning_runs r
-  where r.id = claimed_learning_run.run and r.private_to = current_person_id() and r.claimed_by = worker
+  where r.id = claimed_learning_run.run and r.private_to = current_person_id() and r.claim = claimed_learning_run.claim
     and r.space_id in (select accessible_spaces())
   for update;
   if found.id is null then
-    raise exception 'that learning run isn''t this worker''s to work on now' using errcode = 'insufficient_privilege';
+    raise exception 'that learning run isn''t this claim''s to work on now' using errcode = 'insufficient_privilege';
   end if;
   return found;
 end
 $$;
 
 -- Marks items a run processed: learned from, with the note learning wrote
--- from their thread, or set aside and why. Called in the transaction that
--- writes what learning wrote from them, so a crash leaves both or neither.
--- An item marked again, as with a changed version, is marked anew. It keeps
--- the claim, and says the run isn't waiting for anything.
-create function learning_marked(run uuid, worker uuid, marks jsonb, note uuid) returns void
+-- from their thread, added to that note's sources, or set aside and why.
+-- Called in the transaction that writes what learning wrote from them, so a
+-- crash leaves both or neither. An item marked again, as with a changed
+-- version, is marked anew. One set aside for something that may pass is
+-- tried again a day later, once. It keeps the claim, says the run isn't
+-- waiting for anything, and counts the threads the provider refused in a
+-- row, until a model answers for one.
+create function learning_marked(run uuid, claim uuid, marks jsonb, note uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
-  r learning_runs := claimed_learning_run(run, worker);
+  r learning_runs := claimed_learning_run(run, claim);
 begin
   if jsonb_typeof(marks) <> 'array' or jsonb_array_length(marks) > 1000 then
     raise exception 'marks are a list of at most 1,000 items' using errcode = 'check_violation';
@@ -667,15 +730,21 @@ begin
   ) then
     raise exception 'a note is on the run''s owner''s side of its place''s space' using errcode = 'insufficient_privilege';
   end if;
-  insert into learned_items (run_id, space_id, private_to, item, version, thread, outcome, reason, note, sender, at, because, interpretation)
-  select r.id, r.space_id, r.private_to, m.item, m.version, m.thread, m.outcome, m.reason, learning_marked.note, lower(m.sender), m.at, m.because, m.interpretation
-  from jsonb_to_recordset(marks) as m (item text, version text, thread text, outcome text, reason text, sender text, at timestamptz, because text, interpretation text)
+  insert into learned_items (run_id, space_id, private_to, item, version, thread, outcome, reason, note, sender, at, because, interpretation, folder, retry_at)
+  select r.id, r.space_id, r.private_to, m.item, m.version, m.thread, m.outcome, m.reason, learning_marked.note, lower(m.sender), m.at, m.because, m.interpretation, m.folder,
+         case when m.outcome = 'set aside' and learning_retryable(m.reason) then now() + interval '1 day' end
+  from jsonb_to_recordset(marks) as m (item text, version text, thread text, outcome text, reason text, sender text, at timestamptz, because text, interpretation text, folder text)
   on conflict (run_id, item) do update
   set version = excluded.version, thread = excluded.thread, outcome = excluded.outcome, reason = excluded.reason,
       note = coalesce(excluded.note, learned_items.note), sender = excluded.sender, at = excluded.at, because = excluded.because,
-      interpretation = excluded.interpretation, again = false, processed_at = clock_timestamp();
+      interpretation = excluded.interpretation, folder = excluded.folder, again = false, processed_at = clock_timestamp(),
+      retry_at = case when excluded.retry_at is not null and not learned_items.retried then coalesce(learned_items.retry_at, excluded.retry_at) end;
   update learning_runs
-  set claimed_until = greatest(claimed_until, now() + make_interval(secs => coalesce(lease_seconds, 60))), attempts = 0, waiting_for = null
+  set claimed_until = greatest(claimed_until, now() + make_interval(secs => coalesce(lease_seconds, 60))), attempts = 0, waiting_for = null,
+      refused = case
+        when exists (select from jsonb_to_recordset(marks) as m (reason text) where m.reason = 'provider refused') then refused + 1
+        when exists (select from jsonb_to_recordset(marks) as m (reason text, interpretation text) where m.interpretation is not null and m.reason is distinct from 'provider failed') then 0
+        else refused end
   where id = r.id;
 end
 $$;
@@ -685,15 +754,16 @@ $$;
 -- takes the connector's new checkpoint, how far history reached, and whether
 -- it caught up, which takes the run from history to following. A walk of an
 -- extension ends it once it caught up. A page of items learned from again
--- moves nothing. The claim ends, and the run is due at once while it has
+-- moves nothing. The claim ends, what the provider failed on is forgotten
+-- for this walk, whose page is done, and the run is due at once while it has
 -- history or older material to learn from, and otherwise when it's time to
 -- look again. The state now.
-create function learning_walked(run uuid, worker uuid, walk text, walked_since timestamptz, checkpoint text, caught_up boolean, reached timestamptz, poll_seconds integer)
+create function learning_walked(run uuid, claim uuid, walk text, walked_since timestamptz, checkpoint text, caught_up boolean, reached timestamptz, poll_seconds integer)
 returns text
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
-  r learning_runs := claimed_learning_run(run, worker);
+  r learning_runs := claimed_learning_run(run, claim);
   after learning_runs;
   more boolean;
   now_in text;
@@ -726,8 +796,9 @@ begin
   update learning_runs
   set state = case when after.state in ('learning history', 'following') then learning_active(after) else after.state end,
       next_at = case when more then now() else now() + make_interval(secs => greatest(poll_seconds, 1)) end,
-      attempts = 0, failures = null, page_size = null, waiting_for = null,
-      claimed_by = null, claimed_until = null, changed_at = clock_timestamp()
+      attempts = 0, failures = (select jsonb_agg(f) from jsonb_array_elements(after.failures) as f where f ->> 0 <> learning_walked.walk),
+      page_size = null, waiting_for = null,
+      claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
   where id = r.id
   returning state into now_in;
   return now_in;
@@ -736,22 +807,22 @@ $$;
 
 -- Lets a run wait, and ends the claim, with its checkpoint as it was: for a
 -- moment when calls under way leave no room or Homing stops, as long as the
--- system asked, or longer each time after a failure, counted. While it
--- waits for the model's provider, the system or an error of Homing's own, it
--- keeps trying and says which. It needs its owner once their account needs
--- them to sign in again, or once Homing isn't set up for the system any
--- more. It pauses at the monthly limit, and where model processing is off,
--- until that changes. It keeps which threads the provider failed on, and how
--- many items to ask for at once after a page that failed.
-create function learning_later(run uuid, worker uuid, wait_seconds integer, trouble text, failures jsonb default null, page_size integer default null) returns void
+-- system or the provider asked, or longer each time after a failure,
+-- counted. While it waits for the model's provider, the system or an error
+-- of Homing's own, it keeps trying and says which. It needs its owner once
+-- their account needs them to sign in again, or once Homing isn't set up
+-- for the system any more. It pauses at the monthly limit, and where model
+-- processing is off, until that changes. It keeps which threads the provider
+-- failed on, and how many items to ask for at once after a page that failed.
+create function learning_later(run uuid, claim uuid, wait_seconds integer, trouble text, failures jsonb default null, page_size integer default null) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
-  r learning_runs := claimed_learning_run(run, worker);
+  r learning_runs := claimed_learning_run(run, claim);
   active boolean := r.state in ('learning history', 'following');
-  waits text := case when trouble in ('provider', 'system', 'error') then trouble when trouble = 'throttled' then 'system' end;
+  waits text := case when trouble in ('provider', 'system', 'error') then trouble when trouble = 'throttled' then 'system' when trouble = 'limited' then 'provider' end;
 begin
-  if trouble is not null and trouble not in ('provider', 'system', 'error', 'throttled', 'sign in again', 'not set up', 'monthly limit', 'model processing off') then
+  if trouble is not null and trouble not in ('provider', 'system', 'error', 'throttled', 'limited', 'sign in again', 'not set up', 'monthly limit', 'model processing off') then
     raise exception 'a run waits for the provider, the system or an error, its owner, the monthly limit or model processing' using errcode = 'check_violation';
   end if;
   update learning_runs
@@ -765,7 +836,7 @@ begin
       failures = coalesce(learning_later.failures, learning_runs.failures),
       page_size = coalesce(learning_later.page_size, learning_runs.page_size),
       next_at = now() + make_interval(secs => greatest(wait_seconds, 0)),
-      claimed_by = null, claimed_until = null, changed_at = clock_timestamp()
+      claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
   where id = r.id;
 end
 $$;
@@ -774,7 +845,9 @@ $$;
 -- which of its walks: the main one, an extension of its scope, or items
 -- learned from again. The run must be the person's own, on a place of theirs
 -- that's still there, in a space they can open, and carry that space. A run
--- that isn't learning now is refused. What it learns from history, until it
+-- that isn't learning now is refused, and so is a call under a claim the
+-- run no longer has, for a page begun before the run was claimed again:
+-- nothing more is sent for it. What it learns from history, until it
 -- first caught up and in the other walks after that, is held to its own
 -- limit, or the ceiling if that's lower: what it spent and this call's worst
 -- case past it pause the run, which setting its limit resumes, or, once it
@@ -783,7 +856,7 @@ $$;
 -- limit, as any call, and history counts against that no more.
 drop function reserve_model_call(text, text, uuid[], numeric);
 
-create function reserve_model_call(purpose text, model text, spaces uuid[], worst numeric, run uuid default null, walk text default 'main')
+create function reserve_model_call(purpose text, model text, spaces uuid[], worst numeric, run uuid default null, walk text default 'main', claim uuid default null)
 returns table (call uuid, refused text, spent numeric, under_way numeric, cap numeric)
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -845,6 +918,10 @@ begin
   if learning.id is not null then
     if learning.state not in ('learning history', 'following') then
       return query select null::uuid, 'run paused', learning_spent(learning.id), 0::numeric, learning.spending_limit;
+      return;
+    end if;
+    if reserve_model_call.claim is not null and learning.claim is distinct from reserve_model_call.claim then
+      return query select null::uuid, 'claim lost', learning_spent(learning.id), 0::numeric, learning.spending_limit;
       return;
     end if;
     history := learning.caught_up_at is null or walk <> 'main';
@@ -957,13 +1034,30 @@ alter table proposals
     'archive page', 'reopen page', 'add include', 'remove include', 'plan', 'start learning', 'extend learning'
   )),
   add constraint proposals_learning check (action not in ('start learning', 'extend learning') or coalesce(
-    not request and item_id is null and task_id is null and page_id is null and include_id is null and learning_fits(change, space_id, private_to),
+    not request and item_id is null and task_id is null and page_id is null and include_id is null,
     false
   ));
 
-revoke execute on function learning_active, learning_spent, sender_matches, learning_elsewhere, own_learning_run, estimate_learning, start_learning, pause_learning, resume_learning,
-  estimate_extension, extend_learning, set_learning_limit, set_learning_exclusions, claim_learning_run, claimed_learning_run, learning_marked, learning_walked,
-  learning_later, reserve_model_call, set_run_ceiling, model_usage_this_month from public;
+-- That it names a place of the person's own is checked as the proposal is
+-- written, by a trigger: a check constraint may read only its own row, since
+-- a restore loads tables in no order it promises.
+create function check_learning_proposal() returns trigger
+language plpgsql set search_path = public, pg_temp
+as $$
+begin
+  if not coalesce(learning_fits(new.change, new.space_id, new.private_to), false) then
+    raise exception 'a proposal to learn names a place of the person''s own in its space' using errcode = 'check_violation';
+  end if;
+  return new;
+end
+$$;
+
+create trigger learning_proposal before insert or update of action, change, space_id, private_to on proposals
+for each row when (new.action in ('start learning', 'extend learning')) execute function check_learning_proposal();
+
+revoke execute on function learning_active, learning_spent, sender_matches, learning_retryable, learning_elsewhere, own_learning_run, estimate_learning, start_learning, pause_learning, resume_learning,
+  estimate_extension, extend_learning, set_learning_limit, set_learning_exclusions, retry_learning, claim_learning_run, claimed_learning_run, learning_marked, learning_walked,
+  learning_later, reserve_model_call, set_run_ceiling, model_usage_this_month, check_learning_proposal from public;
 grant execute on function estimate_learning, start_learning, pause_learning, resume_learning, estimate_extension, extend_learning, set_learning_limit,
-  set_learning_exclusions, claim_learning_run, learning_marked, learning_walked, learning_later, reserve_model_call, set_run_ceiling, model_usage_this_month
+  set_learning_exclusions, retry_learning, claim_learning_run, learning_marked, learning_walked, learning_later, reserve_model_call, set_run_ceiling, model_usage_this_month
   to homing_app;

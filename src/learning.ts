@@ -90,11 +90,27 @@ export interface Progress {
   /** How many threads it learned from, and how many items they held. */
   threads: number;
   learned: number;
-  /** What it set aside, by why, most first, each with who sent it, most first, as far as it's known. */
-  setAside: { reason: string; items: number; senders: { sender: string; items: number }[] }[];
-  /** How many items set aside before it now learns from after all, since their owner said so. */
+  /**
+   * What it set aside, by why, most first, each with who sent the most of it, how many senders
+   * there are beside those, and whether it's something that may pass, which can be tried again.
+   */
+  setAside: { reason: string; items: number; senders: Sender[]; more: number; retry: boolean }[];
+  /** How many items set aside before it now learns from after all, since their owner said so, or tries again. */
   again: number;
 }
+
+/** Who sent items a run set aside, and how many. */
+export interface Sender {
+  sender: string;
+  items: number;
+}
+
+/**
+ * What an item is set aside for that may pass: the model's provider refused it or failed on it,
+ * the model's answer couldn't be used, or the system couldn't give it. Those are tried again, once
+ * by Homing itself, a day later, and whenever the person or their assistant asks.
+ */
+export const retryable = ['provider refused', 'provider failed', 'no usable answer', 'unreadable'];
 
 /** Learning can't do what was asked, and says why, for the person or their assistant. */
 export class LearningRefused extends Error {
@@ -155,14 +171,15 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
   return new Map(rows.map((row) => [row.place, runOf(row)]));
 }
 
-/** How many senders each reason names. The rest are counted. */
+/** How many senders each reason names at first, and how many more each further look gives. The rest are counted. */
 const sendersShown = 8;
+const sendersAtOnce = 50;
 
 /** How far the person's run has come: what it learned from, what it set aside, why and from whom, and what it spent. */
 export async function progressOf(s: Session, run: Run): Promise<Progress> {
   const [learned] = await s.tx<{ items: number; threads: number }[]>`
     select count(*)::integer as items, count(distinct coalesce(thread, item))::integer as threads
-    from learned_items where run_id = ${run.id}::uuid and outcome = 'learned'
+    from learned_items where run_id = ${run.id}::uuid and outcome in ('learned', 'added as a source')
   `;
   const aside = await s.tx<{ reason: string; sender: string | null; items: number; again: number }[]>`
     select reason, sender, count(*) filter (where not again)::integer as items, count(*) filter (where again)::integer as again
@@ -179,10 +196,13 @@ export async function progressOf(s: Session, run: Run): Promise<Progress> {
   const setAside = reasons
     .map((reason) => {
       const rows = aside.filter((row) => row.reason === reason && row.items > 0);
+      const senders = rows.flatMap((row) => (row.sender ? [{ sender: row.sender, items: row.items }] : []));
       return {
         reason,
         items: rows.reduce((sum, row) => sum + row.items, 0),
-        senders: rows.flatMap((row) => (row.sender ? [{ sender: row.sender, items: row.items }] : [])).slice(0, sendersShown),
+        senders: senders.slice(0, sendersShown),
+        more: Math.max(0, senders.length - sendersShown),
+        retry: retryable.includes(reason),
       };
     })
     .sort((a, b) => b.items - a.items);
@@ -194,6 +214,34 @@ export async function progressOf(s: Session, run: Run): Promise<Progress> {
     setAside,
     again: aside.reduce((sum, row) => sum + row.again, 0),
   };
+}
+
+/**
+ * Everyone who sent what the person's run set aside for one reason, most first, so many at a time
+ * from a place in that order, or only those whose address holds what's searched for. With how many
+ * there are in all, so the rest can be counted.
+ */
+export async function setAsideSenders(s: Session, run: Run, reason: string, options: { search?: string; from?: number } = {}): Promise<{ senders: Sender[]; total: number }> {
+  const search = (options.search ?? '').trim().toLowerCase();
+  const from = Math.max(0, Math.floor(options.from ?? 0));
+  const rows = await s.tx<(Sender & { total: number })[]>`
+    select sender, count(*)::integer as items, (count(*) over ())::integer as total
+    from learned_items
+    where run_id = ${run.id}::uuid and outcome = 'set aside' and not again and reason = ${reason} and sender is not null
+      and (${search} = '' or position(${search} in sender) > 0)
+    group by sender
+    order by 2 desc, 1
+    offset ${from} limit ${sendersAtOnce}
+  `;
+  // Past the last of them, there's still a count to give.
+  const [{ total }] = rows.length
+    ? rows
+    : await s.tx<{ total: number }[]>`
+        select count(distinct sender)::integer as total from learned_items
+        where run_id = ${run.id}::uuid and outcome = 'set aside' and not again and reason = ${reason} and sender is not null
+          and (${search} = '' or position(${search} in sender) > 0)
+      `;
+  return { senders: rows.map(({ sender, items }) => ({ sender, items })), total };
 }
 
 /** Who sent an item, by address in lower case, as far as it's known. */
@@ -436,18 +484,20 @@ export async function estimateLearning(l: Learning, principal: Principal, placeI
 }
 
 /**
- * Starts the person's estimated run, with the limit they chose, or the one the estimate suggested.
- * Only the person does, in Homing itself, directly or by approving what their assistant proposed,
- * which the database checks, as it does that the limit is within what a run may spend here.
+ * Starts the person's estimated run as they were shown it: that far back, with that estimate, and
+ * the limit they chose, or the one the estimate suggested. A run estimated again since isn't what
+ * they saw, and doesn't start. Only the person does, in Homing itself, directly or by approving
+ * what their assistant proposed. The database checks all of it, and that the limit is within what
+ * a run may spend here.
  */
-export async function startLearning(l: Learning, s: Session, run: Run, limit?: number): Promise<void> {
+export async function startLearning(l: Learning, s: Session, shown: Pick<Run, 'id' | 'place' | 'since' | 'estimate'>, limit?: number): Promise<void> {
   if (!l.model) throw new LearningRefused(noModel);
-  if (!run.estimate) throw new LearningRefused('Learning is estimated before it starts.');
-  const cap = limit ?? run.estimate.limit;
-  const place = await ownPlace(s, run.place);
+  if (!shown.estimate) throw new LearningRefused('Learning is estimated before it starts.');
+  const cap = limit ?? shown.estimate.limit;
+  const place = await ownPlace(s, shown.place);
   const already = place && (await elsewhere(s, place, wordsOf(l.broker.connectors.get(place.connector), place.kind)));
   if (already) throw new LearningRefused(already);
-  await refusing(() => s.tx`select start_learning(${run.id}::uuid, ${cap}::numeric)`);
+  await refusing(() => s.tx`select start_learning(${shown.id}::uuid, ${cap}::numeric, ${shown.since}, ${shown.estimate!.at}::timestamptz)`);
 }
 
 /** Pauses the person's run. It keeps where it is. Whether it changed anything. */
@@ -513,6 +563,16 @@ export async function setLeftOut(s: Session, run: Run, leftOut: LeftOut): Promis
   await refusing(() => s.tx`
     select set_learning_exclusions(${run.id}::uuid, ${s.tx.array(leftOut.senders)}::text[], ${s.tx.array(leftOut.folders)}::text[], ${s.tx.array(leftOut.kept)}::text[])
   `);
+}
+
+/**
+ * Has the person's run try again what it set aside for something that may pass, such as the
+ * provider failing on it: all of it, or what was set aside for one such reason. For the person or
+ * their assistant, since it stays within the run and its limit. How many items it tries again.
+ */
+export async function retryLearning(s: Session, run: Run, reason?: string): Promise<number> {
+  const [{ tried }] = await refusing(() => s.tx<{ tried: number }[]>`select retry_learning(${run.id}::uuid, ${reason ?? null}) as tried`);
+  return tried;
 }
 
 /** A set-aside reason in words, for how many items: "240 newsletters", "12 in threads with senders you left out". */

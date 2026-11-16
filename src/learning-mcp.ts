@@ -1,7 +1,8 @@
 // Learning, as a person's assistant sees and directs it (spec §6, §8, §10). Homing does the
 // learning. The assistant never starts it, or takes it further back: it proposes that, with the
 // estimate, and the person approves exactly what they're shown. It pauses a run, resumes one that
-// was paused, and adds to what it leaves out, and says how far a run has come. Only the run's
+// was paused, adds to what it leaves out, has it try again what the provider or the system failed
+// on, which stays within the run the person started, and says how far a run has come. Only the run's
 // owner's assistant gets anything: for anyone else, the reference names nothing. What has a run
 // spend or send more stays the person's, in Homing itself: raising its limit, taking something
 // off what's left out, keeping a sender.
@@ -19,6 +20,7 @@ import {
   pauseLearning,
   progressOf,
   resumeLearning,
+  retryLearning,
   runsFor,
   setAsideWords,
   setLeftOut,
@@ -30,7 +32,7 @@ import { modelStatement, monthlyLimit, usd } from './model.ts';
 import { proposeLearning, type LearningChange } from './proposals.ts';
 import { oneLine, ownPlace, placeName, wordsOf, type Place } from './places.ts';
 
-export const learningActions = ['learning.start', 'learning.pause', 'learning.resume', 'learning.extend', 'learning.leave_out'] as const;
+export const learningActions = ['learning.start', 'learning.pause', 'learning.resume', 'learning.extend', 'learning.leave_out', 'learning.try_again'] as const;
 export type LearningAction = (typeof learningActions)[number];
 
 const from = () => z.string().trim().min(1).max(100).describe('What Homing learns from, as `context` gives it, such as learning:…');
@@ -45,8 +47,9 @@ export const learningInputs = {
       limit: z.number().min(0).max(1_000_000).optional().describe("The run's limit in dollars, if the user named one. By default the one Homing suggests from its estimate"),
     })
     .describe('For learning.start'),
-  'learning.pause': z.strictObject({ from: from() }).describe('For learning.pause and learning.resume'),
+  'learning.pause': z.strictObject({ from: from() }).describe('For learning.pause, learning.resume and learning.try_again'),
   'learning.resume': z.strictObject({ from: from() }),
+  'learning.try_again': z.strictObject({ from: from() }),
   'learning.extend': z.strictObject({ from: from(), since: since() }).describe('For learning.extend'),
   'learning.leave_out': z
     .strictObject({
@@ -169,6 +172,7 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
   const how =
     '`act` with learning.start, this reference and since, the day to go back to, estimates the cost and proposes it to the user: nothing starts until they approve it. ' +
     'learning.extend proposes learning further back the same way. learning.pause and learning.resume stop it and carry on, and learning.leave_out adds senders or folders to leave out. ' +
+    `learning.try_again has it try again what it set aside because the model’s provider or ${vendor} failed on it, or the model’s answer couldn’t be used, which Homing also does by itself once, a day later. ` +
     'Only the user, in Homing, raises its limit, takes something off what’s left out, or keeps a sender whose mail was set aside.';
   if (!kindOf(connector, place.kind)?.follow) return [title, where, `Homing can't learn from a ${words.place} of this kind.`].join('\n');
   if (!run) return [title, where, l.model ? `Homing hasn’t learned from it. ${how}` : `Homing hasn’t learned from it. ${noModel}`].join('\n');
@@ -191,7 +195,9 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
                 ...progress.setAside.map(
                   (aside) =>
                     `- ${setAsideWords(aside.reason, aside.items, words, 'the user')}` +
-                    (aside.senders.length ? `, from ${aside.senders.map((one) => `${JSON.stringify(oneLine(one.sender))} (${one.items.toLocaleString('en-US')})`).join(', ')}` : ''),
+                    (aside.senders.length ? `, from ${aside.senders.map((one) => `${JSON.stringify(oneLine(one.sender))} (${one.items.toLocaleString('en-US')})`).join(', ')}` : '') +
+                    (aside.more ? `, and ${counted(aside.more, 'more sender', 'more senders')}, which the user can look through in Homing` : '') +
+                    (aside.retry ? '. learning.try_again tries these again' : ''),
                 ),
               ]
             : []),
@@ -286,6 +292,13 @@ export async function actOnLearning(
         if (now.reason !== 'person') throw new LearningRefused(`It is ${standing(now, vendor, connector?.name ?? place.connector)}, and carries on by itself then. Nothing changed.`);
         await resumeLearning(l, s, now);
         return `Resumed. Homing carries on learning from ${what} where it stopped.`;
+      });
+    case 'learning.try_again':
+      return again(async (s, now) => {
+        const tried = await retryLearning(s, now);
+        return tried
+          ? `Homing tries ${counted(tried, words.item, words.items)} again that it had set aside. What that costs counts against the run's limit of ${usd(now.limit)}, as its history does.`
+          : `Homing has set nothing aside in ${what} that it can try again, so nothing changed.`;
       });
     case 'learning.extend': {
       const { since } = input as z.infer<(typeof learningInputs)['learning.extend']>;

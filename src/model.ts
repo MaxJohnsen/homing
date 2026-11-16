@@ -220,6 +220,8 @@ export interface ModelCall {
    */
   run?: string;
   walk?: 'main' | 'extension' | 'again';
+  /** The claim the run's worker works under. Once the run was claimed again, a call under an earlier claim is refused, and nothing sent. */
+  claim?: string;
 }
 
 /** What the model answered, and what it cost. Everything it wrote is untrusted input, never instructions. */
@@ -240,7 +242,7 @@ export interface ModelAnswer {
  * for the limit to change. For a learning run: at its own limit, which pauses it, or not learning
  * now, such as paused by its owner.
  */
-export type Refusal = 'no model' | 'model processing off' | 'no access' | 'unknown price' | 'paused' | 'monthly limit' | 'busy' | 'run limit' | 'run paused';
+export type Refusal = 'no model' | 'model processing off' | 'no access' | 'unknown price' | 'paused' | 'monthly limit' | 'busy' | 'run limit' | 'run paused' | 'claim lost';
 
 /** Homing didn't send the call, and says why. Nothing was spent. */
 export class ModelRefused extends Error {
@@ -261,15 +263,22 @@ export class ModelFailed extends Error {
   /** The model answered, but not with what was asked for, so asking again would likely give the same. */
   readonly unusable: boolean;
   /**
-   * The provider wouldn't take this very request, such as for what it holds, so asking again would
-   * give the same: it answered 4xx, other than for the key (401), the account's credit (402) or
-   * being asked too often (429), which are about every request.
+   * The provider refused the request as it was: it answered 4xx, other than for the key (401),
+   * the account's credit (402), taking too long (408) or being asked too often (429), which are
+   * about every request. That may be about what this one holds, or about every request all the
+   * same, such as a model it no longer has: whoever asked tells them apart by what else it answers.
    */
   readonly refused: boolean;
-  constructor(message: string, unusable = false, refused = false) {
+  /** The provider said it's asked too often (429), which says nothing about this request. */
+  readonly limited: boolean;
+  /** How many seconds the provider asked to wait before asking again, when it said. */
+  readonly retryAfter?: number;
+  constructor(message: string, unusable = false, status?: number, retryAfter?: number) {
     super(message);
     this.unusable = unusable;
-    this.refused = refused;
+    this.refused = status !== undefined && status >= 400 && status < 500 && ![401, 402, 408, 429].includes(status);
+    this.limited = status === 429;
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -357,7 +366,7 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
   const worst = worstCase(prices, inputTokensOf(request), maxTokens);
 
   if (call.run !== undefined && !uuid.test(call.run)) throw new ModelRefused('no access', 'A learning run’s call names the run, so nothing was sent.');
-  const reserved = await reserve(homing.sql, person, { purpose: call.purpose, model: id, spaces, worst, run: call.run, walk: call.walk });
+  const reserved = await reserve(homing.sql, person, { purpose: call.purpose, model: id, spaces, worst, run: call.run, walk: call.walk, claim: call.claim });
 
   let answer: ProviderAnswer;
   try {
@@ -369,8 +378,8 @@ export async function callModel(homing: { sql: Sql; model?: Model }, person: str
     await settle(homing.sql, person, reserved, worst, { outcome: 'failed', cost: said ?? (before ? 0 : worst), from: said !== undefined ? 'provider' : before ? 'refused' : 'worst case' });
     const reason = error instanceof ProviderRefused || error instanceof ProviderFailed ? hidden(error.message, key) : 'something went wrong on the way';
     console.error(`model: a call to ${id}, for ${call.purpose}, failed: ${reason}`);
-    const status = error instanceof ProviderRefused || error instanceof ProviderFailed ? error.status : undefined;
-    throw new ModelFailed(`The model call failed: ${reason}.`, false, status !== undefined && status >= 400 && status < 500 && ![401, 402, 429].includes(status));
+    const answered = error instanceof ProviderRefused || error instanceof ProviderFailed ? error : undefined;
+    throw new ModelFailed(`The model call failed: ${reason}.`, false, answered?.status, answered?.retryAfter);
   }
 
   // A provider's counts are believed only when they could be right: no more tokens in than the
@@ -420,11 +429,11 @@ function hidden(reason: string, key: string | undefined): string {
 }
 
 /** Reserves the call's worst case for the person, or throws why it was refused. */
-async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model: string; spaces: string[]; worst: number; run?: string; walk?: string }): Promise<string> {
+async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model: string; spaces: string[]; worst: number; run?: string; walk?: string; claim?: string }): Promise<string> {
   let row: { call: string | null; refused: string | null; spent: string; underWay: string; cap: string };
   try {
     [row] = await withPrincipal(sql, { person }, ({ tx }) => tx<(typeof row)[]>`
-      select * from reserve_model_call(${call.purpose}, ${call.model}, ${tx.array(call.spaces)}::uuid[], ${call.worst}::numeric, ${call.run ?? null}::uuid, ${call.walk ?? 'main'})
+      select * from reserve_model_call(${call.purpose}, ${call.model}, ${tx.array(call.spaces)}::uuid[], ${call.worst}::numeric, ${call.run ?? null}::uuid, ${call.walk ?? 'main'}, ${call.claim ?? null}::uuid)
     `);
   } catch (error) {
     if (error instanceof postgres.PostgresError && error.code === '42501') {
@@ -439,6 +448,7 @@ async function reserve(sql: Sql, person: string, call: { purpose: Purpose; model
   if (row.call) return row.call;
   const [spent, underWay, cap] = [Number(row.spent), Number(row.underWay), Number(row.cap)];
   if (row.refused === 'run paused') throw new ModelRefused('run paused', 'That learning run isn’t learning now, so nothing was sent.');
+  if (row.refused === 'claim lost') throw new ModelRefused('claim lost', 'That learning run was claimed again since this page began, so nothing was sent.');
   if (row.refused === 'run limit') {
     throw new ModelRefused(
       'run limit',

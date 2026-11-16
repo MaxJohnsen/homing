@@ -452,7 +452,7 @@ export function mcpServer(
         'space.export gives the link where the user downloads a space as they see it, with the spaces in it they can open, when they ask for an export or a copy. ' +
         "space.model_off turns model processing off in a space the user is an admin of, when they ask: Homing then sends nothing in it, or in the spaces in it, to its own model. " +
         'It changes nothing about what you can read. Only the user turns it back on, in Homing. ' +
-        "learning.start and learning.extend propose that Homing learn from the user's connected mailbox, or further back in it, for them to approve with the estimate; learning.pause, learning.resume and learning.leave_out direct it. `read` its learning:… reference first, which says how. " +
+        "learning.start and learning.extend propose that Homing learn from the user's connected mailbox, or further back in it, for them to approve with the estimate; learning.pause, learning.resume, learning.leave_out and learning.try_again direct it. `read` its learning:… reference first, which says how. " +
         'plan.propose proposes several of these changes as one decision, when one request needs them together, such as sharing what is known in a space, adding someone to it and a rule: ' +
         'they are all in one space, the user approves the whole plan as it is or declines it, and approving makes every change at once, or none. ' +
         'Only what the user decides alone goes in: a request to a space\'s admins goes on its own, and routine work, such as keeping knowledge or a space only the user will have, is done first, outside the plan. ' +

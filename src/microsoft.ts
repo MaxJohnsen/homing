@@ -392,12 +392,13 @@ interface Tree {
  * Where following a mailbox stands, as its checkpoint keeps it: through its history by the date
  * each email arrived, from the time the next page starts at, with the emails at that very time
  * already given, and how many of them to pass over once a page holds nothing new; then, once that
- * caught up, onward by Graph's delta for each folder, with each folder's next link, the time its
- * filter starts at, and the latest email seen. Either way, the folders as they were when last read.
+ * caught up, onward by Graph's delta for each folder, with the time the filters start at, and for
+ * each folder its next link, the latest email it gave in the rounds it finished, and in the one
+ * under way, and which folder a look stopped at. Either way, the folders as they were when last read.
  */
 type Walk =
   | { v: 2; by: 'date'; after: string | null; seen: string[]; skip?: number; tree: Tree }
-  | { v: 2; by: 'delta'; from: string; latest: string | null; links: Record<string, string>; tree: Tree };
+  | { v: 2; by: 'delta'; from: string; links: Record<string, string>; reached?: Record<string, string>; seen?: Record<string, string>; at?: string; tree: Tree };
 
 /** What following reads of each email: what reading one does, with its folder and headers, and without its attachments. */
 const followFields = `${summaryFields},parentFolderId,toRecipients,ccRecipients,body,uniqueBody,internetMessageHeaders,isDraft`;
@@ -413,6 +414,11 @@ const asideFolders: Record<string, SetAside> = { junkemail: 'junk', deleteditems
 /** The most folders Homing follows in a mailbox, and how long it keeps what it read of them. */
 const mostFolders = 500;
 const treeKept = 10 * 60_000;
+/** How many empty pages of history in a row Homing follows to the next before it takes Graph to be failing. */
+const emptyPages = 5;
+/** How many folders one look asks for their changes, and for how long, before the next look carries on from there. */
+const foldersAtOnce = 50;
+const lookTime = 30_000;
 /** How Graph says, beside answering 410, that it no longer knows where a folder's changes stood. */
 const forgotten = ['SyncStateNotFound', 'syncStateNotFound', 'SyncStateInvalid', 'syncStateInvalid', 'resyncRequired', 'ResyncRequired'];
 const day = 24 * 60 * 60_000;
@@ -429,12 +435,12 @@ interface Fetched {
  * One page of the mailbox's changes (connectors.ts). Its history comes by the date each email
  * arrived, across all its folders, oldest first, from the start of the scope, up to its end if it
  * has one, and is done only when Graph says there is no more, since a page may hold fewer than
- * asked for. Without an end, it then follows each folder with Graph's delta from the last email
- * given. Delta says only which emails arrived or changed, in no promised order, and not always
- * with more than their id, so each is read by its id, and one that arrived before the scope is
- * dropped. Each email comes with its thread, unless it's set aside: by its folder, as a draft, or
- * by its own headers. Asked for one at a time, it reads each email by its id, and gives one Graph
- * can't give as set aside.
+ * asked for, or none. Without an end, it then follows each folder with Graph's delta from the last
+ * email given, some folders each look, carrying on where the last one stopped. Delta says only
+ * which emails arrived or changed, in no promised order, and not always with more than their id,
+ * so each is read by its id, and one that arrived before the scope is dropped. Each email comes
+ * with its thread, unless it's set aside: by its folder, as a draft, or by its own headers. Asked
+ * for one at a time, it reads each email by its id, and gives one Graph can't give as set aside.
  */
 export async function followMail(
   settings: MicrosoftSettings,
@@ -454,12 +460,18 @@ export async function followMail(
     const start = walk.after ?? scope.since.toISOString();
     const skip = walk.skip ?? 0;
     const filter = `receivedDateTime ge ${start}${scope.until ? ` and receivedDateTime lt ${scope.until.toISOString()}` : ''}`;
-    const body = await graph(
+    let body = await graph(
       settings,
       access,
       `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime%20asc&$top=${size}${skip ? `&$skip=${skip}` : ''}&$select=${careful ? lightFields : followFields}`,
       { prefer: [immutableIds, textBodies], signal },
     );
+    // A page may hold nothing and still not be the last. Only its link leads on, since asking the
+    // same again gives the same. One empty page after another is Graph failing, which is waited out.
+    for (let empty = 0; listOf(body).length === 0 && typeof body['@odata.nextLink'] === 'string'; empty++) {
+      if (empty === emptyPages) throw new MicrosoftUnreachable('Graph');
+      body = await graph(settings, access, body['@odata.nextLink'], { prefer: [immutableIds, textBodies], signal });
+    }
     const page = listOf(body);
     // Graph says whether there's more: a page may hold fewer than asked for, and still not be the last.
     const more = typeof body['@odata.nextLink'] === 'string';
@@ -477,19 +489,27 @@ export async function followMail(
     const there: Walk = { v: 2, by: 'date', after, seen, ...(pass && { skip: pass }), tree };
     if (more) return { changes, next: JSON.stringify(there), caughtUp: false };
     // History caught up. With an end, that's all; without one, Graph's delta carries on from the last email.
-    const next: Walk = scope.until ? there : { v: 2, by: 'delta', from: after ?? scope.since.toISOString(), latest: after, links: {}, tree };
+    const next: Walk = scope.until ? there : { v: 2, by: 'delta', from: after ?? scope.since.toISOString(), links: {}, reached: {}, tree };
     return { changes, next: JSON.stringify(next), caughtUp: true };
   }
 
-  // Each folder in turn, but those left out, until one has something new.
+  // Each folder in turn, but those left out, from where the last look stopped, until one has
+  // something new, or the look has asked its share of folders.
   const walk = kept;
-  const links: Record<string, string> = {};
-  for (const [id] of tree.folders) if (walk.links[id]) links[id] = walk.links[id];
-  let { from: starts, latest } = walk;
-  const there = (): string => JSON.stringify({ v: 2, by: 'delta', from: starts, latest, links, tree } satisfies Walk);
-  for (const id of tree.folders.map(([id]) => id).filter((id) => !tree.aside[id]).sort()) {
-    const first = () => `${settings.graph}/v1.0/me/mailFolders/${encodeURIComponent(id)}/messages/delta?$select=${lightFields}&$filter=${encodeURIComponent(`receivedDateTime ge ${starts}`)}`;
-    let link = links[id] ?? first();
+  const followed = tree.folders.map(([id]) => id).filter((id) => !tree.aside[id]).sort();
+  const inTree = new Set(tree.folders.map(([id]) => id));
+  const still = (by: Record<string, string> | undefined) => Object.fromEntries(Object.entries(by ?? {}).filter(([id]) => inTree.has(id)));
+  const [links, reached, seen] = [still(walk.links), still(walk.reached), still(walk.seen)];
+  const there = (at?: string): string => JSON.stringify({ v: 2, by: 'delta', from: walk.from, links, reached, ...(Object.keys(seen).length > 0 && { seen }), ...(at && { at }), tree } satisfies Walk);
+  const resumed = walk.at === undefined ? 0 : followed.findIndex((id) => id >= walk.at!);
+  const start = resumed < 0 ? followed.length : resumed;
+  const until = Date.now() + lookTime;
+  for (let index = start; index < followed.length; index++) {
+    const id = followed[index];
+    // A mailbox with hundreds of folders takes several looks: the next carries on from this folder.
+    if (index - start >= foldersAtOnce || Date.now() > until) return { changes: [], next: there(id), caughtUp: false };
+    const first = (from: string) => `${settings.graph}/v1.0/me/mailFolders/${encodeURIComponent(id)}/messages/delta?$select=${lightFields}&$filter=${encodeURIComponent(`receivedDateTime ge ${from}`)}`;
+    let link = links[id] ?? first(walk.from);
     let begun = Boolean(links[id]);
     for (let pages = 0; pages < 100; pages++) {
       let body: Record<string, unknown>;
@@ -503,12 +523,14 @@ export async function followMail(
           break;
         }
         // Graph forgot where this folder stood: it's followed again, from a day before the latest
-        // email seen, so what it has to give again stays far below the most a filtered delta gives,
-        // and what comes again, Homing skips.
+        // email this very folder gave in a round it finished, since another folder's says nothing
+        // of what this one missed. So what it has to give again stays far below the most a
+        // filtered delta gives, and what comes again, Homing skips.
         if (error.status !== 410 && !forgotten.includes(error.detail ?? '')) throw error;
         delete links[id];
-        if (latest && Date.parse(latest) - day > Date.parse(starts)) starts = new Date(Date.parse(latest) - day).toISOString();
-        link = first();
+        delete seen[id];
+        const back = reached[id] ? new Date(Date.parse(reached[id]) - day).toISOString() : walk.from;
+        link = first(back > walk.from ? back : walk.from);
         begun = false;
         continue;
       }
@@ -525,15 +547,21 @@ export async function followMail(
         const at = summaryOf(one.message).at;
         return at === null || at.getTime() >= scope.since.getTime();
       });
+      // The latest email this round gave counts for the folder only once the round is done: until
+      // then, older ones may still be to come.
       for (const one of read) {
         const at = summaryOf(one.message).at?.toISOString();
-        if (at && (!latest || at > latest)) latest = at;
+        if (at && (!seen[id] || at > seen[id])) seen[id] = at;
+      }
+      if (!nextLink) {
+        if (seen[id] && (!reached[id] || seen[id] > reached[id])) reached[id] = seen[id];
+        delete seen[id];
       }
       if (read.length) {
         const changes = await changesOf(settings, access, read, tree, given);
         // In no order Graph promises, so oldest first here.
         changes.sort((a, b) => (a.item.envelope.at?.getTime() ?? 0) - (b.item.envelope.at?.getTime() ?? 0));
-        return { changes, next: there(), caughtUp: false };
+        return { changes, next: there(id), caughtUp: false };
       }
       if (!nextLink) break;
       link = nextLink;
