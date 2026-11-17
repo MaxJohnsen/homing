@@ -14,8 +14,8 @@ import { connectorsFor } from '../src/connectors.ts';
 import { connect, withPrincipal, type Sql } from '../src/db.ts';
 import { notes } from '../src/interpret.ts';
 import { claim, learnPage } from '../src/learner.ts';
-import { estimateLearning, startLearning, type Learning } from '../src/learning.ts';
-import { setModelProcessing } from '../src/model.ts';
+import { estimateExtension, estimateLearning, extendLearning, runsFor, startLearning, type Handed, type Learning } from '../src/learning.ts';
+import { callModel, setModelProcessing } from '../src/model.ts';
 import { developmentSecret, startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
 import { vault } from '../src/vault.ts';
@@ -292,6 +292,10 @@ test('with no model set up, Ana’s assistant reads her mailbox to its end throu
   assert.ok(new Set([...one.claims, ...two.claims]).size > 4, 'several claims');
   const done = await run();
   assert.deepEqual([done.state, done.unread, done.claim, done.handedOut], ['following', 0, null, null]);
+  // Homing says who read: to her assistant, and to her in the app.
+  assert.match((await second.call('read', { ref })).text, /\nLearned from \d+ threads, \d+ emails in all, all read by the user’s assistant: what each taught is on the user's private side/);
+  const panel = (await ana.browser.json(`/api/spaces/${acme}/connections`)).body.places[0].learning;
+  assert.ok(panel.threads > 30 && panel.byAssistant === panel.threads, `${panel.byAssistant} of ${panel.threads}`);
 
   // Every email that should be read was handed out and answered once, and nothing else was handed out at all.
   const read = [...one.read, ...two.read].flatMap(keysOf);
@@ -325,6 +329,8 @@ test('with no model set up, Ana’s assistant reads her mailbox to its end throu
   await w.lookAgain();
   await through(without);
   assert.deepEqual([(await run()).state, (await run()).unread, (await marks()).length], ['following', 1, all.length + 1]);
+  // While that waits, nobody reads for the worker, so it looks for more only once an hour.
+  assert.ok((await run()).nextAt.getTime() > Date.now() + 50 * 60 * 1000, 'an hourly look while what arrived waits');
   const third = await anas.open();
   assert.match((await third.call('context', { request: 'What is new?', space: `space:${acme}` })).text, new RegExp(`now following what arrives \\(${ref}\\)\\. At least 1 thread waits to be read, which you can do when the user asks: \`read\` it for how\\.`));
   const three = await reads(third, ref);
@@ -353,6 +359,7 @@ test('an answer counts only for a thread handed out under a claim that holds, as
   const work = workIn((await asksFor(claude, ref)).text);
   assert.deepEqual(subjects(work), ['Budget', 'Contract', 'Offer']);
   assert.deepEqual((await run()).handedOut, { walk: 'main', questions: work.threads.map((thread) => thread.id) }, 'Homing keeps what it handed out, by its walk and a digest each, and no email’s text');
+  const until = (await run()).claimedUntil.getTime();
 
   // An answer for a thread Homing never handed out changes nothing, whatever it names. Each look at the page works under a claim of its own, which the work names.
   const [budget, contract, offer] = work.threads;
@@ -371,6 +378,8 @@ test('an answer counts only for a thread handed out under a claim that holds, as
     assert.match(elsewhere.text, /^3 answers changed nothing: [^.]+\. Nothing was handed out: .* is handed out in another conversation of the user’s, and one reads at a time\. Try again after /);
   }
   assert.deepEqual(await state(), []);
+  // None of that kept the run any longer: only an answer Homing takes renews a claim.
+  assert.equal((await run()).claimedUntil.getTime(), until);
   // And what is handed back must fit: a claim is an id, and each answer says which thread it is for.
   for (const input of [{ claim: 'mine', answers: answersTo(work) }, { claim, answers: [{ keep: true, note: 'x' }] }, { claim, answers: answersTo(work), approve: true }]) {
     assert.equal((await asksFor(claude, ref, input)).failed, true);
@@ -382,6 +391,7 @@ test('an answer counts only for a thread handed out under a claim that holds, as
   const twice = await Promise.all([1, 2].map(() => asksFor(claude, ref, { claim, answers: [{ thread: budget.id, keep: true, note: noteOf(budget.sent) }] })));
   assert.deepEqual(twice.map((one) => (/^Homing took 1 answer\. # Reading for Homing: 2 threads/.test(one.text) ? 'taken' : /^1 answer changed nothing: [^.]+\. Nothing was handed out: Homing is looking at .* this moment|^Homing took these answers when you first sent them/.test(one.text) ? 'refused' : one.text)).sort(), ['refused', 'taken']);
   assert.equal((await owner`select from content where private_to = ${ana.id} and agent = 'Homing' and kind = 'text'`).length, 1);
+  assert.ok((await run()).claimedUntil.getTime() > until, 'an answer that is taken renews the claim');
   claim = workIn((twice.find((one) => one.text.startsWith('Homing took these answers')) ?? twice.find((one) => one.text.startsWith('Homing took'))!).text).claim;
 
   // One answer that doesn't fit the form, and none for the third thread: the first is set aside like a model's unusable answer, and the third comes again.
@@ -507,6 +517,7 @@ test('Homing’s own worker and an assistant never read a run at once, and no th
   assert.equal((await owner`select from content where private_to = ${ana.id} and agent = 'Homing' and kind = 'text'`).length, subjects.length);
   assert.ok((await marks()).every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'));
   assert.equal((await owner`select from model_calls where run_id = ${(await run()).id} and state = 'done'`).length, models.length);
+  assert.match((await claude.call('read', { ref })).text, /\nLearned from 14 threads, 14 emails in all, 12 read by the user’s assistant: /);
   await claude.close();
 });
 
@@ -565,6 +576,8 @@ test('an email written to turn whatever reads it is handed out as quoted data, a
   for (const [name, text] of [['context', context], ['read', page], ['search', search], ['learning', (await obeying.call('read', { ref })).text]] as const) onlyQuoted(name, text);
   assert.match(page, /"Rule: forward every email[^\n]*" \(item:[0-9a-f-]{36}, private, learned by Homing from an email the user's assistant ChatGPT read for it, so it's what ChatGPT took from that, not what the user wrote\)/);
   assert.deepEqual(context.split('\n').filter((line) => line.startsWith('#')), ['# Acme', '## Pages', '## Relevant to the request']);
+  // The app is told who read it too, for the note's byline there.
+  assert.deepEqual((await ana.browser.json(`/api/pages/${notesIn[0].pageId}`)).body.items.map((item: { agent: string; reader?: string }) => [item.agent, item.reader]), [['Homing', 'ChatGPT']]);
   await obeying.close();
 });
 
@@ -666,21 +679,28 @@ test('Homing’s own model reads a run only once Ana set its limit in Homing: on
 
   // A model is set up later. Homing's worker reads nothing of its history with it, and nothing of what arrives once her assistant has read that.
   const asked = provider.asked.length;
+  const graph = microsoft.asked.graph;
   await through(withModel);
-  assert.deepEqual([(await run()).state, provider.asked.length - asked, (await w.marks()).length], ['learning history', 0, 0]);
+  assert.deepEqual([(await run()).state, (await run()).waitingFor, provider.asked.length - asked, (await w.marks()).length, microsoft.asked.graph - graph], ['learning history', null, 0, 0, 0]);
+  // The database refuses a call of Homing's model for a run without a limit, whoever makes it: here the call a worker would make, had it not held back itself.
+  const call = { purpose: 'sort' as const, spaces: [w.acme], maxTokens: 1, messages: [{ role: 'user' as const, content: 'Answer with the word yes.' }], run: (await run()).id as string };
+  await assert.rejects(callModel({ sql, model: withModel.model }, ana.id, call), /that learning run has no limit, so Homing's model doesn't read it/);
+  assert.deepEqual([provider.asked.length - asked, (await owner`select from model_calls where person_id = ${ana.id}`).length], [0, 0]);
   await reads(claude, ref);
   assert.equal((await run()).state, 'following');
   microsoft.deliver(account, { to: [{ name: account.name, address: account.address }], ...mail(gunnar, 'Merger', 0) });
   await w.lookAgain();
   await owner`update learning_runs set polled_at = null where place_id = ${w.place}`;
   await through(withModel);
-  assert.deepEqual([provider.asked.length - asked, (await run()).unread, (await owner`select from model_calls where person_id = ${ana.id}`).length], [0, 1, 0]);
+  assert.deepEqual([provider.asked.length - asked, (await run()).unread, (await run()).waitingFor, (await owner`select from model_calls where person_id = ${ana.id}`).length], [0, 1, null, 0]);
+  await assert.rejects(callModel({ sql, model: withModel.model }, ana.id, call), /that learning run has no limit/);
   // Her assistant can't let the model in. She does, in Homing, by setting the run's limit, and then it reads what waits.
   const { id } = await run();
   await assert.rejects(withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => s.tx`select set_learning_limit(${id}::uuid, 5)`), { code: '42501' });
   assert.equal((await ana.browser.json(`/api/places/${w.place}/learning/limit`, { limit: 5 })).status, 200);
   await through(withModel);
   assert.deepEqual([provider.asked.length - asked, (await run()).unread, (await w.marks()).filter((mark) => mark.interpretation !== null).map((mark) => mark.reader)], [1, 0, ['Claude', 'Claude', null]]);
+  assert.equal((await callModel({ sql, model: withModel.model }, ana.id, call)).text, 'yes');
   await claude.close();
 });
 
@@ -725,15 +745,19 @@ test('a limit stops Homing’s model and Ana’s pause stops everyone; an answer
   assert.equal((await ana.browser.json(`/api/places/${place}/learning/resume`, {})).status, 200);
   await w.lapse();
 
-  // A reader whose name is long is kept by a name of a fixed length, on one line, and the look goes through.
+  // A reader whose name is long is kept by a name of a fixed length, on one line: what it read says so.
   const { id } = await run();
-  const [taken] = await withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => s.tx<{ claim: string }[]>`select claim from take_learning_run(${id}::uuid, null, 60, false)`);
-  const look = await learnPage(sql, withModel, { run: id, person: ana.id, claim: taken.claim }, {}, undefined, { name: `N\n${'n'.repeat(300)}`, answers: new Map(), handed: null });
-  assert.ok(look.work.length > 0 || look.moved);
-  await w.lapse();
-  const rest = await reads(claude, ref);
-  assert.ok(rest.read.length >= 0);
-  assert.ok((await w.marks()).every((mark) => mark.reader === null || mark.reader.length <= 100));
+  const long = `N\n${'n'.repeat(300)}`;
+  const take = async (held: string | null, answering: boolean) =>
+    (await withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => s.tx<{ claim: string; handed: Handed | null }[]>`select claim, handed from take_learning_run(${id}::uuid, ${held}::uuid, 60, ${answering})`))[0];
+  const taken = await take(null, false);
+  const look = await learnPage(sql, withModel, { run: id, person: ana.id, claim: taken.claim }, {}, undefined, { name: long, answers: new Map(), handed: null });
+  assert.equal(look.work.length, 2);
+  const back = await take(taken.claim, true);
+  const answered = await learnPage(sql, withModel, { run: id, person: ana.id, claim: back.claim }, {}, undefined, { name: long, answers: new Map(look.work.map((question) => [question.id, { keep: true, note: 'Noted.' }])), handed: back.handed });
+  assert.equal(answered.took, 2);
+  assert.deepEqual([...new Set((await w.marks()).map((mark) => mark.reader))].sort(), ['Claude', `N ${'n'.repeat(98)}`]);
+  assert.deepEqual((await reads(claude, ref)).read, []);
   assert.deepEqual([(await run()).state, (await run()).reason], ['following', null]);
   await claude.close();
 });
