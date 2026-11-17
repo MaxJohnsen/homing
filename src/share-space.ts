@@ -44,7 +44,7 @@ export async function conversionOf(s: Session, spaceId: string): Promise<Convers
     .filter((rule) => above.has(rule.includedIn?.spaceId ?? rule.spaceId))
     .map((rule) => ({ ...rule, elsewhere: !byId.get(rule.spaceId)?.privateTo }));
   const skillsLeaving = (await skillsFor(s, spaceId))
-    .filter((skill) => above.has(skill.includedIn?.spaceId ?? skill.spaceId))
+    .filter((skill) => skill.spaceId !== null && above.has(skill.includedIn?.spaceId ?? skill.spaceId))
     .map((skill) => ({ name: skill.name, from: skill.spaceName }));
 
   // Who has each shared space, as its Members shows them: its members and those of the spaces

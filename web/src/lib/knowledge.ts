@@ -63,8 +63,11 @@ export interface ItemData {
   /** Who shared it with the space from their own private side, and when, if someone did. */
   sharedBy?: Author;
   sharedAt?: string | null;
-  /** Its sources as you see them. Your own aren't shared, such as those behind something you shared. */
-  sources: { id: string; reference: string | null; excerpt: string; shared?: boolean; readFrom?: string | null }[];
+  /**
+   * Its sources as you see them. Your own aren't shared, such as those behind something you shared.
+   * One Homing read itself, such as an email, has the connection it read it through.
+   */
+  sources: { id: string; reference: string | null; excerpt: string; shared?: boolean; readThrough?: string | null; readFrom?: string | null }[];
   /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
   /** What it said before it was last changed, oldest first, each with who wrote that version. */
@@ -87,6 +90,8 @@ export interface PageData {
   mentionedOn: { id: string; title: string }[];
   /** When it was archived and by whom, if it is. Archived by someone else before you could see the page, since then, by nobody named. */
   archived?: { at: string; by: Author; since: boolean } | null;
+  /** Where you last moved it from, by which assistant and when, if you did. Null for a space you can no longer open. */
+  moved?: { from: { id: string; name: string; personal: boolean } | null; agent: string | null; at: string } | null;
   /** Where it is, and how many people see what's shared there now. */
   space: { id: string; name: string; personal: boolean; private: boolean; people: number; above: boolean };
   items: ItemData[];

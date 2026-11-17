@@ -323,11 +323,8 @@ export async function updateItem(
   const me = personOf(s.principal);
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
   if (shared === itemId || (original.privateTo === null && s.principal.agent !== undefined && me)) {
-    // Everyone sees it, so yours is an update of it. Something you shared by moving it, meanwhile
-    // or before, still rests on what it did, and so does your update.
-    const moved = shared === itemId || (original.publishedFrom === null && original.publishedBy === me);
-    const kept = moved ? await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid` : [];
-    return supersedeItem(s, itemId, { body: input.body, sources: [...new Set([...kept.map((row) => row.sourceId), ...(input.sources ?? [])])] });
+    // Everyone sees it, so yours is an update of it, resting on what it does.
+    return supersedeItem(s, itemId, input);
   }
   if (shared) {
     const update = await supersedeItem(s, shared, input);
@@ -350,6 +347,8 @@ export async function updateItem(
  * to be true. A private replacement changes only the writer's own view; a
  * shared one replaces a shared item for everyone. Something of yours that
  * you shared as a copy is the copy from then on, so that's what it replaces.
+ * The new item rests on what the old one did, besides its own sources, so
+ * rewriting never loses where knowledge came from, such as an email.
  */
 export async function supersedeItem(
   s: Session,
@@ -363,7 +362,9 @@ export async function supersedeItem(
   if (!old) return undefined;
   const privateTo = sideOf(s, input.shared);
   const body = await textFor(s, old, input.body);
-  return insertItem(s, { sources: input.sources, body, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
+  const item = await insertItem(s, { sources: input.sources, body, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
+  for (const before of new Set([old.id, original.id])) await s.tx`select carry_citations(${before}::uuid, ${item.id}::uuid)`;
+  return item;
 }
 
 /**
@@ -440,6 +441,25 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     archived: archivedAt ? { at: archivedAt, by: archivedBy, since: archivedSince ?? false } : null,
     items: items.filter((item) => item.kind !== 'title'),
   };
+}
+
+/**
+ * Moves a page that's wholly the person's own to another space they can open, for them or by their
+ * assistant: its items, with their citations and history. Its sources stay where they were kept,
+ * and the collections it's in, or that it is, end, since a collection gathers pages of its own
+ * space. Recorded for the person alone. Says which space it was in.
+ */
+export async function movePage(s: Session, pageId: string, spaceId: string): Promise<string> {
+  const [{ movedFrom }] = await s.tx<{ movedFrom: string }[]>`select move_page(${pageId}::uuid, ${spaceId}::uuid) as moved_from`;
+  return movedFrom;
+}
+
+/** The person's latest move of a page, if they moved it: from where, by which assistant, and when. */
+export async function lastMove(s: Session, pageId: string): Promise<{ movedFrom: string; agent: string | null; at: Date } | undefined> {
+  const [move] = await s.tx<{ movedFrom: string; agent: string | null; at: Date }[]>`
+    select moved_from, agent, at from page_moves where page_id = ${pageId}::uuid order by at desc limit 1
+  `;
+  return move;
 }
 
 /** The space a page is in, if the viewer sees it in a space they can open. */
@@ -546,7 +566,7 @@ export async function publishItem(s: Session, itemId: string, shown: string): Pr
  */
 export async function readItem(s: Session, itemId: string) {
   const [item] = await s.tx<(Item & { sources: Citation[]; updates: string | null })[]>`
-    select ${itemColumns(s)}, ${citationsOf(s)} as sources,
+    select ${itemColumns(s)}, ${citationsOf(s, true)} as sources,
            case when private_to is not null and supersedes is not null then shared_base(id) end as updates
     from content
     where id = ${itemId}::uuid and ${visibleContent(s, 'content')}
@@ -1410,6 +1430,15 @@ function titleOf(s: Session, pageId: ReturnType<Session['tx']>) {
     order by t.private_to is null
     limit 1
   )`;
+}
+
+/** The sources each of these items rests on, as the viewer can see them, with those of what they shared from their own side. */
+export async function sourcesOf(s: Session, itemIds: string[]): Promise<Map<string, Citation[]>> {
+  if (itemIds.length === 0) return new Map();
+  const rows = await s.tx<{ id: string; sources: Citation[] }[]>`
+    select content.id, ${citationsOf(s, true)} as sources from content where content.id in ${s.tx(itemIds)} and ${visible(s, 'content')}
+  `;
+  return new Map(rows.map((row) => [row.id, row.sources]));
 }
 
 /**

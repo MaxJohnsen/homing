@@ -132,7 +132,7 @@ git pull
 docker compose up -d --build
 ```
 
-Migrations run before the server starts. Back up the database and `.env` together, since a restored database needs the same secret.
+Migrations run before the server starts. Back up the database and `.env` together, since a restored database needs the same secret. Homing's own skills, such as the one for learning from a mailbox, are in the image and apply once it starts again, with nothing to migrate.
 
 If you ran Homing from main while it learned from mailboxes on its own, updating removes that. The migration drops the learning runs, what they processed and their maps, and the proposals to start or extend learning or to set a map, decided or not. The notes learning wrote stay, and so do the model calls it made, which all count toward this month's limit now. Nothing else changes.
 

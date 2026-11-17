@@ -95,6 +95,7 @@ function About({ page, now }: { page: PageData; now?: Date }) {
         ? 'Only you see it.'
         : `Everyone in ${page.space.name} sees it${mine ? `, except ${mine === 1 ? 'one item' : `${mine} items`} only you see` : ''}.`}
       {page.archived && ` Archived ${page.archived.since ? 'since' : 'on'} ${dateOf(page.archived.at)}.`}
+      {page.moved && ` Moved here from ${page.moved.from ? (page.moved.from.personal ? 'your personal space' : page.moved.from.name) : 'a space you can no longer open'} by ${page.moved.agent ?? 'you'} on ${dateOf(page.moved.at)}.`}
     </>
   );
 }
@@ -215,6 +216,22 @@ function wrote(by: Author, agent: string | null, editAgent?: string | null): str
 }
 
 /**
+ * What an item says of its sources when one is something Homing read for you, such as an email,
+ * whoever wrote it: what your assistant took from it, never what you wrote.
+ */
+function learned(item: ItemData): string | null {
+  const read = item.sources.filter((source) => source.readThrough);
+  if (read.length === 0) return null;
+  const mail = read.every((source) => source.readFrom === 'mailbox');
+  const [what, it] = read.length === 1 ? [mail ? 'an email' : 'something', 'it'] : [`${read.length} ${mail ? 'emails' : 'things'}`, 'them'];
+  const from = `${what} Homing read${mail ? ' in your mailbox' : ' for you'}`;
+  const assistant = item.agent ?? item.editAgent ?? 'your assistant';
+  return read.length === item.sources.length && item.agent !== null
+    ? `Learned from ${from}: it’s what ${assistant} took from ${it}, not what you wrote.`
+    : `Learned partly from ${from}: that part is what ${assistant} took from ${it}, not what you wrote.`;
+}
+
+/**
  * Who wrote it and when, its sources, and what it said before, each earlier version with who changed
  * it, to restore where you may correct it: small, under the item it's about.
  */
@@ -229,10 +246,12 @@ function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
   const byPerson = item.by !== null && item.agent === null;
   // Your own text, which your assistant may change when you ask: here, or as your own update of what you shared.
   const yours = byPerson && item.by?.you === true && !item.by.imported;
+  const fromMail = learned(item);
   return (
     <div className="flex cursor-auto flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
         {wrote(item.by, item.agent, item.editAgent)} on {dateOf(item.writtenAt)}.
+        {fromMail && ` ${fromMail}`}
         {byPerson && (yours ? (item.shared ? ' Assistants never rewrite it, though yours can make your own update of it when you ask.' : ' Your assistant may change it when you ask, and you can restore an earlier version.') : ' Assistants never rewrite it.')}
       </p>
       {item.sharedBy && item.sharedAt && <p className="text-muted-foreground">{nameOf(item.sharedBy)} shared it with everyone here on {dateOf(item.sharedAt)}.</p>}

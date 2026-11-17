@@ -2,8 +2,8 @@
 //
 // Ana works for Acme and Ben for Beta. Each has a page of knowledge on their
 // client's shared side, a private note on it that cites an email and has an
-// earlier version, notes in their personal space, a shared and a private
-// rule for their client, a skill, a rule their assistant proposed and
+// earlier version, notes in their personal space, moved out and back, a
+// shared and a private rule for their client, a skill, a rule their assistant proposed and
 // they haven't decided yet, their work mailbox connected in their client's
 // space, only for them, and a call to Homing's model about their client. Each tries to read and
 // change the other's, in three ways: through Homing, through Homing with
@@ -30,6 +30,7 @@ import {
   createPage,
   gather,
   listPages,
+  movePage,
   pagesIn,
   publishItem,
   readItem,
@@ -240,7 +241,8 @@ for (const [layer, sql] of [
           assert.deepEqual(bodies(await rulesFor(s, target.space)), []);
           assert.deepEqual(bodies(await rulesFor(s, intruder.space)), bodies(intruder.rules));
           assert.equal((await skillsFor(s, target.space)).length, 0);
-          assert.deepEqual((await skillsFor(s, intruder.space)).map((skill) => skill.pageId), [intruder.skill.pageId]);
+          // Their own client's skill, besides Homing's own, which comes with their mailbox.
+          assert.deepEqual((await skillsFor(s, intruder.space)).filter((skill) => skill.spaceId !== null).map((skill) => skill.pageId), [intruder.skill.pageId]);
           assert.equal(await readPage(s, target.skill.pageId), undefined);
           const found = await search(s, target.skill.name.replaceAll('-', ' '));
           assert.ok(found.every((hit) => hit.spaceId === intruder.space || hit.spaceId === intruder.person.personalSpaceId));
@@ -297,7 +299,7 @@ for (const [layer, sql] of [
 
 describe('straight against the database', () => {
   test('each person reads only their own client’s rows', async () => {
-    for (const { name, person, space, items, rules: ownRules, skill, source, proposal, connection, modelCall } of [acme, beta]) {
+    for (const { name, person, space, pages: ownPages, items, rules: ownRules, skill, source, proposal, connection, modelCall } of [acme, beta]) {
       await as(person, async (s) => {
         const texts = await s.tx`select body from content where kind = 'text' order by created_at`;
         const rules = await s.tx`select body from content where kind in ('requirement', 'preference') order by created_at`;
@@ -318,6 +320,7 @@ describe('straight against the database', () => {
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
         const modelCalls = await s.tx`select id, spaces from model_calls`;
+        const moves = await s.tx`select page_id, moved_from, moved_to from page_moves order by at`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -338,6 +341,7 @@ describe('straight against the database', () => {
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
+        assert.deepEqual(moves.map((row) => [row.pageId, row.movedTo]), [[ownPages[1], space], [ownPages[1], person.personalSpaceId]]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -699,6 +703,8 @@ async function client(
     const changed = await updateItem(s, draft.id, { body: notes.private });
     const personalPage = await createPage(s, { spaceId: p.personalSpaceId, title: 'Notes' });
     const personal = await writeItem(s, { pageId: personalPage, body: notes.personal });
+    // Moved into the client's space and back, which is recorded for them alone.
+    for (const to of [space, p.personalSpaceId]) await movePage(s, personalPage, to);
     const rules = [
       await addRule(s, { spaceId: space, kind: 'requirement', body: notes.rule, shared: true }),
       await addRule(s, { spaceId: space, kind: 'preference', body: notes.privateRule }),

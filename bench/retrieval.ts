@@ -356,7 +356,7 @@ async function everyday(s: Session, request: string) {
   const all = await listSpaces(s);
   const named = (name: string) => new RegExp(`(^|[^\\p{L}\\p{N}])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^\\p{L}\\p{N}])`, 'iu').test(request);
   const out = new Set(all.filter((space) => space.archived && !named(space.name)).map((space) => space.id));
-  return <T extends { spaceId: string }>(found: T[]) => found.filter((one) => !out.has(one.spaceId));
+  return <T extends { spaceId: string | null }>(found: T[]) => found.filter((one) => one.spaceId === null || !out.has(one.spaceId));
 }
 
 const asLines = (found: { kind: string; id: string; score?: number }[]): Line[] => found.map(({ kind, id, score }) => ({ kind, id, score }));
