@@ -68,7 +68,7 @@ after(async () => {
 
 /** What the model was sent about a thread, as the stand-in got it: the emails, by date and subject, and the note it had. */
 interface Sent {
-  emails: { From: string; Date: string; Subject: string; text: string; quotes?: string }[];
+  emails: { From: string; Date: string; Subject: string; text: string; quotes?: string; older?: boolean }[];
   thread?: unknown[];
   earlierNote?: string;
 }
@@ -77,6 +77,24 @@ const sentIn = (body: any): Sent => JSON.parse(body.messages[1].content);
 const keyOf = (email: { at: Date; from: { name: string; address: string }; subject: string }) => `${email.at.toISOString().slice(0, 16).replace('T', ' ')} UTC, ${email.from.name} <${email.from.address}>, ${email.subject}`;
 /** Every email the model was sent since a point, as "date, sender, subject". */
 const sentSince = (from: number) => provider.asked.slice(from).flatMap((asked) => sentIn(asked.body).emails.map((email) => `${email.Date}, ${email.From}, ${email.Subject}`));
+
+/**
+ * What holds at the end of any run: a note cites only what a model read. Every email of the
+ * mailbox that's marked with a note, or that a note of Homing's cites, was in a call the provider
+ * got and answered, since a point. Emails by their id, as "date, sender, subject".
+ */
+async function onlyCitesWhatWasRead(place: string, emails: Map<string, string>, from: number) {
+  const read = new Set(provider.answered.slice(from).flatMap((asked) => sentIn(asked.body).emails.map((email) => `${email.Date}, ${email.From}, ${email.Subject}`)));
+  const noted = (await marksOf(place)).filter((mark) => mark.note !== null).map((mark) => mark.item as string);
+  const cited = await owner<{ reference: string }[]>`
+    select s.reference from citations ci join sources s on s.id = ci.source_id join content c on c.id = ci.content_id
+    where c.agent = 'Homing' and starts_with(s.reference, ${`microsoft:${place}:`})
+  `;
+  assert.ok(noted.length > 0 && cited.length >= noted.length, `${noted.length} marked with a note, ${cited.length} cited`);
+  for (const item of [...noted, ...cited.map((source) => source.reference.slice(`microsoft:${place}:`.length))]) {
+    assert.ok(emails.has(item) && read.has(emails.get(item)!), `a note cites ${emails.get(item) ?? item}, which no model read`);
+  }
+}
 
 /** The stand-in model writes a note that says which email it read last, and whether it had a note already. */
 function noteReply(body: any): Reply {
@@ -167,7 +185,7 @@ test('Ana’s assistant proposes that Homing learn from her mailbox, and once sh
 
   // Asked to start, Homing estimates, from Microsoft's count and a sample, and proposes it to Ana. Nothing starts.
   const since = new Date(now.getTime() - 731 * day).toISOString().slice(0, 10);
-  const asked = provider.asked.length;
+  const [asked, answered] = [provider.asked.length, provider.answered.length];
   const proposed = await claude.call('act', { action: 'learning.start', input: { from: learning, since } });
   assert.ok(!proposed.failed, proposed.text);
   assert.match(proposed.text, new RegExp(`^Waiting for the user's approval \\(proposal:[0-9a-f-]{36}\\)\\. Nothing has started\\. Homing would learn from the user's mailbox ${account.address} back to ${since}, with a limit of \\$1\\.00 for its history, where it pauses\\. `));
@@ -360,7 +378,8 @@ test('Ana’s assistant proposes that Homing learn from her mailbox, and once sh
 
   // A new email arrives. Homing looks again within the second, learns from it, and from nothing else.
   const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
-  microsoft.deliver(account, { from: gunnar, to: [{ name: account.name, address: account.address }], subject: 'Northwind steering group', html: '<p>Hi Ana,</p><p>The Northwind steering group meets on 3 December at ten.</p><p>Gunnar</p>', at: new Date() });
+  const arrived = { from: gunnar, to: [{ name: account.name, address: account.address }], subject: 'Northwind steering group', html: '<p>Hi Ana,</p><p>The Northwind steering group meets on 3 December at ten.</p><p>Gunnar</p>', at: new Date() };
+  const arrivedId = microsoft.deliver(account, arrived);
   microsoft.deliver(account, { from: { name: 'The Weekly Digest', address: 'news@weekly-digest.test' }, subject: 'This week in consulting, issue 999', html: '<p>Read on.</p>', at: new Date(), headers: { 'List-Unsubscribe': '<https://weekly-digest.test/u>' } });
   await until(async () => (await marksOf(place)).length === mailbox.length + 2);
   assert.deepEqual(sentSince(then).map((one) => one.split(', ').at(-1)), ['Northwind steering group']);
@@ -447,6 +466,8 @@ test('Ana’s assistant proposes that Homing learn from her mailbox, and once sh
   assert.equal((await ana.browser.json('/api/model')).body.uses[0].calls, provider.asked.length - asked);
   // The run is untouched by all of it.
   assert.deepEqual([(await runOf(place)).state, (await runOf(place)).spendingLimit, provider.asked.length], ['following', '5.00', calls]);
+  // And through all of it, no note cites an email that no model read.
+  await onlyCitesWhatWasRead(place, new Map([...[...ids].map(([email, id]): [string, string] => [id, keyOf(email)]), [arrivedId, keyOf(arrived)]]), answered);
   await claude.close();
   await caras.close();
 });
@@ -458,14 +479,14 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   const place = await connectMailbox(ana, acme, account);
   const now = new Date();
   const mailbox = generateMailbox({ name: account.name, address: account.address }, { seed: 7, conversations: 200, days: 300, until: now });
-  for (const email of mailbox) microsoft.deliver(account, email);
+  const ids = new Map(mailbox.map((email) => [microsoft.deliver(account, email), keyOf(email)]));
   const claude = await (await assistantOf(ana)).open();
   const learning = `learning:${place}`;
   const days = (count: number) => new Date(now.getTime() - count * day).toISOString().slice(0, 10);
   const within = (from: number, to = -1) => mailbox.filter((email) => email.at >= new Date(days(from)) && email.at < new Date(to < 0 ? now.getTime() + day : new Date(days(to)).getTime()));
   const shown = async () => (await ana.browser.json(`/api/spaces/${acme}/connections`)).body;
   const post = (path: string, body: unknown = {}) => ana.browser.json(`/api/places/${place}/learning/${path}`, body);
-  const asked = provider.asked.length;
+  const [asked, answered] = [provider.asked.length, provider.answered.length];
 
   // In the app, Ana sees that Homing can learn from it and which provider would read it, and asks what the last 100 days would cost.
   assert.deepEqual([(await shown()).places[0].learns, (await shown()).places[0].learning, (await shown()).model.cheaper], [true, null, 'test/cheaper']);
@@ -572,22 +593,20 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   await until(async () => (await runOf(place)).extensionSince === null && (await marksOf(place)).length === within(200).length);
   assert.equal((await runOf(place)).state, 'following', 'it never stopped following');
   const leftOutOf = (emails: Generated[]) => emails.filter((email) => kept(email) && email.kind !== 'receipt' && !withTor.has(email.conversation));
-  // An older email of a thread whose note already rests on newer mail is added to what that note rests on, and no model reads it: the note stands.
-  const olderOf = (range: Generated[], learnedFrom: Generated[]) => {
-    const noted = new Set(leftOutOf(learnedFrom).map((email) => email.conversation));
-    return leftOutOf(range).filter((email) => !noted.has(email.conversation));
-  };
+  // Every email the range adds went to the model, once. The older ones of a thread that already has its note too: with that note, marked as older than what it holds.
   const added = sentSince(then);
   assert.equal(new Set([...sent, ...added]).size, sent.length + added.length, 'nothing was sent twice');
-  assert.deepEqual([...added].sort(), olderOf(within(200, 100), within(100)).map(keyOf).sort());
-  assert.ok(added.length < leftOutOf(within(200, 100)).length, 'some threads carried on into what it had learned from');
-  // Each of those is marked as added to a note's sources, read by no interpretation, and the rest as learned.
+  assert.deepEqual([...added].sort(), leftOutOf(within(200, 100)).map(keyOf).sort());
+  const noted = new Set(leftOutOf(within(100)).map((email) => email.conversation));
+  const carriedOn = leftOutOf(within(200, 100)).filter((email) => noted.has(email.conversation));
+  assert.ok(carriedOn.length > 0, 'some threads carried on into what it had learned from');
+  const background = provider.asked.slice(then).map((one) => sentIn(one.body)).flatMap((call) => call.emails.filter((email) => email.older).map((email) => (call.earlierNote ? `${email.Date}, ${email.From}, ${email.Subject}` : 'without its note')));
+  assert.deepEqual(background.sort(), carriedOn.map(keyOf).sort());
+  // Each is marked as learned from, with its thread's note, by the interpretation that read it.
   const taken = (await marksOf(place)).filter((mark) => mark.outcome !== 'set aside');
   assert.equal(taken.length, leftOutOf(within(200)).length);
-  const addedAsSources = taken.filter((mark) => mark.outcome === 'added as a source');
-  assert.deepEqual([addedAsSources.length, addedAsSources.every((mark) => mark.interpretation === null && mark.note !== null)], [leftOutOf(within(200, 100)).length - added.length, true]);
-  assert.ok(taken.filter((mark) => mark.outcome === 'learned').every((mark) => mark.interpretation === 'notes 1'));
-  assert.equal((await shown()).places[0].learning.learned, taken.length, 'for Ana, all of them were learned from');
+  assert.ok(taken.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1' && mark.note !== null));
+  assert.equal((await shown()).places[0].learning.learned, taken.length);
 
   // The rest she adds herself, in the app: the estimate first, then for that very day, and not for another.
   const before = provider.asked.length;
@@ -601,7 +620,7 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   assert.equal((await post('extend/estimate', { since: days(301) })).status, 200);
   assert.equal((await post('extend', { since: days(301) })).status, 200);
   await until(async () => (await runOf(place)).extensionSince === null && (await marksOf(place)).length === mailbox.length);
-  assert.deepEqual(sentSince(before).sort(), olderOf(within(301, 200), within(200)).map(keyOf).sort());
+  assert.deepEqual(sentSince(before).sort(), leftOutOf(within(301, 200)).map(keyOf).sort());
   assert.match((await claude.call('act', { action: 'learning.extend', input: { from: learning, since: days(200) } })).text, /already learns from .* back to .*, so nothing changed/);
   assert.equal((await post('extend/estimate', { since: days(200) })).status, 409);
 
@@ -617,6 +636,8 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   // Started, it isn't estimated or started again.
   assert.equal((await post('estimate', { since: days(10) })).status, 409);
   assert.equal((await post('start', { limit: 1 })).status, 409);
+  // Further back twice and a sender taken off the list, and no note cites an email that no model read.
+  await onlyCitesWhatWasRead(place, ids, answered);
   await claude.close();
 });
 

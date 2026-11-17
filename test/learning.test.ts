@@ -2,8 +2,9 @@
 // working a run a page at a time, as Homing's worker does. Nothing is processed twice, whatever
 // happens on the way. A run's limit is the database's. One worker works on a run at a time.
 // Pausing stops it at once. What needs no model never reaches one, and nor does anything where
-// model processing is off. What a model answers is checked before anything is written, and a
-// routine never changes what a person wrote. Microsoft and the model's provider are stand-ins.
+// model processing is off. What a model answers is checked before anything is written, a note
+// cites only what a model read, a thread is read in order, and a routine never changes what a
+// person wrote. Microsoft and the model's provider are stand-ins.
 //
 // The worker here is the test's own, so the server runs none, in a database of its own.
 
@@ -69,11 +70,16 @@ const subjectsSince = (from: number) => provider.asked.slice(from).flatMap((aske
 
 const answerWith = (content: string, cost = 0.0001): Reply => ({ json: { choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }], usage: { prompt_tokens: 120, completion_tokens: 30, cost } } });
 
-/** The stand-in model writes a note naming the last email it read. */
+/**
+ * The stand-in model writes a note naming the last email it read. What's marked older is
+ * background, as it's told: with nothing newer, the note keeps what it said, and names what came before.
+ */
 function noteReply(body: any): Reply {
   if (carriesNothing(body)) return answerWith('yes');
   const sent = sentIn(body);
-  return answerWith(JSON.stringify({ keep: true, note: `${sent.emails.at(-1)!.Subject}: noted${sent.earlierNote ? ', again' : ''}.` }));
+  const news = sent.emails.filter((email) => !email.older);
+  const note = news.length ? `${news.at(-1)!.Subject}: noted${sent.earlierNote ? ', again' : ''}.` : `${sent.earlierNote} After ${sent.emails.at(-1)!.Subject}.`;
+  return answerWith(JSON.stringify({ keep: true, note }));
 }
 
 const day = 24 * 60 * 60 * 1000;
@@ -107,7 +113,9 @@ async function world(emails: Email[] = []) {
   const [{ place, connection }] = await owner<{ place: string; connection: string }[]>`
     select p.id as place, c.id as connection from places p join connections c on c.id = p.connection_id where c.person_id = ${ana.id} and c.account = ${account.oid}
   `;
-  const ids = emails.map((one) => microsoft.deliver(account, { to: [{ name: account.name, address: account.address }], ...one }));
+  // Each in a thread of its own unless it names one, which a failure on the run is kept by.
+  const threads = emails.map((one) => one.conversation ?? `AAQk${randomBytes(12).toString('base64url')}=`);
+  const ids = emails.map((one, at) => microsoft.deliver(account, { to: [{ name: account.name, address: account.address }], ...one, conversation: threads[at] }));
   const me = { person: ana.id, direct: true } as const;
   /** Estimates and starts learning back so many days, with a limit, as Ana does in the app. */
   const begin = async (days = 400, limit = 5) => {
@@ -128,7 +136,7 @@ async function world(emails: Email[] = []) {
   /** Sets what it leaves out and keeps, as Ana does in the app. */
   const leaveOut = async (leftOut: { senders?: string[]; folders?: string[]; kept?: string[] }) =>
     withPrincipal(sql, me, async (s) => setLeftOut(s, await mine(), { senders: [], folders: [], kept: [], ...leftOut }));
-  return { ana, cara, acme, account, place, connection, ids, begin, run, marks, mine, me, extend, leaveOut };
+  return { ana, cara, acme, account, place, connection, ids, threads, begin, run, marks, mine, me, extend, leaveOut };
 }
 
 async function join(name: string) {
@@ -1267,13 +1275,32 @@ const hoursPass = (place: string, hours: number) => owner`
   set failures = (select jsonb_agg(jsonb_set(f, '{3}', to_jsonb((f ->> 3)::bigint - ${hours * 3_600_000}::bigint))) from jsonb_array_elements(failures) as f)
   where place_id = ${place} and jsonb_array_length(coalesce(failures, '[]')) > 0
 `;
+/** The threads a run's provider failed on, as the run keeps them: on which walk, which thread, and how often. */
+const failuresOf = (now: Record<string, any>) => now.failures.map((failure: unknown[]) => failure.slice(0, 3));
 const failing = { status: 503, json: { error: { message: 'overloaded' } } };
 const refusing = (status = 400): Reply => ({ status, json: { error: { message: 'The request was rejected.' } } });
 /** How often the model was asked about an email with this subject, since a point. */
 const askedAbout = (subject: string, from: number) => subjectsSince(from).filter((one) => one === subject).length;
 
+/**
+ * What holds whatever happened on the way: a note cites only what a model read. Every email of a
+ * mailbox that's marked with a note, or that a note of Homing's cites, was in a call the provider
+ * got and answered, since a point. Emails by subject, which a test here gives each once.
+ */
+async function onlyCitesWhatWasRead(place: string, subjects: Map<string, string>, from: number) {
+  const read = new Set(provider.answered.slice(from).flatMap((asked) => sentIn(asked.body).emails.map((email) => email.Subject)));
+  const noted = await owner<{ item: string }[]>`select i.item from learned_items i join learning_runs r on r.id = i.run_id where r.place_id = ${place} and i.note is not null`;
+  const cited = await owner<{ reference: string }[]>`
+    select s.reference from citations ci join sources s on s.id = ci.source_id join content c on c.id = ci.content_id
+    where c.agent = 'Homing' and starts_with(s.reference, ${`microsoft:${place}:`})
+  `;
+  const items = [...noted.map((mark) => mark.item), ...cited.map((source) => source.reference.slice(`microsoft:${place}:`.length))];
+  assert.ok(noted.length > 0 && cited.length >= noted.length, `${noted.length} marked with a note, ${cited.length} cited`);
+  for (const item of items) assert.ok(subjects.has(item) && read.has(subjects.get(item)!), `a note cites ${subjects.get(item) ?? item}, which no model read`);
+}
+
 test('a thread the provider won’t take is set aside once the provider answers otherwise, a failing one only after three tries hours apart, and a provider that’s down is waited for', async () => {
-  const { ana, begin, run, marks, place, ids } = await world([email('Alpha', 50), email('Refused', 40), email('Failing', 30), email('Delta', 20)]);
+  const { ana, begin, run, marks, place, ids, threads } = await world([email('Alpha', 50), email('Refused', 40), email('Failing', 30), email('Delta', 20)]);
   await begin();
   const asked = provider.asked.length;
   // The provider refuses one request as it is, with a 400, and fails on another every time, while it answers the rest.
@@ -1287,7 +1314,8 @@ test('a thread the provider won’t take is set aside once the provider answers 
     const first = await tryPage(place);
     assert.deepEqual((await marks()).map((mark) => [mark.item, mark.reason ?? mark.outcome]), [[ids[0], 'learned'], [ids[1], 'provider refused'], [ids[3], 'learned']]);
     assert.deepEqual([first.now.state, first.now.waitingFor, first.now.checkpoint], ['learning history', 'provider', null]);
-    assert.deepEqual(first.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', ids[2], 1]]);
+    // The failure is kept by its thread.
+    assert.deepEqual(first.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', threads[2], 1]]);
     assert.equal((await mineOf(ana, place)).waitingFor, 'provider');
     // Its second try comes an hour later, not seconds: looked at before that, the thread isn't asked about again.
     assert.ok(Math.abs(first.wait - 3600) <= 2, `waits ${first.wait}s`);
@@ -1298,7 +1326,7 @@ test('a thread the provider won’t take is set aside once the provider answers 
     // An hour on it fails again, with nothing else on the page to ask: a call that carries nothing says the provider answers, so it counts, and the third try is two hours on.
     await hoursPass(place, 1);
     const second = await tryPage(place);
-    assert.deepEqual([askedAbout('Failing', asked), second.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await marks()).length], [2, [['main', ids[2], 2]], 3]);
+    assert.deepEqual([askedAbout('Failing', asked), second.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await marks()).length], [2, [['main', threads[2], 2]], 3]);
     assert.ok(Math.abs(second.wait - 7200) <= 2, `waits ${second.wait}s`);
     // Failed on three times, hours apart, while the provider answers otherwise, it's one the provider won't read: set aside, and the run moves on.
     await hoursPass(place, 2);
@@ -1336,7 +1364,7 @@ test('a thread the provider won’t take is set aside once the provider answers 
   provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Slow' ? refusing(408) : noteReply(body));
   try {
     const { now, wait } = await tryPage(slow.place);
-    assert.deepEqual([(await slow.marks()).map((mark) => mark.reason ?? mark.outcome), now.failures.map((failure: unknown[]) => failure.slice(0, 3))], [['learned'], [['main', slow.ids[1], 1]]]);
+    assert.deepEqual([(await slow.marks()).map((mark) => mark.reason ?? mark.outcome), now.failures.map((failure: unknown[]) => failure.slice(0, 3))], [['learned'], [['main', slow.threads[1], 1]]]);
     assert.ok(Math.abs(wait - 3600) <= 2, `waits ${wait}s`);
   } finally {
     provider.reply = noteReply;
@@ -1386,7 +1414,7 @@ test('several threads refused in a row are the provider’s trouble, even while 
       assert.deepEqual([now.state, now.waitingFor, now.checkpoint, now.refused], ['learning history', 'provider', null, 2], `try ${tries}`);
       assert.deepEqual((await history.marks()).map((mark) => mark.reason), ['provider refused', 'provider refused'], `try ${tries}: two, and no more`);
       // Of those it waits behind, only the first is counted against, once, however many were asked about.
-      assert.deepEqual(now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', history.ids[2], 1]], `try ${tries}`);
+      assert.deepEqual(now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', history.threads[2], 1]], `try ${tries}`);
     }
   } finally {
     provider.reply = noteReply;
@@ -1408,7 +1436,7 @@ test('several threads refused in a row are the provider’s trouble, even while 
     for (let tries = 1; tries <= 4; tries++) {
       const before = provider.asked.length;
       const { now } = await tryPage(failed.place);
-      assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await failed.marks()).length], ['learning history', 'provider', tries, [['main', failed.ids[0], 1]], 0], `try ${tries}`);
+      assert.deepEqual([now.state, now.waitingFor, now.attempts, now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await failed.marks()).length], ['learning history', 'provider', tries, [['main', failed.threads[0], 1]], 0], `try ${tries}`);
       assert.ok(provider.asked.length - before <= 7, `${provider.asked.length - before} requests in a try`);
     }
   } finally {
@@ -1447,7 +1475,7 @@ test('a run never waits for good behind threads the provider really won’t take
   const fine = Array.from({ length: 43 }, (_, at) => `Fine ${at + 1}`);
   const bad = Array.from({ length: 7 }, (_, at) => `Bad ${at + 1}`);
   const later = Array.from({ length: 5 }, (_, at) => `Later ${at + 1}`);
-  const { begin, run, marks, place, ids } = await world([...fine.map((subject, at) => email(subject, 300 - at)), ...bad.map((subject, at) => email(subject, 200 - at)), ...later.map((subject, at) => email(subject, 100 - at))]);
+  const { begin, run, marks, place, ids, threads } = await world([...fine.map((subject, at) => email(subject, 300 - at)), ...bad.map((subject, at) => email(subject, 200 - at)), ...later.map((subject, at) => email(subject, 100 - at))]);
   await begin();
   const asked = provider.asked.length;
   provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Bad')) ? refusing() : noteReply(body));
@@ -1456,15 +1484,15 @@ test('a run never waits for good behind threads the provider really won’t take
     // The first two are set aside at once. The third is one of several in a row, which is the provider's trouble: the run waits, and counts a try against that one thread.
     const first = await tryPage(place);
     assert.deepEqual(await aside(), [['Bad 1', 'provider refused'], ['Bad 2', 'provider refused']]);
-    assert.deepEqual([first.now.state, first.now.waitingFor, first.now.checkpoint, first.now.failures.map((failure: unknown[]) => failure.slice(0, 3))], ['learning history', 'provider', null, [['main', ids[fine.length + 2], 1]]]);
+    assert.deepEqual([first.now.state, first.now.waitingFor, first.now.checkpoint, first.now.failures.map((failure: unknown[]) => failure.slice(0, 3))], ['learning history', 'provider', null, [['main', threads[fine.length + 2], 1]]]);
     // Tried again before an hour has passed, it's asked about like the rest, and that counts nothing more against it.
     for (let tries = 0; tries < 3; tries++) {
       const { now } = await tryPage(place);
-      assert.deepEqual([now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await marks()).filter((mark) => mark.reason).length], [[['main', ids[fine.length + 2], 1]], 2]);
+      assert.deepEqual([now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await marks()).filter((mark) => mark.reason).length], [[['main', threads[fine.length + 2], 1]], 2]);
     }
     // An hour on it's refused again, and two hours after that a third time, each while a call that carries nothing is answered: it's one the provider won't take, and is set aside like the first two.
     await hoursPass(place, 1);
-    assert.deepEqual((await tryPage(place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', ids[fine.length + 2], 2]]);
+    assert.deepEqual((await tryPage(place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', threads[fine.length + 2], 2]]);
     await hoursPass(place, 2);
     await tryPage(place);
     assert.deepEqual((await aside()).slice(2), [['Bad 3', 'provider refused']]);
@@ -1488,7 +1516,7 @@ test('a run never waits for good behind threads the provider really won’t take
   provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Fails')) ? failing : noteReply(body));
   try {
     const first = await tryPage(failed.place);
-    assert.deepEqual([first.now.waitingFor, first.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await failed.marks()).length], ['provider', [['main', failed.ids[1], 1]], 1]);
+    assert.deepEqual([first.now.waitingFor, first.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await failed.marks()).length], ['provider', [['main', failed.threads[1], 1]], 1]);
     for (let hours = 0; hours < 40 && (await failed.run()).state !== 'following'; hours++) {
       await hoursPass(failed.place, 2);
       await tryPage(failed.place);
@@ -1508,9 +1536,9 @@ test('a run never waits for good behind threads the provider really won’t take
     await tryPage(passing.place);
     provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Fails 1' ? failing : noteReply(body));
     const early = await tryPage(passing.place);
-    assert.deepEqual([early.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await passing.marks()).map((mark) => mark.outcome)], [[['main', passing.ids[1], 1]], ['learned', 'learned', 'learned']]);
+    assert.deepEqual([early.now.failures.map((failure: unknown[]) => failure.slice(0, 3)), (await passing.marks()).map((mark) => mark.outcome)], [[['main', passing.threads[1], 1]], ['learned', 'learned', 'learned']]);
     await hoursPass(passing.place, 1);
-    assert.deepEqual((await tryPage(passing.place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', passing.ids[1], 2]]);
+    assert.deepEqual((await tryPage(passing.place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', passing.threads[1], 2]]);
   } finally {
     provider.reply = noteReply;
   }
@@ -1616,12 +1644,13 @@ test('the first of several in a row that then fails while the provider answers f
   await through();
   assert.equal((await run()).state, 'following');
   // Four emails arrive, and the provider fails on each while a call that carries nothing is answered: the first is counted against, alone.
-  const arrived = ['Fails 1', 'Fails 2', 'Fails 3', 'Fails 4'].map((subject, at) => microsoft.deliver(account, email(subject, (10 - at) / 1440)));
+  const thread = `AAQk${randomUUID()}=`;
+  for (const [at, subject] of ['Fails 1', 'Fails 2', 'Fails 3', 'Fails 4'].entries()) microsoft.deliver(account, email(subject, (10 - at) / 1440, at === 0 ? { conversation: thread } : {}));
   provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : sentIn(body).emails.some((one) => one.Subject.startsWith('Fails')) ? failing : noteReply(body));
   try {
     await lookAgain(place);
     const first = await tryPage(place);
-    assert.deepEqual(first.now.failures, [['main', arrived[0], 1, first.now.failures[0][3], true]]);
+    assert.deepEqual(first.now.failures, [['main', thread, 1, first.now.failures[0][3], true]]);
     // The provider answers for the others again, and still fails on the first, which was asked with them before its next try was due.
     provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Fails 1' ? failing : noteReply(body));
     const from = provider.asked.length;
@@ -1630,13 +1659,13 @@ test('the first of several in a row that then fails while the provider answers f
     // That was no new try, and it's the last time it's asked early: look after look, it waits for its next try, an hour after the first.
     for (let looks = 1; looks <= 6; looks++) {
       const { now } = await tryPage(place);
-      assert.deepEqual([now.state, now.failures.map((failure: unknown[]) => failure.slice(0, 3)), now.failures[0].length], ['following', [['main', arrived[0], 1]], 4], `look ${looks}`);
+      assert.deepEqual([now.state, now.failures.map((failure: unknown[]) => failure.slice(0, 3)), now.failures[0].length], ['following', [['main', thread, 1]], 4], `look ${looks}`);
     }
     assert.deepEqual([askedAbout('Fails 1', from), (await failed()) - before], [1, 1]);
     assert.deepEqual((await marks()).map((mark) => mark.outcome), ['learned', 'learned', 'learned', 'learned']);
     // An hour on it's tried again, and that counts.
     await hoursPass(place, 1);
-    assert.deepEqual((await tryPage(place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', arrived[0], 2]]);
+    assert.deepEqual((await tryPage(place)).now.failures.map((failure: unknown[]) => failure.slice(0, 3)), [['main', thread, 2]]);
     assert.equal(askedAbout('Fails 1', from), 2);
   } finally {
     provider.reply = noteReply;
@@ -2042,93 +2071,132 @@ test('a thread with more emails in a page than one call takes is read in several
   assert.match(forward.quotes!, /Clause 40 says/);
 });
 
-test('an older email never writes over a note that rests on newer mail: the note stands, and the email is added to what it rests on', async () => {
+test('going further back, an older email of a thread that has its note is read by a model before the note cites it: as background, so the note still holds what came later', async () => {
   const thread = `AAQk${randomUUID()}=`;
-  const { ana, begin, marks, mine, extend } = await world([
+  const { ana, begin, marks, mine, extend, place, ids } = await world([
     email('Budget', 300, { conversation: thread, html: '<p>The budget is NOK 1 million.</p>' }),
     email('Re: Budget', 20, { conversation: thread, html: '<p>The board raised the budget to NOK 2 million.</p>' }),
   ]);
-  await begin(100);
+  const from = provider.answered.length;
+  const id = await begin(100);
   await through();
   const [{ note }] = await marks();
   const written = async () => (await owner`select body from content where id = ${note}`)[0].body;
   const progress = () => withPrincipal(sql, { person: ana.id }, async (s) => progressOf(s, await mine()));
   assert.equal(await written(), 'Re: Budget: noted.');
-  // Going further back brings the thread's first email. No model is asked, and the note says what it said.
+  // Going further back brings the thread's first email, which the estimate counted as one a model reads.
   const asked = provider.asked.length;
-  assert.ok(await extend(365));
+  const added = await extend(365);
+  assert.deepEqual([added?.items, added?.threads], [1, 1]);
   await through();
-  assert.equal(provider.asked.length, asked, 'no model was asked about it');
-  assert.equal(await written(), 'Re: Budget: noted.');
-  // It's marked as added to the note's sources, by no interpretation: no model read it, which a later one learning from it again can tell.
-  assert.deepEqual((await marks()).map((mark) => [mark.outcome, mark.interpretation, mark.note === note]), [['learned', 'notes 1', true], ['added as a source', null, true]]);
-  assert.deepEqual([(await progress()).learned, (await progress()).threads], [2, 1], 'for Ana it’s still one thread of two emails');
+  // It's sent to the model with the note, marked as older than what the note holds.
+  const calls = provider.asked.slice(asked).map((call) => sentIn(call.body));
+  assert.deepEqual(calls.map((call) => [call.emails.map((one) => [one.Subject, one.older]), call.earlierNote]), [[[['Budget', true]], 'Re: Budget: noted.']]);
+  // The note is written again, and still says what came later. It rests on both, each learned from by the interpretation that read it.
+  assert.equal(await written(), 'Re: Budget: noted. After Budget.');
+  assert.deepEqual((await marks()).map((mark) => [mark.outcome, mark.interpretation, mark.note === note]), [['learned', 'notes 1', true], ['learned', 'notes 1', true]]);
+  assert.deepEqual([(await progress()).learned, (await progress()).threads], [2, 1], 'one thread of two emails');
   assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${note}`)[0].sources, 2);
-  assert.equal((await owner`select count(*)::integer as revisions from revisions where content_id = ${note}`)[0].revisions, 0);
+  assert.equal((await owner`select count(*)::integer as revisions from revisions where content_id = ${note}`)[0].revisions, 1);
+  // That was a call like any other in its history, against the run's limit.
+  assert.deepEqual((await owner`select run_history from model_calls where run_id = ${id}`).map((call) => call.runHistory), [true, true]);
+  await onlyCitesWhatWasRead(place, new Map([[ids[0], 'Budget'], [ids[1], 'Re: Budget']]), from);
 
-  // Read together with something newer, the older email is marked as background for the model.
+  // Alone or with something newer, an email older than what the note rests on is a call, which an estimate counts, and goes marked as background.
   const batch = (items: Date[], upTo: Date) => ({
     space: randomUUID(), words: { place: 'mailbox', item: 'email', items: 'emails', title: 'subject', related: 'conversation' } as never, thread, earlier: 'The earlier note.', earlierUpTo: upTo,
     items: items.map((at, n) => ({ envelope: { id: `i${n}`, title: `Email ${n}`, at, author: null, audience: 'unknown' as const }, fields: [], text: `Text ${n}`, related: [], moreRelated: false })),
   });
   const [old, recent, newer] = [new Date(Date.now() - 300 * day), new Date(Date.now() - 20 * day), new Date(Date.now() - day)];
-  assert.deepEqual(notes.calls(batch([old], recent)), []);
+  const olderIn = (call: { messages: { content: unknown }[] }) => JSON.parse(call.messages[1].content as string).emails.map((one: { older?: boolean }) => one.older ?? false);
+  const [alone, ...more] = notes.calls(batch([old], recent));
+  assert.deepEqual([olderIn(alone), more], [[true], []]);
   const [mixed] = notes.calls(batch([old, newer], recent));
-  assert.deepEqual(JSON.parse(mixed.messages[1].content as string).emails.map((one: { older?: boolean }) => one.older ?? false), [true, false]);
+  assert.deepEqual(olderIn(mixed), [true, false]);
   assert.match(mixed.messages[0].content as string, /marked older came before what the earlier note already holds: it is background/);
 });
 
-test('emails the provider failed on are read when they’re tried again, even after the rest of their thread was learned from: never added to the note’s sources unread', async () => {
-  // A thread of twelve emails is read in two calls. The provider fails on the first, with the ten oldest, and answers the second.
+test('a thread is read in order whatever the provider does: what a later call would read waits behind a call it failed on, through that call’s tries, and is asked about once it was answered or set aside', async () => {
+  // A thread of twelve emails is read in two calls. The provider fails on the first, with the ten oldest.
   const thread = `AAQk${randomUUID()}=`;
   const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
-  const { begin, marks, place, mine, me } = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })));
+  const { begin, marks, place, ids } = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })));
   await begin();
-  const asked = provider.asked.length;
-  const sentSince = (from: number) => provider.asked.slice(from).filter((call) => !carriesNothing(call.body)).map((call) => sentIn(call.body));
-  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? failing : noteReply(body));
+  const [asked, from] = [provider.asked.length, provider.answered.length];
+  const sentSince = (since: number) => provider.asked.slice(since).filter((call) => !carriesNothing(call.body)).map((call) => sentIn(call.body));
+  const failsOn = (subject: string) => (body: any) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === subject ? failing : noteReply(body));
+  provider.reply = failsOn('Plan 1');
   try {
-    // The two newest wait until the run knows the ten failed, which it does when the page is handed back, and are asked about at once then.
+    // The two newest aren't asked about: they wait with the ten, whose next try is an hour on. The failure is the thread's.
     const first = await tryPage(place);
-    assert.deepEqual([(await marks()).length, first.wait, first.now.failures.length, subjectsSince(asked)], [0, 0, 1, plans.slice(0, 10)]);
-    await tryPage(place);
-    assert.deepEqual((await marks()).map((mark) => mark.outcome), ['learned', 'learned'], 'the two newest');
+    assert.deepEqual([(await marks()).length, failuresOf(first.now), subjectsSince(asked)], [0, [['main', thread, 1]], plans.slice(0, 10)]);
+    assert.ok(Math.abs(first.wait - 3600) <= 2, `waits ${first.wait}s`);
+    // Looked at before that, nothing of the thread is asked about.
+    const early = await tryPage(place);
+    assert.deepEqual([(await marks()).length, subjectsSince(asked).length], [0, 10]);
+    assert.ok(early.wait > 3500 && early.wait <= 3600, `still waits ${early.wait}s`);
+    // An hour on the provider answers for the ten, and fails on the two newest. With the ten read, that's a first failure, of the thread's next call.
+    provider.reply = failsOn('Plan 11');
+    await hoursPass(place, 1);
+    const second = await tryPage(place);
+    assert.deepEqual([(await marks()).map((mark) => mark.outcome), failuresOf(second.now)], [plans.slice(0, 10).map(() => 'learned'), [['main', thread, 1]]]);
+    assert.ok(Math.abs(second.wait - 3600) <= 2, `waits ${second.wait}s`);
   } finally {
     provider.reply = noteReply;
   }
-  // An hour later the ten are tried again. The note rests on newer mail by now, and they're read all the same, as background to it.
+  // Another hour on the two are read, with the note the ten wrote: one note for the thread, from every email in order.
   await hoursPass(place, 1);
   const again = provider.asked.length;
   await through();
-  const [retried] = sentSince(again);
-  assert.deepEqual(retried.emails.map((one) => [one.Subject, one.older]), plans.slice(0, 10).map((subject) => [subject, true]));
-  assert.equal(retried.earlierNote, 'Plan 12: noted.');
+  assert.deepEqual(sentSince(again).map((call) => [call.emails.map((one) => one.Subject), call.earlierNote]), [[['Plan 11', 'Plan 12'], 'Plan 10: noted.']]);
   const all = await marks();
   assert.deepEqual([all.length, all.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'), new Set(all.map((mark) => mark.note)).size], [12, true, 1]);
+  assert.equal((await owner`select body from content where id = ${all[0].note}`)[0].body, 'Plan 12: noted, again.');
   assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${all[0].note}`)[0].sources, 12);
+  await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, plans[at]])), from);
 
-  // The same when the provider refuses them, they're set aside, and Ana has them tried again.
-  const other = `AAQk${randomUUID()}=`;
-  const set = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: other })));
-  await set.begin();
-  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? refusing() : noteReply(body));
+  // A call the provider fails on three times, hours apart, is set aside. What waited behind it is asked about at once then, not at the next try of a thread that has none.
+  const failed = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: `${thread}2` })));
+  await failed.begin();
+  const before = provider.asked.length;
+  provider.reply = failsOn('Plan 1');
   try {
+    await tryPage(failed.place);
+    await hoursPass(failed.place, 1);
+    await tryPage(failed.place);
+    await hoursPass(failed.place, 2);
+    const third = await tryPage(failed.place);
+    assert.deepEqual((await failed.marks()).map((mark) => mark.reason), plans.slice(0, 10).map(() => 'provider failed'));
+    assert.deepEqual([third.wait, third.now.failures, third.now.state, askedAbout('Plan 11', before)], [0, [], 'learning history', 0]);
     await through();
-    assert.deepEqual((await set.marks()).map((mark) => mark.reason ?? mark.outcome), [...plans.slice(0, 10).map(() => 'provider refused'), 'learned', 'learned']);
+    assert.deepEqual([(await failed.marks()).map((mark) => mark.reason ?? mark.outcome), askedAbout('Plan 11', before), (await failed.run()).state], [[...plans.slice(0, 10).map(() => 'provider failed'), 'learned', 'learned'], 1, 'following']);
   } finally {
     provider.reply = noteReply;
   }
+
+  // One the provider refuses while it answers otherwise is set aside at once, and the rest of its thread is read right after it.
+  const refused = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })));
+  await refused.begin();
+  const then = provider.answered.length;
+  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? refusing() : noteReply(body));
+  try {
+    await through();
+    assert.deepEqual((await refused.marks()).map((mark) => mark.reason ?? mark.outcome), [...plans.slice(0, 10).map(() => 'provider refused'), 'learned', 'learned']);
+  } finally {
+    provider.reply = noteReply;
+  }
+  // Ana has the ten tried again. They're read, as what came before the note, which keeps what it said.
   const tried = provider.asked.length;
-  assert.equal(await withPrincipal(sql, set.me, async (s) => retryLearning(s, await set.mine())), 10);
+  assert.equal(await withPrincipal(sql, refused.me, async (s) => retryLearning(s, await refused.mine())), 10);
   await through();
-  assert.deepEqual(sentSince(tried).map((call) => call.emails.map((one) => one.Subject)), [plans.slice(0, 10)]);
-  assert.ok((await set.marks()).every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'));
-  void asked;
-  void mine;
-  void me;
+  assert.deepEqual(sentSince(tried).map((call) => [call.emails.map((one) => [one.Subject, one.older]), call.earlierNote]), [[plans.slice(0, 10).map((subject) => [subject, true]), 'Plan 12: noted.']]);
+  const retried = await refused.marks();
+  assert.ok(retried.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'));
+  assert.equal((await owner`select body from content where id = ${retried[0].note}`)[0].body, 'Plan 12: noted. After Plan 10.');
+  await onlyCitesWhatWasRead(refused.place, new Map(refused.ids.map((item, at) => [item, plans[at]])), then);
 });
 
-test('emails the provider failed on are never added to a note’s sources unread, however their page ended: asked too often, at the run’s limit, with Homing stopping, or with the provider in doubt, the rest of their thread waits until the run knows they failed', async () => {
+test('a later call of a thread is never made before its earlier one was answered or set aside, however the page ends: asked too often, at the run’s limit, with Homing stopping, or with the provider in doubt, the thread is read from its start the next time, in order', async () => {
   const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
   const tenOldest = (body: any) => !carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1';
   const about = (body: any, subject: string) => !carriesNothing(body) && sentIn(body).emails[0].Subject === subject;
@@ -2141,7 +2209,7 @@ test('emails the provider failed on are never added to a note’s sources unread
     const { begin, marks, place, ids } = await world([...plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })), email('Other', 20), email('Last', 10)]);
     const id = await begin();
     const stop = new AbortController();
-    const from = provider.asked.length;
+    const [from, answered] = [provider.asked.length, provider.answered.length];
     provider.reply = replies({ id, stop });
     try {
       const claimed = await claim(sql, randomUUID(), 30);
@@ -2149,20 +2217,21 @@ test('emails the provider failed on are never added to a note’s sources unread
     } finally {
       provider.reply = noteReply;
     }
-    // The two newest weren't sent: a note from them alone would make the ten look like mail that turned up late.
+    // The two newest weren't sent: they wait behind the ten, which nothing on the run says failed.
     assert.deepEqual(subjectsSince(from).filter((subject) => subject.startsWith('Plan')), plans.slice(0, 10));
     assert.ok((await marks()).every((mark) => !ids.slice(0, 12).includes(mark.item)), 'nothing of the thread is marked yet');
     await carryOn?.(id);
     await lookAgain(place);
     const again = provider.asked.length;
     await through();
-    // Every email of the thread went to the model, oldest first, and none was added to its note unread.
+    // Every email of the thread went to the model, oldest first, into its one note.
     assert.deepEqual(subjectsSince(again).filter((subject) => subject.startsWith('Plan')), plans);
     const all = await marks();
     assert.deepEqual([all.length, all.filter((mark) => mark.outcome !== 'learned' || mark.interpretation !== 'notes 1')], [14, []]);
     const notes = new Set(all.filter((mark) => ids.slice(0, 12).includes(mark.item)).map((mark) => mark.note));
     assert.equal(notes.size, 1);
     assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${[...notes][0]}`)[0].sources, 12);
+    await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, [...plans, 'Other', 'Last'][at]])), answered);
   };
 
   // A later thread is answered 429, and the run waits as long as the provider says.
@@ -2189,6 +2258,74 @@ test('emails the provider failed on are never added to a note’s sources unread
   });
   // The provider refuses the ten and won't say whether it answers otherwise, so nothing is counted against them, and the run waits for it.
   await ended(() => (body) => (carriesNothing(body) ? failing : tenOldest(body) ? refusing() : noteReply(body)));
+});
+
+test('a failure is kept by its thread, so a failing thread is known as failing however Microsoft serves its page the next time: its emails wait for its next try and are read together then, oldest first, and no note ever cites an email no model read', async () => {
+  // A thread of twelve emails after five others, on one page. The provider fails on the call with its ten oldest.
+  const thread = `AAQk${randomUUID()}=`;
+  const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
+  const olds = Array.from({ length: 5 }, (_, at) => `Old ${at + 1}`);
+  const { account, begin, marks, place, run, ids } = await world([...olds.map((subject, at) => email(subject, 60 - at)), ...plans.map((subject, at) => email(subject, 40 - at, { conversation: thread }))]);
+  await begin();
+  const [asked, from] = [provider.asked.length, provider.answered.length];
+  const subjects = new Map(ids.map((item, at) => [item, [...olds, ...plans][at]]));
+  const sentSince = (since: number) => provider.asked.slice(since).filter((call) => !carriesNothing(call.body)).map((call) => sentIn(call.body));
+  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 1' ? failing : noteReply(body));
+  try {
+    // The others are learned from. The thread's two newest wait with its ten oldest, for its next try, an hour on.
+    const first = await tryPage(place);
+    assert.deepEqual([subjectsSince(asked), (await marks()).length, failuresOf(first.now)], [[...olds, ...plans.slice(0, 10)], 5, [['main', thread, 1]]]);
+    assert.ok(Math.abs(first.wait - 3600) <= 2, `waits ${first.wait}s`);
+  } finally {
+    provider.reply = noteReply;
+  }
+  // Then Microsoft fails on the page, so it's asked for in fewer: the thread comes split over two pages now, five of its emails on the first.
+  microsoft.outage(account);
+  const down = await tryPage(place);
+  assert.deepEqual([down.now.pageSize, failuresOf(down.now)], [10, [['main', thread, 1]]]);
+  microsoft.outage(account, 0);
+  // It's the thread that failed, whichever of its emails come together now: before its try is due, none of them is asked about.
+  const early = provider.asked.length;
+  const waiting = await tryPage(place);
+  assert.deepEqual([provider.asked.length, (await marks()).length, failuresOf(waiting.now)], [early, 5, [['main', thread, 1]]]);
+  assert.ok(waiting.wait > 3500 && waiting.wait <= 3600, `still waits ${waiting.wait}s`);
+  // An hour on, those on the page are read together, oldest first, and the rest on the next page, with the note the first wrote.
+  await hoursPass(place, 1);
+  await through();
+  assert.deepEqual(sentSince(early).map((call) => [call.emails.map((one) => one.Subject), call.earlierNote]), [[plans.slice(0, 5), undefined], [plans.slice(5), 'Plan 5: noted.']]);
+  const all = await marks();
+  assert.deepEqual([all.length, all.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'), new Set(all.slice(5).map((mark) => mark.note)).size], [17, true, 1]);
+  assert.equal((await owner`select body from content where id = ${all.at(-1)!.note}`)[0].body, 'Plan 12: noted, again.');
+  assert.deepEqual([(await run()).state, (await run()).failures], ['following', null]);
+  // Whatever happened on the way, every email a note cites was sent to the model, which answered.
+  await onlyCitesWhatWasRead(place, subjects, from);
+
+  // The same when the thread's first email is gone by its next try, so its call starts with another: it still waits for that try.
+  const other = `AAQk${randomUUID()}=`;
+  const gone = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: other })));
+  await gone.begin();
+  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails.some((one) => one.Subject === 'Plan 2') ? failing : noteReply(body));
+  try {
+    await tryPage(gone.place);
+    microsoft.remove(gone.account, gone.ids[0]);
+    const before = provider.asked.length;
+    const still = await tryPage(gone.place);
+    assert.deepEqual([provider.asked.length, failuresOf(still.now)], [before, [['main', other, 1]]]);
+    // And its second try, an hour on, counts as that.
+    await hoursPass(gone.place, 1);
+    const second = await tryPage(gone.place);
+    assert.deepEqual([subjectsSince(before), failuresOf(second.now)], [plans.slice(1, 11), [['main', other, 2]]]);
+  } finally {
+    provider.reply = noteReply;
+  }
+
+  // A failure kept the earlier way, by the first email of a call, names no thread: it holds nothing back, and is dropped once its page is done.
+  const earlier = await world([email('Alpha', 30), email('Bravo', 20)]);
+  const id = await earlier.begin();
+  await owner`update learning_runs set failures = ${owner.json([['main', earlier.ids[0], 2, Date.now()]] as never)} where id = ${id}`;
+  const since = provider.asked.length;
+  await through();
+  assert.deepEqual([subjectsSince(since), (await earlier.marks()).map((mark) => mark.outcome), (await earlier.run()).failures], [['Alpha', 'Bravo'], ['learned', 'learned'], null]);
 });
 
 test('learning that an assistant proposes starts only when the person approves it, with the provider and model it showed, and a proposal is only ever about their own mailbox', async () => {

@@ -1,7 +1,8 @@
 // A stand-in for a model provider's Chat Completions API, which is outside Homing. It answers as
 // OpenRouter does, with the tokens and what the call cost, unless a test says otherwise, and
 // refuses a key it doesn't know the way OpenAI does, repeating the key. It keeps what it was
-// asked, so a test can see what was sent, and that nothing was.
+// asked, and which of that it answered, so a test can see what was sent, what a model read, and
+// that nothing was.
 
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
@@ -33,6 +34,8 @@ export class ModelStandIn {
   /** The key it takes, which a test hands Homing. */
   readonly key = `sk-test-${randomBytes(24).toString('hex')}`;
   asked: Asked[] = [];
+  /** Those of them it answered, rather than refused or failed on. */
+  answered: Asked[] = [];
   /** How it answers the next request. */
   reply: (body: any) => Reply | Promise<Reply> = () => plainReply();
   private server?: Server;
@@ -52,6 +55,7 @@ export class ModelStandIn {
       const reply = await this.reply(body);
       if (reply.delayMs) await new Promise((resolve) => setTimeout(resolve, reply.delayMs));
       if (res.destroyed) return;
+      if ((reply.status ?? 200) === 200) this.answered.push({ body, authorization: req.headers.authorization });
       res.writeHead(reply.status ?? 200, { 'content-type': 'application/json', ...reply.headers });
       res.end(reply.raw ?? JSON.stringify(reply.json));
     });
