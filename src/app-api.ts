@@ -11,10 +11,10 @@ import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
-import { estimateExtension, estimateLearning, extendLearning, forgetExtension, LearningRefused, nothingThere, notPlaced, pauseLearning, progressOf, resumeLearning, retryable, retryLearning, runsFor, setAsideSenders, setAsideWords, setLearningLimit, setLeftOut, startLearning, summarizeLearning, type Progress, type Run } from './learning.ts';
-import { holdings, suggestMap, summaryFor, type Held } from './map.ts';
+import { estimateExtension, estimateLearning, extendLearning, forgetExtension, LearningRefused, mapLinesOf, nothingThere, notPlaced, pauseLearning, progressOf, resumeLearning, retryable, retryLearning, runsFor, setAsideSenders, setAsideWords, setLearningLimit, setLeftOut, startLearning, summarizeLearning, type MapLine, type Progress, type Run } from './learning.ts';
+import { holdings, mapShown, suggestMap, summaryFor, type Held, type Summary } from './map.ts';
 import { modelName, modelProcessingOf, modelStatement, modelUsageOfEveryone, modelUseThisMonth, monthlyLimit, setModelProcessing, setMonthlyLimit, setRunCeiling } from './model.ts';
-import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
+import { mapWaiting, publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
@@ -987,20 +987,22 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const found = await read(async (s) => ((await spaceView(s, route.id)) ? placesIn(s, route.id) : undefined));
         if (!found) return answer(res, 404, noSpace);
         // How far Homing has learned from each, which only they see, as with the place.
-        const { runs, ceiling } = await read(async (s) => {
+        const { runs, spaces, ceiling } = await read(async (s) => {
           const runs = await runsFor(s, found.map((place) => place.id));
           return {
             runs: new Map(
               await Promise.all(
                 [...runs].map(async ([place, run]) => {
-                  // What each route holds, going by the summary, and what the run met that no route names.
+                  // What each route holds, going by the summary, what the run met that no route names, its map line by line,
+                  // and a map that waits for them to decide.
                   const summary = await summaryFor(s, run);
                   const held = summary ? holdings(summary, run.map, run.state === 'estimating' ? run.estimate : null) : [];
                   const address = found.find((one) => one.id === place)?.connection.address ?? '';
-                  return [place, { run, progress: await progressOf(s, run), held, notPlaced: await notPlaced(s, run, address) }] as const;
+                  return [place, { run, progress: await progressOf(s, run), ...(await mapLinesOf(s, run)), summary, held, notPlaced: await notPlaced(s, run, address), waiting: await mapWaiting(s, place) }] as const;
                 }),
               ),
             ),
+            spaces: runs.size > 0 ? await listSpaces(s) : [],
             ceiling: (await monthlyLimit(s)).runCeiling,
           };
         });
@@ -1026,7 +1028,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               words: { place: kind?.words.place ?? 'place', item: kind?.words.item ?? 'item', items: kind?.words.items ?? 'items', thread: kind?.words.related ?? 'thread' },
               // Whether Homing can summarize who writes there, which a map is worked out from.
               summarizes: Boolean(kind?.follow?.summary),
-              learning: learning ? { ...learningData(learning.run, learning.progress, kind?.words ?? { item: 'item', items: 'items' }), ...mapData(learning.run, learning.held, learning.notPlaced) } : null,
+              learning: learning ? { ...learningData(learning.run, learning.progress, kind?.words ?? { item: 'item', items: 'items' }), ...mapData(learning, spaces) } : null,
             };
           }),
         });
@@ -1303,9 +1305,25 @@ function learningData(run: Run, progress: Progress, words: { item: string; items
   };
 }
 
-/** A run's map as the app shows it: each route and everything else, with what it holds, whether a summary is there, being made or given up, and who isn't placed. */
-function mapData(run: Run, held: Held[], unplaced: Awaited<ReturnType<typeof notPlaced>>) {
-  return { map: run.map, summarizing: run.summarizing, summarized: run.summarized, summaryFailed: run.summaryFailed, held, notPlaced: unplaced };
+/**
+ * A run's map as the app shows it: each route and everything else, by space name, with what it
+ * holds, and who isn't placed. Whether a summary is there, being made or given up, and how much the
+ * one there counted. And whether Homing's model is being asked for a map, or one waits for the
+ * person to decide.
+ */
+function mapData({ run, lines, suggesting, summary, held, notPlaced: unplaced, waiting }: { run: Run; lines: MapLine[]; suggesting: boolean; summary: Summary | null; held: Held[]; notPlaced: Awaited<ReturnType<typeof notPlaced>>; waiting: string | undefined }, spaces: Space[]) {
+  return {
+    map: run.map,
+    mapped: mapShown(run, lines, held, spaces),
+    summarizing: run.summarizing,
+    summarized: run.summarized,
+    summaryFailed: run.summaryFailed,
+    summary: summary && { since: summary.since, emails: summary.emails, senders: summary.senders.length + summary.rest.senders },
+    held,
+    notPlaced: unplaced,
+    suggesting,
+    waiting: waiting ?? null,
+  };
 }
 
 function answer(res: ServerResponse, status: number, body: unknown): true {

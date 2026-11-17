@@ -14,10 +14,10 @@ import * as z from 'zod';
 import { routineAgent } from './assistants.ts';
 import type { Listed } from './connectors.ts';
 import { withPrincipal, type Session } from './db.ts';
-import { cents, folderLeftOut, leftOutBy, LearningRefused, namesSender, nothingThere, routeFor, runsFor, senderNamed, type Estimate, type Learning, type LearningMap, type Route, type Run } from './learning.ts';
+import { cents, folderLeftOut, hasMap, leftOutBy, LearningRefused, namesSender, nothingThere, routeFor, runsFor, senderNamed, type Estimate, type Learning, type LearningMap, type MapLine, type Route, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused, modelOn, type ModelCall } from './model.ts';
 import { oneLine, ownPlace, placeName, quoted, wordsOf, type Place } from './places.ts';
-import { mapWaits, proposeMap, type MapSteps, type Proposal } from './proposals.ts';
+import { mapWaits, proposeMap, type Leads, type MapSteps, type Proposal } from './proposals.ts';
 import { cleanName, listSpaces, sameName, type Space } from './spaces.ts';
 
 /** Who wrote to a place, as its summary lists them. */
@@ -213,6 +213,27 @@ export function holdings(summary: Summary, map: LearningMap, estimate?: Estimate
   const threads = rows.reduce((sum, row) => sum + (read(row.to) ? row.threads : 0), 0);
   if (!estimate || threads === 0) return rows;
   return rows.map((row) => (read(row.to) ? { ...row, low: cents((estimate.low * row.threads) / threads), high: cents((estimate.high * row.threads) / threads) } : row));
+}
+
+/** Where a line of a run's map leads, as its owner sees it, with about what reading it costs, while there's an estimate. */
+export type Line = Leads & Pick<Held, 'low' | 'high'>;
+
+/**
+ * A run's map as its owner sees it where the place is connected, the way a proposal shows one:
+ * each route with where it leads, by name, and what it holds, then everything else. A route whose
+ * sender is left out says where it leads and what leaves them out. A space they can't open has no
+ * name. Null without a map, when everything goes to the place's own space.
+ */
+export function mapShown(run: Run, lines: MapLine[], held: Held[], spaces: Space[]): { routes: ({ who: string } & Line)[]; rest: Line } | null {
+  if (!hasMap(run.map)) return null;
+  const leads = (who: string | null, to: string | null, leftOut?: string): Line => {
+    const row = held.find((one) => one.who === who);
+    const holds = { emails: row?.emails ?? null, threads: row?.threads ?? null, ...(row?.high !== undefined && { low: row.low, high: row.high }), ...(leftOut !== undefined && { leftOut }) };
+    if (to === 'leave out' || to === 'wait') return { to, name: null, ...holds };
+    const space = spaces.find((candidate) => candidate.id === (to ?? run.space));
+    return { to: 'space', name: space ? (space.privateTo !== null && space.parentId === null ? 'Your personal space' : space.name) : null, ...holds };
+  };
+  return { routes: lines.map((line) => ({ who: line.who, ...leads(line.who, line.to, line.leftOut) })), rest: leads(null, run.map.rest) };
 }
 
 /** The answer's form, the same for an assistant and for a model: the spaces to create, the routes, and where everything else goes. */

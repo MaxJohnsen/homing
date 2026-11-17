@@ -187,6 +187,27 @@ export const mapOf = (routes: Route[], leftOut: string[], rest: string | null): 
   return { routes: [...others, ...out.map((who) => ({ who, to: 'leave out' }))], rest };
 };
 
+/** A line of a map as its owner is shown it: a route, and the entry that leaves its sender out, when one does. */
+export type MapLine = Route & { leftOut?: string };
+
+/**
+ * A map line by line, as its owner is shown it, from the routes a run keeps and the senders it
+ * leaves out: each route with where it leads, and with the entry that leaves its sender out when
+ * one does, since the route does nothing until that entry is off the list; then everyone else
+ * who is left out.
+ */
+export const mapLines = (routes: Route[], leftOut: string[]): MapLine[] => {
+  const out = [...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])];
+  const kept = routes.filter((route) => route.to !== 'leave out');
+  return [
+    ...kept.map((route): MapLine => {
+      const entry = leftOutBy(out, route.who);
+      return entry ? { ...route, leftOut: entry } : route;
+    }),
+    ...out.filter((who) => !kept.some((route) => route.who === who)).map((who) => ({ who, to: 'leave out' })),
+  ];
+};
+
 /** The entry among those left out that covers a route's sender: that address, or the whole of the domain it names. */
 export const leftOutBy = (leftOut: string[], who: string) => leftOut.find((entry) => sentBy(entry, who.includes('@') ? who : `someone@${who}`));
 
@@ -231,6 +252,17 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid
   `;
   return new Map(rows.map((row) => [row.place, runOf(row)]));
+}
+
+/**
+ * The person's run's map line by line, as they are shown it where the place is connected, and
+ * whether Homing's own model is being asked for a map of the place now.
+ */
+export async function mapLinesOf(s: Session, run: Run): Promise<{ lines: MapLine[]; suggesting: boolean }> {
+  const [row] = await s.tx<{ routes: Route[]; suggesting: boolean }[]>`
+    select routes, coalesce(map_asked_until > now(), false) as suggesting from learning_runs where id = ${run.id}::uuid
+  `;
+  return { lines: mapLines(row?.routes ?? [], run.leftOut.senders), suggesting: row?.suggesting ?? false };
 }
 
 /** How many senders each reason names at first, and how many more each further look gives. The rest are counted. */

@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
-import { mapOf, noModel, runsFor, type Estimate, type Route } from './learning.ts';
+import { mapLines, mapOf, noModel, runsFor, type Estimate, type MapLine, type Route } from './learning.ts';
 import { holdings, summaryFor } from './map.ts';
 import { ownPlace, type Place as ConnectedPlace } from './places.ts';
 import { readSkill } from './skills.ts';
@@ -257,12 +257,18 @@ export interface PlanStepView {
   cant: string;
 }
 
-/** Where a route leads, as the person sees it: a space by name, one the plan creates, leave out, or wait; and what it holds, when a summary says. */
+/**
+ * Where a route leads, as the person sees it: a space by name, one the plan creates, leave out, or
+ * wait; and what it holds, when a summary says. A route whose sender is left out by another entry
+ * of what's left out, or by their own, still says where it leads, with that entry, since it does
+ * nothing until the person takes the entry off.
+ */
 export interface Leads {
   to: 'space' | 'new space' | 'leave out' | 'wait';
   name: string | null;
   emails: number | null;
   threads: number | null;
+  leftOut?: string;
 }
 
 /** A map as the person decides it. */
@@ -721,14 +727,18 @@ const mapsWaiting = (s: Session, place: string) => s.tx<{ id: string }[]>`
     and exists (select from jsonb_array_elements(change -> 'steps') as step where step ->> 'action' = 'learning map' and step ->> 'place' = ${place})
 `;
 
+/** The map that waits for the person to decide, for one of their places, if one does. */
+export const mapWaiting = async (s: Session, place: string) => (await mapsWaiting(s, place))[0]?.id;
+
 /** Whether a map for one of the person's places waits for them to decide. */
-export const mapWaits = async (s: Session, place: string) => (await mapsWaiting(s, place)).length > 0;
+export const mapWaits = async (s: Session, place: string) => (await mapWaiting(s, place)) !== undefined;
 
 /**
  * A map step as the reader sees it now: where each route leads, by name, what it holds going by
  * the run's summary, and why it can't be set, if it can't. While it waits, it's shown as approving
  * it would set it now: with everyone the run leaves out, who stay left out, and with where
- * everything else goes as it is when the map doesn't say.
+ * everything else goes as it is when the map doesn't say. A route for someone left out keeps where
+ * it leads, and says who leaves them out.
  */
 async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { action: 'learning map' }>, steps: (PlanStep | MapStep)[], spaces: Space[], open: boolean): Promise<Pick<PlanStepView, 'map' | 'problem' | 'cant'>> {
   const place = await ownPlace(s, step.place);
@@ -738,9 +748,10 @@ async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { a
   const held = summary ? holdings(summary, set) : [];
   const words = step.words ?? { place: 'mailbox', items: 'emails' };
   let missing = false;
-  const leads = (who: string | null, to: string | null): Leads => {
+  const lines: MapLine[] = open && run ? mapLines(step.routes, run.leftOut.senders) : step.routes;
+  const leads = (who: string | null, to: string | null, leftOut?: string): Leads => {
     const holds = held.find((row) => row.who === who);
-    const counts = { emails: holds?.emails ?? null, threads: holds?.threads ?? null };
+    const counts = { emails: holds?.emails ?? null, threads: holds?.threads ?? null, ...(leftOut !== undefined && { leftOut }) };
     if (to === 'leave out' || to === 'wait') return { to, name: null, ...counts };
     const made = to?.startsWith('step ') ? steps[Number(to.slice(5))] : undefined;
     if (made?.action === 'add space') return { to: 'new space', name: made.name, ...counts };
@@ -748,7 +759,7 @@ async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { a
     if (!space || space.archived) missing = true;
     return { to: 'space', name: space ? (space.privateTo !== null && space.parentId === null ? 'Your personal space' : space.name) : null, ...counts };
   };
-  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: set.routes.map((route) => ({ who: route.who, ...leads(route.who, route.to) })), rest: leads(null, set.rest) };
+  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: lines.map((line) => ({ who: line.who, ...leads(line.who, line.to, line.leftOut) })), rest: leads(null, set.rest) };
   let problem: string | null = null;
   if (open) {
     if (!place || !run) problem = `That ${words.place} isn’t connected here any more, so there’s nothing to set.`;
@@ -1114,7 +1125,7 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
     shown: JSON.stringify([
       create?.name ?? '',
       ...views.map((step) =>
-        step.item ? `${step.item.page}\n${step.item.text}` : step.task ? step.task.shown : step.space ? `${step.space.name}\n${step.space.in}` : step.map ? JSON.stringify([step.map.routes.map((route) => [route.who, route.to, route.name]), step.map.rest.to, step.map.rest.name]) : step.rule?.now ?? '',
+        step.item ? `${step.item.page}\n${step.item.text}` : step.task ? step.task.shown : step.space ? `${step.space.name}\n${step.space.in}` : step.map ? JSON.stringify([step.map.routes.map((route) => [route.who, route.to, route.name, route.leftOut ?? null]), step.map.rest.to, step.map.rest.name]) : step.rule?.now ?? '',
       ),
     ]),
   };

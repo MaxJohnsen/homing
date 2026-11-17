@@ -974,6 +974,15 @@ describe('through the app’s endpoints', () => {
         [[intruder.connection.map.route, 12], [null, 0]],
         { senders: [{ sender: intruder.connection.map.unplaced, items: 3 }], more: 0 },
       ]);
+      // As the screen shows it: the route by its space's name, what Homing counted, and nothing of a map that waits or is being suggested.
+      assert.deepEqual([own.mapped, own.summary, own.summarized, own.suggesting, own.waiting], [
+        { routes: [{ who: intruder.connection.map.route, to: 'space', name: `${intruder.name}’s client`, emails: 12, threads: 5, low: own.held[0].low, high: own.held[0].high }], rest: { to: 'wait', name: null, emails: 0, threads: 0 } },
+        { since: '2025-01-01T00:00:00.000Z', emails: 12, senders: 1 },
+        '2026-11-17T09:00:00.000Z',
+        false,
+        null,
+      ]);
+      assert.doesNotMatch(JSON.stringify((await get(`/api/spaces/${intruder.space}/connections`)).body), new RegExp([`${target.name}’s client`, target.space, target.connection.address, target.connection.place, ...Object.values(target.connection.map)].join('|')));
       const overwritten = await browser.json(`/api/spaces/${target.space}/overview`, { text: 'Hello', shared: true });
       assert.equal(overwritten.status, 404);
       seen.push(overwritten.body);
