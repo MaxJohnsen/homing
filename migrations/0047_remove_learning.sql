@@ -4,6 +4,10 @@
 -- maps go. What learning wrote stays: its notes are the person's knowledge,
 -- and its model calls stay recorded with what they cost.
 
+-- Everything this touches is locked at once, so a run that is calling a model
+-- while Homing is updated waits for this, and can't deadlock with it.
+lock table learning_runs, learned_items, model_calls, model_spending, proposals in access exclusive mode;
+
 -- Proposals to start or extend learning, and plans that set a map, go with
 -- the runs they were about, waiting or decided. Withdrawing them wouldn't
 -- do: proposals as 0044 has them can't hold any of these, and nothing reads
