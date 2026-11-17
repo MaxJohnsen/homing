@@ -260,12 +260,17 @@ export function setAside(change: Change, leftOut: LeftOut): { reason: string; be
   // What an email says about itself, its owner can overrule for a sender. Where it lies, or that it can't be read, nobody can.
   const overruled = (change.setAside === 'newsletter' || change.setAside === 'automated') && address !== undefined && leftOut.kept.some((entry) => sentBy(entry, address));
   if (change.setAside && !overruled) return { reason: change.setAside };
-  const folder = change.folder?.trim().toLowerCase();
-  const inFolder = folder && leftOut.folders.find((name) => name.trim().toLowerCase() === folder);
+  const inFolder = folderLeftOut(change.folder, leftOut);
   if (inFolder) return { reason: 'excluded folder', because: inFolder };
   const from = address && leftOut.senders.find((entry) => sentBy(entry, address));
   if (from) return { reason: 'excluded sender', because: from };
   return undefined;
+}
+
+/** The entry of its owner's that leaves out a folder, by its name, if one does. */
+export function folderLeftOut(folder: string | null, leftOut: LeftOut): string | undefined {
+  const named = folder?.trim().toLowerCase();
+  return named ? leftOut.folders.find((name) => name.trim().toLowerCase() === named) : undefined;
 }
 
 /**

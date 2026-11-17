@@ -194,26 +194,34 @@ function quotedPart(body: string, own: string[]): string[] {
  * write it in English and Norwegian. Both as paragraphs.
  */
 export function splitQuoted(body: string): { own: string[]; earlier: string[] } {
-  const lines = body.replace(/\r\n?/g, '\n').split('\n');
+  const lines = linesOf(body);
   const plainLines = lines.map(flat);
-  const header = (at: number) =>
-    /^(From|Fra|Von|Från):\s/i.test(plainLines[at]) && plainLines.slice(at + 1, at + 5).some((line) => /^(Sent|Sendt|Date|Dato|Gesendet|Skickat):\s/i.test(line));
-  const starts = (at: number) =>
-    /^-{2,}\s*(Original Message|Opprinnelig melding)\s*-{2,}$/i.test(plainLines[at]) ||
-    /^_{8,}$/.test(plainLines[at]) ||
-    /^On\s.*\bwrote:$/i.test(plainLines[at]) ||
-    (/^On\s/i.test(plainLines[at]) && /\bwrote:$/i.test(plainLines[at + 1] ?? '')) ||
-    /\d.*\bskrev\b.*:$/i.test(plainLines[at]) ||
-    header(at);
-  const first = plainLines.findIndex((_, at) => starts(at));
+  const first = plainLines.findIndex((line, at) => /^_{8,}$/.test(line) || startsQuoted(plainLines, at));
   const before = first < 0 ? lines : lines.slice(0, first);
-  const quotes = (line: string) => /^\s*>/.test(line);
   return {
     // A quoted line among the sender's own ends a paragraph, as a blank line would.
     own: paragraphs(before.map((line) => (quotes(line) ? '' : line)).join('\n')),
     earlier: paragraphs([...before.map((line) => (quotes(line) ? line : '')), '', ...(first < 0 ? [] : lines.slice(first))].join('\n')),
   };
 }
+
+/**
+ * Whether an email's text carries what came before it, by quoting an earlier email: a line starts
+ * with ">", or starts a quoted email. A line of underscores alone doesn't count, since a signature
+ * has one too. A quote written some other way isn't seen, which errs on the safe side: the thread's
+ * earlier emails are then read besides.
+ */
+export const carriesEarlier = (body: string) => linesOf(body).map(flat).some((line, at, plainLines) => quotes(line) || startsQuoted(plainLines, at));
+
+const linesOf = (body: string) => body.replace(/\r\n?/g, '\n').split('\n');
+const quotes = (line: string) => /^\s*>/.test(line);
+/** Whether the line there starts a quoted email: the header of a reply or a forward, or the line written above one. */
+const startsQuoted = (plainLines: string[], at: number) =>
+  /^-{2,}\s*(Original Message|Opprinnelig melding)\s*-{2,}$/i.test(plainLines[at]) ||
+  /^On\s.*\bwrote:$/i.test(plainLines[at]) ||
+  (/^On\s/i.test(plainLines[at]) && /\bwrote:$/i.test(plainLines[at + 1] ?? '')) ||
+  /\d.*\bskrev\b.*:$/i.test(plainLines[at]) ||
+  (/^(From|Fra|Von|Från):\s/i.test(plainLines[at]) && plainLines.slice(at + 1, at + 5).some((line) => /^(Sent|Sendt|Date|Dato|Gesendet|Skickat):\s/i.test(line)));
 
 /**
  * The words, found in one paragraph, or across them, with up to a little of what's around them

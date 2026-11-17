@@ -110,6 +110,13 @@ export interface Follow {
   items(access: Access, ids: string[]): Promise<Change[]>;
   /** How many items the scope holds, as the system counts them, for an estimate. */
   count(access: Access, scope: Scope): Promise<number>;
+  /**
+   * Items of a change's thread by their ids, from among those the change names as earlier, oldest
+   * first, each as changes gives it and read with what the change is read with. `from` is the
+   * checkpoint the change's page gave. Asked for one at a time, it gives an item it can't read as
+   * set aside. A kind whose items belong to nothing has none.
+   */
+  earlier?(access: Access, change: Change, ids: string[], options: { from: string; size?: number }): Promise<Change[]>;
 }
 
 /** What learning covers: from a time, and up to one, or on with what arrives. */
@@ -139,6 +146,8 @@ export interface Change {
   thread: string | null;
   /** Where it is there, such as its folder, by name. */
   folder: string | null;
+  /** What its thread holds from before it that it doesn't carry itself, as a reply does by quoting: newest first, by id and where each is, but for what lies where the connector leaves everything out, such as junk. */
+  earlier?: { id: string; folder: string | null }[];
   /** Why it needs no model, by the system's own signs, such as a newsletter's headers. */
   setAside?: SetAside;
 }
