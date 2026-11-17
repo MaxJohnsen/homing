@@ -331,6 +331,44 @@ test('a scope with an end is walked up to it and no further, and more emails in 
   assert.deepEqual([done.changes.length, done.caughtUp], [0, true]);
 });
 
+test('a thread’s earlier emails come from Microsoft by its conversation and the time they arrived, a page at a time, and Homing puts them in order, each as the walk through history gives it', async () => {
+  const thread = `AAQk${randomUUID()}=`;
+  const subjects = Array.from({ length: 8 }, (_, at) => `Minutes ${at + 1}`);
+  const { ana, account, connection, ids } = await world([
+    ...subjects.map((subject, at) => email(subject, 80 - at, { conversation: thread, ...(at === 2 && { folder: 'junkemail' }) })),
+    email('Another thread', 76),
+  ]);
+  const { follow, access, onward } = await following(ana, account, connection, 100);
+  const walked = (await onward(null)).changes;
+  // The first six arrived before then, and the last two after.
+  const before = new Date(Date.now() - 74.5 * day);
+  const asked = microsoft.earlier.length;
+  microsoft.shortPages(account, 4);
+  try {
+    const earlier = await follow.earlier!(access, [thread], before);
+    assert.deepEqual(earlier.map((change) => change.item.envelope.title), subjects.slice(0, 6));
+    // Asked by the conversation and the time alone, a page and then its link: Microsoft gave them newest first.
+    const filter = `conversationId eq '${thread}' and receivedDateTime lt ${before.toISOString()}`;
+    assert.deepEqual(microsoft.earlier.slice(asked), [filter, filter]);
+    // Each is what the walk gives: the same id and version, so a run that walks there later finds it read, with its thread, its folder and what sets it aside.
+    for (const change of earlier) {
+      const same = walked.find((one) => one.item.envelope.id === change.item.envelope.id)!;
+      assert.deepEqual([change.version, change.thread, change.folder, change.setAside, change.item.text], [same.version, thread, same.folder, same.setAside, same.item.text]);
+    }
+    assert.deepEqual([earlier[2].setAside, earlier[2].folder, earlier[0].item.related.length], ['junk', 'Junk Email', 8]);
+    // A thread with nothing from before then gives nothing.
+    assert.deepEqual(await follow.earlier!(access, [thread], new Date(Date.now() - 90 * day)), []);
+    // An email Microsoft can't give fails the lot, until they're asked for one at a time: then it comes set aside, and the rest as they are.
+    microsoft.poison(account, ids[1]);
+    await assert.rejects(follow.earlier!(access, [thread], before));
+    const careful = await follow.earlier!(access, [thread], before, { size: 1 });
+    assert.deepEqual(careful.map((change) => [change.item.envelope.id, change.setAside]), ids.slice(0, 6).map((id, at) => [id, at === 1 ? 'unreadable' : at === 2 ? 'junk' : undefined]));
+  } finally {
+    microsoft.shortPages(account);
+    microsoft.poison(account, ids[1], false);
+  }
+});
+
 test('a folder whose changes Microsoft forgot is followed again, whatever code it answers with, and nothing is lost', async () => {
   const { ana, account, connection } = await world([email('Old news', 30)]);
   const { onward } = await following(ana, account, connection);
@@ -2071,40 +2109,199 @@ test('a thread with more emails in a page than one call takes is read in several
   assert.match(forward.quotes!, /Clause 40 says/);
 });
 
-test('going further back, an older email of a thread that has its note is read by a model before the note cites it: as background, so the note still holds what came later', async () => {
+test('a thread that began before the run’s start is read from its beginning the first time it’s met, and going further back then makes no call for those earlier emails', async () => {
   const thread = `AAQk${randomUUID()}=`;
-  const { ana, begin, marks, mine, extend, place, ids } = await world([
+  const { ana, begin, marks, mine, run, extend, place, ids } = await world([
     email('Budget', 300, { conversation: thread, html: '<p>The budget is NOK 1 million.</p>' }),
-    email('Re: Budget', 20, { conversation: thread, html: '<p>The board raised the budget to NOK 2 million.</p>' }),
+    email('Budget asked', 250, { conversation: thread, html: '<p>Can the board raise it?</p>' }),
+    email('Budget decided', 20, { conversation: thread, html: '<p>The board raised the budget to NOK 2 million.</p>' }),
+    email('Ended before', 200),
+    email('Workshop', 10),
   ]);
-  const from = provider.answered.length;
+  const [budget, asked, decided, , workshop] = ids;
+  const [from, sent, looked] = [provider.answered.length, provider.asked.length, microsoft.earlier.length];
   const id = await begin(100);
   await through();
-  const [{ note }] = await marks();
-  const written = async () => (await owner`select body from content where id = ${note}`)[0].body;
-  const progress = () => withPrincipal(sql, { person: ana.id }, async (s) => progressOf(s, await mine()));
-  assert.equal(await written(), 'Re: Budget: noted.');
-  // Going further back brings the thread's first email, which the estimate counted as one a model reads.
-  const asked = provider.asked.length;
-  const added = await extend(365);
-  assert.deepEqual([added?.items, added?.threads], [1, 1]);
-  await through();
-  // It's sent to the model with the note, marked as older than what the note holds.
-  const calls = provider.asked.slice(asked).map((call) => sentIn(call.body));
-  assert.deepEqual(calls.map((call) => [call.emails.map((one) => [one.Subject, one.older]), call.earlierNote]), [[[['Budget', true]], 'Re: Budget: noted.']]);
-  // The note is written again, and still says what came later. It rests on both, each learned from by the interpretation that read it.
-  assert.equal(await written(), 'Re: Budget: noted. After Budget.');
-  assert.deepEqual((await marks()).map((mark) => [mark.outcome, mark.interpretation, mark.note === note]), [['learned', 'notes 1', true], ['learned', 'notes 1', true]]);
-  assert.deepEqual([(await progress()).learned, (await progress()).threads], [2, 1], 'one thread of two emails');
-  assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${note}`)[0].sources, 2);
-  assert.equal((await owner`select count(*)::integer as revisions from revisions where content_id = ${note}`)[0].revisions, 1);
-  // That was a call like any other in its history, against the run's limit.
+  // The thread's first two emails arrived before the run's start. They go to the model with the third, oldest first, in the one call, none of them as background.
+  const calls = provider.asked.slice(sent).map((call) => sentIn(call.body));
+  assert.deepEqual(calls.map((call) => [call.emails.map((one) => [one.Subject, one.text, one.older]), call.earlierNote]), [
+    [[['Budget', 'The budget is NOK 1 million.', undefined], ['Budget asked', 'Can the board raise it?', undefined], ['Budget decided', 'The board raised the budget to NOK 2 million.', undefined]], undefined],
+    [[['Workshop', 'Workshop: the board decided on Monday.', undefined]], undefined],
+  ]);
+  // Each is marked as learned from, with the thread's one note, which cites all three. The thread that ended before the start isn't read.
+  const first = await marks();
+  const note = first.find((mark) => mark.item === decided)!.note;
+  assert.deepEqual(first.map((mark) => mark.item).sort(), [budget, asked, decided, workshop].sort());
+  assert.ok(first.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'));
+  assert.deepEqual(first.filter((mark) => mark.note === note).map((mark) => mark.item).sort(), [budget, asked, decided].sort());
+  assert.equal((await owner`select body from content where id = ${note}`)[0].body, 'Budget decided: noted.');
+  assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${note}`)[0].sources, 3);
+  // They count like any other email: in how far the run has come, and against its limit.
+  const progress = await withPrincipal(sql, { person: ana.id }, async (s) => progressOf(s, await mine()));
+  assert.deepEqual([progress.learned, progress.threads], [4, 2]);
   assert.deepEqual((await owner`select run_history from model_calls where run_id = ${id}`).map((call) => call.runHistory), [true, true]);
-  await onlyCitesWhatWasRead(place, new Map([[ids[0], 'Budget'], [ids[1], 'Re: Budget']]), from);
+  // Microsoft was asked for the earlier part of the one thread that showed something from before the start, by its conversation and that time, and for no other.
+  assert.deepEqual(microsoft.earlier.slice(looked), [`conversationId eq '${thread}' and receivedDateTime lt ${(await mine()).since.toISOString()}`]);
 
-  // Alone or with something newer, an email older than what the note rests on is a call, which an estimate counts, and goes marked as background.
+  // Going further back, Microsoft counts three emails in what that adds. Two of them are read already, as they were: only the thread that ended before the old start is sent.
+  const again = provider.asked.length;
+  const added = await extend(365);
+  assert.equal(added?.items, 3);
+  await through();
+  assert.deepEqual(subjectsSince(again), ['Ended before']);
+  const second = await marks();
+  assert.equal(second.length, 5);
+  for (const item of [budget, asked]) assert.deepEqual(second.find((mark) => mark.item === item), first.find((mark) => mark.item === item));
+  assert.deepEqual([(await run()).state, (await mine()).extending, microsoft.earlier.length], ['following', null, looked + 1]);
+  await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, ['Budget', 'Budget asked', 'Budget decided', 'Ended before', 'Workshop'][at]])), from);
+});
+
+test('a long thread from before the start is read in several calls, in order: a call the provider fails on waits and is tried again like any other, Homing stopping on the way repeats only what wasn’t marked, and no note cites an email no model read', async () => {
+  // Twenty-three emails of a thread arrived before the run's start, and two after it.
+  const thread = `AAQk${randomUUID()}=`;
+  const plans = Array.from({ length: 25 }, (_, at) => `Plan ${at + 1}`);
+  const { account, begin, marks, run, place, ids } = await world(plans.map((subject, at) => email(subject, at < 23 ? 300 - at : 43 - at, { conversation: thread })));
+  await begin(100);
+  const [sent, from] = [provider.asked.length, provider.answered.length];
+  const sentSince = (since: number) => provider.asked.slice(since).filter((call) => !carriesNothing(call.body)).map((call) => sentIn(call.body));
+  const subjectsOf = (calls: Sent[]) => calls.map((call) => call.emails.map((one) => one.Subject));
+  // Microsoft gives the thread's earlier part a few at a time, newest first.
+  microsoft.shortPages(account, 7);
+  provider.reply = (body) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === 'Plan 11' ? failing : noteReply(body));
+  try {
+    // The ten oldest are read and marked. The provider fails on the next ten, so the last five wait behind them, the two from after the start among them.
+    const first = await tryPage(place);
+    assert.deepEqual(subjectsOf(sentSince(sent)), [plans.slice(0, 10), plans.slice(10, 20)]);
+    assert.deepEqual([(await marks()).length, failuresOf(first.now), first.now.checkpoint, first.now.state], [10, [['main', thread, 1]], null, 'learning history']);
+    assert.ok(Math.abs(first.wait - 3600) <= 2, `waits ${first.wait}s`);
+    // Looked at before the thread's next try, nothing of it is asked about.
+    await tryPage(place);
+    assert.equal(sentSince(sent).length, 2);
+  } finally {
+    provider.reply = noteReply;
+  }
+  try {
+    // An hour on the provider answers for those ten, with the note the first ten wrote. Homing stops right after.
+    await hoursPass(place, 1);
+    let calls = 0;
+    const stopping: Interpretation = {
+      ...notes,
+      learn: (batch, ask) => {
+        if (++calls === 2) throw new Error('Homing stopped here');
+        return notes.learn(batch, ask);
+      },
+    };
+    await quietly(() => page({ interpretation: stopping }));
+    assert.deepEqual([subjectsOf(sentSince(sent).slice(2)), sentSince(sent)[2].earlierNote, (await marks()).length, (await run()).checkpoint], [[plans.slice(10, 20)], 'Plan 10: noted.', 20, null]);
+    // The next worker asks for the thread's earlier part again, finds twenty of it read, and reads the five that are left, with the note.
+    await through();
+    assert.deepEqual([subjectsOf(sentSince(sent).slice(3)), sentSince(sent)[3].earlierNote], [[plans.slice(20)], 'Plan 20: noted, again.']);
+  } finally {
+    microsoft.shortPages(account);
+  }
+  const all = await marks();
+  assert.deepEqual([all.length, all.every((mark) => mark.outcome === 'learned' && mark.interpretation === 'notes 1'), new Set(all.map((mark) => mark.note)).size, (await run()).state], [25, true, 1, 'following']);
+  assert.equal((await owner`select body from content where id = ${all[0].note}`)[0].body, 'Plan 25: noted, again.');
+  assert.equal((await owner`select count(*)::integer as sources from citations where content_id = ${all[0].note}`)[0].sources, 25);
+  await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, plans[at]])), from);
+});
+
+test('what is left out stays left out in a thread’s earlier emails, each by itself: junk, deleted mail, a folder Ana left out and a newsletter, while a sender she keeps is read. And mail from a sender she left out, anywhere in a thread, sets all of it aside', async () => {
+  const [offer, terms] = [`AAQk${randomUUID()}=`, `AAQk${randomUUID()}=`];
+  const list = { 'List-Id': '<project.groups.acme.test>' };
+  const subjects = ['Offer', 'Offer in junk', 'Offer deleted', 'Offer receipt', 'Offer digest', 'Offer through the group', 'Offer accepted', 'Terms', 'Terms from the shop', 'Terms agreed'];
+  const { ana, place, me, marks, mine, leaveOut, ids } = await world([
+    email(subjects[0], 300, { conversation: offer }),
+    email(subjects[1], 290, { conversation: offer, folder: 'junkemail' }),
+    email(subjects[2], 280, { conversation: offer, folder: 'deleteditems' }),
+    email(subjects[3], 270, { conversation: offer, folder: 'Receipts' }),
+    email(subjects[4], 260, { conversation: offer, from: { name: 'Project digest', address: 'digest@groups.acme.test' }, headers: list }),
+    email(subjects[5], 250, { conversation: offer, from: { name: 'Kari Nilsen', address: 'kari@acme.test' }, headers: list }),
+    email(subjects[6], 20, { conversation: offer }),
+    email(subjects[7], 300, { conversation: terms }),
+    email(subjects[8], 290, { conversation: terms, from: { name: 'The shop', address: 'news@shop.test' } }),
+    email(subjects[9], 20, { conversation: terms }),
+  ]);
+  const estimated = await estimateLearning(learning, me, place, new Date(Date.now() - 100 * day));
+  await leaveOut({ senders: ['shop.test'], folders: ['Receipts'], kept: ['kari@acme.test'] });
+  await withPrincipal(sql, me, (s) => startLearning(learning, s, estimated, 5));
+  const [sent, from] = [provider.asked.length, provider.answered.length];
+  await through();
+  // Of the first thread's six emails from before the start, a model reads the two that nothing leaves out, with the one from after it. Of the second, nothing: the shop wrote in it, before the start.
+  assert.deepEqual(subjectsSince(sent), ['Offer', 'Offer through the group', 'Offer accepted']);
+  const by = new Map((await marks()).map((mark) => [mark.item, [mark.reason ?? mark.outcome, mark.because]]));
+  assert.deepEqual(ids.map((item) => by.get(item)), [
+    ['learned', null], ['junk', null], ['deleted', null], ['excluded folder', 'Receipts'], ['newsletter', null], ['learned', null], ['learned', null],
+    ['excluded sender', 'shop.test'], ['excluded sender', 'shop.test'], ['excluded sender', 'shop.test'],
+  ]);
+  // What was set aside counts the earlier emails like any other.
+  const progress = await withPrincipal(sql, { person: ana.id }, async (s) => progressOf(s, await mine()));
+  assert.deepEqual([progress.learned, progress.threads], [3, 1]);
+  assert.deepEqual(Object.fromEntries(progress.setAside.map((aside) => [aside.reason, aside.items])), { 'excluded sender': 3, junk: 1, deleted: 1, 'excluded folder': 1, newsletter: 1 });
+  // Ana takes the folder off the list: the email set aside for it is learned from after all, as what came before the note.
+  const again = provider.asked.length;
+  await leaveOut({ senders: ['shop.test'], folders: [], kept: ['kari@acme.test'] });
+  await through();
+  assert.deepEqual(provider.asked.slice(again).map((call) => [sentIn(call.body).emails.map((one) => [one.Subject, one.older]), sentIn(call.body).earlierNote]), [[[['Offer receipt', true]], 'Offer accepted: noted.']]);
+  // She takes the shop off it too. The thread set aside for it is learned from after all: from its beginning, each email once.
+  const whole = provider.asked.length;
+  await leaveOut({ senders: [], folders: [], kept: ['kari@acme.test'] });
+  await through();
+  assert.deepEqual(provider.asked.slice(whole).map((call) => [sentIn(call.body).emails.map((one) => [one.Subject, one.older]), sentIn(call.body).earlierNote]), [[[['Terms', undefined], ['Terms from the shop', undefined], ['Terms agreed', undefined]], undefined]]);
+  await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, subjects[at]])), from);
+});
+
+test('a thread first met while the run follows, or on its way further back, is read from its beginning there too: a reply to an old thread against the monthly limit, like anything that arrives', async () => {
+  const [old, older, away] = [`AAQk${randomUUID()}=`, `AAQk${randomUUID()}=`, `AAQk${randomUUID()}=`];
+  const subjects = ['Lease', 'Lease terms', 'Audit', 'Audit findings', 'Recent', 'Leave', 'Leave: out of office'];
+  const { account, begin, marks, place, extend, ids } = await world([
+    email(subjects[0], 300, { conversation: old }),
+    email(subjects[1], 290, { conversation: old }),
+    email(subjects[2], 400, { conversation: older }),
+    email(subjects[3], 200, { conversation: older }),
+    email(subjects[4], 20),
+    email(subjects[5], 300, { conversation: away }),
+    email(subjects[6], 30, { conversation: away, headers: { 'Auto-Submitted': 'auto-replied' } }),
+  ]);
+  const [sent, from] = [provider.asked.length, provider.answered.length];
+  const id = await begin(100);
+  await through();
+  // Two threads ended before the start, so the run never met them. Of the third it saw an automatic reply, which no model read.
+  assert.deepEqual([subjectsSince(sent), (await marks()).map((mark) => mark.reason ?? mark.outcome).sort()], [['Recent'], ['automated', 'learned']]);
+  const history = async () => (await owner`select run_history from model_calls where run_id = ${id} order by started_at`).map((call) => call.runHistory);
+  const calls = (since: number) => provider.asked.slice(since).map((call) => sentIn(call.body).emails.map((one) => one.Subject));
+  const arrives = async (subject: string, conversation?: string) => {
+    const arrived = microsoft.deliver(account, email(subject, 0, { ...(conversation && { conversation }) }));
+    await lookAgain(place);
+    await through();
+    return arrived;
+  };
+
+  // A reply arrives in one of them. That's the first the run sees of the thread, so it's read from its beginning. It costs what arriving mail costs, against the month's limit.
+  const reply = await arrives('Lease signed', old);
+  assert.deepEqual([calls(sent + 1), await history(), (await marks()).length], [[['Lease', 'Lease terms', 'Lease signed']], [true, false], 5]);
+  // A thread that starts now has nothing earlier, and Microsoft isn't asked for any.
+  const looked = microsoft.earlier.length;
+  const fresh = await arrives('New matter');
+  assert.deepEqual([calls(sent + 2), microsoft.earlier.length], [[['New matter']], looked]);
+  // A thread of which only what needed no model was seen is still read for the first time.
+  const approved = await arrives('Leave approved', away);
+  assert.deepEqual([calls(sent + 3), (await marks()).length], [[['Leave', 'Leave approved']], 8]);
+
+  // Going further back meets the other thread, whose first email is from before that too: both are read, against the run's limit.
+  assert.ok(await extend(250));
+  await through();
+  assert.deepEqual([calls(sent + 4), await history(), (await marks()).length], [[['Audit', 'Audit findings']], [true, false, false, false, true], 10]);
+  // Further back still is where the other two began, which are read already: nothing is sent.
+  assert.ok(await extend(365));
+  await through();
+  assert.deepEqual([provider.asked.length, (await marks()).length], [sent + 5, 10]);
+  await onlyCitesWhatWasRead(place, new Map([...ids.map((item, at): [string, string] => [item, subjects[at]]), [reply, 'Lease signed'], [fresh, 'New matter'], [approved, 'Leave approved']]), from);
+});
+
+test('an email older than what a thread’s note rests on goes to the model marked as background, alone or beside newer ones, and is a call an estimate counts', () => {
   const batch = (items: Date[], upTo: Date) => ({
-    space: randomUUID(), words: { place: 'mailbox', item: 'email', items: 'emails', title: 'subject', related: 'conversation' } as never, thread, earlier: 'The earlier note.', earlierUpTo: upTo,
+    space: randomUUID(), words: { place: 'mailbox', item: 'email', items: 'emails', title: 'subject', related: 'conversation' } as never, thread: 'AAQkThread=', earlier: 'The earlier note.', earlierUpTo: upTo,
     items: items.map((at, n) => ({ envelope: { id: `i${n}`, title: `Email ${n}`, at, author: null, audience: 'unknown' as const }, fields: [], text: `Text ${n}`, related: [], moreRelated: false })),
   });
   const [old, recent, newer] = [new Date(Date.now() - 300 * day), new Date(Date.now() - 20 * day), new Date(Date.now() - day)];
@@ -2636,6 +2833,33 @@ test('an estimate asks Microsoft for a count and two pages, never for each threa
   assert.equal(microsoft.asked.reads - before.reads, 0, 'no email is asked for by itself');
   // The count, two pages, and the mailbox's folders for each page: the same for 300 emails in 120 threads as for three.
   assert.ok(made <= 16, `${made} requests`);
+});
+
+test('an estimate leaves room at its top for a thread that began before the scope, going by what the scope’s first emails show, and says that such threads are read from their beginning', async () => {
+  // Prices high enough for one thread to show in an estimate, which is in cents.
+  const dear = { ...learning, model: provider.model({ MODEL_PRICES: 'test/capable=2/10, test/cheaper=100/500' }) };
+  const since = new Date(Date.now() - 100 * day);
+  const opening = { html: '<p>Can we meet on Thursday?</p>' };
+  const reply = { html: '<p>Thursday works.</p><p>On Monday, Gunnar Lie wrote:</p><blockquote>Can we meet on Friday?</blockquote>', unique: '<p>Thursday works.</p>' };
+  const estimated = async (first: Partial<Email>, second: Partial<Email>) => {
+    const thread = `AAQk${randomUUID()}=`;
+    const { place, me } = await world([email('Meeting', 50, { conversation: thread, ...first }), email('Meeting', 40, { conversation: thread, ...second })]);
+    const [requests, looked] = [microsoft.asked.graph, microsoft.earlier.length];
+    const { estimate } = await estimateLearning(dear, me, place, since);
+    assert.equal(microsoft.earlier.length, looked, 'no thread is asked for its earlier part');
+    return { estimate: estimate!, place, me, requests: microsoft.asked.graph - requests };
+  };
+  // The same two emails either way. Where the scope's first email quotes one from before it, the thread began earlier.
+  const [within, across] = [await estimated(opening, reply), await estimated(reply, opening)];
+  assert.deepEqual([within.estimate.items, across.estimate.items, across.requests], [2, 2, within.requests]);
+  // How far back it reaches isn't known: the top has room for one more call of ten emails at what an email of the sample costs. The rest is as it was.
+  assert.equal(across.estimate.low, within.estimate.low);
+  assert.ok(Math.abs(across.estimate.high / within.estimate.high - 6) < 0.05, `${within.estimate.high} and ${across.estimate.high}`);
+  assert.ok(across.estimate.limit > within.estimate.limit);
+  // Ana's assistant is told so with the estimate.
+  const links = { connections: (space: string) => `https://homing.test/spaces/${space}/connections`, proposal: (proposal: string) => `https://homing.test/proposals/${proposal}`, connectors: learning.broker.connectors };
+  const told = await withPrincipal(sql, { person: across.me.person, agent: 'Claude' }, (s) => readLearning(s, dear, links, learningRef(across.place)));
+  assert.match(told, /Microsoft counts 2 emails back to \d{4}-\d{2}-\d{2}\. About 0 of them need no model and are set aside, and the rest make about 1 thread for the model to read\. Threads that began earlier are read from their beginning, which that count leaves out\. Estimated model cost: /);
 });
 
 test('only its owner directs a run, and starts it, extends it and sets what it may spend only in Homing itself, while their assistant pauses it, resumes what was paused and leaves more out', async () => {

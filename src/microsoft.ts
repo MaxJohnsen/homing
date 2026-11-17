@@ -196,6 +196,7 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
           changes: async (access, from, scope, options) => followMail(set(), await access.token(), from, scope, options, access.signal),
           items: async (access, ids) => mailItems(set(), await access.token(), ids, access.signal),
           count: async (access, scope) => countMail(set(), await access.token(), scope, access.signal),
+          earlier: async (access, threads, before, options) => earlierMail(set(), await access.token(), threads, before, options, access.signal),
         },
       },
     },
@@ -612,6 +613,42 @@ export async function followMail(
 export async function mailItems(settings: MicrosoftSettings, access: string, ids: string[], signal?: AbortSignal): Promise<Change[]> {
   const tree = await treeOf(settings, access, signal);
   return changesOf(settings, access, await readEach(settings, access, ids.map((id) => ({ id })), true, signal), tree, { related: true, signal });
+}
+
+/**
+ * The emails of these conversations that arrived before a time, oldest first, each as following
+ * gives it, with its thread, its folder and what sets it aside. Graph refuses an order with this
+ * filter, so it's asked without one, a page at a time until it says there is no more, and the
+ * emails are put in order here. Asked for one at a time, each email is read by its id, and one
+ * Graph can't give comes set aside.
+ */
+export async function earlierMail(
+  settings: MicrosoftSettings,
+  access: string,
+  conversations: string[],
+  before: Date,
+  options: { size?: number } = {},
+  signal?: AbortSignal,
+): Promise<Change[]> {
+  const careful = options.size === 1;
+  const prefer = [immutableIds, textBodies];
+  const listed: Record<string, unknown>[] = [];
+  for (const conversation of conversations) {
+    const filter = `conversationId eq '${conversation.replace(/'/g, "''")}' and receivedDateTime lt ${before.toISOString()}`;
+    let body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$top=${pageSize}&$select=${careful ? lightFields : followFields}`, { prefer, signal });
+    for (let empty = 0; ; ) {
+      const page = listOf(body);
+      listed.push(...page);
+      if (typeof body['@odata.nextLink'] !== 'string') break;
+      empty = page.length ? 0 : empty + 1;
+      if (empty === emptyPages) throw new MicrosoftUnreachable('Graph');
+      body = await graph(settings, access, body['@odata.nextLink'], { prefer, signal });
+    }
+  }
+  if (listed.length === 0) return [];
+  const fetched: Fetched[] = careful ? await readEach(settings, access, listed, true, signal) : listed.map((message) => ({ message }));
+  const changes = await changesOf(settings, access, fetched, await treeOf(settings, access, signal), { related: true, signal });
+  return changes.sort((a, b) => (a.item.envelope.at?.getTime() ?? 0) - (b.item.envelope.at?.getTime() ?? 0));
 }
 
 /** How many emails arrived in the mailbox within the scope, as Graph counts them. */

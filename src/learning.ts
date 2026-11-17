@@ -314,8 +314,10 @@ const latestSampled = 30 * 24 * 60 * 60 * 1000;
  * counts there, and, from a sample of its first items and its latest, how many of them need no
  * model, how many threads the rest make, and what reading those costs at the model's prices. A
  * handful of requests to the system, no scan, and no model call. It's rough: the rest of the scope
- * may differ from the sample. The limit it suggests is at most what whoever looks after Homing
- * lets a run spend.
+ * may differ from the sample. A thread that began before the scope is read from its beginning, which
+ * the count doesn't hold and nothing here asks each thread for, so the range is wider at its top for
+ * the threads the scope's first items show began earlier. The limit it suggests is at most what
+ * whoever looks after Homing lets a run spend.
  */
 export async function estimate(l: Learning, principal: Principal, place: Place, scope: Scope, leftOut: LeftOut, ceiling: number): Promise<Estimate> {
   if (!l.model) throw new LearningRefused(noModel);
@@ -336,18 +338,25 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
   });
   const seen = new Set<string>();
   let [sampled, aside, threads, most, about] = [0, 0, 0, 0, 0];
-  for (const page of sample) {
+  // How many items the sample's calls carry, and how many threads the scope's first items show began before it.
+  let [read, earlier] = [0, 0];
+  for (const [at, page] of sample.entries()) {
     const fresh = page.filter((change) => !seen.has(change.item.envelope.id));
     for (const change of fresh) seen.add(change.item.envelope.id);
     sampled += fresh.length;
     const kept = fresh.filter((change) => !setAside(change, leftOut));
     aside += fresh.length - kept.length;
+    const met = new Set<string>();
     for (const batch of batchesOf(kept, l.interpretation.most)) {
       if (leftOutIn(batch.changes, leftOut)) {
         aside += batch.changes.length;
         continue;
       }
       threads++;
+      read += batch.changes.length;
+      // Where the scope starts, a thread whose first item repeats something it's read with, as a reply quotes what it answers, began before it.
+      if (at === 0 && batch.thread !== null && !met.has(batch.thread) && batch.changes[0].item.parts?.quoted) earlier++;
+      if (batch.thread !== null) met.add(batch.thread);
       for (const call of l.interpretation.calls({ space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: null, earlierUpTo: null })) {
         const cost = callCost(model, call);
         if (!cost) throw new LearningRefused(noModel);
@@ -357,7 +366,10 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
     }
   }
   const each = (total: number) => (sampled ? (total / sampled) * items : 0);
-  const high = cents(each(most));
+  // How far back those threads reach isn't known, so each gets room for one more call of the most
+  // items a call takes, at the most an item of the sample costs. That widens the top only.
+  const room = read ? earlier * l.interpretation.most * (most / read) : 0;
+  const high = cents(each(most) + room);
   return {
     since: scope.since.toISOString(),
     until: scope.until?.toISOString() ?? null,

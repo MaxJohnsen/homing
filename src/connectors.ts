@@ -95,7 +95,8 @@ export interface PlaceKind {
 /**
  * Following a place, for learning: its history, oldest first, then what arrives. One method
  * serves both. How the connector walks the place, such as by date and then by the system's own
- * record of changes, stays in its checkpoint, which Homing keeps and hands back as it was.
+ * record of changes, stays in its checkpoint, which Homing keeps and hands back as it was. A
+ * thread that began before the scope is read from its beginning, which the connector gives apart.
  */
 export interface Follow {
   /**
@@ -110,6 +111,12 @@ export interface Follow {
   items(access: Access, ids: string[]): Promise<Change[]>;
   /** How many items the scope holds, as the system counts them, for an estimate. */
   count(access: Access, scope: Scope): Promise<number>;
+  /**
+   * What these threads hold from before a time, oldest first, each as changes gives it, so a thread
+   * is learned from its beginning. Asked for one at a time, it gives an item it can't read as set
+   * aside. A kind whose items belong to nothing has none.
+   */
+  earlier?(access: Access, threads: string[], before: Date, options?: { size?: number }): Promise<Change[]>;
 }
 
 /** What learning covers: from a time, and up to one, or on with what arrives. */
