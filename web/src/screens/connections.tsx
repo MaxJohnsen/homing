@@ -92,7 +92,7 @@ function PlaceRow({ space, place, model, ceiling, actions }: { space: SpaceData;
       {connection.status === 'needs attention' && (
         <p className="text-sm text-destructive">Microsoft stopped letting Homing in, so it isn’t used until you sign in again.</p>
       )}
-      <Learning place={place} model={model} ceiling={ceiling} actions={actions?.learning} />
+      <Learning place={place} here={here} model={model} ceiling={ceiling} actions={actions?.learning} />
       {actions && !removing && (
         <div className="flex flex-wrap gap-2">
           {connection.status === 'needs attention' && (

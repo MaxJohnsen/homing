@@ -6,7 +6,7 @@ import { FieldError } from '@/components/ui/field';
 import { cn } from 'cn';
 import { focusRing, wrapsLabel } from '@/components/screen';
 import { draftOf, spaceOf, type SpaceSet } from '@/components/space-fields';
-import { buttonsOf, changesIn, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, planBlocked, wantsTo, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, planNote, wantsTo, type ProposalData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 
 /**
@@ -97,9 +97,7 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
             {/* Someone who can't be added is only declined, so there's no approving to explain. */}
             {!(declineOnly && action === 'members') && <p className="text-sm text-muted-foreground">
               {proposal.plan
-                ? planBlocked(proposal.plan)
-                  ? `A change can’t be made now, so this can’t be approved as it is. Ask ${assistant} to revise it, or decline it.`
-                  : `Only you can approve this, and ${assistant} can’t do it for you. Approving makes every change at once, and none if one can’t be made then. To change something, ask ${assistant} to revise it.`
+                ? planNote(proposal, proposal.plan, 'page')
                 : action === 'learn' || action === 'learn further'
                 ? proposal.learning?.problem
                   ? `This can’t be approved as it is. Ask ${assistant} to propose it again, or decline it.`

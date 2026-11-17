@@ -137,12 +137,23 @@ export interface PlanStepData {
   problem: string | null;
 }
 
-/** Where a route leads: a space by name, one the map creates, leave out, or wait; and what it holds, when Homing has counted. */
+/**
+ * Where a route leads: a space by name, one the map creates, leave out, or wait; and what it holds,
+ * when Homing has counted. A route whose sender you left out still says where it leads, with the
+ * entry of what's left out that covers them, which may be the sender itself. One whose space can't
+ * take its mail now says why it waits.
+ */
 export interface LeadsData {
   to: 'space' | 'new space' | 'leave out' | 'wait';
   name: string | null;
   emails: number | null;
   threads: number | null;
+  leftOut?: string;
+  /** Why its mail waits now, though it leads to a space: the space is archived, or model processing is off there. */
+  waits?: 'archived' | 'model processing off';
+  /** In dollars: about what reading it costs, while there's an estimate to share. */
+  low?: number;
+  high?: number;
 }
 
 export interface MapData {
@@ -166,6 +177,24 @@ export function changesIn(plan: Pick<PlanData, 'create' | 'steps'>): number {
 /** Whether a change in a plan can't be made now, so it can only be declined. */
 export function planBlocked(plan: Pick<PlanData, 'create' | 'steps'>): boolean {
   return Boolean(plan.create?.problem) || plan.steps.some((step) => step.problem);
+}
+
+/** Whether Homing proposed it itself, such as a map its own model suggested. No assistant goes by that name. */
+export const byHoming = (proposal: Pick<ProposalData, 'assistant'>) => proposal.assistant === 'Homing';
+
+/**
+ * What a plan says under its buttons: that it's approved as it is, and how to get something in it
+ * changed. A map Homing suggested itself is declined and asked for again, since nobody can tell
+ * Homing's model what to change in it.
+ */
+export function planNote(proposal: ProposalData, plan: PlanData, on: 'page' | 'card'): string {
+  const { assistant } = proposal;
+  const own = byHoming(proposal) && mapOf(plan) !== undefined;
+  const again = `ask your assistant to propose a map, or have Homing suggest one again in ${proposal.personal ? 'your personal space' : proposal.space}’s Connections`;
+  if (planBlocked(plan)) return `A change can’t be made now, so this can’t be approved as it is. ${own ? `Decline it, then ${again}.` : `Ask ${assistant} to revise it, or decline it.`}`;
+  const only = on === 'card' ? '' : own ? 'Only you can approve this. ' : `Only you can approve this, and ${assistant} can’t do it for you. `;
+  const approving = on === 'card' ? 'Approving makes them all at once, and none if one can’t be made then.' : 'Approving makes every change at once, and none if one can’t be made then.';
+  return `${only}${approving} To change something, ${own ? `decline it, then ${again}` : `ask ${assistant} to revise it`}.`;
 }
 
 export type MemberChange = 'add' | 'make admin' | 'make member' | 'remove';
