@@ -17,8 +17,8 @@ import { ConnectionUnusable, kindOf, messageOf, Unanswered } from './connections
 import type { Change, Changes } from './connectors.ts';
 import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } from './db.ts';
 import { Unusable, type Ask, type Learned } from './interpret.ts';
-import { addSource, cite, createPage, insertItem, updateItem, visible } from './knowledge.ts';
-import { asOwner, batchesOf, leftOutIn, retryable, senderOf, setAside, type Learning, type Run } from './learning.ts';
+import { addSource, createPage, insertItem, updateItem, visible } from './knowledge.ts';
+import { asOwner, batchesOf, leftOutIn, senderOf, setAside, type Learning, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused } from './model.ts';
 import { ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
 
@@ -121,8 +121,12 @@ export async function claim(sql: Sql, worker: string, leaseSeconds = defaults.le
   return claimed;
 }
 
-/** A thread the provider failed on, on the page of a walk: how often, when last, and whether as the first of several in a row. */
-type Failure = [walk: Walk, key: string, count: number, at: number, row?: true];
+/**
+ * A thread the provider failed on, on the page of a walk: how often, when last, and whether as the
+ * first of several in a row. Kept by the thread, or by its id for an item on its own, so the thread
+ * is known as failing however its page is served or read in calls the next time.
+ */
+type Failure = [walk: Walk, thread: string, count: number, at: number, row?: true];
 /** How often a thread was counted against, when last, and whether as the first of several in a row. */
 type Tries = { count: number; at: number; row?: true };
 
@@ -132,7 +136,7 @@ interface Claim extends Run {
   checkpoint: string | null;
   extensionCheckpoint: string | null;
   attempts: number;
-  /** The threads the provider failed on, on the page each walk is on, by the thread's first item. */
+  /** The threads the provider failed on, on the page each walk is on. */
   failures: Failure[];
   /** How many threads in a row the provider refused, since a model last answered for one. */
   refused: number;
@@ -193,7 +197,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     estimate: null,
     proposed: null,
     leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
-    // Kept as a list, since an item's id is no name for the database's client to reword.
+    // Kept as a list, since a thread's id is no name for the database's client to reword.
     failures: row.failures ?? [],
   };
   /** Hands the claim back with the checkpoint as it was, to carry on after a wait. */
@@ -313,75 +317,69 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     let pinged: Promise<boolean> | undefined;
     const answersOtherwise = async () => answered > 0 || (await (pinged ??= answers(call, place.space)));
     const words = wordsOf(connector, place.kind);
-    // The threads the provider failed on before, on this walk's page, and when each is tried next.
-    const before = new Map(run.failures.filter(([of]) => of === walk).map(([, key, count, at, row]): [string, Tries] => [key, { count, at, ...(row && { row }) }]));
+    const batches = batchesOf(kept, l.interpretation.most);
+    type Batch = (typeof batches)[number];
+    const keyOf = (batch: Batch) => batch.thread ?? batch.changes[0].item.envelope.id;
+    // The threads on this page the provider failed on before, and since, until each is learned from
+    // or set aside. And when each is tried next.
+    const onPage = new Set(batches.map(keyOf));
+    const failing = new Map(run.failures.filter(([of, key]) => of === walk && onPage.has(key)).map(([, key, count, at, row]): [string, Tries] => [key, { count, at, ...(row && { row }) }]));
     const elsewhere = run.failures.filter(([of]) => of !== walk);
     const next = ({ count, at }: Tries) => at + pace.retrySeconds[Math.min(count, pace.retrySeconds.length) - 1] * 1000;
-    const batches = batchesOf(kept, l.interpretation.most);
-    const keyOf = (batch: { changes: Change[] }) => batch.changes[0].item.envelope.id;
-    // Still to be tried again, of those on this page, until each is learned from or set aside.
-    const pending = new Map(batches.flatMap((batch) => (before.has(keyOf(batch)) ? [[keyOf(batch), before.get(keyOf(batch))!] as const] : [])));
-    const stillFailing = (): Failure[] => [...elsewhere, ...[...pending].map(([key, { count, at, row }]): Failure => (row ? [walk, key, count, at, true] : [walk, key, count, at]))];
-    const asideFor = (changes: Change[], reason: string) => withPrincipal(sql, principal, (s) => mark(s, run, claim, changes.map((change) => markOf(change, 'set aside', reason, null, read)), null));
+    const stillFailing = (): Failure[] => [...elsewhere, ...[...failing].map(([key, { count, at, row }]): Failure => (row ? [walk, key, count, at, true] : [walk, key, count, at]))];
+    // The calls of this page that are done with: answered, or set aside. A later call of a thread is
+    // never made before its earlier one is, so a thread is read in order, and the page is done once
+    // all are.
+    const settled = new Set<Batch>();
+    const asideFor = async (batch: Batch, reason: string) => {
+      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => markOf(change, 'set aside', reason, null, read)), null));
+      failing.delete(keyOf(batch));
+      settled.add(batch);
+    };
     // Those it failed on in this try: followed by a call it answered, which shows the fault was with
     // them, or since the last one it answered, which doesn't yet.
-    const counted: { key: string; changes: Change[] }[] = [];
-    let streak: { key: string; changes: Change[] }[] = [];
+    const counted: Batch[] = [];
+    let streak: Batch[] = [];
     // The provider refused or failed on several in a row, or wouldn't say whether it answers: the page isn't done, and the run waits for it.
     let trouble = false;
-    // The threads it failed on in this try, with nothing on the run about that yet. What follows of
-    // such a thread on this page waits for the next try, when there is: a note written from the
-    // newer emails alone would make the older ones look like mail that turned up late, to be cited
-    // unread, however this page ends.
-    const unrecorded = new Set<string>();
-    let held = false;
-    const failedNow = (batch: { thread: string | null; changes: Change[] }) => {
-      if (batch.thread !== null && !before.has(keyOf(batch))) unrecorded.add(batch.thread);
-    };
     /**
      * A thread refused or failed on as one of several in a row. That's the provider's trouble, and
      * the run waits. But the run would wait for good behind threads the provider really won't take,
      * so the first of them is counted against, alone, like a thread that fails by itself: on tries
-     * hours apart, each only while the provider answers otherwise. After the last it's set aside,
-     * and the next one is the first.
+     * hours apart, each only while the provider answers otherwise. After the last, the call is set
+     * aside, and the next thread is the first.
      */
-    const inRow = async (key: string, changes: Change[], reason: 'provider refused' | 'provider failed'): Promise<void> => {
-      const first = [...pending].find(([, tries]) => tries.row)?.[0];
-      const earlier = before.get(key);
+    const inRow = async (batch: Batch, reason: 'provider refused' | 'provider failed'): Promise<void> => {
+      const key = keyOf(batch);
+      const first = [...failing].find(([, tries]) => tries.row)?.[0];
+      const earlier = failing.get(key);
       if ((first === undefined || first === key) && !(earlier && next(earlier) > Date.now()) && (await answersOtherwise())) {
         const count = (earlier?.count ?? 0) + 1;
-        if (count >= triesForThread) {
-          pending.delete(key);
-          return void (await asideFor(changes, reason));
-        }
-        pending.set(key, { count, at: Date.now(), row: true });
+        if (count >= triesForThread) return await asideFor(batch, reason);
+        failing.set(key, { count, at: Date.now(), row: true });
       }
       trouble = true;
     };
-    for (const batch of batches) {
+    for (const [at, batch] of batches.entries()) {
       if (signal.aborted) return await later(0);
       const key = keyOf(batch);
-      if (batch.thread !== null && unrecorded.has(batch.thread)) {
-        held = true;
-        continue;
-      }
+      // What follows a call of its thread that isn't done with waits for it.
+      if (batches.slice(0, at).some((before) => keyOf(before) === key && !settled.has(before))) continue;
       // Failed on before, a thread is tried again hours later, so its tries never all fall within one
       // passing fault. The first of several in a row is asked with the rest, and only counted hours
       // apart, until it fails while the provider answers for others.
-      const earlierTry = before.get(key);
-      if (earlierTry && !earlierTry.row && next(earlierTry) > Date.now()) continue;
+      const tries = failing.get(key);
+      if (tries && !tries.row && next(tries) > Date.now()) continue;
       // Nothing was answered for so many in a row that asking on says nothing more.
       if (inARow >= 2 * several) {
         trouble = true;
         break;
       }
       const earlier = await withPrincipal(sql, principal, (s) => earlierNote(s, run, batch.thread));
-      // Emails the provider or the system failed on before, now tried again: no model has read them.
-      const retry = earlierTry !== undefined || batch.changes.some((change) => retryable.includes(marked.get(change.item.envelope.id)?.reason ?? ''));
       let learned: Learned;
       try {
         learned = await l.interpretation.learn(
-          { space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: earlier?.text ?? null, earlierUpTo: earlier?.upTo ?? null, retry },
+          { space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: earlier?.text ?? null, earlierUpTo: earlier?.upTo ?? null },
           ask,
         );
       } catch (error) {
@@ -400,8 +398,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
         }
         // The model answered, and its answer can't be used: asking again would give the same. It's set aside, saying so, and the run moves on.
         if (error instanceof Unusable || (error instanceof ModelFailed && error.unusable)) {
-          pending.delete(key);
-          await asideFor(batch.changes, 'no usable answer');
+          await asideFor(batch, 'no usable answer');
           continue;
         }
         if (!(error instanceof ModelFailed)) throw error;
@@ -421,25 +418,20 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
           // The provider refused the request as it was. That's about this thread only when the provider
           // answers otherwise, and when it isn't one of several in a row, which is how a refusal of
           // everything looks, such as for a model it no longer has.
-          if (inARow < several && (await answersOtherwise())) {
-            pending.delete(key);
-            await asideFor(batch.changes, 'provider refused');
-          } else {
-            failedNow(batch);
-            await inRow(key, batch.changes, 'provider refused');
-          }
+          if (inARow < several && (await answersOtherwise())) await asideFor(batch, 'provider refused');
+          else await inRow(batch, 'provider refused');
           continue;
         }
         // The provider failed on this one: the rest of the page is tried all the same, but for what follows of its thread, so one thread never holds up the others.
-        failedNow(batch);
-        streak.push({ key, changes: batch.changes });
+        streak.push(batch);
         continue;
       }
       // Answered: what failed before it on this page failed while the provider answers otherwise.
       counted.push(...streak);
       streak = [];
-      pending.delete(key);
       await withPrincipal(sql, principal, (s) => write(s, l, run, claim, place, batch.changes, learned, read));
+      failing.delete(key);
+      settled.add(batch);
     }
 
     // What it failed on last counts against those threads only when there were few and the provider
@@ -448,31 +440,31 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     if (streak.length) {
       if (inARow < several && (await answersOtherwise())) counted.push(...streak);
       else {
-        await inRow(streak[0].key, streak[0].changes, 'provider failed');
+        await inRow(streak[0], 'provider failed');
         if (streak.length > 1) trouble = true;
       }
     }
-    for (const { key, changes } of counted) {
-      const earlier = before.get(key);
+    for (const batch of counted) {
+      const key = keyOf(batch);
+      const earlier = failing.get(key);
       // Asked before its next try was due, as the first of several in a row is: not another try. It
       // failed alone now, so it's no longer asked with the rest: it waits for its next try like any other.
       if (earlier && next(earlier) > Date.now()) {
-        pending.set(key, { count: earlier.count, at: earlier.at });
+        failing.set(key, { count: earlier.count, at: earlier.at });
         continue;
       }
       const count = (earlier?.count ?? 0) + 1;
-      // Failed on three times, hours apart, while the provider answers otherwise, a thread is one it won't read: it's set aside, saying so.
-      if (count >= triesForThread) {
-        pending.delete(key);
-        await asideFor(changes, 'provider failed');
-      } else pending.set(key, { count, at: Date.now() });
+      // Failed on three times, hours apart, while the provider answers otherwise, a call is one it won't read: it's set aside, saying so.
+      if (count >= triesForThread) await asideFor(batch, 'provider failed');
+      else failing.set(key, { count, at: Date.now() });
     }
     if (trouble) return await backoff('provider', { failures: stillFailing() });
-    if (pending.size || held) {
-      // Until the first of them is tried again, and no longer than until what arrives is looked at
-      // next. It waits for the provider, and that wait is no failure of the run's. What was held
-      // behind a failure is asked about at once, now that the failure is on the run.
-      const wait = held ? 0 : Math.max(0, Math.min(...[...pending.values()].map(next)) - Date.now()) / 1000;
+    if (settled.size < batches.length) {
+      // Until the first failing thread is tried again, and no longer than until what arrives is
+      // looked at next. It waits for the provider, and that wait is no failure of the run's. What
+      // only waited behind a call that was set aside in this try is asked about at once.
+      const waits = batches.every((batch) => settled.has(batch) || failing.has(keyOf(batch)));
+      const wait = waits ? Math.max(0, Math.min(...[...failing.values()].map(next)) - Date.now()) / 1000 : 0;
       return await later(run.caughtUpAt === null ? wait : Math.min(wait, pace.pollSeconds), 'limited', { failures: stillFailing() });
     }
 
@@ -503,7 +495,7 @@ async function answers(call: Ask, space: string): Promise<boolean> {
 }
 
 /** A processed item as the run marks it: who sent it and when, where it was, why it was set aside and for which entry of its owner's, and which interpretation read it. */
-function markOf(change: Change, outcome: 'learned' | 'added as a source' | 'set aside', reason: string | null, because: string | null = null, interpretation: string | null = null) {
+function markOf(change: Change, outcome: 'learned' | 'set aside', reason: string | null, because: string | null = null, interpretation: string | null = null) {
   return { item: change.item.envelope.id, version: change.version, thread: change.thread, outcome, reason, sender: senderOf(change) ?? null, at: change.item.envelope.at, because, interpretation, folder: change.folder };
 }
 
@@ -516,8 +508,7 @@ function mark(s: Session, run: Run, claim: string, marks: Mark[], note: string |
  * its items as a source Homing read, and its items marked processed, all in this one transaction.
  * A thread learning wrote about before gets that note rewritten, while it's still learning's own;
  * what its owner or their assistant changed since stays as it is, which the database sees to, and
- * the note goes beside it. A note that stands as it is only gets the items as sources, and they're
- * marked as that, since no model read them.
+ * the note goes beside it.
  */
 async function write(s: Session, l: Learning, run: Claim, claim: string, place: Place, changes: Change[], learned: Learned, read: string): Promise<void> {
   if ('nothing' in learned) {
@@ -531,30 +522,24 @@ async function write(s: Session, l: Learning, run: Claim, claim: string, place: 
   }
   const earlier = await earlierNote(s, run, changes[0].thread);
   let note: string | undefined;
-  if ('stands' in learned) {
-    if (earlier) await cite(s, earlier.id, sources);
-    await mark(s, run, claim, changes.map((change) => markOf(change, 'added as a source', null)), earlier?.id ?? null);
-    return;
-  } else {
-    if (earlier) {
-      try {
-        note = (await updateItem(s, earlier.id, { body: learned.text, sources }))?.id;
-      } catch (error) {
-        if (!(error instanceof AccessDenied)) throw error;
-      }
-    }
-    if (!note) {
-      const [page] = await s.tx<{ id: string }[]>`
-        select c.page_id as id from content c
-        where c.space_id = ${place.space}::uuid and c.kind = 'title' and lower(c.body) = lower(${learned.page}) and ${visible(s, 'c')}
-        order by c.created_at limit 1
-      `;
-      // An item of its own, even when another thread's note says the same: each is kept up to date apart.
-      const pageId = page?.id ?? (await createPage(s, { spaceId: place.space, title: learned.page }));
-      note = (await insertItem(s, { pageId, spaceId: place.space, privateTo: run.owner, kind: 'text', body: learned.text, sources })).id;
+  if (earlier) {
+    try {
+      note = (await updateItem(s, earlier.id, { body: learned.text, sources }))?.id;
+    } catch (error) {
+      if (!(error instanceof AccessDenied)) throw error;
     }
   }
-  await mark(s, run, claim, changes.map((change) => markOf(change, 'learned', null, null, read)), note ?? null);
+  if (!note) {
+    const [page] = await s.tx<{ id: string }[]>`
+      select c.page_id as id from content c
+      where c.space_id = ${place.space}::uuid and c.kind = 'title' and lower(c.body) = lower(${learned.page}) and ${visible(s, 'c')}
+      order by c.created_at limit 1
+    `;
+    // An item of its own, even when another thread's note says the same: each is kept up to date apart.
+    const pageId = page?.id ?? (await createPage(s, { spaceId: place.space, title: learned.page }));
+    note = (await insertItem(s, { pageId, spaceId: place.space, privateTo: run.owner, kind: 'text', body: learned.text, sources })).id;
+  }
+  await mark(s, run, claim, changes.map((change) => markOf(change, 'learned', null, null, read)), note);
 }
 
 /**

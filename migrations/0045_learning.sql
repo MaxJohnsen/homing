@@ -186,12 +186,12 @@ create index learning_runs_space on learning_runs (space_id);
 create index learning_runs_connection on learning_runs (connection_id);
 create index learning_runs_due on learning_runs (next_at) where state in ('learning history', 'following');
 
--- Each item a run processed, by its id and version there: learned from,
--- added to a note's sources without a model reading it, or set aside and
--- why. A thread is learned from together, and the note learning wrote from
--- it is kept with each of its items. Each says who sent it and when, where
--- it was, which left-out sender or folder set it aside, and which
--- interpretation read it, so a later one can learn from it again.
+-- Each item a run processed, by its id and version there: learned from, or
+-- set aside and why. A thread is learned from together, and the note
+-- learning wrote from it is kept with each of its items, which a model read
+-- before the note cited it. Each says who sent it and when, where it was,
+-- which left-out sender or folder set it aside, and which interpretation
+-- read it, so a later one can learn from it again.
 create table learned_items (
   run_id uuid not null references learning_runs (id) on delete cascade,
   space_id uuid not null references spaces (id),
@@ -199,7 +199,7 @@ create table learned_items (
   item text not null check (length(item) between 1 and 1024),
   version text not null check (length(version) between 1 and 200),
   thread text check (length(thread) between 1 and 1024),
-  outcome text not null check (outcome in ('learned', 'added as a source', 'set aside')),
+  outcome text not null check (outcome in ('learned', 'set aside')),
   reason text check (reason ~ '^[a-z][a-z ]{0,39}$'),
   note uuid references content (id) on delete set null,
   sender text check (length(sender) <= 320),
@@ -718,13 +718,12 @@ end
 $$;
 
 -- Marks items a run processed: learned from, with the note learning wrote
--- from their thread, added to that note's sources, or set aside and why.
--- Called in the transaction that writes what learning wrote from them, so a
--- crash leaves both or neither. An item marked again, as with a changed
--- version, is marked anew. One set aside for something that may pass is
--- tried again a day later, once. It keeps the claim, says the run isn't
--- waiting for anything, and counts the threads the provider refused in a
--- row, until a model answers for one.
+-- from their thread, or set aside and why. Called in the transaction that
+-- writes what learning wrote from them, so a crash leaves both or neither.
+-- An item marked again, as with a changed version, is marked anew. One set
+-- aside for something that may pass is tried again a day later, once. It
+-- keeps the claim, says the run isn't waiting for anything, and counts the
+-- threads the provider refused in a row, until a model answers for one.
 create function learning_marked(run uuid, claim uuid, marks jsonb, note uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$

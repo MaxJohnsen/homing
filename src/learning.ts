@@ -182,7 +182,7 @@ const sendersAtOnce = 50;
 export async function progressOf(s: Session, run: Run): Promise<Progress> {
   const [learned] = await s.tx<{ items: number; threads: number }[]>`
     select count(*)::integer as items, count(distinct coalesce(thread, item))::integer as threads
-    from learned_items where run_id = ${run.id}::uuid and outcome in ('learned', 'added as a source')
+    from learned_items where run_id = ${run.id}::uuid and outcome = 'learned'
   `;
   const aside = await s.tx<{ reason: string; sender: string | null; items: number; again: number }[]>`
     select reason, sender, count(*) filter (where not again)::integer as items, count(*) filter (where again)::integer as again

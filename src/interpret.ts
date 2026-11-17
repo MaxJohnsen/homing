@@ -25,21 +25,14 @@ export interface Batch {
   earlier: string | null;
   /**
    * When the latest item that earlier note rests on is from. An item older than that isn't news: it
-   * comes late, as when a scope is extended further back, and must not undo what came after it.
+   * comes late, as when a scope is extended further back, and is read as background, which must not
+   * undo what came after it.
    */
   earlierUpTo: Date | null;
-  /**
-   * Whether these are items learning failed to get read before, and tries again. No model has read
-   * them, so they're read now even when all are older than what the earlier note rests on.
-   */
-  retry?: boolean;
 }
 
-/**
- * What a batch teaches, for learning to write; or that what learning wrote before stands as it is,
- * and only rests on these items too; or why there's nothing to write, in a few plain words.
- */
-export type Learned = { page: string; text: string } | { stands: true } | { nothing: string };
+/** What a batch teaches, for learning to write, or why there's nothing to write, in a few plain words. */
+export type Learned = { page: string; text: string } | { nothing: string };
 
 /** Calls the model for the run that's learning, which holds each call to the run's limit. */
 export type Ask = (call: Omit<ModelCall, 'run'>) => Promise<ModelAnswer>;
@@ -82,10 +75,8 @@ export const notes: Interpretation = {
   name: 'notes',
   version: 1,
   most: 10,
-  calls: (batch) => (stands(batch) ? [] : [request(batch)]),
+  calls: (batch) => [request(batch)],
   learn: async (batch, ask) => {
-    // Only older than what the note already rests on, and not tried again after a failure: the note stands, and no model is asked.
-    if (stands(batch)) return { stands: true };
     const said = answer.safeParse((await ask(request(batch))).json);
     if (!said.success) throw new Unusable('The model’s answer wasn’t a note.');
     // One line, so nothing in it can pass for a heading or a list of Homing's own where it's read later.
@@ -97,9 +88,6 @@ export const notes: Interpretation = {
 
 /** Whether an item came before the latest the earlier note rests on. */
 const older = (batch: Batch, item: Item) => batch.earlierUpTo !== null && item.envelope.at !== null && item.envelope.at.getTime() < batch.earlierUpTo.getTime();
-
-/** Whether every item of the batch is older than what the earlier note rests on, so that note stands, unless they're tried again after a failure. */
-const stands = (batch: Batch) => !batch.retry && batch.earlier !== null && batch.items.length > 0 && batch.items.every((item) => older(batch, item));
 
 function request(batch: Batch): Omit<ModelCall, 'run'> {
   const { words } = batch;
