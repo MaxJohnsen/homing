@@ -1,6 +1,5 @@
 import { ShareSpaceFields, type ShareChoice } from '@/components/share-space-fields';
 import { FieldError } from '@/components/ui/field';
-import type { ReactNode } from 'react';
 import { CircleCheck, CircleSlash, Clock, Send } from 'lucide-react';
 import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
@@ -182,14 +181,15 @@ function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; pla
   if (step.space) return <ProposedChange kind="preference" label={`New space in ${step.space.in ?? 'your personal space'}`} text={step.space.name} onlyYou />;
   if (step.map) {
     const all = [...step.map.routes, step.map.rest];
-    const [waits, leftOut] = [all.some((row) => row.to === 'wait'), all.some((row) => row.to === 'leave out' || row.leftOut !== undefined)];
+    const [waits, leftOut] = [all.some((row) => row.to === 'wait'), all.some((row) => row.to === 'leave out')];
     return (
       <>
         <Routes map={step.map} />
         <p className="text-sm text-muted-foreground">
-          A thread goes by who it’s with: an address goes before its domain, and when several are listed, the earliest in the thread decides.
-          {leftOut && ' A thread with anyone left out is never read, whatever else is listed here.'}
-          {waits && ' Mail that waits isn’t read until you say where it goes.'}
+          A thread goes by who it’s with: whoever wrote in it, and whoever you wrote to. An address goes before its domain, and if several are listed here, the first in the thread decides. What Homing learns from it is kept only for you, in the space it goes to.{' '}
+          {waits && 'Mail that waits isn’t read until you say where it goes. '}
+          {leftOut && 'A thread with anyone left out is never read, whatever else is listed here. '}
+          What Homing learned before stays where it is.
         </p>
       </>
     );
@@ -504,67 +504,26 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
  * Decided, it's greyed and names the mailbox, which the heading no longer does.
  */
 function Routes({ map, settled = false }: { map: MapData; settled?: boolean }) {
+  const rows = [...map.routes.map((route) => ({ who: route.who, leads: route as LeadsData })), { who: 'Everything else', leads: map.rest }];
+  const where = (to: LeadsData) => (to.to === 'leave out' ? 'left out' : to.to === 'wait' ? 'waits' : to.to === 'new space' ? `${to.name}, a new space` : (to.name ?? 'a space you can’t open'));
   return (
     <figure className={cn('flex flex-col gap-1.5 rounded-lg px-4 py-3.5', settled ? 'bg-muted' : 'bg-change')}>
       <figcaption className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
         {settled ? `Where the mail in ${map.address} goes` : 'Where each sender’s mail goes'}
         {!settled && <OnlyYou />}
       </figcaption>
-      <RouteList map={map} settled={settled} />
+      <ul className={cn('flex flex-col gap-2 text-base leading-snug', settled && 'text-muted-foreground')}>
+        {rows.map(({ who, leads }) => (
+          <li key={who} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:justify-between sm:gap-x-4">
+            <span className="[overflow-wrap:anywhere]">
+              {who} <span aria-hidden="true">→</span>
+              <span className="sr-only">{leads.to === 'leave out' ? 'is' : leads.to === 'wait' ? '' : 'to'}</span> {where(leads)}
+            </span>
+            {leads.emails !== null && <span className="text-sm text-muted-foreground">{thousands(leads.emails)} {leads.emails === 1 ? map.words.items.replace(/s$/, '') : map.words.items}</span>}
+          </li>
+        ))}
+      </ul>
     </figure>
-  );
-}
-
-/**
- * Where a line of a map leads, in words: "Northwind", "Fabrikam, a new space", "left out" or
- * "waits". A route whose sender you left out says where it leads and what leaves them out, such as
- * "Zeta, left out with zeta.test", since it does nothing until you take that off what's left out.
- * One whose space can't take its mail now says that it waits and why, in the same form, such as
- * "Zeta, waits while it’s archived".
- */
-function leadsTo(who: string, leads: LeadsData): string {
-  const where = leads.to === 'leave out' ? 'left out' : leads.to === 'wait' ? 'waits' : leads.to === 'new space' ? `${leads.name}, a new space` : (leads.name ?? 'a space you can’t open');
-  if (leads.leftOut !== undefined) return `${where}, left out${leads.leftOut === who ? '' : ` with ${leads.leftOut}`}`;
-  if (leads.waits) return `${where}, waits while ${leads.waits === 'archived' ? 'it’s archived' : 'model processing is off'}`;
-  return where;
-}
-
-/**
- * The lines of a map, wherever one is shown: each sender with where their mail goes, then
- * everything else, and how much each holds as secondary text, at the end of the line, and under it
- * on a phone. While there's an estimate, also about what reading it costs.
- */
-export function RouteList({ map, settled = false }: { map: Pick<MapData, 'routes' | 'rest' | 'words'>; settled?: boolean }) {
-  const rows = [...map.routes.map((route) => ({ who: route.who, leads: route as LeadsData })), { who: 'Everything else', leads: map.rest }];
-  const item = map.words.items.replace(/s$/, '');
-  return (
-    <MapLines
-      settled={settled}
-      rows={rows.map(({ who, leads }) => ({
-        key: who,
-        line: (
-          <>
-            {who} <span aria-hidden="true">→</span>
-            <span className="sr-only">{leads.to === 'leave out' ? 'is' : leads.to === 'wait' ? '' : 'to'}</span> {leadsTo(who, leads)}
-          </>
-        ),
-        holds: leads.emails === null ? undefined : `${thousands(leads.emails)} ${leads.emails === 1 ? item : map.words.items}${leads.high !== undefined ? `, about ${usd(leads.low ?? 0)} to ${usd(leads.high)} to read` : ''}`,
-      }))}
-    />
-  );
-}
-
-/** Lines about a map, one on each, with how much each holds as secondary text. */
-export function MapLines({ rows, settled = false }: { rows: { key: string; line: ReactNode; holds?: string }[]; settled?: boolean }) {
-  return (
-    <ul className={cn('flex flex-col gap-2 text-base leading-snug', settled && 'text-muted-foreground')}>
-      {rows.map(({ key, line, holds }) => (
-        <li key={key} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:justify-between sm:gap-x-4">
-          <span className="[overflow-wrap:anywhere]">{line}</span>
-          {holds !== undefined && <span className="text-sm text-muted-foreground">{holds}</span>}
-        </li>
-      ))}
-    </ul>
   );
 }
 

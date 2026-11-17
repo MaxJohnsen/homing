@@ -108,16 +108,6 @@ export interface Run {
   startedAt: Date | null;
 }
 
-/**
- * A person's own run as it's read for them: also the routes as it keeps them, where a route for
- * someone left out stays as it was, and whether Homing's own model is being asked for a map of
- * its place now.
- */
-export interface OwnRun extends Run {
-  routes: Route[];
-  suggesting: boolean;
-}
-
 /** How far a run has come. */
 export interface Progress {
   /** In USD: what its history cost, with the worst case of its calls under way, which its limit holds; and what following cost, which the monthly limit holds. */
@@ -182,7 +172,6 @@ interface RunRow {
   summarizing: boolean;
   summarized: string | null;
   summaryFailed: boolean;
-  suggesting: boolean;
   startedAt: Date | null;
 }
 
@@ -196,27 +185,6 @@ export const mapOf = (routes: Route[], leftOut: string[], rest: string | null): 
   const out = [...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])];
   const others = routes.filter((route) => !out.includes(route.who)).map((route) => (leftOutBy(out, route.who) ? { who: route.who, to: 'leave out' } : route));
   return { routes: [...others, ...out.map((who) => ({ who, to: 'leave out' }))], rest };
-};
-
-/** A line of a map as its owner is shown it: a route, and the entry that leaves its sender out, when one does. */
-export type MapLine = Route & { leftOut?: string };
-
-/**
- * A map line by line, as its owner is shown it, from the routes a run keeps and the senders it
- * leaves out: each route with where it leads, and with the entry that leaves its sender out when
- * one does, since the route does nothing until that entry is off the list; then everyone else
- * who is left out.
- */
-export const mapLines = (routes: Route[], leftOut: string[]): MapLine[] => {
-  const out = [...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])];
-  const kept = routes.filter((route) => route.to !== 'leave out');
-  return [
-    ...kept.map((route): MapLine => {
-      const entry = leftOutBy(out, route.who);
-      return entry ? { ...route, leftOut: entry } : route;
-    }),
-    ...out.filter((who) => !kept.some((route) => route.who === who)).map((who) => ({ who, to: 'leave out' })),
-  ];
 };
 
 /** The entry among those left out that covers a route's sender: that address, or the whole of the domain it names. */
@@ -235,11 +203,10 @@ export const senderNamed = (who: string) => who.trim().toLowerCase().replace(/^@
 /** Whether a map says anything beyond who is left out: a run without one behaves as it did before maps. */
 export const hasMap = (map: LearningMap) => map.rest !== null || map.routes.some((route) => route.to !== 'leave out');
 
-function runOf(row: RunRow): OwnRun {
+function runOf(row: RunRow): Run {
   const { extensionSince, extensionUntil, extensionEstimate, spendingLimit, routes, rest, excludedSenders, excludedFolders, keptSenders, ...run } = row;
   return {
     ...run,
-    routes,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
     limit: Number(spendingLimit),
     proposed: extensionEstimate,
@@ -252,15 +219,14 @@ function runOf(row: RunRow): OwnRun {
  * The person's own runs for these places, by place. Never anyone else's: Homing asks only for the
  * person's, and row-level security shows them nothing more.
  */
-export async function runsFor(s: Session, places: string[]): Promise<Map<string, OwnRun>> {
+export async function runsFor(s: Session, places: string[]): Promise<Map<string, Run>> {
   const person = personOf(s.principal);
   if (!person || places.length === 0) return new Map();
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
            r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
            r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
-           r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed,
-           coalesce(r.map_asked_until > now(), false) as suggesting
+           r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed
     from learning_runs r
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid
   `;

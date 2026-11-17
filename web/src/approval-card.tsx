@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, changesIn, mapOf, declineOnly, isSending, outcomeOf, placeOf, planNote, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, mapOf, declineOnly, isSending, outcomeOf, placeOf, planBlocked, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
@@ -172,7 +172,13 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
             <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttons!.reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
-          {proposal.plan && <p className="text-sm text-muted-foreground">{planNote(proposal, proposal.plan, 'card')}</p>}
+          {proposal.plan && (
+            <p className="text-sm text-muted-foreground">
+              {planBlocked(proposal.plan)
+                ? `A change can’t be made now, so this can’t be approved as it is. Ask ${proposal.assistant} to revise it, or decline it.`
+                : `Approving makes them all at once, and none if one can’t be made then. To change something, ask ${proposal.assistant} to revise it.`}
+            </p>
+          )}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (
             <p className="text-sm text-muted-foreground">If you don’t create it, {proposal.assistant} won’t suggest a space called {proposal.suggestion?.name} again.</p>
           )}

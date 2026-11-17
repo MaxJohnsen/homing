@@ -14,10 +14,10 @@ import * as z from 'zod';
 import { routineAgent } from './assistants.ts';
 import type { Listed } from './connectors.ts';
 import { withPrincipal, type Session } from './db.ts';
-import { cents, folderLeftOut, hasMap, leftOutBy, LearningRefused, mapLines, namesSender, nothingThere, routeFor, runsFor, senderNamed, type Estimate, type Learning, type LearningMap, type OwnRun, type Route, type Run } from './learning.ts';
+import { cents, folderLeftOut, leftOutBy, LearningRefused, namesSender, nothingThere, routeFor, runsFor, senderNamed, type Estimate, type Learning, type LearningMap, type Route, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused, modelOn, type ModelCall } from './model.ts';
 import { oneLine, ownPlace, placeName, quoted, wordsOf, type Place } from './places.ts';
-import { mapWaits, proposeMap, type Leads, type MapStep, type MapSteps, type PlanStep, type Proposal } from './proposals.ts';
+import { mapWaits, proposeMap, type MapSteps, type Proposal } from './proposals.ts';
 import { cleanName, listSpaces, sameName, type Space } from './spaces.ts';
 
 /** Who wrote to a place, as its summary lists them. */
@@ -213,39 +213,6 @@ export function holdings(summary: Summary, map: LearningMap, estimate?: Estimate
   const threads = rows.reduce((sum, row) => sum + (read(row.to) ? row.threads : 0), 0);
   if (!estimate || threads === 0) return rows;
   return rows.map((row) => (read(row.to) ? { ...row, low: cents((estimate.low * row.threads) / threads), high: cents((estimate.high * row.threads) / threads) } : row));
-}
-
-/** Where a line of a map leads, as its owner sees it, with about what reading it costs, while there's an estimate. */
-export type Line = Leads & Pick<Held, 'low' | 'high'>;
-
-/**
- * Where a line of a map leads, as the person sees it, wherever a map is shown: a space by name,
- * one the plan creates, leave out or wait, with what it holds going by the summary. A space that
- * can't take its mail now says why, when `on` says which spaces have model processing on: it's
- * archived, or model processing is off there, so the mail waits as reading has it (learner.ts).
- * A space they can't open has no name. `home` is where everything goes when the map doesn't say.
- */
-export function leadsOf(line: { who: string | null; to: string | null; leftOut?: string }, held: Held[], spaces: Space[], home: string, on?: string[], steps: (PlanStep | MapStep)[] = []): Line {
-  const row = held.find((one) => one.who === line.who);
-  const holds = { emails: row?.emails ?? null, threads: row?.threads ?? null, ...(row?.high !== undefined && { low: row.low, high: row.high }), ...(line.leftOut !== undefined && { leftOut: line.leftOut }) };
-  if (line.to === 'leave out' || line.to === 'wait') return { to: line.to, name: null, ...holds };
-  const made = line.to?.startsWith('step ') ? steps[Number(line.to.slice(5))] : undefined;
-  if (made?.action === 'add space') return { to: 'new space', name: made.name, ...holds };
-  const space = spaces.find((candidate) => candidate.id === (line.to ?? home));
-  const waits = !space || !on ? undefined : space.archived ? ('archived' as const) : on.includes(space.id) ? undefined : ('model processing off' as const);
-  return { to: 'space', name: space ? (space.privateTo !== null && space.parentId === null ? 'Your personal space' : space.name) : null, ...holds, ...(waits && { waits }) };
-}
-
-/**
- * A run's map as its owner sees it where the place is connected, the way a proposal shows one:
- * each route with where it leads, by name, and what it holds, then everything else. A route whose
- * sender is left out says where it leads and what leaves them out, and one whose space can't take
- * its mail now says why it waits. Null without a map, when everything goes to the place's own space.
- */
-export function mapShown(run: OwnRun, held: Held[], spaces: Space[], on: string[]): { routes: ({ who: string } & Line)[]; rest: Line } | null {
-  if (!hasMap(run.map)) return null;
-  const leads = (line: { who: string | null; to: string | null; leftOut?: string }) => leadsOf(line, held, spaces, run.space, on);
-  return { routes: mapLines(run.routes, run.leftOut.senders).map((line) => ({ who: line.who, ...leads(line) })), rest: leads({ who: null, to: run.map.rest }) };
 }
 
 /** The answer's form, the same for an assistant and for a model: the spaces to create, the routes, and where everything else goes. */

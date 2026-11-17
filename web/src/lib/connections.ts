@@ -1,5 +1,4 @@
 import type { ModelStatement } from '@/lib/model';
-import type { LeadsData } from '@/lib/proposals';
 
 /** An account Homing signs in to for you, such as your work Microsoft 365. Never its credentials. */
 export interface ConnectionData {
@@ -77,18 +76,6 @@ export interface LearningData {
   setAside: { reason: string; items: number; words: string; senders: SenderData[]; more?: number; retry?: boolean }[];
   /** How many set aside before it now learns from after all, since you said so, or tries again. */
   again?: number;
-  /** Its map, as a proposal shows one: each route with where it leads and what it holds, then everything else. Null without a map. */
-  mapped?: { routes: ({ who: string } & LeadsData)[]; rest: LeadsData } | null;
-  /** The senders no route names whose mail adds up, most first, and how many there are beside those. */
-  notPlaced?: { senders: SenderData[]; more: number };
-  /** Whether Homing is looking at who writes there now, when it last did, whether it gave up, and what it counted. */
-  summarizing?: boolean;
-  summarized?: string | null;
-  summaryFailed?: boolean;
-  summary?: { since: string; emails: number; senders: number } | null;
-  /** Whether Homing's model is working out a map now, and the map that waits for you to decide, by its proposal. */
-  suggesting?: boolean;
-  waiting?: string | null;
 }
 
 /** Something of yours connected in a space, such as your mailbox, only for you. */
@@ -102,8 +89,6 @@ export interface PlaceData {
   connection: ConnectionData;
   /** Whether Homing can learn from a place of this kind, how what's in it is worded, and how far it has learned. */
   learns?: boolean;
-  /** Whether Homing can look at who writes there, which a map is worked out from. */
-  summarizes?: boolean;
   words?: { place: string; item: string; items: string; thread: string };
   learning?: LearningData | null;
 }

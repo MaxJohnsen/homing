@@ -111,7 +111,7 @@ export const sampleConnections: SpaceConnectionsData = {
   model: { provider: 'OpenRouter', capable: 'Claude Sonnet 5.5', cheaper: 'Claude Haiku 5.5' },
   runCeiling: 25,
   places: [
-    { id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection, learns: true, summarizes: true, words: mailboxWords, learning: null },
+    { id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection, learns: true, words: mailboxWords, learning: null },
   ],
 };
 
@@ -166,75 +166,6 @@ export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'pause
   proposed: { ...sampleRun, state: 'following', caughtUp: true, spent: 2.31, proposed: { ...sampleEstimate, since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z', items: 26020, threads: 7300, setAside: 10400, low: 1.2, high: 4.1 } },
   waiting: { ...sampleRun, waitingFor: 'provider' },
   off: { ...sampleRun, state: 'paused', reason: 'model processing off' },
-};
-
-// Who writes in Ana's mailbox, as Homing counted it, and the map she approved: a route whose sender she left out since, one that waits, and senders no route names.
-const sampleLooked = { summarizing: false, summarized: '2026-11-14T09:05:00Z', summary: { since: '2024-11-15T00:00:00Z', emails: 9620, senders: 412 } };
-const sampleMapped: NonNullable<LearningData['mapped']> = {
-  routes: [
-    { who: 'northwind.example', to: 'space', name: 'Northwind', emails: 1240, threads: 312 },
-    { who: 'fabrikam.example', to: 'space', name: 'Fabrikam', emails: 386, threads: 97 },
-    { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Acme', emails: 48, threads: 48 },
-    { who: 'mum@berg.example', to: 'space', name: 'Your personal space', emails: 61, threads: 22 },
-    { who: 'jon@zeta.example', to: 'space', name: 'Northwind', emails: 17, threads: 6, leftOut: 'zeta.example' },
-    { who: 'globex.example', to: 'wait', name: null, emails: 9, threads: 4 },
-    { who: 'weekly-digest.example', to: 'leave out', name: null, emails: 204, threads: 204 },
-    { who: 'zeta.example', to: 'leave out', name: null, emails: 31, threads: 12 },
-  ],
-  rest: { to: 'space', name: 'Acme', emails: 2913, threads: 1104 },
-};
-const sampleNotPlaced = { senders: [{ sender: 'kari.nilsen@contoso.example', items: 46 }, { sender: 'post@regnskapshuset.example', items: 21 }, { sender: 'per@tailspin.example', items: 9 }], more: 14 };
-const sampleUnstarted: LearningData = { ...sampleRun, state: 'estimating', estimate: null, learnedUpTo: null, spent: 0, threads: 0, learned: 0, setAside: [], leftOut: { senders: [], folders: [], kept: [] } };
-/** What each route's share of the estimate is, by its threads, for the routes that are read. */
-const withCosts = (leads: NonNullable<LearningData['mapped']>['rest']) => (leads.to === 'space' && !leads.leftOut ? { ...leads, low: Math.ceil((0.86 * (leads.threads ?? 0)) / 15.83) / 100, high: Math.ceil((2.94 * (leads.threads ?? 0)) / 15.83) / 100 } : leads);
-
-/** Ana's mailbox at each point on the way to a map, and with one. */
-export const sampleMaps: Record<'looking' | 'looked' | 'suggesting' | 'waiting' | 'mapped' | 'estimated' | 'failed' | 'failedAgain' | 'nowhere' | 'long', LearningData> = {
-  looking: { ...sampleUnstarted, summarizing: true },
-  looked: { ...sampleUnstarted, ...sampleLooked },
-  suggesting: { ...sampleUnstarted, ...sampleLooked, suggesting: true },
-  waiting: { ...sampleUnstarted, ...sampleLooked, waiting: 'map' },
-  mapped: { ...sampleLearning.following, leftOut: { senders: ['weekly-digest.example', 'zeta.example'], folders: ['Receipts'], kept: [] }, ...sampleLooked, mapped: sampleMapped, notPlaced: sampleNotPlaced },
-  estimated: {
-    ...sampleLearning.estimated,
-    leftOut: { senders: ['weekly-digest.example', 'zeta.example'], folders: [], kept: [] },
-    ...sampleLooked,
-    mapped: { routes: sampleMapped.routes.map((route) => ({ ...route, ...withCosts(route) })), rest: withCosts(sampleMapped.rest) },
-  },
-  failed: { ...sampleUnstarted, summaryFailed: true },
-  // Homing gave up looking again, so the lines keep what it counted before.
-  failedAgain: { ...sampleLearning.following, ...sampleLooked, summaryFailed: true, mapped: sampleMapped, notPlaced: sampleNotPlaced },
-  // A space archived since, and one where model processing was turned off: their mail waits, and each line says why.
-  nowhere: {
-    ...sampleLearning.following,
-    ...sampleLooked,
-    mapped: {
-      routes: [
-        ...sampleMapped.routes.slice(0, 1),
-        { who: 'fabrikam.example', to: 'space', name: 'Fabrikam', emails: 386, threads: 97, waits: 'archived' },
-        { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Accounting', emails: 48, threads: 48, waits: 'model processing off' },
-        ...sampleMapped.routes.slice(3),
-      ],
-      rest: sampleMapped.rest,
-    },
-  },
-  // Years in: a map of eighty routes, with a new one that waits.
-  long: {
-    ...sampleLearning.following,
-    ...sampleLooked,
-    waiting: 'map',
-    mapped: {
-      routes: Array.from({ length: 80 }, (_, at) => ({
-        who: at % 3 ? `client-${at + 1}.example` : `person.${at + 1}@client-${at + 1}.example`,
-        to: at % 11 === 10 ? ('wait' as const) : at % 7 === 6 ? ('leave out' as const) : ('space' as const),
-        name: at % 11 === 10 || at % 7 === 6 ? null : `Client ${at + 1}`,
-        emails: 1200 - at * 14,
-        threads: 300 - at * 3,
-      })),
-      rest: sampleMapped.rest,
-    },
-    notPlaced: sampleNotPlaced,
-  },
 };
 
 /** A space's connections with Ana's mailbox at a point in learning from it. */
@@ -1015,46 +946,6 @@ export const mapProposal: ProposalData = {
     shown: '[]',
   },
 };
-
-/** The same map after Ana left a domain out: the route for someone there keeps where it leads, and says what leaves them out. */
-export const mapLeftOutProposal: ProposalData = {
-  ...mapProposal,
-  id: 'map-left-out',
-  plan: {
-    ...mapProposal.plan!,
-    steps: mapProposal.plan!.steps.map((step) =>
-      step.map
-        ? {
-            ...step,
-            map: {
-              ...step.map,
-              routes: [
-                ...step.map.routes.slice(0, 4),
-                { who: 'jon@zeta.example', to: 'space' as const, name: 'Northwind', emails: 17, threads: 6, leftOut: 'zeta.example' },
-                ...step.map.routes.slice(4),
-                { who: 'zeta.example', to: 'leave out' as const, name: null, emails: 31, threads: 12 },
-              ],
-            },
-          }
-        : step,
-    ),
-  },
-};
-
-/** The same map with a route to a space where model processing is off: its mail waits, and the line says why. */
-export const mapWaitsProposal: ProposalData = {
-  ...mapProposal,
-  id: 'map-waits',
-  plan: {
-    ...mapProposal.plan!,
-    steps: mapProposal.plan!.steps.map((step) =>
-      step.map ? { ...step, map: { ...step.map, routes: step.map.routes.map((route) => (route.who.startsWith('faktura@') ? { ...route, name: 'Accounting', waits: 'model processing off' as const } : route)) } } : step,
-    ),
-  },
-};
-
-/** A map Homing's own model suggested, which Ana asked for where the mailbox is connected. */
-export const mapByHomingProposal: ProposalData = { ...mapProposal, id: 'map-by-homing', assistant: 'Homing', plan: { ...mapProposal.plan!, why: null } };
 
 /** A space's tasks: Ana's own and the space's, open and done lately. */
 export const sampleTasks = {

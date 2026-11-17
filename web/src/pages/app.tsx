@@ -314,18 +314,6 @@ function connectionActions(spaceId: string): ConnectionActions {
       setLimit: (placeId, limit) => learning(placeId, 'limit', { limit }),
       leaveOut: (placeId, senders, folders, kept) => learning(placeId, 'left-out', { senders, folders, kept }),
       tryAgain: (placeId, reason) => learning(placeId, 'again', { reason }),
-      summarize: (placeId, since) => learning(placeId, 'summary', { since }),
-      suggestMap: async (placeId) => {
-        // Homing's model answers within the request, and what it suggests then waits as a proposal.
-        try {
-          const { message } = await api<{ message?: string }>(`/api/places/${placeId}/learning/map`, {});
-          await reload(`/api/spaces/${spaceId}/connections`);
-          return { note: message };
-        } catch (error) {
-          await reload(`/api/spaces/${spaceId}/connections`);
-          return { problem: error instanceof Error ? error.message : 'Something went wrong. Try again.' };
-        }
-      },
       senders: async (placeId, reason, search, from) => {
         try {
           return await api(`/api/places/${placeId}/learning/set-aside?${new URLSearchParams({ reason, q: search, from: String(from) })}`);
@@ -405,8 +393,8 @@ function SpacePage({ id, view }: { id: string; view: SpaceView }) {
   const collections = useList<PagesData>(view === 'collections' ? `/api/spaces/${id}/pages` : undefined, { collections: '1' });
   const sources = useList<SourcesData>(view === 'sources' ? `/api/spaces/${id}/sources` : undefined);
   const connections = useLoad<SpaceConnectionsData>(view === 'connections' ? `/api/spaces/${id}/connections` : '');
-  // While Homing learns through a place's history, looks at who writes there, or works out a map, how far it is shows as it goes.
-  const learningNow = connections.data?.places.some((place) => place.learning?.state === 'learning history' || place.learning?.extending || place.learning?.again || place.learning?.summarizing || place.learning?.suggesting) ?? false;
+  // While Homing learns through a place's history, how far it is shows as it goes.
+  const learningNow = connections.data?.places.some((place) => place.learning?.state === 'learning history' || place.learning?.extending || place.learning?.again) ?? false;
   useEffect(() => {
     if (!learningNow) return;
     const timer = setInterval(() => void reload(`/api/spaces/${id}/connections`), 4000);
