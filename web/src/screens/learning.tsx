@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { cn } from 'cn';
+import { MapLines, RouteList } from '@/components/proposal';
 import { capitalize, count, dateOf, focusRing } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
@@ -7,6 +8,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import type { EstimateData, LearningData, PlaceData, SenderData } from '@/lib/connections';
 import { usd, type ModelStatement } from '@/lib/model';
+import { Link } from '@/lib/router';
 import { Pager, pageSize } from '@/screens/pages';
 
 /** What you do about learning from something of yours. Each resolves to a message to show, or nothing when it worked. */
@@ -29,6 +31,10 @@ export interface LearningActions {
   leaveOut: (placeId: string, senders: string[], folders: string[], kept: string[]) => Promise<string | undefined>;
   /** Tries again what was set aside for something that may pass, such as the provider failing on it. */
   tryAgain: (placeId: string, reason: string) => Promise<string | undefined>;
+  /** Has Homing look at who writes there, back to a day, which a map is worked out from. It needs no model. */
+  summarize: (placeId: string, since: string) => Promise<string | undefined>;
+  /** Has Homing's own model suggest a map, which then waits for you to approve. Resolves to what went wrong, or to something to tell you about what it suggested. */
+  suggestMap: (placeId: string) => Promise<{ problem?: string; note?: string }>;
   /** Everyone who sent what was set aside for a reason, most first, fifty at a time, or those whose address holds the search. A message when it couldn't be read. */
   senders: (placeId: string, reason: string, search: string, from: number) => Promise<{ senders: SenderData[]; total: number } | string>;
 }
@@ -59,7 +65,14 @@ type Words = { place: string; item: string; items: string; thread: string };
  * spent against its limit, and pausing, resuming, extending it and leaving things out. Only you
  * see any of it.
  */
-export function Learning({ place, model, ceiling, actions }: { place: PlaceData; model: ModelStatement | null | undefined; ceiling?: number; actions?: LearningActions }) {
+export function Learning({ place, here, model, ceiling, actions }: {
+  place: PlaceData;
+  /** The space it's connected in, as it's said in a sentence, where everything goes without a map. */
+  here: string;
+  model: ModelStatement | null | undefined;
+  ceiling?: number;
+  actions?: LearningActions;
+}) {
   const words: Words = place.words ?? { place: 'place', item: 'item', items: 'items', thread: 'thread' };
   const run = place.learning;
   const [busy, setBusy] = useState(false);
@@ -82,7 +95,8 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
   );
 
   let body: ReactNode;
-  if (!run || (run.state === 'estimating' && open === 'scope')) {
+  // A run that was only looked at, for who writes there, has nothing estimated yet.
+  if (!run || (run.state === 'estimating' && (open === 'scope' || !run.estimate))) {
     body = !model ? (
       <p className="text-sm text-muted-foreground">Homing has no model set up, so it can’t learn from this {words.place} yet. Whoever looks after Homing can set one up.</p>
     ) : (
@@ -205,9 +219,118 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
   }
 
   return (
-    <section aria-label={`Learning from ${place.connection.address}`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
-      <h3 className="text-base font-semibold">{run && run.state !== 'estimating' ? `Learning from this ${words.place}` : `Learn from this ${words.place}`}</h3>
-      {body}
+    <>
+      {place.summarizes && <WhereItGoes place={place} here={here} words={words} model={model} actions={actions} />}
+      <section aria-label={`Learning from ${place.connection.address}`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
+        <h3 className="text-base font-semibold">{run && run.state !== 'estimating' ? `Learning from this ${words.place}` : `Learn from this ${words.place}`}</h3>
+        {body}
+        {problem && <FieldError>{problem}</FieldError>}
+      </section>
+    </>
+  );
+}
+
+/**
+ * Where the mail in something of yours goes: its map, line by line as a proposal shows one, and
+ * the senders no route names. Without a map, where everything goes and how to get one. A map is
+ * worked out from who writes there, which Homing looks at here without a model, and it changes
+ * only through a proposal you approve: from your assistant, or from Homing's own model where one
+ * is set up. While one is being suggested, or waits for you, it says so.
+ */
+function WhereItGoes({ place, here, words, model, actions }: { place: PlaceData; here: string; words: Words; model: ModelStatement | null | undefined; actions?: LearningActions }) {
+  const run = place.learning;
+  const [busy, setBusy] = useState<'looking' | 'suggesting'>();
+  const [asking, setAsking] = useState(false);
+  const [problem, setProblem] = useState<string>();
+  const [note, setNote] = useState<string>();
+  const look = async (since: string) => {
+    if (!actions) return;
+    setBusy('looking');
+    const answer = await actions.summarize(place.id, since);
+    setBusy(undefined);
+    setProblem(answer);
+    if (!answer) setAsking(false);
+  };
+  const suggest = async () => {
+    if (!actions) return;
+    setBusy('suggesting');
+    setNote(undefined);
+    const answer = await actions.suggestMap(place.id);
+    setBusy(undefined);
+    setProblem(answer.problem);
+    setNote(answer.note);
+  };
+  const mapped = run?.mapped;
+  const unplaced = run?.notPlaced ?? { senders: [], more: 0 };
+  const looked = run?.summary && run.summarized ? { ...run.summary, at: run.summarized } : undefined;
+  const looking = run?.summarizing === true;
+  const suggesting = busy === 'suggesting' || run?.suggesting === true;
+  const waiting = run?.waiting ?? undefined;
+  // Who can propose a map: your assistant always, and Homing's own model where one is set up, once Homing has looked at who writes.
+  const suggests = Boolean(model) && looked !== undefined && !looking;
+  const propose = (what: string) => `ask your assistant to propose ${what}${suggests ? ', or have Homing suggest one' : ''}`;
+  const back = (since: string) => (since.startsWith('1990') ? 'as far back as it goes' : `back to ${dateOf(since)}`);
+
+  return (
+    <section aria-label={`Where the mail in ${place.connection.address} goes`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
+      <h3 className="text-base font-semibold">Where its mail goes</h3>
+      {mapped ? (
+        <RouteList map={{ ...mapped, words }} />
+      ) : (
+        <p className="text-base">
+          There’s no map yet, so everything goes to {here}
+          {waiting || suggesting || looking ? '.' : looked ? `: ${propose('one')}.` : `: to get one, first have Homing look at who writes here.`}
+        </p>
+      )}
+      {unplaced.senders.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-base font-semibold">Not placed</span>
+          <MapLines rows={unplaced.senders.map((one) => ({ key: one.sender, line: one.sender, holds: count(one.items, words.item, words.items) }))} />
+          {unplaced.more > 0 && <p className="text-sm text-muted-foreground">And {count(unplaced.more, 'more sender', 'more senders')}.</p>}
+        </div>
+      )}
+      {waiting ? (
+        <div className="flex flex-col gap-1">
+          <p className="text-base">A map waits for you to approve. Nothing changes until you do.</p>
+          <Link href={`/proposals/${waiting}`} className={cn('w-fit rounded-sm text-base font-semibold text-primary-ink hover:underline', focusRing)}>Review the map</Link>
+        </div>
+      ) : suggesting ? (
+        <p role="status" className="text-base">Homing’s model is working out a map. It waits for you here once it’s made, and nothing changes until you approve it.</p>
+      ) : mapped ? (
+        <p className="text-sm text-muted-foreground">
+          {unplaced.senders.length > 0
+            ? `No route names them, so their mail goes where everything else does. To place them, ${propose('a change to the map')}.`
+            : `The map changes only when you approve a new one: ${propose('a change')}.`}
+        </p>
+      ) : null}
+      {looking ? (
+        <p role="status" className="text-sm text-muted-foreground">
+          Homing is looking at who writes here{looked ? ' again' : ''}, {back(run!.since)}. It uses no model and reads no {words.item}’s text, and a large {words.place} takes a few minutes.
+        </p>
+      ) : run?.summaryFailed ? (
+        <p className="text-sm text-destructive">Homing couldn’t look at who writes here: {place.connection.service} or Homing kept failing, so it gave up.</p>
+      ) : looked ? (
+        <p className="text-sm text-muted-foreground">
+          Homing looked at who writes here on {dateOf(looked.at)}, {back(looked.since)}: {count(looked.emails, words.item, words.items)} from {count(looked.senders, 'sender', 'senders')}.
+          {mapped && ' What each line holds goes by that.'}
+        </p>
+      ) : (
+        !mapped && <p className="text-sm text-muted-foreground">It counts who writes, how much and when, without a model and without reading any {words.item}’s text.</p>
+      )}
+      {actions && !asking && !looking && !suggesting && (
+        <div className="flex flex-wrap gap-2">
+          {suggests && !waiting && <Button variant="outline" size="sm" disabled={busy !== undefined} onClick={suggest}>Suggest a map</Button>}
+          <Button variant="outline" size="sm" disabled={busy !== undefined} onClick={() => (run ? look(run.since) : setAsking(true))}>
+            {looked || run?.summaryFailed ? 'Look again' : 'Look at who writes here'}
+          </Button>
+        </div>
+      )}
+      {actions && asking && (
+        <Panel label="Look at who writes here">
+          <ScopeForm label="How far back should it look?" action="Look at who writes here" busy={busy === 'looking'} onChoose={look} onCancel={() => setAsking(false)} />
+        </Panel>
+      )}
+      {note && <p role="status" className="text-sm text-muted-foreground">{note}</p>}
       {problem && <FieldError>{problem}</FieldError>}
     </section>
   );
