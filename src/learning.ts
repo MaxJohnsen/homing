@@ -108,6 +108,16 @@ export interface Run {
   startedAt: Date | null;
 }
 
+/**
+ * A person's own run as it's read for them: also the routes as it keeps them, where a route for
+ * someone left out stays as it was, and whether Homing's own model is being asked for a map of
+ * its place now.
+ */
+export interface OwnRun extends Run {
+  routes: Route[];
+  suggesting: boolean;
+}
+
 /** How far a run has come. */
 export interface Progress {
   /** In USD: what its history cost, with the worst case of its calls under way, which its limit holds; and what following cost, which the monthly limit holds. */
@@ -172,6 +182,7 @@ interface RunRow {
   summarizing: boolean;
   summarized: string | null;
   summaryFailed: boolean;
+  suggesting: boolean;
   startedAt: Date | null;
 }
 
@@ -224,10 +235,11 @@ export const senderNamed = (who: string) => who.trim().toLowerCase().replace(/^@
 /** Whether a map says anything beyond who is left out: a run without one behaves as it did before maps. */
 export const hasMap = (map: LearningMap) => map.rest !== null || map.routes.some((route) => route.to !== 'leave out');
 
-function runOf(row: RunRow): Run {
+function runOf(row: RunRow): OwnRun {
   const { extensionSince, extensionUntil, extensionEstimate, spendingLimit, routes, rest, excludedSenders, excludedFolders, keptSenders, ...run } = row;
   return {
     ...run,
+    routes,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
     limit: Number(spendingLimit),
     proposed: extensionEstimate,
@@ -240,29 +252,19 @@ function runOf(row: RunRow): Run {
  * The person's own runs for these places, by place. Never anyone else's: Homing asks only for the
  * person's, and row-level security shows them nothing more.
  */
-export async function runsFor(s: Session, places: string[]): Promise<Map<string, Run>> {
+export async function runsFor(s: Session, places: string[]): Promise<Map<string, OwnRun>> {
   const person = personOf(s.principal);
   if (!person || places.length === 0) return new Map();
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
            r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
            r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
-           r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed
+           r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed,
+           coalesce(r.map_asked_until > now(), false) as suggesting
     from learning_runs r
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid
   `;
   return new Map(rows.map((row) => [row.place, runOf(row)]));
-}
-
-/**
- * The person's run's map line by line, as they are shown it where the place is connected, and
- * whether Homing's own model is being asked for a map of the place now.
- */
-export async function mapLinesOf(s: Session, run: Run): Promise<{ lines: MapLine[]; suggesting: boolean }> {
-  const [row] = await s.tx<{ routes: Route[]; suggesting: boolean }[]>`
-    select routes, coalesce(map_asked_until > now(), false) as suggesting from learning_runs where id = ${run.id}::uuid
-  `;
-  return { lines: mapLines(row?.routes ?? [], run.leftOut.senders), suggesting: row?.suggesting ?? false };
 }
 
 /** How many senders each reason names at first, and how many more each further look gives. The rest are counted. */

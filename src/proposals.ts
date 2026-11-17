@@ -3,7 +3,8 @@ import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
 import { mapLines, mapOf, noModel, runsFor, type Estimate, type MapLine, type Route } from './learning.ts';
-import { holdings, summaryFor } from './map.ts';
+import { holdings, leadsOf, summaryFor } from './map.ts';
+import { modelOn } from './model.ts';
 import { ownPlace, type Place as ConnectedPlace } from './places.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
@@ -261,7 +262,8 @@ export interface PlanStepView {
  * Where a route leads, as the person sees it: a space by name, one the plan creates, leave out, or
  * wait; and what it holds, when a summary says. A route whose sender is left out by another entry
  * of what's left out, or by their own, still says where it leads, with that entry, since it does
- * nothing until the person takes the entry off.
+ * nothing until the person takes the entry off. A route to a space that can't take its mail now
+ * says why it waits.
  */
 export interface Leads {
   to: 'space' | 'new space' | 'leave out' | 'wait';
@@ -269,6 +271,8 @@ export interface Leads {
   emails: number | null;
   threads: number | null;
   leftOut?: string;
+  /** Why its mail waits now, though it leads to a space: the space is archived, or model processing is off there. */
+  waits?: 'archived' | 'model processing off';
 }
 
 /** A map as the person decides it. */
@@ -747,23 +751,16 @@ async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { a
   const set = open && run ? mapOf(step.routes, run.leftOut.senders, step.rest ?? run.map.rest) : { routes: step.routes, rest: step.rest };
   const held = summary ? holdings(summary, set) : [];
   const words = step.words ?? { place: 'mailbox', items: 'emails' };
-  let missing = false;
   const lines: MapLine[] = open && run ? mapLines(step.routes, run.leftOut.senders) : step.routes;
-  const leads = (who: string | null, to: string | null, leftOut?: string): Leads => {
-    const holds = held.find((row) => row.who === who);
-    const counts = { emails: holds?.emails ?? null, threads: holds?.threads ?? null, ...(leftOut !== undefined && { leftOut }) };
-    if (to === 'leave out' || to === 'wait') return { to, name: null, ...counts };
-    const made = to?.startsWith('step ') ? steps[Number(to.slice(5))] : undefined;
-    if (made?.action === 'add space') return { to: 'new space', name: made.name, ...counts };
-    const space = spaces.find((candidate) => candidate.id === (to ?? proposal.spaceId));
-    if (!space || space.archived) missing = true;
-    return { to: 'space', name: space ? (space.privateTo !== null && space.parentId === null ? 'Your personal space' : space.name) : null, ...counts };
-  };
-  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: lines.map((line) => ({ who: line.who, ...leads(line.who, line.to, line.leftOut) })), rest: leads(null, set.rest) };
+  // While it waits, a space that can't take its mail now says why: it's archived, or model processing is off there.
+  const named = [proposal.spaceId, set.rest, ...step.routes.map((route) => route.to)];
+  const on = open ? await modelOn(s, spaces.filter((space) => named.includes(space.id)).map((space) => space.id)) : undefined;
+  const leads = (line: { who: string | null; to: string | null; leftOut?: string }) => leadsOf(line, held, spaces, proposal.spaceId, on, steps);
+  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: lines.map((line) => ({ who: line.who, ...leads(line) })), rest: leads({ who: null, to: set.rest }) };
   let problem: string | null = null;
   if (open) {
     if (!place || !run) problem = `That ${words.place} isn’t connected here any more, so there’s nothing to set.`;
-    else if (missing) problem = 'A space it leads to is archived, or you can’t open it any more.';
+    else if ([...map.routes, map.rest].some((row) => row.to === 'space' && (row.name === null || row.waits === 'archived'))) problem = 'A space it leads to is archived, or you can’t open it any more.';
   }
   return { map, problem, cant: 'the map can’t be set' };
 }
