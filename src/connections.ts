@@ -12,7 +12,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fromNodeHeaders } from 'better-auth/node';
 import postgres from 'postgres';
-import type { Access, Connector, Connectors, PlaceKind, Tokens } from './connectors.ts';
+import type { Access, Connector, Connectors, NeverRead, PlaceKind, Tokens } from './connectors.ts';
 import { personOf, withPrincipal, type Session, type Sql } from './db.ts';
 import { accessibleSpaces, spaceView } from './spaces.ts';
 import { SealBroken, type Vault } from './vault.ts';
@@ -42,6 +42,10 @@ export interface PlaceInSpace {
   connection: Connection;
   /** The other spaces the person uses the same connection in, of those they can open. */
   elsewhere: { id: string; name: string; personal: boolean }[];
+  /** For a kind read in order, where reading began and the place it reached, or null before it begins. */
+  reading: { began: Date; reached: Date } | null;
+  /** What's never read there, as the person left it, or null for as its kind starts it. */
+  neverRead: NeverRead | null;
 }
 
 interface ConnectionRow {
@@ -78,9 +82,10 @@ export function kindOf(connector: Connector | undefined, kind: string): PlaceKin
 export async function placesIn(s: Session, spaceId: string): Promise<PlaceInSpace[]> {
   const person = personOf(s.principal);
   if (!person) return [];
-  const rows = await s.tx<(ConnectionRow & { id: string; kind: string; addedAt: Date })[]>`
-    select p.id, p.kind, p.added_at, c.id as connection_id, c.provider, c.address, c.name, c.scopes, c.status, c.connected_at, c.refreshed_at
-    from places p join connections c on c.id = p.connection_id
+  const rows = await s.tx<(ConnectionRow & { id: string; kind: string; addedAt: Date; began: Date | null; reached: Date | null; neverSenders: string[] | null; neverFolders: string[] | null })[]>`
+    select p.id, p.kind, p.added_at, c.id as connection_id, c.provider, c.address, c.name, c.scopes, c.status, c.connected_at, c.refreshed_at,
+           r.began, r.reached, r.never_senders, r.never_folders
+    from places p join connections c on c.id = p.connection_id left join readings r on r.place_id = p.id
     where p.space_id = ${spaceId}::uuid and p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
     order by p.added_at, p.id
   `;
@@ -99,6 +104,8 @@ export async function placesIn(s: Session, spaceId: string): Promise<PlaceInSpac
     addedAt: row.addedAt,
     connection: connectionOf(row),
     elsewhere: others.filter((other) => other.connectionId === row.connectionId).map(({ id, name, personal }) => ({ id, name, personal })),
+    reading: row.began && row.reached && { began: row.began, reached: row.reached },
+    neverRead: row.neverSenders === null && row.neverFolders === null ? null : { senders: row.neverSenders ?? [], folders: row.neverFolders ?? [] },
   }));
 }
 
@@ -179,8 +186,8 @@ export interface Broker {
 export interface Use {
   place: string;
   space: string;
-  /** What Homing did there: searched it, or read something in it. */
-  operation: 'search' | 'read';
+  /** What Homing did there: searched it, read something in it, or listed it in order. */
+  operation: 'search' | 'read' | 'list';
   /** The assistant it's for, such as Claude. */
   agent?: string;
 }
@@ -370,7 +377,7 @@ export async function using<T>(
   broker: Broker,
   connector: Connector,
   person: string,
-  place: { connection: string; resource: string },
+  place: { connection: string; resource: string; neverRead?: NeverRead },
   use: Use | undefined,
   signal: AbortSignal,
   fn: (access: Access) => Promise<T>,
@@ -380,6 +387,7 @@ export async function using<T>(
     return {
       resource: place.resource,
       signal,
+      neverRead: place.neverRead,
       // The renewal is part of the same use, which is already recorded.
       token: () => (token ??= accessToken(broker, person, place.connection, renew ? undefined : use, { renew, signal })),
     };

@@ -4,7 +4,7 @@
 // Graph, stays in microsoft.ts, and what's the same for every system, such
 // as finding places and framing, is in places.ts and mcp.ts.
 
-import type { Audience, Envelope, Found, Item, Party, Words } from './connectors.ts';
+import type { Audience, Envelope, Found, Item, NeverRead, Party, Words } from './connectors.ts';
 import { noItem, oneLine, SourceRefused, when } from './places.ts';
 
 /** How Homing words a mailbox and the emails in it. */
@@ -42,7 +42,7 @@ export interface Email {
 }
 
 /** An email as a list of them shows it, such as a search or its thread. */
-export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'>;
+export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'> & { conversation?: string | null };
 
 /** How many of an email's recipients its audience keeps. */
 const audienceKept = 100;
@@ -53,7 +53,29 @@ export function emailFound(email: EmailSummary): Found {
 }
 
 function envelopeOf(email: EmailSummary, audience: Audience = 'unknown'): Envelope {
-  return { id: email.id, title: email.subject, at: email.at, author: email.from, audience };
+  return { id: email.id, title: email.subject, at: email.at, author: email.from, audience, conversation: email.conversation ?? null };
+}
+
+/**
+ * Whether an email is never read: it's in a folder on the never-read list, or in one within such
+ * a folder, by name whatever its case, or it's from or to a sender on the list, by address, or by
+ * domain, which covers its subdomains. Its folders are its own and every one it's in, or null when
+ * Homing couldn't tell where it is, which counts as on the list once the list names any folder.
+ * Only where it is and who it's from and to decide, never what it says. A sender it only quotes
+ * can't be recognized.
+ */
+export function withheld(email: { parties: Party[]; folders: string[] | null }, never: NeverRead): boolean {
+  if (never.folders.length > 0) {
+    if (email.folders === null) return true;
+    const listed = new Set(never.folders.map((folder) => folder.toLowerCase()));
+    if (email.folders.some((folder) => listed.has(folder.toLowerCase()))) return true;
+  }
+  return email.parties.some(({ address }) => {
+    const at = address?.trim().toLowerCase();
+    if (!at) return false;
+    const domain = at.slice(at.lastIndexOf('@') + 1);
+    return never.senders.some((sender) => (sender.includes('@') ? at === sender : domain === sender || domain.endsWith(`.${sender}`)));
+  });
 }
 
 /**

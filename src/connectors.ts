@@ -5,7 +5,8 @@
 // the code to redeem, and using a place, an Access with the place's resource,
 // a token and Homing's time limit. Everything it gives back is outside
 // content, which Homing frames itself, so nothing in it passes for Homing's
-// own words. Following changes and acting come later, beside find and read.
+// own words. A kind may also be read in order, oldest first, by its owner's
+// assistant. Acting comes later, beside find and read.
 
 import { microsoftConnector, type MicrosoftSettings } from './microsoft.ts';
 
@@ -31,6 +32,8 @@ export interface Connector {
   kinds: Record<string, PlaceKind>;
   /** What an error from any of the above means, when it's the system's refusal or silence; undefined when it isn't. */
   refused(error: unknown): Refusal | undefined;
+  /** How many seconds the system asked Homing to wait, when an error says so, such as one about being asked too often. */
+  retryAfter?(error: unknown): number | undefined;
 }
 
 /**
@@ -83,8 +86,42 @@ export interface PlaceKind {
   discover?(access: Access): Promise<{ resource: string; name: string }[]>;
   /** Live search, newest first, where it makes sense. A kind without it is still read by reference. */
   search?(access: Access, words: string, limit: number): Promise<Found[]>;
-  /** One item by its id, with what it's read with unless left out, or undefined when it isn't there any more. */
-  read(access: Access, id: string, options: { related: boolean }): Promise<Item | undefined>;
+  /**
+   * One item by its id, with what it's read with unless left out, or undefined when it isn't there
+   * any more, or withheld when it's on the place's never-read list.
+   */
+  read(access: Access, id: string, options: { related: boolean }): Promise<Item | 'withheld' | undefined>;
+  /** For a kind whose items can be read in the order they came, such as a mailbox by when each email arrived. */
+  inOrder?: InOrder;
+}
+
+/**
+ * A kind of place listed in order, oldest first, for its owner's assistant to read through (spec
+ * §8). Homing keeps where reading began, the place it reached and what is never read; the
+ * connector lists, and withholds what's never read wherever it reads the place.
+ */
+export interface InOrder {
+  /** What the never-read list holds until its owner changes it, such as a mailbox's Junk Email. */
+  neverRead: NeverRead;
+  /**
+   * The items that came from one moment until another, oldest first, without what's never read:
+   * every one up to the whole second it says it got through, which is until when nothing more came
+   * before it. It stops once it has more than most, or has asked the system as much as it may at
+   * once, so through may be sooner.
+   */
+  list(access: Access, window: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date }>;
+}
+
+/** An item as a list in order gives it: its envelope, and where it is there, such as an email's folder by name. */
+export type Listed = Envelope & { where: string | null };
+
+/**
+ * What's never read in a place, whoever asks, until its owner takes it off: senders by an address
+ * or a domain, which covers its subdomains, and folders by name, with every folder in them.
+ */
+export interface NeverRead {
+  senders: string[];
+  folders: string[];
 }
 
 /** What Homing hands a connector for one use of a place. */
@@ -95,6 +132,8 @@ export interface Access {
   token(): Promise<string>;
   /** Homing's time limit, which the connector stops at. */
   signal: AbortSignal;
+  /** What's never read in the place, for a kind that has the list, which the connector withholds wherever it reads it. */
+  neverRead?: NeverRead;
 }
 
 /** How Homing words a kind of place and what's in it, to people and assistants. */
@@ -136,6 +175,8 @@ export interface Envelope {
   at: Date | null;
   author: Party | null;
   audience: Audience;
+  /** What it belongs with there, such as an email's conversation, by the system's id, where the kind has that. */
+  conversation?: string | null;
 }
 
 /** An item a search found, with its first words, as the system gives them. */
