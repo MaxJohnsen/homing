@@ -146,7 +146,7 @@ export interface Change {
   thread: string | null;
   /** Where it is there, such as its folder, by name. */
   folder: string | null;
-  /** What its thread holds from before it, newest first, by id and where each is, but for what lies where the connector leaves everything out, such as junk. */
+  /** What its thread holds from before it that it doesn't carry itself, as a reply does by quoting: newest first, by id and where each is, but for what lies where the connector leaves everything out, such as junk. */
   earlier?: { id: string; folder: string | null }[];
   /** Why it needs no model, by the system's own signs, such as a newsletter's headers. */
   setAside?: SetAside;

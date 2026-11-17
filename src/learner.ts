@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { routineAgent } from './assistants.ts';
 import { ConnectionUnusable, kindOf, messageOf, Unanswered } from './connections.ts';
-import type { Access, Change, Changes, Item } from './connectors.ts';
+import type { Access, Change, Changes } from './connectors.ts';
 import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } from './db.ts';
 import { Unusable, type Ask, type Learned } from './interpret.ts';
 import { addSource, createPage, insertItem, updateItem, visible } from './knowledge.ts';
@@ -315,8 +315,9 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     // the last few from before it are fetched and read first, all in the thread's first call, and
     // marked like the rest, so going further back later finds them read. What's set aside of such a
     // thread is marked only once the page's calls are done: until its first call is, the thread has
-    // no mark, and a page that stopped before that does all of this again.
-    const met = follow.earlier ? await firstMet(sql, principal, run, kept, new Set(changes.map((change) => change.item.envelope.id)), Math.min(earlierRead, l.interpretation.most)) : [];
+    // no mark, and a page that stopped before that does all of this again. Nothing is fetched for
+    // what's learned from again: it was set aside, so its thread has marks, and the odd one without loses nothing.
+    const met = follow.earlier && walk !== 'again' ? await firstMet(sql, principal, run, kept, new Set(changes.map((change) => change.item.envelope.id)), Math.min(earlierRead, l.interpretation.most)) : [];
     if (met.length) {
       const earlier: Change[] = [];
       try {
@@ -533,20 +534,13 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
 }
 
 /**
- * Whether an item carries what came before it in its thread, as a reply quotes what it answers and
- * a forward what it passes on: the part of its text that isn't its sender's own, which a model
- * reads with it.
- */
-const carriesEarlier = (item: Item) => Boolean(item.parts?.quoted.trim());
-
-/**
  * The threads among these items that the run has no mark for, and whose oldest item here doesn't
- * carry what came before it: that item, with the ids of the newest its thread holds from before it,
- * so many at most, but for those the page gave itself and those in a folder left out.
+ * carry what came before it, by what its change names as earlier: that item, with the ids of the
+ * newest of those, so many at most, but for those the page gave itself and those in a folder left out.
  */
 async function firstMet(sql: Sql, principal: Principal, run: Claim, kept: Change[], given: Set<string>, most: number): Promise<{ change: Change; ids: string[] }[]> {
   const found = batchesOf(kept, Number.MAX_SAFE_INTEGER).flatMap(({ thread, changes: [change] }) => {
-    if (thread === null || carriesEarlier(change.item)) return [];
+    if (thread === null) return [];
     const ids = (change.earlier ?? []).filter((other) => !given.has(other.id) && !folderLeftOut(other.folder, run.leftOut)).slice(0, most).map((other) => other.id);
     return ids.length ? [{ change, ids }] : [];
   });

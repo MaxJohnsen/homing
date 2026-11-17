@@ -13,7 +13,7 @@ import { createHash, createPrivateKey, randomUUID, X509Certificate, type KeyObje
 import { readFileSync } from 'node:fs';
 import { decodeJwt, SignJWT } from 'jose';
 import type { Change, Changes, Connector, Grant, Party, Scope, SetAside, Tokens } from './connectors.ts';
-import { automatedEmail, emailFound, emailItem, mailbox } from './mail.ts';
+import { automatedEmail, carriesEarlier, emailFound, emailItem, mailbox } from './mail.ts';
 import { contentVersion } from './places.ts';
 
 /** How this Homing signs people in with Microsoft: its app registration in Microsoft Entra ID. */
@@ -678,7 +678,7 @@ async function readEach(settings: MicrosoftSettings, access: string, entries: Re
 
 /**
  * The emails as changes, each with its thread, listed once for each conversation, and with what
- * that list shows from before it, unless it's set aside. An email that came without its headers, in a list, is asked for them by its id before it's
+ * that list shows from before it, unless it's set aside or quotes an earlier email itself. An email that came without its headers, in a list, is asked for them by its id before it's
  * taken for a person's mail; what its owner sent has none.
  */
 async function changesOf(
@@ -720,8 +720,8 @@ async function changesOf(
   return found.map(({ mail, folder, setAside }) => {
     const thread = (!setAside && mail.conversationId && threads.get(mail.conversationId)) || { thread: [], more: false };
     const item = emailItem(mail, thread.thread, thread.more);
-    // What the thread's list shows from before this email, newest first, outside the folders left out with everything in them.
-    const earlier = thread.thread
+    // What the thread's list shows from before this email, newest first, outside the folders left out with everything in them, unless it quotes an earlier one and so carries its thread itself.
+    const earlier = (carriesEarlier(mail.body) ? [] : thread.thread)
       .filter((other) => other.at !== null && mail.at !== null && other.at < mail.at && !(other.folder && tree.aside[other.folder]))
       .reverse()
       .map((other) => ({ id: other.id, folder: named(other.folder) }));

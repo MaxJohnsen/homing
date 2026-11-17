@@ -2114,7 +2114,7 @@ test('an email that quotes what came before it is read as it is: nothing of its 
     email('Venue', 400, { conversation: venue, html: '<p>The venue is booked for 3 March.</p>' }),
     // A reply, quoted as Outlook does, and a forward: each carries the email before it.
     email('Re: Budget', 20, { conversation: budget, html: `${raised}<p>On Monday, Gunnar Lie wrote:</p><blockquote>The budget is NOK 1 million.</blockquote>`, unique: raised }),
-    email('FW: Venue', 15, { conversation: venue, html: '<p>For the workshop.</p><p>---------- Forwarded message ----------</p><p>The venue is booked for 3 March.</p>', unique: '<p>For the workshop.</p>' }),
+    email('FW: Venue', 15, { conversation: venue, html: '<p>For the workshop.</p><p>---------- Forwarded message ----------<br>From: Gunnar Lie &lt;gunnar@northwind.test&gt;<br>Date: Mon, 5 Oct 2026 at 09:14</p><p>The venue is booked for 3 March.</p>', unique: '<p>For the workshop.</p>' }),
   ]);
   const from = provider.answered.length;
   const id = await begin(100);
@@ -2124,7 +2124,7 @@ test('an email that quotes what came before it is read as it is: nothing of its 
   const first = provider.asked.slice(sent).map((call) => sentIn(call.body));
   assert.deepEqual(first.map((call) => call.emails.map((one) => [one.Subject, one.text, one.quotes])), [
     [['Re: Budget', 'The board raised the budget to NOK 2 million.', 'On Monday, Gunnar Lie wrote: The budget is NOK 1 million.']],
-    [['FW: Venue', 'For the workshop.', '---------- Forwarded message ---------- The venue is booked for 3 March.']],
+    [['FW: Venue', 'For the workshop.', '---------- Forwarded message ---------- From: Gunnar Lie <gunnar@northwind.test> Date: Mon, 5 Oct 2026 at 09:14 The venue is booked for 3 March.']],
   ]);
   assert.equal(microsoft.asked.reads, requests.reads);
   assert.deepEqual((await marks()).map((mark) => mark.item).sort(), [ids[2], ids[3]].sort());
@@ -2149,6 +2149,38 @@ test('an email that quotes what came before it is read as it is: nothing of its 
   // That was a call like any other in its history, against the run's limit.
   assert.deepEqual((await owner`select run_history from model_calls where run_id = ${id}`).map((call) => call.runHistory), [true, true, true]);
   await onlyCitesWhatWasRead(place, new Map([[ids[0], 'Budget'], [ids[2], 'Re: Budget'], [ids[3], 'FW: Venue']]), from);
+});
+
+test('a signature or a disclaimer is no quote: an email whose own words end in a line of underscores and a disclaimer, or whose text holds an image besides them, is read after its thread’s earlier emails, while a reply above the header of the email it answers, or with it quoted line by line, is read as it is', async () => {
+  const [offer, lease, audit, terms] = Array.from({ length: 4 }, () => `AAQk${randomUUID()}=`);
+  const { ana, account, connection, begin, marks, ids } = await world([
+    email('Offer', 300, { conversation: offer, html: '<p>We offer NOK 2 million, valid until June.</p>' }),
+    email('Lease', 299, { conversation: lease, html: '<p>The lease runs for five years.</p>' }),
+    email('Audit', 298, { conversation: audit, html: '<p>The audit found two faults.</p>' }),
+    email('Terms', 297, { conversation: terms, html: '<p>Payment is due in thirty days.</p>' }),
+    email('Offer answered', 20, { conversation: offer, html: '<p>We accept.</p><p>________________________________</p><p>This email is confidential and meant only for its addressee.</p>' }),
+    // Exchange gives the part that's its own, and the text holds a signature's image besides.
+    email('Lease answered', 19, { conversation: lease, html: '<p>Agreed.</p><p>[cid:image001.png@01DB]</p>', unique: '<p>Agreed.</p>' }),
+    // A reply as Outlook writes it, under a line of underscores too, and one in plain text.
+    email('Audit answered', 18, { conversation: audit, html: '<p>Both are fixed.</p><p>________________________________<br>From: Gunnar Lie &lt;gunnar@northwind.test&gt;<br>Sent: Monday, October 5, 2026 09:14<br>Subject: Audit</p><p>The audit found two faults.</p>' }),
+    email('Terms answered', 17, { conversation: terms, html: '<p>Thirty days is fine.</p><p>&gt; Payment is due in thirty days.</p>' }),
+  ]);
+  // Microsoft's connector says which of them carry what came before: those name nothing as earlier.
+  const { changes } = await (await following(ana, account, connection, 100)).onward(null);
+  assert.deepEqual(changes.map((change) => [change.item.envelope.title, change.earlier?.map((other) => other.id)]), [['Offer answered', [ids[0]]], ['Lease answered', [ids[1]]], ['Audit answered', undefined], ['Terms answered', undefined]]);
+  await begin(100);
+  const [sent, reads] = [provider.asked.length, microsoft.asked.reads];
+  await through();
+  // The first two are read after the email before them, which is read by its id. The disclaimer still goes to the model as no words of the sender's.
+  const calls = provider.asked.slice(sent).map((call) => sentIn(call.body));
+  assert.deepEqual(calls.map((call) => call.emails.map((one) => [one.Subject, one.text, one.quotes])), [
+    [['Offer', 'We offer NOK 2 million, valid until June.', undefined], ['Offer answered', 'We accept.', '________________________________ This email is confidential and meant only for its addressee.']],
+    [['Lease', 'The lease runs for five years.', undefined], ['Lease answered', 'Agreed.', '[cid:image001.png@01DB]']],
+    [['Audit answered', 'Both are fixed.', '________________________________ From: Gunnar Lie <gunnar@northwind.test> Sent: Monday, October 5, 2026 09:14 Subject: Audit The audit found two faults.']],
+    [['Terms answered', 'Thirty days is fine.', 'Payment is due in thirty days.']],
+  ]);
+  assert.equal(microsoft.asked.reads - reads, 2);
+  assert.deepEqual((await marks()).map((mark) => [mark.item, mark.outcome]).sort(), [0, 1, 4, 5, 6, 7].map((at) => [ids[at], 'learned']).sort());
 });
 
 test('an email that quotes nothing, first met in a thread with thirty earlier emails, is read after the newest ten of them, oldest first, and going further back then makes no call for those ten', async () => {
@@ -2204,7 +2236,7 @@ test('a conversation of a thousand automated emails never holds a run: a forward
     const thread = `AAQk${randomUUID()}=`;
     const reports = Array.from({ length: 1005 }, (_, at) => email(`Report ${at + 1}`, 1500 - at, { conversation: thread, from: { name: 'Reports', address: 'reports@groups.acme.test' }, headers: list }));
     const own = '<p>Here are the numbers.</p>';
-    const after = email('Report passed on', 20, { conversation: thread, ...(quotes && { html: `${own}<p>---------- Forwarded message ----------</p><p>Report 1005: the board decided on Monday.</p>`, unique: own }) });
+    const after = email('Report passed on', 20, { conversation: thread, ...(quotes && { html: `${own}<p>---------- Forwarded message ----------<br>From: Reports &lt;reports@groups.acme.test&gt;<br>Date: Mon, 5 Oct 2026 at 09:14</p><p>Report 1005: the board decided on Monday.</p>`, unique: own }) });
     const { begin, marks, run } = await world([...reports, after, email('Other', 10)]);
     await begin(100);
     const [sent, reads] = [provider.asked.length, microsoft.asked.reads];
@@ -2351,6 +2383,32 @@ test('a thread first met while the run follows, or on its way further back, is r
   await through();
   assert.deepEqual([calls(sent + 5), (await marks()).length, fetched()], [[['Leave, older']], 10, 3]);
   await onlyCitesWhatWasRead(place, new Map([...ids.map((item, at): [string, string] => [item, subjects[at]]), [reply, 'Lease signed'], [fresh, 'New matter'], [approved, 'Leave approved']]), from);
+});
+
+test('an email Microsoft couldn’t give, tried again while it still couldn’t, is left without its thread: learned from again once it can be read, it’s read as it is, with nothing earlier fetched, and the run goes on', async () => {
+  const thread = `AAQk${randomUUID()}=`;
+  const { ana, account, begin, marks, mine, run, place, ids } = await world([email('Old', 300, { conversation: thread }), email('Broken', 20, { conversation: thread })]);
+  await begin(100);
+  const again = async () => {
+    assert.equal(await withPrincipal(sql, { person: ana.id }, async (s) => retryLearning(s, await mine())), 1);
+    await quietly(() => through());
+  };
+  const threads = () => owner`select i.reason, i.thread from learned_items i join learning_runs r on r.id = i.run_id where r.place_id = ${place}`;
+  microsoft.poison(account, ids[1]);
+  try {
+    await quietly(() => through());
+    assert.deepEqual((await threads()).map((mark) => [mark.reason, mark.thread]), [['unreadable', thread]]);
+    // Tried again while Microsoft still can't give it, it's set aside again, and nothing says which thread it is of.
+    await again();
+    assert.deepEqual((await threads()).map((mark) => [mark.reason, mark.thread]), [['unreadable', null]]);
+  } finally {
+    microsoft.poison(account, ids[1], false);
+  }
+  // Readable now, its thread has no mark and an email before it. Nothing earlier is fetched where emails are learned from again: it's read by itself.
+  const [sent, reads] = [provider.asked.length, microsoft.asked.reads];
+  await again();
+  assert.deepEqual([subjectsSince(sent), microsoft.asked.reads - reads, (await marks()).map((mark) => [mark.item, mark.outcome])], [['Broken'], 1, [[ids[1], 'learned']]]);
+  assert.deepEqual([(await run()).state, (await run()).waitingFor, (await run()).attempts], ['following', null, 0]);
 });
 
 test('an email older than what a thread’s note rests on goes to the model marked as background, alone or beside newer ones, and is a call an estimate counts', () => {
