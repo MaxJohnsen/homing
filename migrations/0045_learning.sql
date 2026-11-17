@@ -160,7 +160,8 @@ create table learning_runs (
   excluded_folders text[] not null default '{}' check (cardinality(excluded_folders) <= 200),
   kept_senders text[] not null default '{}' check (cardinality(kept_senders) <= 200),
   -- When it next needs work, how often in a row it failed, which threads the
-  -- provider failed on, how often and when last, how many threads in a row
+  -- provider failed on, how often and when last, each kept until its thread
+  -- is answered or set aside or it's a day old, how many threads in a row
   -- the provider refused since it last answered one, how many items it asks
   -- for at once after a page that failed, and which of Homing's workers works
   -- on it, until when, under a claim of its own each time.
@@ -717,6 +718,25 @@ begin
 end
 $$;
 
+-- The threads a run's provider is failing on, as the run keeps them from
+-- here on: those it kept, each on a walk, by its thread, with how often and
+-- when last, without those a day old and those of threads done with since,
+-- and with what was counted in this try, each in place of what was kept for
+-- its walk and thread. A failure leaves a run in no other way: not because
+-- a page ended early, was served in fewer, or is done.
+create function learning_failures(kept jsonb, counted jsonb, done text[]) returns jsonb
+language sql stable
+as $$
+  select jsonb_agg(f order by place) from (
+    select k.f, k.place from jsonb_array_elements(coalesce(kept, '[]')) with ordinality as k (f, place)
+    where (k.f ->> 3)::numeric > extract(epoch from now() - interval '1 day') * 1000
+      and not (k.f ->> 1 = any (done))
+      and not exists (select from jsonb_array_elements(coalesce(counted, '[]')) as c (f) where c.f ->> 0 = k.f ->> 0 and c.f ->> 1 = k.f ->> 1)
+    union all
+    select c.f, 1000000 + c.place from jsonb_array_elements(coalesce(counted, '[]')) with ordinality as c (f, place)
+  ) as now_kept
+$$;
+
 -- Marks items a run processed: learned from, with the note learning wrote
 -- from their thread, or set aside and why. Called in the transaction that
 -- writes what learning wrote from them, so a crash leaves both or neither.
@@ -724,6 +744,10 @@ $$;
 -- aside for something that may pass is tried again a day later, once. It
 -- keeps the claim, says the run isn't waiting for anything, and counts the
 -- threads the provider refused in a row, until a model answers for one.
+-- A thread a call was answered for, or set aside after, is no longer one
+-- the provider is failing on: what was counted against it ends here, with
+-- the marks, so it holds however the page ends. What follows of the thread
+-- starts its own count.
 create function learning_marked(run uuid, claim uuid, marks jsonb, note uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -752,7 +776,10 @@ begin
       refused = case
         when exists (select from jsonb_to_recordset(marks) as m (reason text) where m.reason = 'provider refused') then refused + 1
         when exists (select from jsonb_to_recordset(marks) as m (reason text, interpretation text) where m.interpretation is not null and m.reason is distinct from 'provider failed') then 0
-        else refused end
+        else refused end,
+      failures = learning_failures(failures, null, array(
+        select coalesce(m.thread, m.item) from jsonb_to_recordset(marks) as m (item text, thread text, interpretation text) where m.interpretation is not null
+      ))
   where id = r.id;
 end
 $$;
@@ -763,10 +790,9 @@ $$;
 -- it caught up, which takes the run from history to following, and whether
 -- the connector follows only part of the place. A walk of an extension ends
 -- it once it caught up. A page of items learned from again moves nothing.
--- The claim ends, what the provider failed on is forgotten for this walk,
--- whose page is done, and the run is due at once while it has history or
--- older material to learn from, and otherwise when it's time to look again.
--- The state now.
+-- The claim ends, and the run is due at once while it has history or older
+-- material to learn from, and otherwise when it's time to look again. The
+-- state now.
 create function learning_walked(run uuid, claim uuid, walk text, walked_since timestamptz, checkpoint text, caught_up boolean, reached timestamptz, poll_seconds integer, partly boolean default false)
 returns text
 language plpgsql security definer set search_path = public, pg_temp
@@ -806,7 +832,7 @@ begin
   update learning_runs
   set state = case when after.state in ('learning history', 'following') then learning_active(after) else after.state end,
       next_at = case when more then now() else now() + make_interval(secs => greatest(poll_seconds, 1)) end,
-      attempts = 0, failures = (select jsonb_agg(f) from jsonb_array_elements(after.failures) as f where f ->> 0 <> learning_walked.walk),
+      attempts = 0, failures = learning_failures(after.failures, null, '{}'),
       page_size = null, waiting_for = null,
       claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
   where id = r.id
@@ -822,9 +848,10 @@ $$;
 -- of Homing's own, it keeps trying and says which. It needs its owner once
 -- their account needs them to sign in again, or once Homing isn't set up
 -- for the system any more. It pauses at the monthly limit, and where model
--- processing is off, until that changes. It keeps which threads the provider
--- failed on, and how many items to ask for at once after a page that failed.
-create function learning_later(run uuid, claim uuid, wait_seconds integer, trouble text, failures jsonb default null, page_size integer default null) returns void
+-- processing is off, until that changes. It keeps the threads the provider
+-- failed on in this try, with those the run kept, and how many items to ask
+-- for at once after a page that failed.
+create function learning_later(run uuid, claim uuid, wait_seconds integer, trouble text, counted jsonb default null, page_size integer default null) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
@@ -843,7 +870,7 @@ begin
         when active and trouble in ('monthly limit', 'model processing off') then 'paused'
         else state end,
       reason = case when active and trouble in ('sign in again', 'not set up', 'monthly limit', 'model processing off') then trouble else reason end,
-      failures = coalesce(learning_later.failures, learning_runs.failures),
+      failures = learning_failures(failures, counted, '{}'),
       page_size = coalesce(learning_later.page_size, learning_runs.page_size),
       next_at = now() + make_interval(secs => greatest(wait_seconds, 0)),
       claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
@@ -1070,7 +1097,7 @@ $$;
 create trigger learning_proposal before insert or update of action, change, space_id, private_to on proposals
 for each row when (new.action in ('start learning', 'extend learning')) execute function check_learning_proposal();
 
-revoke execute on function learning_active, learning_spent, sender_matches, learning_retryable, learning_elsewhere, own_learning_run, estimate_learning, start_learning, pause_learning, resume_learning,
+revoke execute on function learning_active, learning_spent, sender_matches, learning_retryable, learning_failures, learning_elsewhere, own_learning_run, estimate_learning, start_learning, pause_learning, resume_learning,
   estimate_extension, extend_learning, set_learning_limit, set_learning_exclusions, retry_learning, claim_learning_run, claimed_learning_run, learning_marked, learning_walked,
   learning_later, reserve_model_call, set_run_ceiling, model_usage_this_month, check_learning_proposal from public;
 grant execute on function estimate_learning, start_learning, pause_learning, resume_learning, estimate_extension, extend_learning, set_learning_limit,
