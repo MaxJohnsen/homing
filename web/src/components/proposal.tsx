@@ -186,8 +186,9 @@ function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; pla
       <>
         <Routes map={step.map} />
         <p className="text-sm text-muted-foreground">
-          A thread goes where the first sender in it who is listed here goes. What Homing learns from it is kept only for you, in that space.{' '}
-          {waits && leftOut ? 'Mail that waits isn’t read until you say where it goes, and mail left out is never read. ' : waits ? 'Mail that waits isn’t read until you say where it goes. ' : leftOut ? 'Mail left out is never read. ' : ''}
+          A thread goes by who it’s with: whoever wrote in it, and whoever you wrote to. An address goes before its domain, and if several are listed here, the first in the thread decides. What Homing learns from it is kept only for you, in the space it goes to.{' '}
+          {waits && 'Mail that waits isn’t read until you say where it goes. '}
+          {leftOut && 'A thread with anyone left out is never read, whatever else is listed here. '}
           What Homing learned before stays where it is.
         </p>
       </>
