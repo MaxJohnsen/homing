@@ -1276,7 +1276,7 @@ const hoursPass = (place: string, hours: number) => owner`
   where place_id = ${place} and jsonb_array_length(coalesce(failures, '[]')) > 0
 `;
 /** The threads a run's provider failed on, as the run keeps them: on which walk, which thread, and how often. */
-const failuresOf = (now: Record<string, any>) => now.failures.map((failure: unknown[]) => failure.slice(0, 3));
+const failuresOf = (now: Record<string, any>) => (now.failures ?? []).map((failure: unknown[]) => failure.slice(0, 3));
 const failing = { status: 503, json: { error: { message: 'overloaded' } } };
 const refusing = (status = 400): Reply => ({ status, json: { error: { message: 'The request was rejected.' } } });
 /** How often the model was asked about an email with this subject, since a point. */
@@ -1346,7 +1346,7 @@ test('a thread the provider won’t take is set aside once the provider answers 
   try {
     for (let tries = 1; tries <= 10; tries++) {
       const { now, wait } = await tryPage(down.place);
-      assert.deepEqual([now.state, now.reason, now.waitingFor, now.attempts, now.failures], ['learning history', null, 'provider', tries, []]);
+      assert.deepEqual([now.state, now.reason, now.waitingFor, now.attempts, now.failures], ['learning history', null, 'provider', tries, null]);
       assert.ok(Math.abs(wait - Math.min(30 * 2 ** (tries - 1), 3600)) <= 2, `try ${tries} waits ${wait}s`);
     }
     assert.equal((await down.marks()).length, 0);
@@ -2167,7 +2167,7 @@ test('a thread is read in order whatever the provider does: what a later call wo
     await hoursPass(failed.place, 2);
     const third = await tryPage(failed.place);
     assert.deepEqual((await failed.marks()).map((mark) => mark.reason), plans.slice(0, 10).map(() => 'provider failed'));
-    assert.deepEqual([third.wait, third.now.failures, third.now.state, askedAbout('Plan 11', before)], [0, [], 'learning history', 0]);
+    assert.deepEqual([third.wait, third.now.failures, third.now.state, askedAbout('Plan 11', before)], [0, null, 'learning history', 0]);
     await through();
     assert.deepEqual([(await failed.marks()).map((mark) => mark.reason ?? mark.outcome), askedAbout('Plan 11', before), (await failed.run()).state], [[...plans.slice(0, 10).map(() => 'provider failed'), 'learned', 'learned'], 1, 'following']);
   } finally {
@@ -2318,14 +2318,122 @@ test('a failure is kept by its thread, so a failing thread is known as failing h
   } finally {
     provider.reply = noteReply;
   }
+});
 
-  // A failure kept the earlier way, by the first email of a call, names no thread: it holds nothing back, and is dropped once its page is done.
-  const earlier = await world([email('Alpha', 30), email('Bravo', 20)]);
-  const id = await earlier.begin();
-  await owner`update learning_runs set failures = ${owner.json([['main', earlier.ids[0], 2, Date.now()]] as never)} where id = ${id}`;
+test('what was counted against a thread ends with the marks of an answer for it, and so holds however the page ends then: Homing stopping, the claim lost, or an error of its own. What follows of the thread starts its own count', async () => {
+  const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
+  const about = (body: any, subject: string) => !carriesNothing(body) && sentIn(body).emails[0].Subject === subject;
+  const failsOn = (subject: string) => (body: any) => (about(body, subject) ? failing : noteReply(body));
+  /**
+   * The provider failed twice, hours apart, on the ten oldest of a thread of twelve. On the third try it answers for them, and the page
+   * ends early in the way given, before anything is handed back. Then it fails once on the thread's two newest.
+   */
+  const answeredThen = async (ending: 'stopping' | 'claim lost' | 'error') => {
+    const thread = `AAQk${randomUUID()}=`;
+    const { account, begin, marks, place, run } = await world(plans.map((subject, at) => email(subject, 40 - at, { conversation: thread })));
+    const id = await begin();
+    const learnedFrom = async () => (await marks()).filter((mark) => mark.outcome === 'learned').length;
+    provider.reply = failsOn('Plan 1');
+    try {
+      await tryPage(place);
+      await hoursPass(place, 1);
+      assert.deepEqual(failuresOf((await tryPage(place)).now), [['main', thread, 2]]);
+      // Mail in the thread that needs no model is set aside without one, which is no answer for the thread: the count stays.
+      microsoft.deliver(account, email('This week', 35, { conversation: thread, headers: { 'List-Unsubscribe': '<https://x.test/u>' } }));
+      assert.deepEqual([failuresOf((await tryPage(place)).now), (await marks()).map((mark) => mark.reason)], [[['main', thread, 2]], ['newsletter']]);
+      await hoursPass(place, 2);
+      const stop = new AbortController();
+      provider.reply = async (body) => {
+        if (!about(body, 'Plan 11')) return noteReply(body);
+        // The run is claimed again while the thread's next call is under way, as after its scope changed: nothing this page hands back is taken.
+        if (ending === 'claim lost') await owner`update learning_runs set claim = gen_random_uuid() where id = ${id}`;
+        return failing;
+      };
+      const interpretation: Interpretation = {
+        ...notes,
+        learn: async (batch, ask) => {
+          const learned = await notes.learn(batch, ask);
+          if (ending === 'stopping') stop.abort();
+          return learned;
+        },
+      };
+      // Something of Homing's own breaks at the thread's next call, before it's sent.
+      const breaking: Interpretation = { ...notes, learn: (batch, ask) => (batch.items[0].envelope.title === 'Plan 11' ? Promise.reject(new Error('Something broke.')) : notes.learn(batch, ask)) };
+      const claimed = await claim(sql, randomUUID(), 30);
+      await quietly(() => learnPage(sql, { ...learning, interpretation: ending === 'error' ? breaking : interpretation }, claimed!, { backoffSeconds: 0, pollSeconds: 3600 }, stop.signal));
+      // The ten were learned from, and what was counted against their thread ended with their marks, whatever became of the page.
+      assert.deepEqual([await learnedFrom(), (await run()).failures], [10, null], ending);
+      await owner`update learning_runs set claimed_by = null, claim = null, claimed_until = null, next_at = now() where id = ${id}`;
+      // So a failure on the two newest is their first: tried again in an hour, and nothing is set aside for it.
+      provider.reply = failsOn('Plan 11');
+      const next = await tryPage(place);
+      assert.deepEqual([failuresOf(next.now), (await marks()).filter((mark) => mark.reason === 'provider failed').length, await learnedFrom()], [[['main', thread, 1]], 0, 10], ending);
+      assert.ok(Math.abs(next.wait - 3600) <= 2, `${ending}: waits ${next.wait}s`);
+    } finally {
+      provider.reply = noteReply;
+    }
+  };
+  await answeredThen('stopping');
+  await answeredThen('claim lost');
+  await answeredThen('error');
+});
+
+test('a failure leaves a run only when its thread is answered or set aside, or when it’s a day old: it holds while Microsoft serves the page in fewer without the thread, and one for a thread that never comes back is gone after a day', async () => {
+  // A thread of twelve emails after ten others, on one page. The provider fails on the call with its ten oldest.
+  const thread = `AAQk${randomUUID()}=`;
+  const plans = Array.from({ length: 12 }, (_, at) => `Plan ${at + 1}`);
+  const olds = Array.from({ length: 10 }, (_, at) => `Old ${at + 1}`);
+  const failsOn = (subject: string) => (body: any) => (!carriesNothing(body) && sentIn(body).emails[0].Subject === subject ? failing : noteReply(body));
+  const { account, begin, marks, place } = await world([...olds.map((subject, at) => email(subject, 60 - at)), ...plans.map((subject, at) => email(subject, 40 - at, { conversation: thread }))]);
+  await begin();
+  provider.reply = failsOn('Plan 1');
+  try {
+    await tryPage(place);
+    // Microsoft fails on the page, and serves it in fewer: the ten others, which were learned from, and nothing of the thread. That page is done.
+    microsoft.outage(account);
+    await tryPage(place);
+    microsoft.outage(account, 0);
+    const from = provider.asked.length;
+    const smaller = await tryPage(place);
+    assert.deepEqual([smaller.now.pageSize, smaller.now.checkpoint !== null, failuresOf(smaller.now), provider.asked.length], [null, true, [['main', thread, 1]], from]);
+    // The thread comes on the next page, where it's still known as failing: it waits out its hour, and failing then is its second failure.
+    const waiting = await tryPage(place);
+    assert.deepEqual([failuresOf(waiting.now), provider.asked.length, (await marks()).length], [[['main', thread, 1]], from, 10]);
+    assert.ok(waiting.wait > 3500 && waiting.wait <= 3600, `still waits ${waiting.wait}s`);
+    await hoursPass(place, 1);
+    const second = await tryPage(place);
+    assert.deepEqual([failuresOf(second.now), askedAbout('Plan 1', from)], [[['main', thread, 2]], 1]);
+    assert.ok(Math.abs(second.wait - 7200) <= 2, `waits ${second.wait}s`);
+    // A day without another try, and what was counted is forgotten: the next failure is a first one again, and nothing is set aside.
+    await hoursPass(place, 25);
+    const dayOn = await tryPage(place);
+    assert.deepEqual([failuresOf(dayOn.now), askedAbout('Plan 1', from), (await marks()).length], [[['main', thread, 1]], 2, 10]);
+  } finally {
+    provider.reply = noteReply;
+  }
+
+  // A failure for a thread that isn't on the page holds nothing up there. That goes for one kept the earlier way too, by an email's id, which names no thread.
+  const elsewhere = await world(['Alpha', 'Bravo', 'Charlie', 'Delta'].map((subject, at) => email(subject, 30 - at)));
+  const id = await elsewhere.begin();
+  const kept = (failures: unknown[][]) => owner`update learning_runs set failures = ${owner.json(failures as never)} where id = ${id}`;
+  await kept([['main', 'AAQkGone=', 1, Date.now(), true], ['main', elsewhere.ids[0], 2, Date.now()]]);
+  // The provider refuses every real request and answers one that carries nothing: the third on the page is the first of the row there, and is counted against.
+  provider.reply = (body) => (carriesNothing(body) ? answerWith('yes') : refusing());
+  try {
+    const { now } = await tryPage(elsewhere.place);
+    assert.deepEqual([(await elsewhere.marks()).map((mark) => mark.reason), failuresOf(now)], [['provider refused', 'provider refused'], [['main', 'AAQkGone=', 1], ['main', elsewhere.ids[0], 2], ['main', elsewhere.threads[2], 1]]]);
+  } finally {
+    provider.reply = noteReply;
+  }
+  // The page is done, and the two for what never came stay, since nothing answered for them: until they're a day old.
   const since = provider.asked.length;
   await through();
-  assert.deepEqual([subjectsSince(since), (await earlier.marks()).map((mark) => mark.outcome), (await earlier.run()).failures], [['Alpha', 'Bravo'], ['learned', 'learned'], null]);
+  assert.deepEqual([subjectsSince(since), failuresOf(await elsewhere.run())], [['Charlie', 'Delta'], [['main', 'AAQkGone=', 1], ['main', elsewhere.ids[0], 2]]]);
+  await hoursPass(elsewhere.place, 25);
+  microsoft.deliver(elsewhere.account, email('Echo', 0));
+  await lookAgain(elsewhere.place);
+  await through();
+  assert.deepEqual([subjectsSince(since).at(-1), (await elsewhere.run()).failures], ['Echo', null]);
 });
 
 test('learning that an assistant proposes starts only when the person approves it, with the provider and model it showed, and a proposal is only ever about their own mailbox', async () => {
