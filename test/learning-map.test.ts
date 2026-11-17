@@ -1007,7 +1007,8 @@ test('the summary never holds up reading and one email can’t stop it: text is 
     // Tried again when it's time, and given up after a few tries, which her assistant is told.
     for (let tries = 2; tries <= 5; tries++) {
       await owner`update learning_runs set summarizing = summarizing || '{"retryAt": 0}' where place_id = ${w.place} and not summarizing ? 'failed'`;
-      await through(learning);
+      await learnPage(sql, learning, (await claim(sql, randomUUID(), 30))!, { pollSeconds: 3600, backoffSeconds: 30 });
+      if (tries < 5) assert.equal((await w.run()).summarizing.tries, tries);
     }
     assert.deepEqual([(await w.run()).summarizing, (await w.run()).summary.at], [{ since: (await w.run()).summarizing.since, failed: true }, made.at]);
     assert.match((await t.claude.call('read', { ref: `learning:${w.place}` })).text, /Homing couldn’t look at who writes there: .* gave up\. learning\.summarize asks it to try again\./);
