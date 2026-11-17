@@ -164,6 +164,8 @@ Inside an assistant the approval card takes the host's colors, font and corners,
 - Learning from your mailbox asks "Have Homing learn from ana@acme.no?", with the assistant's reason. The mailbox and how far back are set apart, under a label naming the space, with "Only you". Then what Microsoft counts there and what is left for a model to read, "Estimated model cost: $9.40 to $18.80." in the heavier weight, that it's rough and what it goes by, and one sentence with the run's limit and the provider and model that would read your mail, ending "What it learns is only yours." The buttons are Start learning and Don't start. Learning further back shows the period it adds and says the limit stays what it is, with Learn further back and Leave it as it is. If the estimate or the period changed since it was proposed, it says so in the destructive color, and it can only be declined. The decision page shows the same.
 - Only assistants checked to keep the model from pressing its buttons show it, Claude first. The others give the person a link to the decision page.
 
+A map is shown as a plan: each new space as a change of its own, marked as only yours, then one change that lists the routes, one on each line, as "northwind.test → Northwind, a new space · 124 emails", ending with where everything else goes. The heading asks "Set where the mail in … belongs?", and the button says how many changes it approves.
+
 ## The landing page
 
 homing.place introduces Homing to someone meeting it for the first time. It is a site of its own, never part of Homing, so a self-hosted Homing doesn't carry it.

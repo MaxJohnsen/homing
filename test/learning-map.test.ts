@@ -181,6 +181,8 @@ test('with no model set up, Ana’s assistant reads who writes in her mailbox an
   assert.deepEqual((await run()).routes, []);
   const { id: runId } = await run();
   await assert.rejects(withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => s.tx`select set_learning_map(${runId}::uuid, '[]'::jsonb, 'wait')`), /only the person sets where learning puts things/);
+  // Nor does a route lead to a space that isn't Ana's to open, even set by herself past Homing's own check: the database refuses it.
+  await assert.rejects(withPrincipal(sql, { person: ana.id, direct: true }, (s) => s.tx`select set_learning_map(${runId}::uuid, ${s.tx.json([{ who: 'northwind.test', to: caras }])}, null)`), /a route leads to a space you can open/);
   // Ana is shown the spaces and the routes, with what each holds.
   const shown = (await ana.browser.json(`/api/proposals/${first}`)).body.proposal;
   assert.deepEqual(shown.plan.steps.map((step: { action: string }) => step.action), ['space', 'space', 'space', 'map']);
