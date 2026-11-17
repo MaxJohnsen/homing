@@ -121,7 +121,11 @@ export interface PlanData {
 
 /** One change in a plan. While it waits, why it can't be made now, if it can't. */
 export interface PlanStepData {
-  action: 'publish' | 'task' | 'members' | 'add' | 'change' | 'remove';
+  action: 'publish' | 'task' | 'members' | 'add' | 'change' | 'remove' | 'space' | 'map';
+  /** A space a map creates, only yours: its name, and the space it goes in. */
+  space?: { name: string; in: string | null } | null;
+  /** A map: whose mail, each route with where it leads and what it holds, and where everything else goes. */
+  map?: MapData | null;
   /** Sharing an item, while it can be shared: what sharing it alone would show. */
   publication: PublicationData | null;
   /** Sharing an item: what it says and its page, shared or not. */
@@ -131,6 +135,27 @@ export interface PlanStepData {
   /** A rule: the new one or its new wording, and for a change or removal the rule as it is now. */
   rule: { kind: RuleKind; text: string | null; now: string | null; shared: boolean; onlyHere: boolean } | null;
   problem: string | null;
+}
+
+/** Where a route leads: a space by name, one the map creates, leave out, or wait; and what it holds, when Homing has counted. */
+export interface LeadsData {
+  to: 'space' | 'new space' | 'leave out' | 'wait';
+  name: string | null;
+  emails: number | null;
+  threads: number | null;
+}
+
+export interface MapData {
+  place: string;
+  address: string;
+  words: { place: string; items: string };
+  routes: ({ who: string } & LeadsData)[];
+  rest: LeadsData;
+}
+
+/** The map a plan sets, if it's one. */
+export function mapOf(plan: Pick<PlanData, 'steps'> | null | undefined): MapData | undefined {
+  return plan?.steps.find((step) => step.map)?.map ?? undefined;
 }
 
 /** How many changes a plan makes, creating its space among them. */
@@ -257,6 +282,8 @@ export function wantsTo(
     // The changes in the space it creates, which isn't one of them, or all of them.
     const changes = proposal.plan?.steps.length ?? proposal.changes ?? 0;
     const create = proposal.plan ? proposal.plan.create?.name : proposal.text;
+    const map = mapOf(proposal.plan);
+    if (map) return `${assistant} wants to set where the mail in ${map.address} belongs`;
     if (create) return `${assistant} wants to create ${create}${withPlace ? ` in ${placeOf(proposal)}` : ''} and make ${count(changes, 'change')} in it`;
     return `${assistant} wants to make ${count(changes, 'change')}${withPlace ? ` in ${placeOf(proposal)}` : ''}`;
   }
@@ -377,7 +404,7 @@ export function declineOnly(proposal: Pick<ProposalData, 'action' | 'member' | '
 /** The buttons for deciding it, or for a request you haven't sent, for sending it. A plan's names how many it makes. */
 export function buttonsOf(action: ProposalData['action'], sending = false, member?: MemberChange, place?: string, changes = 0): { approve: string; reject: string } {
   if (sending) return { approve: 'Send request', reject: 'Don’t send' };
-  if (action === 'plan') return { approve: changes === 2 ? 'Approve both' : `Approve all ${changes}`, reject: 'Decline' };
+  if (action === 'plan') return { approve: changes === 1 ? 'Approve' : changes === 2 ? 'Approve both' : `Approve all ${changes}`, reject: 'Decline' };
   // The button names who will see it.
   if (action === 'publish' || action === 'task') return { approve: place ? `Share with ${place}` : 'Share', reject: 'Don’t share' };
   if (action === 'members') {
@@ -426,6 +453,11 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   if (state === 'withdrawn') return { kind: 'gone', heading: 'Withdrawn', detail: `${proposal.withdrawnBy ? `${proposal.withdrawnBy} withdrew it` : 'You withdrew it'} before anyone decided it, so nothing changed.` };
   if (action === 'plan' && proposal.plan) {
     const { plan } = proposal;
+    const map = mapOf(plan);
+    if (state === 'approved' && map) {
+      const spaces = plan.steps.filter((step) => step.space).length;
+      return { kind: 'approved', heading: 'Map set', detail: `${spaces ? `${count(spaces, 'space')} ${spaces === 1 ? 'was' : 'were'} created at the same time. ` : ''}Homing follows the map for the ${map.words.items} it reads from here on.` };
+    }
     if (state === 'approved') {
       return plan.create
         ? { kind: 'approved', heading: `${plan.space} created`, detail: `It’s in ${place}, and ${count(plan.steps.length, 'change')} ${plan.steps.length === 1 ? 'was' : 'were'} made in it at the same time.` }

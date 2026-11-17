@@ -8,11 +8,11 @@
 
 import postgres from 'postgres';
 import { ConnectionUnusable, kindOf, Unanswered, using, type Broker } from './connections.ts';
-import type { Change, Follow, Scope } from './connectors.ts';
+import type { Change, Envelope, Follow, Scope } from './connectors.ts';
 import { personOf, withPrincipal, type Principal, type Session } from './db.ts';
 import type { Interpretation } from './interpret.ts';
 import { callCost, monthlyLimit, type Model } from './model.ts';
-import { ownPlace, wordsOf, type Place } from './places.ts';
+import { ownPlace, quoted, wordsOf, type Place } from './places.ts';
 import { accessibleSpaces } from './spaces.ts';
 
 /** What learning needs from the server: connections, Homing's model if it has one, and how a batch is read. */
@@ -30,6 +30,24 @@ export interface LeftOut {
   senders: string[];
   folders: string[];
   kept: string[];
+}
+
+/**
+ * A route of a run's map: who, someone a thread is with, by address or domain, and where their mail
+ * belongs: a space, by its id, or leave out, or wait.
+ */
+export interface Route {
+  who: string;
+  to: string;
+}
+
+/**
+ * A run's map as it works: its routes, with each sender its owner left out as a route to leave
+ * out, and where everything else goes, which is the place's own space when it's null.
+ */
+export interface LearningMap {
+  routes: Route[];
+  rest: string | null;
 }
 
 /** What learning from a scope may cost, as Homing estimated it before the pass. It's rough. */
@@ -81,6 +99,12 @@ export interface Run {
   /** The estimate for a range further back its owner asked about, which isn't learned from until they say so. */
   proposed: Estimate | null;
   leftOut: LeftOut;
+  /** Where its mail belongs. The senders left out are its routes to leave out. */
+  map: LearningMap;
+  /** Whether a summary of the place is being made, when the one it has was made, and whether Homing gave up making one. */
+  summarizing: boolean;
+  summarized: string | null;
+  summaryFailed: boolean;
   startedAt: Date | null;
 }
 
@@ -140,20 +164,54 @@ interface RunRow {
   extensionEstimate: Estimate | null;
   spendingLimit: string;
   estimate: Estimate | null;
+  routes: Route[];
+  rest: string | null;
   excludedSenders: string[];
   excludedFolders: string[];
   keptSenders: string[];
+  summarizing: boolean;
+  summarized: string | null;
+  summaryFailed: boolean;
   startedAt: Date | null;
 }
 
+/**
+ * A map as it works, from the routes a run keeps and the senders it leaves out, who stay a list of
+ * their own: each of them a route to leave out, and so is every other route for anyone that list
+ * covers, since what is left out is never read, whatever else names it. The run keeps such a route
+ * as it was, so it works again once its sender is off the list.
+ */
+export const mapOf = (routes: Route[], leftOut: string[], rest: string | null): LearningMap => {
+  const out = [...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])];
+  const others = routes.filter((route) => !out.includes(route.who)).map((route) => (leftOutBy(out, route.who) ? { who: route.who, to: 'leave out' } : route));
+  return { routes: [...others, ...out.map((who) => ({ who, to: 'leave out' }))], rest };
+};
+
+/** The entry among those left out that covers a route's sender: that address, or the whole of the domain it names. */
+export const leftOutBy = (leftOut: string[], who: string) => leftOut.find((entry) => sentBy(entry, who.includes('@') ? who : `someone@${who}`));
+
+/**
+ * Whether a text names a sender, for a route or for what's left out: a plain address or a domain,
+ * in lower case, of ASCII only, so it names who it looks like it names and nothing in it stands
+ * for anything else. The database holds the same (route_names).
+ */
+export const namesSender = (who: string) => who.length <= 320 && /^([a-z0-9.!#$%&'*+/=?^_`{|}~-]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(who);
+
+/** A sender as someone wrote it, the way it's kept: in lower case, without the @ a domain may be written with. */
+export const senderNamed = (who: string) => who.trim().toLowerCase().replace(/^@/, '');
+
+/** Whether a map says anything beyond who is left out: a run without one behaves as it did before maps. */
+export const hasMap = (map: LearningMap) => map.rest !== null || map.routes.some((route) => route.to !== 'leave out');
+
 function runOf(row: RunRow): Run {
-  const { extensionSince, extensionUntil, extensionEstimate, spendingLimit, excludedSenders, excludedFolders, keptSenders, ...run } = row;
+  const { extensionSince, extensionUntil, extensionEstimate, spendingLimit, routes, rest, excludedSenders, excludedFolders, keptSenders, ...run } = row;
   return {
     ...run,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
     limit: Number(spendingLimit),
     proposed: extensionEstimate,
     leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
+    map: mapOf(routes, excludedSenders, rest),
   };
 }
 
@@ -167,7 +225,8 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
            r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
-           r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at
+           r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
+           r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed
     from learning_runs r
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid
   `;
@@ -251,9 +310,10 @@ export async function setAsideSenders(s: Session, run: Run, reason: string, opti
 export const senderOf = (change: Change) => change.item.envelope.author?.address?.trim().toLowerCase() || undefined;
 
 /**
- * Why an item needs no model: by the system's own signs, as its connector reads them, such as a
- * newsletter's headers, unless its owner keeps the sender; or because its owner left out its
- * folder or its sender, and then which entry of theirs it was. Undefined when a model should read it.
+ * Why an item needs no model, whoever its thread is with: by the system's own signs, as its
+ * connector reads them, such as a newsletter's headers, unless its owner keeps the sender; or
+ * because its owner left out its folder, and then which entry of theirs it was. Undefined when it
+ * goes on to where its thread belongs.
  */
 export function setAside(change: Change, leftOut: LeftOut): { reason: string; because?: string } | undefined {
   const address = senderOf(change);
@@ -262,34 +322,121 @@ export function setAside(change: Change, leftOut: LeftOut): { reason: string; be
   if (change.setAside && !overruled) return { reason: change.setAside };
   const inFolder = folderLeftOut(change.folder, leftOut);
   if (inFolder) return { reason: 'excluded folder', because: inFolder };
-  const from = address && leftOut.senders.find((entry) => sentBy(entry, address));
-  if (from) return { reason: 'excluded sender', because: from };
   return undefined;
 }
 
 /** The entry of its owner's that leaves out a folder, by its name, if one does. */
-export function folderLeftOut(folder: string | null, leftOut: LeftOut): string | undefined {
+export function folderLeftOut(folder: string | null, leftOut: Pick<LeftOut, 'folders'>): string | undefined {
   const named = folder?.trim().toLowerCase();
   return named ? leftOut.folders.find((name) => name.trim().toLowerCase() === named) : undefined;
 }
 
 /**
- * The left-out sender a thread holds mail from, if it holds any: among these items, or among what
- * they're read with. Such a thread is set aside whole, whoever else wrote in it, since a reply
- * quotes what it answers.
+ * Whether an address is the one an entry names, or at the domain it names or one under it. Both as
+ * they are kept, in lower case, and compared letter by letter: nothing in an entry stands for
+ * anything else. An entry may begin with one @, as @northwind.test. The database says the same
+ * (sender_matches), and one table of cases is run through both.
  */
-export function leftOutIn(changes: Change[], leftOut: LeftOut): string | undefined {
-  if (leftOut.senders.length === 0) return undefined;
-  const addresses = changes.flatMap((change) => [change.item.envelope.author, ...change.item.related.map((other) => other.author)]).flatMap((author) => (author?.address ? [author.address.trim().toLowerCase()] : []));
-  return leftOut.senders.find((entry) => addresses.some((address) => sentBy(entry, address)));
+export function sentBy(entry: string, address: string): boolean {
+  const named = entry.replace(/^@/, '');
+  if (named.includes('@')) return address === named;
+  return named !== '' && (address.endsWith(`@${named}`) || address.endsWith(`.${named}`));
 }
 
-/** Whether an address is the one an entry names, or at the domain it names, written as northwind.test or @northwind.test. */
-function sentBy(entry: string, address: string): boolean {
-  const named = entry.trim().toLowerCase();
-  if (named.includes('@') && !named.startsWith('@')) return address === named;
-  const domain = named.replace(/^@/, '');
-  return domain !== '' && (address.endsWith(`@${domain}`) || address.endsWith(`.${domain}`));
+/**
+ * The route that names an address. Whoever is left out is left out, whatever else names them: a
+ * route that leaves them out, by their address or their domain, comes before any other. Among the
+ * rest it is the most exact one: the address itself before its domain, and a domain before one
+ * above it.
+ */
+export function routeFor(routes: Route[], address: string): Route | undefined {
+  const exact = (route: Route) => route.who.replace(/^@/, '').length;
+  const out = (route: Route) => Number(route.to === 'leave out');
+  return routes.filter((route) => sentBy(route.who, address)).sort((a, b) => out(b) - out(a) || exact(b) - exact(a))[0];
+}
+
+/**
+ * Who an item is with: whoever wrote it, or, for one its owner wrote, whoever they wrote it to, as
+ * far as that's known. By address, in lower case. Its owner's own address never counts.
+ */
+export function partiesOf(envelope: Envelope, own: string): string[] {
+  const me = own.trim().toLowerCase();
+  const address = (party: { address: string | null } | null) => party?.address?.trim().toLowerCase() || undefined;
+  const author = address(envelope.author);
+  const those = author === me ? (envelope.audience === 'unknown' ? [] : envelope.audience.people.map(address)) : [author];
+  return [...new Set(those.filter((one): one is string => one !== undefined && one !== me))];
+}
+
+/**
+ * Where a thread belongs by its owner's map: the one rule, which reading, the estimate, what's not
+ * placed and looking again all go by. A thread is routed by who it is with, among these items and
+ * what they're read with, and each of them by the route that names them (routeFor): left out
+ * first, then the most exact. If any of them is left out, the whole thread is, since a reply quotes
+ * what it answers. Otherwise
+ * the oldest item that is with someone a route names decides. With none, the thread goes where
+ * everything else goes, and says no route named it. The space is null for the place's own. It also
+ * says everyone the thread is with, which a run keeps with what it sets aside by this.
+ */
+export function routeOf(changes: Change[], map: LearningMap, own: string): { to: string | null; entry: string | null; parties: string[] } {
+  // Each item once, as it was read where it was: an item among what another is read with comes without whom it was sent to.
+  const written = new Map<string, Envelope>();
+  for (const envelope of changes.flatMap((change) => change.item.related)) written.set(envelope.id, envelope);
+  for (const change of changes) written.set(change.item.envelope.id, change.item.envelope);
+  const each = [...written.values()].sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)).map((envelope) => partiesOf(envelope, own));
+  const parties = [...new Set(each.flat())].slice(0, partiesKept);
+  const named = each.flatMap((those) => those.flatMap((address) => routeFor(map.routes, address) ?? []).slice(0, 1));
+  const route = each.flat().map((address) => routeFor(map.routes, address)).find((one) => one?.to === 'leave out') ?? named[0];
+  return route ? { to: route.to, entry: route.who, parties } : { to: map.rest, entry: null, parties };
+}
+
+/** How many of those a thread is with a run keeps with what it sets aside. */
+const partiesKept = 200;
+
+/** How many emails a sender no route names has before they're listed as not placed, and how many are listed. */
+const addsUp = 3;
+const notPlacedShown = 20;
+
+/**
+ * The senders no route of the person's run names whose mail adds up, most first, with how many
+ * there are beside those: what the run met that the map says nothing about, in threads that went
+ * where everything else goes. Their own address isn't one. A run without a map has none.
+ */
+export async function notPlaced(s: Session, run: Run, own: string): Promise<{ senders: Sender[]; more: number }> {
+  if (!hasMap(run.map)) return { senders: [], more: 0 };
+  const rows = await s.tx<Sender[]>`
+    select sender, count(*)::integer as items from learned_items
+    where run_id = ${run.id}::uuid and because is null and (interpretation is not null or reason in ('waiting', 'excluded sender'))
+      and sender is not null and sender <> ${own.trim().toLowerCase()}
+    group by sender having count(*) >= ${addsUp}
+    order by 2 desc, 1
+    limit 500
+  `;
+  const open = rows.filter((row) => !run.map.routes.some((route) => sentBy(route.who, row.sender)));
+  return { senders: open.slice(0, notPlacedShown), more: Math.max(0, open.length - notPlacedShown) };
+}
+
+/**
+ * Asks for a summary of one of the person's places back to a day, for them or their assistant.
+ * Homing's worker makes it (learner.ts), without a model. A place that has no run yet gets one,
+ * which waits to be started; a started run is summarized over its own scope.
+ */
+export async function summarizeLearning(l: Learning, principal: Principal, placeId: string, since?: Date): Promise<Run> {
+  const found = await ownRun(l, principal, placeId);
+  if (!found) throw new LearningRefused(nothingThere);
+  const connector = l.broker.connectors.get(found.place.connector);
+  const words = wordsOf(connector, found.place.kind);
+  if (!kindOf(connector, found.place.kind)?.follow?.summary) throw new LearningRefused(`Homing can’t summarize a ${words.place} of that kind.`);
+  const started = found.run && found.run.state !== 'estimating';
+  if (!started && !since) throw new LearningRefused('Say how far back to look, such as 2024-11-15.');
+  if (!started) checked(since!);
+  return refusing(() =>
+    withPrincipal(l.broker.sql, principal, async (s) => {
+      const already = started ? undefined : await elsewhere(s, found.place, words);
+      if (already) throw new LearningRefused(already);
+      await s.tx`select summarize_learning(${placeId}::uuid, ${started ? found.run!.since : since!})`;
+      return (await runsFor(s, [placeId])).get(placeId)!;
+    }),
+  );
 }
 
 /**
@@ -317,12 +464,12 @@ const latestSampled = 30 * 24 * 60 * 60 * 1000;
 /**
  * Estimates what learning from a scope of the person's place may cost: how many items the system
  * counts there, and, from a sample of its first items and its latest, how many of them need no
- * model, how many threads the rest make, and what reading those costs at the model's prices. A
+ * model or are left out or wait by the run's map, how many threads the rest make, and what reading those costs at the model's prices. A
  * handful of requests to the system, no scan, and no model call. It's rough: the rest of the scope
  * may differ from the sample. The limit it suggests is at most what whoever looks after Homing
  * lets a run spend.
  */
-export async function estimate(l: Learning, principal: Principal, place: Place, scope: Scope, leftOut: LeftOut, ceiling: number): Promise<Estimate> {
+export async function estimate(l: Learning, principal: Principal, place: Place, scope: Scope, { leftOut, map }: Pick<Run, 'leftOut' | 'map'>, ceiling: number): Promise<Estimate> {
   if (!l.model) throw new LearningRefused(noModel);
   const model = l.model;
   const connector = l.broker.connectors.get(place.connector);
@@ -347,11 +494,10 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
     sampled += fresh.length;
     const kept = fresh.filter((change) => !setAside(change, leftOut));
     aside += fresh.length - kept.length;
-    for (const batch of batchesOf(kept, l.interpretation.most)) {
-      if (leftOutIn(batch.changes, leftOut)) {
-        aside += batch.changes.length;
-        continue;
-      }
+    // What the map leaves out or has wait isn't read, so it costs nothing.
+    const read = batchesOf(kept, Number.MAX_SAFE_INTEGER).flatMap((thread) => (['leave out', 'wait'].includes(routeOf(thread.changes, map, place.address).to ?? '') ? [] : thread.changes));
+    aside += kept.length - read.length;
+    for (const batch of batchesOf(read, l.interpretation.most)) {
       threads++;
       for (const call of l.interpretation.calls({ space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: null, earlierUpTo: null })) {
         const cost = callCost(model, call);
@@ -378,7 +524,7 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
 }
 
 /** Dollars rounded up to the cent, so an estimate never reads as free when it isn't. */
-const cents = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
+export const cents = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
 
 /** The limit Homing suggests for a run: a round amount with room above the most the estimate says, and at least a dollar. */
 export function suggestedLimit(high: number): number {
@@ -479,7 +625,7 @@ export async function estimateLearning(l: Learning, principal: Principal, placeI
   if (already) throw new LearningRefused(already);
   let made: Estimate;
   try {
-    made = await estimate(l, principal, found.place, { since }, found.run?.leftOut ?? { senders: [], folders: [], kept: [] }, found.ceiling);
+    made = await estimate(l, principal, found.place, { since }, found.run ?? { leftOut: { senders: [], folders: [], kept: [] }, map: { routes: [], rest: null } }, found.ceiling);
   } catch (error) {
     throw unreachable(l, found.place, error) ?? error;
   }
@@ -535,7 +681,7 @@ export async function estimateExtension(l: Learning, principal: Principal, place
   if (since.getTime() >= run.since.getTime()) return undefined;
   let added: Estimate;
   try {
-    added = await estimate(l, principal, place, { since, until: run.since }, run.leftOut, found.ceiling);
+    added = await estimate(l, principal, place, { since, until: run.since }, run, found.ceiling);
   } catch (error) {
     throw unreachable(l, place, error) ?? error;
   }
@@ -564,12 +710,18 @@ export async function setLearningLimit(s: Session, run: Run, limit: number): Pro
 
 /**
  * Sets what the person's run leaves out without a model, and the senders it keeps. Their assistant
- * only adds to what's left out. What was set aside for something no longer left out, or from a
- * sender now kept, is learned from after all.
+ * only adds to what's left out. A sender to leave out is a plain address or a domain, as a route's
+ * is, and one already on the list stays as it's written there. The run's routes stay: one for a
+ * sender left out does nothing until they're taken off the list. What was set aside for something
+ * no longer left out, or from a sender now kept, is learned from after all.
  */
 export async function setLeftOut(s: Session, run: Run, leftOut: LeftOut): Promise<void> {
+  const had = (who: string) => run.leftOut.senders.includes(who);
+  const senders = leftOut.senders.map((who) => (had(who) ? who : senderNamed(who)));
+  const odd = senders.find((who) => !had(who) && !namesSender(who));
+  if (odd !== undefined) throw new LearningRefused(`${quoted(odd, 80)} isn’t a sender’s address or a domain in plain letters, such as news@shop.test or shop.test. Nothing was changed.`);
   await refusing(() => s.tx`
-    select set_learning_exclusions(${run.id}::uuid, ${s.tx.array(leftOut.senders)}::text[], ${s.tx.array(leftOut.folders)}::text[], ${s.tx.array(leftOut.kept)}::text[])
+    select set_learning_exclusions(${run.id}::uuid, ${s.tx.array(senders)}::text[], ${s.tx.array(leftOut.folders)}::text[], ${s.tx.array(leftOut.kept)}::text[])
   `);
 }
 
@@ -602,6 +754,8 @@ export function setAsideWords(reason: string, items: number, words: { item: stri
       return `${count} in threads with senders ${who} left out`;
     case 'excluded folder':
       return `${count} in folders ${who} left out`;
+    case 'waiting':
+      return `${count} waiting, as ${who === 'you' ? 'your' : 'the user’s'} map says, or until model processing is on where they belong`;
     case 'unreadable':
       return `${count} the service couldn’t give`;
     case 'gone':

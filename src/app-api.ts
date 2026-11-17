@@ -11,7 +11,8 @@ import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
 import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
-import { estimateExtension, estimateLearning, extendLearning, forgetExtension, LearningRefused, nothingThere, pauseLearning, progressOf, resumeLearning, retryable, retryLearning, runsFor, setAsideSenders, setAsideWords, setLearningLimit, setLeftOut, startLearning, type Progress, type Run } from './learning.ts';
+import { estimateExtension, estimateLearning, extendLearning, forgetExtension, LearningRefused, nothingThere, notPlaced, pauseLearning, progressOf, resumeLearning, retryable, retryLearning, runsFor, setAsideSenders, setAsideWords, setLearningLimit, setLeftOut, startLearning, summarizeLearning, type Progress, type Run } from './learning.ts';
+import { holdings, suggestMap, summaryFor, type Held } from './map.ts';
 import { modelName, modelProcessingOf, modelStatement, modelUsageOfEveryone, modelUseThisMonth, monthlyLimit, setModelProcessing, setMonthlyLimit, setRunCeiling } from './model.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
@@ -989,7 +990,17 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
         const { runs, ceiling } = await read(async (s) => {
           const runs = await runsFor(s, found.map((place) => place.id));
           return {
-            runs: new Map(await Promise.all([...runs].map(async ([place, run]) => [place, { run, progress: await progressOf(s, run) }] as const))),
+            runs: new Map(
+              await Promise.all(
+                [...runs].map(async ([place, run]) => {
+                  // What each route holds, going by the summary, and what the run met that no route names.
+                  const summary = await summaryFor(s, run);
+                  const held = summary ? holdings(summary, run.map, run.state === 'estimating' ? run.estimate : null) : [];
+                  const address = found.find((one) => one.id === place)?.connection.address ?? '';
+                  return [place, { run, progress: await progressOf(s, run), held, notPlaced: await notPlaced(s, run, address) }] as const;
+                }),
+              ),
+            ),
             ceiling: (await monthlyLimit(s)).runCeiling,
           };
         });
@@ -1013,7 +1024,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               // Whether Homing can learn from a place of this kind, how its items are worded, and how far it has learned.
               learns: Boolean(kind?.follow),
               words: { place: kind?.words.place ?? 'place', item: kind?.words.item ?? 'item', items: kind?.words.items ?? 'items', thread: kind?.words.related ?? 'thread' },
-              learning: learning ? learningData(learning.run, learning.progress, kind?.words ?? { item: 'item', items: 'items' }) : null,
+              // Whether Homing can summarize who writes there, which a map is worked out from.
+              summarizes: Boolean(kind?.follow?.summary),
+              learning: learning ? { ...learningData(learning.run, learning.progress, kind?.words ?? { item: 'item', items: 'items' }), ...mapData(learning.run, learning.held, learning.notPlaced) } : null,
             };
           }),
         });
@@ -1034,6 +1047,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
       }
 
       case 'estimate learning':
+      case 'summarize learning':
+      case 'suggest map':
       case 'start learning':
       case 'pause learning':
       case 'resume learning':
@@ -1058,6 +1073,14 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               return Boolean(run);
             });
             if (!done) return answer(res, 404, nothing);
+          } else if (route.name === 'summarize learning') {
+            // Who writes there, which Homing's worker counts without a model. A started run is summarized over its own scope.
+            await summarizeLearning(app.learning, { person, direct: true }, route.id, since);
+          } else if (route.name === 'suggest map') {
+            // Homing's own model answers where the mail belongs, and its answer waits as a proposal, as an assistant's does.
+            const { proposal, unasked } = await suggestMap(app.learning, person, route.id);
+            const note = unasked > 0 && `Homing’s model wasn’t asked about ${unasked.toLocaleString('en-US')} ${unasked === 1 ? 'sender' : 'senders'} whose mail goes to a space that isn’t sent to a model.`;
+            return answer(res, 200, { proposal: proposal.id, ...(note && { message: note }) });
           } else if (route.name === 'estimate learning' || route.name === 'estimate extension') {
             if (!since) return answer(res, 400, { field: 'since', message: 'Choose how far back to learn.' });
             if (route.name === 'estimate learning') await estimateLearning(app.learning, { person, direct: true }, route.id, since);
@@ -1280,6 +1303,11 @@ function learningData(run: Run, progress: Progress, words: { item: string; items
   };
 }
 
+/** A run's map as the app shows it: each route and everything else, with what it holds, whether a summary is there, being made or given up, and who isn't placed. */
+function mapData(run: Run, held: Held[], unplaced: Awaited<ReturnType<typeof notPlaced>>) {
+  return { map: run.map, summarizing: run.summarizing, summarized: run.summarized, summaryFailed: run.summaryFailed, held, notPlaced: unplaced };
+}
+
 function answer(res: ServerResponse, status: number, body: unknown): true {
   json(res, status, body);
   return true;
@@ -1289,7 +1317,7 @@ type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' | 'model use' | 'model limit' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'connect'; id: string; connector: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection' | 'estimate learning' | 'start learning' | 'pause learning' | 'resume learning' | 'estimate extension' | 'extend learning' | 'learning limit' | 'learning left out' | 'learning again' | 'learning set aside'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection' | 'estimate learning' | 'summarize learning' | 'suggest map' | 'start learning' | 'pause learning' | 'resume learning' | 'estimate extension' | 'extend learning' | 'learning limit' | 'learning left out' | 'learning again' | 'learning set aside'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -1360,6 +1388,8 @@ function routeOf(method: string, path: string): Route | undefined {
       ['remove include', `/api/includes/${uuid}/remove`],
       ['remove place', `/api/places/${uuid}/remove`],
       ['estimate learning', `/api/places/${uuid}/learning/estimate`],
+      ['summarize learning', `/api/places/${uuid}/learning/summary`],
+      ['suggest map', `/api/places/${uuid}/learning/map`],
       ['start learning', `/api/places/${uuid}/learning/start`],
       ['pause learning', `/api/places/${uuid}/learning/pause`],
       ['resume learning', `/api/places/${uuid}/learning/resume`],

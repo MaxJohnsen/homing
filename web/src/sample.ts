@@ -896,6 +896,57 @@ export const blockedPlanProposal: ProposalData = {
   },
 };
 
+/**
+ * The map story: Ana asked Claude where the mail in her work mailbox belongs. Homing counted who
+ * writes there, and Claude proposes two spaces of her own and the routes, as one plan.
+ */
+export const mapProposal: ProposalData = {
+  ...proposal,
+  why: null,
+  id: 'map',
+  action: 'plan',
+  space: 'Acme',
+  shared: false,
+  text: null,
+  alreadyApplies: [],
+  plan: {
+    create: null,
+    space: 'Acme',
+    spaceId: 'acme',
+    steps: [
+      { action: 'space', space: { name: 'Clients', in: 'your personal space' }, publication: null, item: null, task: null, member: null, rule: null, problem: null },
+      { action: 'space', space: { name: 'Fabrikam', in: 'Clients' }, publication: null, item: null, task: null, member: null, rule: null, problem: null },
+      {
+        action: 'map',
+        map: {
+          place: 'mailbox-acme',
+          address: 'ana.berg@acme.no',
+          words: { place: 'mailbox', items: 'emails' },
+          routes: [
+            { who: 'northwind.example', to: 'space', name: 'Northwind', emails: 1240, threads: 312 },
+            { who: 'fabrikam.example', to: 'new space', name: 'Fabrikam', emails: 386, threads: 97 },
+            { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Acme', emails: 48, threads: 48 },
+            { who: 'mum@berg.example', to: 'space', name: 'Your personal space', emails: 61, threads: 22 },
+            { who: 'globex.example', to: 'wait', name: null, emails: 1, threads: 1 },
+            { who: 'weekly-digest.example', to: 'leave out', name: null, emails: 204, threads: 204 },
+          ],
+          rest: { to: 'space', name: 'Acme', emails: 2913, threads: 1104 },
+        },
+        publication: null,
+        item: null,
+        task: null,
+        member: null,
+        rule: null,
+        problem: null,
+      },
+    ],
+    audience: { people: 5, above: false, adding: [] },
+    sees: null,
+    why: 'You said Fabrikam is a new client, and that Globex can wait until the contract is signed.',
+    shown: '[]',
+  },
+};
+
 /** A space's tasks: Ana's own and the space's, open and done lately. */
 export const sampleTasks = {
   open: [
