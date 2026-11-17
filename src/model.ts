@@ -531,6 +531,15 @@ export async function modelProcessingOf(s: Session, spaceId: string): Promise<Mo
   return row && { on: row.offAt === null && !row.offAbove, ...row };
 }
 
+/** Which of these spaces the person can open have model processing on, in themselves and in every space above them. */
+export async function modelOn(s: Session, spaces: string[]): Promise<string[]> {
+  if (spaces.length === 0) return [];
+  const rows = await s.tx<{ id: string }[]>`
+    select space.id from unnest(${s.tx.array(spaces)}::uuid[]) as space (id), model_processing_of(space.id) as m where m.off_at is null and not m.off_above
+  `;
+  return rows.map((row) => row.id);
+}
+
 /** Turns model processing off in a space the person looks after, or back on. Whether it changed anything. */
 export async function setModelProcessing(s: Session, spaceId: string, on: boolean): Promise<boolean> {
   const [{ changed }] = await s.tx<{ changed: boolean }[]>`select set_model_processing(${spaceId}::uuid, ${on}) as changed`;

@@ -15,6 +15,7 @@ import { withPrincipal, type Session, type Sql } from './db.ts';
 import {
   estimateExtension,
   estimateLearning,
+  hasMap,
   LearningRefused,
   noModel,
   notPlaced,
@@ -193,7 +194,7 @@ function summaryLines(summary: Summary, words: Words): string[] {
 /** The run's map as an assistant reads it: each route, where it leads and what it holds, and what the run met that no route names. */
 async function mapLines(s: Session, l: Learning, place: Place, run: Run, summary: Summary | null, spaces: Space[], words: Words): Promise<string[]> {
   const q = (value: string) => JSON.stringify(oneLine(value));
-  const mapped = run.map.rest !== null || run.map.routes.some((route) => route.to !== 'leave out');
+  const mapped = hasMap(run.map);
   const leads = (to: string | null) => {
     if (to === 'leave out') return 'left out, never read';
     if (to === 'wait') return 'waits, not read until a map says where it goes';
@@ -208,7 +209,7 @@ async function mapLines(s: Session, l: Learning, place: Place, run: Run, summary
     const cost = row.high !== undefined ? `, about ${usd(row.low!)}–${usd(row.high)} to read` : '';
     return `: ${counted(row.emails, words.item, words.items)} in about ${counted(row.threads, words.related ?? 'thread', `${words.related ?? 'thread'}s`)}${cost}`;
   };
-  const unplaced = mapped && run.state !== 'estimating' ? await notPlaced(s, run, place.address) : { senders: [], more: 0 };
+  const unplaced = run.state !== 'estimating' ? await notPlaced(s, run, place.address) : { senders: [], more: 0 };
   return [
     '## The map',
     ...(mapped || run.map.routes.length
@@ -234,7 +235,7 @@ function mapHow(spaces: Space[]): string[] {
     '## Proposing a map',
     `Work out with the user where this mail belongs, then \`act\` with learning.map, this reference, and: routes, a list of {who, to}; create, a list of {name, under} for spaces that don't exist yet; and else. ${mapForm}`,
     'to and else are a space’s reference, the name of a space in create, "leave out" or "wait". A space in create is only the user’s: under is a space in their personal tree, by reference, or another name in create, and without it the space goes in their personal space.',
-    'The whole map is one proposal: the user approves it in Homing, which creates the spaces and sets the routes together, and nothing changes before that. Proposing again replaces a map that still waits, and changes one that is set. The senders already left out stay left out unless a route names them.',
+    'The whole map is one proposal: the user approves it in Homing, which creates the spaces and sets the routes together, and nothing changes before that. Proposing again replaces a map that still waits, and changes one that is set: give every route it should have. Everyone already left out stays left out, since a map only adds to them and only the user takes one off, in Homing. Without else, where everything else goes stays as it is.',
     `The spaces it can lead to: ${spaceTree(spaces).map((space) => `${JSON.stringify(oneLine(space.name))} (${space.reference}${space.under ? `, in ${space.under}` : ''}, ${space.only === 'shared' ? 'shared, so on the user’s private side there' : 'only the user’s'})`).join('; ')}.`,
   ];
 }
@@ -303,7 +304,8 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
           '',
           ...(await mapLines(s, l, place, run, summary, spaces, words)),
           '',
-          ...(summary ? summaryLines(summary, words) : [run.summarizing ? `Homing is looking at who writes there now. \`read\` this again in a moment for the summary.` : `Homing hasn’t looked at who writes there yet: learning.summarize asks it to.`]),
+          ...(summary ? summaryLines(summary, words) : run.summarizing ? [`Homing is looking at who writes there now. \`read\` this again in a moment for the summary.`] : run.summaryFailed ? [] : [`Homing hasn’t looked at who writes there yet: learning.summarize asks it to.`]),
+          ...(run.summaryFailed ? [`Homing couldn’t look at who writes there: ${vendor} or Homing kept failing, so it gave up. learning.summarize asks it to try again.`] : []),
           ...(run.summarizing && summary ? ['Homing is making the summary again now.'] : []),
           '',
           ...mapHow(spaces),

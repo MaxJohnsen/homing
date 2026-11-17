@@ -412,7 +412,7 @@ const lightFields = 'id,conversationId,receivedDateTime,parentFolderId,isDraft';
 /** How many emails a page of history holds at most, and how many changes a page of delta, each of which is read by its id. */
 const pageSize = 50;
 const deltaSize = 20;
-/** How many emails of a thread following lists, by sender, date, subject and folder: one page, in whatever order Graph gives it. */
+/** How many emails of a thread following lists, by sender, recipients, date, subject and folder: one page, in whatever order Graph gives it. */
 const threadLength = 100;
 /** The folders following leaves out, with everything in them, by their well-known names, and why. */
 const asideFolders: Record<string, SetAside> = { junkemail: 'junk', deleteditems: 'deleted', drafts: 'draft', outbox: 'draft' };
@@ -624,19 +624,20 @@ const listedFields = 'id,conversationId,subject,from,receivedDateTime,parentFold
 const listedSize = 500;
 
 /**
- * One page of the mailbox's emails for a summary (connectors.ts): who sent each, when, its subject
- * and its conversation, by the date it arrived, as history is walked, and never its text. Drafts
+ * One page of the mailbox's emails for a summary (connectors.ts): who sent each, when, its subject,
+ * its conversation and its folder, by the date it arrived, as history is walked, and never its text. Drafts
  * and what's in junk, deleted items and the outbox are left out, as following leaves them out.
  */
 export async function listMail(settings: MicrosoftSettings, access: string, from: string | null, scope: Scope, signal?: AbortSignal): Promise<{ listed: Listed[]; next: string | null }> {
   const walk: Walk = from ? walkOf(from) : { v: 2, by: 'date', after: null, seen: [], tree: await treeOf(settings, access, signal) };
   if (walk.by !== 'date') throw new MicrosoftRefused('bad_checkpoint');
   const { fresh, there, more } = await arrived(settings, access, walk, scope, listedSize, listedFields, signal);
+  const names = new Map(walk.tree.folders.map(([id, name]) => [id, name]));
   const listed = fresh
     .filter((message) => message.isDraft !== true && !walk.tree.aside[String(message.parentFolderId ?? '')])
     .map((message) => {
       const mail = summaryOf(message);
-      return { title: mail.subject, at: mail.at, author: mail.from, thread: mail.conversationId };
+      return { title: mail.subject, at: mail.at, author: mail.from, thread: mail.conversationId, folder: names.get(String(message.parentFolderId ?? '')) ?? null };
     });
   return { listed, next: more ? JSON.stringify(there) : null };
 }
@@ -742,10 +743,11 @@ async function changesOf(
   // Never silently: without its headers an email can't be told from a newsletter, so it's read as a person's.
   if (headerless) console.warn(`microsoft: ${headerless} ${headerless === 1 ? 'email' : 'emails'} came without headers, even by id, so Homing couldn’t check them for newsletters`);
   const conversations = related ? [...new Set(found.filter((one) => !one.setAside && one.mail.conversationId).map((one) => one.mail.conversationId!))] : [];
-  const threads = new Map<string, { thread: (MailSummary & { folder: string | null })[]; more: boolean }>();
+  const threads = new Map<string, { thread: (MailSummary & { to: Party[]; folder: string | null })[]; more: boolean }>();
   for (const conversation of conversations) {
-    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields},parentFolderId`, { prefer: [immutableIds], signal });
-    const listed = listOf(body).map((message) => ({ ...summaryOf(message), folder: typeof message.parentFolderId === 'string' ? message.parentFolderId : null }));
+    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields},parentFolderId,toRecipients,ccRecipients`, { prefer: [immutableIds], signal });
+    // With whom each was sent to, so a thread is known by who it is with, whoever wrote first.
+    const listed = listOf(body).map((message) => ({ ...summaryOf(message), to: [...addressesOf(message.toRecipients), ...addressesOf(message.ccRecipients)], folder: typeof message.parentFolderId === 'string' ? message.parentFolderId : null }));
     threads.set(conversation, { thread: listed.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)), more: typeof body['@odata.nextLink'] === 'string' });
   }
   const named = (folder: string | null) => (folder ? (names.get(folder) ?? null) : null);

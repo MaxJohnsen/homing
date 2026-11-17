@@ -525,8 +525,8 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   const inScope = within(100);
   const marks = await marksOf(place);
   const count = (reason: string) => marks.filter((mark) => mark.reason === reason).length;
-  // A thread is read whole, so one Tor wrote in at any time is his, whenever its other emails came.
-  const withTor = new Set(mailbox.filter((email) => email.from.address === 'tor@acme.test').map((email) => email.conversation));
+  // A thread is read whole, so one Tor wrote in at any time is his, whenever its other emails came, and so is one she wrote to him in.
+  const withTor = new Set(mailbox.filter((email) => [email.from, ...(email.from.address === account.address ? [...(email.to ?? []), ...(email.cc ?? [])] : [])].some((party) => party.address === 'tor@acme.test')).map((email) => email.conversation));
   const [receipts, tors] = [inScope.filter((email) => email.kind === 'receipt'), inScope.filter((email) => withTor.has(email.conversation) && kept(email) && email.kind !== 'receipt')];
   assert.ok(receipts.length > 0 && tors.length > 0);
   assert.deepEqual([count('excluded folder'), count('excluded sender')], [receipts.length, tors.length]);

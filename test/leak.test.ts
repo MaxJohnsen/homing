@@ -452,13 +452,13 @@ describe('straight against the database', () => {
         await assert.rejects(as(me, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
         await assert.rejects(as(me, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', now(), 'x', true, null, 1)`), refused);
         await assert.rejects(as(me, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
-        await assert.rejects(as(me, (s) => s.tx`select learning_summarized(${run}::uuid, ${crypto.randomUUID()}::uuid, null, '{}')`), refused);
+        await assert.rejects(as(me, (s) => s.tx`select learning_summarized(${run}::uuid, ${crypto.randomUUID()}::uuid, null, '{}', true)`), refused);
         // Nor as the routine that learns, which works only on a run of the person it acts for, with the claim that holds it.
         const routine = { person: me.id, agent: 'Homing', routine: 'learning' } as const;
         await assert.rejects(as(routine, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
         await assert.rejects(as(routine, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', now(), 'x', true, null, 1)`), refused);
         await assert.rejects(as(routine, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
-        await assert.rejects(as(routine, (s) => s.tx`select learning_summarized(${run}::uuid, ${crypto.randomUUID()}::uuid, null, '{}')`), refused);
+        await assert.rejects(as(routine, (s) => s.tx`select learning_summarized(${run}::uuid, ${crypto.randomUUID()}::uuid, null, '{}', true)`), refused);
         await assert.rejects(as(me, (s) => s.tx`update learning_runs set spending_limit = 1000, private_to = ${me.id} where id = ${run}`), refused);
         await assert.rejects(as(me, (s) => s.tx`update learning_runs set routes = '[]', rest = 'leave out', summary = '{}' where id = ${run}`), refused);
         await assert.rejects(as(me, (s) => s.tx`delete from learned_items where run_id = ${run}`), refused);
@@ -870,7 +870,7 @@ async function mailbox(who: { id: string }, space: string, address: string) {
   await admin`update learning_runs set summary = ${admin.json(summary)} where id = ${connection.run}`;
   await as({ person: who.id, direct: true }, (s) => s.tx`select set_learning_map(${connection.run}::uuid, ${s.tx.json([{ who: map.route, to: space }])}, 'wait')`);
   for (const at of [1, 2, 3]) {
-    await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome, sender, unplaced) values (${connection.run}, ${space}, ${who.id}, ${`AAkALu${at}-${address}`}, 'v1', 'learned', ${map.unplaced}, true)`;
+    await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome, sender, interpretation) values (${connection.run}, ${space}, ${who.id}, ${`AAkALu${at}-${address}`}, 'v1', 'learned', ${map.unplaced}, 'notes 1')`;
   }
   return { ...connection, map };
 }

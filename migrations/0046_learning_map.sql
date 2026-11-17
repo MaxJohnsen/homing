@@ -1,70 +1,92 @@
 -- A map of where a place's mail belongs (#142, spec §8). A run keeps a
 -- summary of its place, made without a model: who writes, how much and when.
 -- And a map: routes, each saying who, a sender by address or domain, and
--- where: a space, leave out, or wait; and where everything else goes. A map
--- is set only by the person, by approving it as a proposal. The senders a run
--- leaves out are routes to leave out, so who goes where is kept once. Without
--- a map, everything goes to the place's own space, as before.
+-- where: a space, or wait; and where everything else goes. A map is set only
+-- by the person, by approving it as a proposal. The senders a run leaves out
+-- stay a list of their own, as 0045 has it: a map adds to it and never takes
+-- anything off it. Without a map, everything goes to the place's own space,
+-- as before.
+
+-- Whether a text names a sender for a route: a plain address or a domain, in
+-- lower case, of ASCII only, so it names who it looks like it names.
+create function route_names(who text) returns boolean
+language sql immutable
+as $$
+  select length(who) <= 320 and who ~ '^([a-z0-9.!#$%&''*+/=?^_`{|}~-]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$'
+$$;
+
+-- Whether a list of routes is whole: each names a sender once, and leads to
+-- a space, leave out, or wait.
+create function routes_fit(routes jsonb) returns boolean
+language sql immutable
+as $$
+  select jsonb_typeof(routes) = 'array' and jsonb_array_length(routes) <= 400
+     and not exists (
+       select from jsonb_array_elements(routes) as route
+       where jsonb_typeof(route) <> 'object' or not coalesce(route_names(route ->> 'who'), false)
+          or coalesce(route ->> 'to' not in ('leave out', 'wait') and route ->> 'to' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', true)
+     )
+     and (select count(*) = count(distinct route ->> 'who') from jsonb_array_elements(routes) as route)
+$$;
 
 alter table learning_runs
-  -- [{"who": "northwind.test", "to": "<space id>" | "leave out" | "wait"}],
-  -- and where everything else goes: null for the place's own space.
-  add column routes jsonb not null default '[]' check (jsonb_typeof(routes) = 'array' and jsonb_array_length(routes) <= 400),
+  -- [{"who": "northwind.test", "to": "<space id>" | "wait"}], and where
+  -- everything else goes: null for the place's own space. Who is left out
+  -- is in excluded_senders, never here.
+  add column routes jsonb not null default '[]' check (routes_fit(routes) and jsonb_array_length(routes) <= 200 and not routes @> '[{"to": "leave out"}]'),
   add column rest text check (rest in ('leave out', 'wait') or rest ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
   -- The summary of the place, as Homing made it, and, while it's being made,
   -- how far the worker has come: senders, counts, dates and subjects, never
-  -- an email's text.
+  -- an email's text. A summary Homing gave up on says so there.
   add column summary jsonb check (jsonb_typeof(summary) = 'object' and pg_column_size(summary) < 400000),
   add column summarizing jsonb check (jsonb_typeof(summarizing) = 'object' and pg_column_size(summarizing) < 8000000);
 
-update learning_runs r
-set routes = (select coalesce(jsonb_agg(jsonb_build_object('who', e.entry, 'to', 'leave out') order by e.entry), '[]') from unnest(r.excluded_senders) as e (entry));
+-- Who a thread was with, as far as Homing saw, when this item of it was set
+-- aside by the map, to wait or as left out: everyone who wrote in it, and
+-- whoever its owner wrote to. A map that changes for one of them has the
+-- thread looked at again.
+alter table learned_items add column parties text[] check (cardinality(parties) <= 200);
 
-alter table learning_runs drop column excluded_senders;
+create index learned_items_waiting on learned_items (run_id) where reason = 'waiting' and not again;
 
--- No route named anyone in its thread, so it went where everything else goes.
-alter table learned_items add column unplaced boolean not null default false;
-
--- Where a route's entry leads now: the route that names it, or, for none,
--- where everything else goes: a space's id, leave out, or wait.
-create function learning_route_to(r learning_runs, entry text) returns text
-language sql stable
-as $$
-  select coalesce(
-    (select route ->> 'to' from jsonb_array_elements(r.routes) as route where route ->> 'who' = entry limit 1),
-    r.rest, r.space_id::text
-  )
-$$;
-
--- What a run set aside because of a route is learned from after all once
--- the route no longer says so: a thread left out whose sender isn't any more,
--- and one that waited once its route leads to a space its owner can open,
--- that isn't archived, where model processing is on, or, when no route named
--- it, once one names its sender. The run reads each as the map has it then.
--- How many.
-create function learning_rerouted(run uuid) returns integer
+-- Sets a run's routes, where everything else goes and who is left out, and
+-- has the run look again at what it set aside by them, by thread: every item
+-- that waits or was left out, in a thread where one was set aside by an
+-- entry that changed, or holds someone an entry that changed names, by
+-- address or domain, or went where everything else goes when that changed.
+-- Where a thread belongs is the worker's to say, which sorts each again.
+-- Looking at too many costs a request; this never decides. How many.
+create function learning_mapped(r learning_runs, routes jsonb, rest text, senders text[]) returns integer
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
-  r learning_runs;
+  changed text[];
   again integer;
 begin
-  select * into r from learning_runs where id = learning_rerouted.run;
+  changed := array(
+    select who
+    from (select route ->> 'who' as who, route ->> 'to' as dest from jsonb_array_elements(r.routes) as route
+          union all select e, 'leave out' from unnest(r.excluded_senders) as e) as before
+    full join (select route ->> 'who' as who, route ->> 'to' as dest from jsonb_array_elements(learning_mapped.routes) as route
+               union all select e, 'leave out' from unnest(senders) as e) as after using (who)
+    where before.dest is distinct from after.dest
+  );
+  update learning_runs
+  set routes = learning_mapped.routes, rest = learning_mapped.rest, excluded_senders = senders, changed_at = clock_timestamp()
+  where id = r.id;
   update learned_items i
   set again = true
-  from (select i2.item, learning_route_to(r, i2.because) as dest from learned_items i2
-        where i2.run_id = r.id and i2.outcome = 'set aside' and not i2.again and i2.reason in ('excluded sender', 'waiting')) as now_to
-  where i.run_id = r.id and i.item = now_to.item and (
-    (i.unplaced and i.sender is not null and exists (select from jsonb_array_elements(r.routes) as route where sender_matches(route ->> 'who', i.sender)))
-    or (i.reason = 'excluded sender' and now_to.dest <> 'leave out')
-    or (i.reason = 'waiting' and now_to.dest = 'leave out')
-    or (i.reason = 'waiting' and now_to.dest not in ('leave out', 'wait')
-        and exists (select from space_access a join spaces s on s.id = a.space_id where a.space_id = now_to.dest::uuid and a.person_id = r.private_to and s.archived_at is null)
-        and not exists (select from model_off(array[now_to.dest::uuid])))
-  );
+  where i.run_id = r.id and i.outcome = 'set aside' and not i.again and i.reason in ('excluded sender', 'waiting')
+    and coalesce(i.thread, i.item) in (
+      select coalesce(p.thread, p.item) from learned_items p
+      where p.run_id = r.id and p.outcome = 'set aside' and p.reason in ('excluded sender', 'waiting')
+        and (p.because = any (changed)
+          or (p.because is null and r.rest is distinct from learning_mapped.rest)
+          or exists (select from unnest(changed) as c (entry), unnest(p.parties) as w (address) where sender_matches(c.entry, w.address)))
+    );
   get diagnostics again = row_count;
   if again > 0 and r.state in ('learning history', 'following') then
-    update learning_runs set next_at = now(), changed_at = clock_timestamp() where id = r.id;
+    update learning_runs set next_at = now() where id = r.id;
   end if;
   return again;
 end
@@ -74,6 +96,8 @@ $$;
 -- them or their assistant: Homing's worker makes it, a page at a time. It
 -- needs no model and no estimate. A place without a run gets one, which
 -- waits to be started. A started run is summarized over its own scope.
+-- Whatever worker has the run loses it, so a summary it was making for an
+-- earlier request is never kept.
 create function summarize_learning(place uuid, since timestamptz) returns uuid
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -113,16 +137,18 @@ begin
     update learning_runs set since = summarize_learning.since, estimate = null where id = r.id returning * into r;
   end if;
   update learning_runs
-  set summarizing = jsonb_build_object('since', to_jsonb(r.since)), next_at = now(), attempts = 0, changed_at = clock_timestamp()
+  set summarizing = jsonb_build_object('since', to_jsonb(r.since)), next_at = least(next_at, now()),
+      claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
   where id = r.id;
   return r.id;
 end
 $$;
 
--- Keeps how far a summary has come, or the summary once it's made, and ends
--- the claim: for the routine that learns, under its claim. Without either,
--- the summary is given up, as when the place can't be reached any more.
-create function learning_summarized(run uuid, claim uuid, working jsonb, summary jsonb) returns void
+-- Keeps how far a summary has come, or the summary once it's made: for the
+-- routine that learns, under its claim, which it hands back when the run
+-- has no page to walk now. The summary is a step of its own: nothing else
+-- about the run changes with it.
+create function learning_summarized(run uuid, claim uuid, working jsonb, summary jsonb, done boolean) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
@@ -130,69 +156,66 @@ declare
 begin
   update learning_runs
   set summarizing = working, summary = coalesce(learning_summarized.summary, learning_runs.summary),
-      next_at = now(), attempts = 0, waiting_for = null,
-      claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
+      claimed_by = case when done then null else claimed_by end, claim = case when done then null else learning_runs.claim end,
+      claimed_until = case when done then null else claimed_until end, changed_at = clock_timestamp()
   where id = r.id;
 end
 $$;
 
--- Whether a list of routes is whole: each names a sender once, by address
--- or domain, in lower case, and leads to a space, leave out, or wait.
-create function routes_fit(routes jsonb) returns boolean
-language sql immutable
-as $$
-  select jsonb_typeof(routes) = 'array' and jsonb_array_length(routes) <= 400
-     and not exists (
-       select from jsonb_array_elements(routes) as route
-       where jsonb_typeof(route) <> 'object' or length(coalesce(route ->> 'who', '')) not between 1 and 320 or route ->> 'who' ~ '[[:cntrl:]]' or route ->> 'who' <> lower(route ->> 'who')
-          or coalesce(route ->> 'to' not in ('leave out', 'wait') and route ->> 'to' !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', true)
-     )
-     and (select count(*) = count(distinct route ->> 'who') from jsonb_array_elements(routes) as route)
-$$;
-
--- Sets a run's map: its routes and where everything else goes. Only the
--- person does, in Homing itself, which approving a proposed map is. A route
--- names only a space they can open, and write on their own side of, that
--- isn't archived. Whatever worker has the run loses it, so nothing is
--- written by the map as it was. What a route set aside before and no longer
--- does is learned from after all.
+-- Sets a run's map: its routes and where everything else goes, which stays
+-- as it is when the map doesn't say. Only the person does, in Homing itself,
+-- which approving a proposed map is. The senders the run leaves out now all
+-- stay left out, with those the map leaves out added, and a route for a
+-- sender who is left out is dropped: a map never takes anyone off that
+-- list. A route names only a space they can open. Whatever worker has the
+-- run loses it, so nothing is written by the map as it was.
 create function set_learning_map(run uuid, routes jsonb, rest text) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
   r learning_runs := own_learning_run(run);
+  leaves text[];
+  kept jsonb;
 begin
   if not direct_edit() then
     raise exception 'only the person sets where learning puts things, in Homing itself' using errcode = 'insufficient_privilege';
   end if;
-  if not coalesce(routes_fit(routes), false)
-     or (select count(*) from jsonb_array_elements(routes) as route where route ->> 'to' = 'leave out') > 200 then
-    raise exception 'a map holds up to 200 routes, and 200 senders left out, each naming a sender once' using errcode = 'check_violation';
+  if not coalesce(routes_fit(routes), false) then
+    raise exception 'a map''s routes each name a sender once, by address or domain' using errcode = 'check_violation';
+  end if;
+  leaves := array(
+    select e from unnest(r.excluded_senders) as e
+    union select route ->> 'who' from jsonb_array_elements(routes) as route where route ->> 'to' = 'leave out'
+    order by 1
+  );
+  select coalesce(jsonb_agg(route order by place), '[]') into kept
+  from jsonb_array_elements(routes) with ordinality as given (route, place)
+  where route ->> 'to' <> 'leave out' and not route ->> 'who' = any (leaves);
+  if cardinality(leaves) > 200 or jsonb_array_length(kept) > 200 then
+    raise exception 'a map holds up to 200 routes, and a run leaves out up to 200 senders' using errcode = 'check_violation';
   end if;
   if exists (
-    select from (select route ->> 'to' as dest from jsonb_array_elements(routes) as route union all select rest) as named
+    select from (select route ->> 'to' as dest from jsonb_array_elements(kept) as route union all select set_learning_map.rest) as named
     where named.dest is not null and named.dest not in ('leave out', 'wait')
-      and not exists (select from spaces s where s.id::text = named.dest and s.archived_at is null and s.id in (select accessible_spaces()))
+      and not exists (select from accessible_spaces() as mine (id) where mine.id::text = named.dest)
   ) then
     raise exception 'a route leads to a space you can open' using errcode = 'insufficient_privilege';
   end if;
-  update learning_runs
-  set routes = set_learning_map.routes, rest = set_learning_map.rest,
-      claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
-  where id = r.id;
-  perform learning_rerouted(r.id);
+  update learning_runs set claimed_by = null, claim = null, claimed_until = null where id = r.id;
+  perform learning_mapped(r, kept, coalesce(set_learning_map.rest, r.rest), leaves);
 end
 $$;
 
--- Sets what a run leaves out and keeps, as 0045 has it, with the senders it
--- leaves out kept as routes to leave out. A sender left out takes the place
--- of a route that named them.
+-- Sets what a run leaves out and keeps, as 0045 has it. A sender left out
+-- takes the place of a route for that very sender, and what the run set
+-- aside by its map or its left-out senders is looked at again where they
+-- changed, as when a map changes. A folder left out since the run's summary
+-- was made is in that summary, so the summary is made again without it.
 create or replace function set_learning_exclusions(run uuid, senders text[], folders text[], kept text[]) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
   r learning_runs := own_learning_run(run);
-  had text[];
   left_senders text[];
   left_folders text[];
   keeps text[];
@@ -202,24 +225,21 @@ begin
      or exists (select from unnest(senders || folders || kept) as one (value) where one.value is null or length(btrim(one.value)) not between 1 and 320 or one.value ~ '[[:cntrl:]]') then
     raise exception 'leave out up to 200 senders and 200 folders, and keep up to 200 senders, each on one line' using errcode = 'check_violation';
   end if;
-  had := array(select route ->> 'who' from jsonb_array_elements(r.routes) as route where route ->> 'to' = 'leave out');
   left_senders := array(select distinct lower(btrim(value)) from unnest(senders) as one (value) order by 1);
   left_folders := array(select distinct btrim(value) from unnest(folders) as one (value) order by 1);
   keeps := array(select distinct lower(btrim(value)) from unnest(kept) as one (value) order by 1);
-  if not direct_edit() and not (had <@ left_senders and r.excluded_folders <@ left_folders and keeps = r.kept_senders) then
+  if not direct_edit() and not (r.excluded_senders <@ left_senders and r.excluded_folders <@ left_folders and keeps = r.kept_senders) then
     raise exception 'only the person takes something off what''s left out, or keeps a sender, in Homing itself' using errcode = 'insufficient_privilege';
   end if;
   update learning_runs
-  set routes = (
-        select coalesce(jsonb_agg(route order by place), '[]') from (
-          select route, place from jsonb_array_elements(r.routes) with ordinality as kept_routes (route, place)
-          where route ->> 'to' <> 'leave out' and not route ->> 'who' = any (left_senders)
-          union all
-          select jsonb_build_object('who', entry, 'to', 'leave out'), 1000 + place from unnest(left_senders) with ordinality as l (entry, place)
-        ) as now_routes
-      ),
-      excluded_folders = left_folders, kept_senders = keeps, changed_at = clock_timestamp()
+  set excluded_folders = left_folders, kept_senders = keeps, changed_at = clock_timestamp()
   where id = r.id;
+  if not left_folders <@ r.excluded_folders and (r.summary is not null or r.summarizing is not null) then
+    update learning_runs
+    set summary = null, summarizing = jsonb_build_object('since', to_jsonb(r.since)), next_at = least(next_at, now()),
+        claimed_by = null, claim = null, claimed_until = null
+    where id = r.id;
+  end if;
   update learned_items i
   set again = true
   where i.run_id = r.id and i.outcome = 'set aside' and not i.again and (
@@ -229,16 +249,40 @@ begin
         and not exists (select from unnest(r.kept_senders) as k (entry) where sender_matches(k.entry, i.sender)))
   );
   get diagnostics again = row_count;
-  if again + learning_rerouted(r.id) > 0 and r.state in ('learning history', 'following') then
+  again := again + learning_mapped(
+    r,
+    (select coalesce(jsonb_agg(route order by place), '[]') from jsonb_array_elements(r.routes) with ordinality as had (route, place) where not route ->> 'who' = any (left_senders)),
+    r.rest, left_senders
+  );
+  if again > 0 and r.state in ('learning history', 'following') then
     update learning_runs set next_at = now() where id = r.id;
   end if;
 end
 $$;
 
+-- Has a run learn after all from what waits for a space that can take it
+-- now: for the routine that learns, under its claim, which says which of
+-- the map's entries lead to such a space, and whether everything else does.
+-- How many.
+create function learning_reopened(run uuid, claim uuid, entries text[], rest boolean) returns integer
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+declare
+  r learning_runs := claimed_learning_run(run, claim);
+  again integer;
+begin
+  update learned_items i
+  set again = true
+  where i.run_id = r.id and i.reason = 'waiting' and not i.again and (i.because = any (entries) or (i.because is null and rest));
+  get diagnostics again = row_count;
+  return again;
+end
+$$;
+
 -- Claims a run that needs work, as 0045 has it. A run whose summary is asked
--- for needs work too, started or not. And what the claimed run set aside to
--- wait is learned from once its route allows, as when model processing was
--- turned on where it leads.
+-- for needs work too, whatever else it waits for, started or not, until the
+-- summary is made or given up, but not while the summary waits to be tried
+-- again.
 create or replace function claim_learning_run(worker uuid, lease_seconds integer)
 returns table (run uuid, person uuid, claim uuid)
 language plpgsql security definer set search_path = public, pg_temp
@@ -268,8 +312,9 @@ begin
   where r.state = 'paused' and r.reason = 'model processing off' and not exists (select from model_off(array[r.space_id]));
 
   select r.* into picked from learning_runs r
-  where (r.state in ('learning history', 'following') or (r.summarizing is not null and r.state <> 'done')) and r.next_at <= now()
-    and (r.claimed_until is null or r.claimed_until < now())
+  where r.state <> 'done' and (r.claimed_until is null or r.claimed_until < now())
+    and ((r.state in ('learning history', 'following') and r.next_at <= now())
+      or (r.summarizing is not null and not r.summarizing ? 'failed' and coalesce((r.summarizing ->> 'retryAt')::numeric, 0) <= extract(epoch from now()) * 1000))
     and exists (select from space_access a where a.space_id = r.space_id and a.person_id = r.private_to)
   order by r.next_at
   limit 1
@@ -282,16 +327,13 @@ begin
   where r.id = picked.id;
   update learned_items i set again = true, retried = true, retry_at = null
   where i.run_id = picked.id and i.retry_at <= now();
-  if exists (select from learned_items i where i.run_id = picked.id and i.reason = 'waiting' and not i.again) then
-    perform learning_rerouted(picked.id);
-  end if;
   return query select picked.id, picked.private_to, token;
 end
 $$;
 
 -- Marks items a run processed, as 0045 has it. A note is on the owner's
 -- private side in the place's space or one the run's map leads to. And an
--- item says whether no route named anyone in its thread.
+-- item set aside by the map says who its thread was with.
 create or replace function learning_marked(run uuid, claim uuid, marks jsonb, note uuid) returns void
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -307,14 +349,14 @@ begin
   ) then
     raise exception 'a note is on the run''s owner''s side of a space its map leads to' using errcode = 'insufficient_privilege';
   end if;
-  insert into learned_items (run_id, space_id, private_to, item, version, thread, outcome, reason, note, sender, at, because, interpretation, folder, unplaced, retry_at)
-  select r.id, r.space_id, r.private_to, m.item, m.version, m.thread, m.outcome, m.reason, learning_marked.note, lower(m.sender), m.at, m.because, m.interpretation, m.folder, coalesce(m.unplaced, false),
+  insert into learned_items (run_id, space_id, private_to, item, version, thread, outcome, reason, note, sender, at, because, interpretation, folder, parties, retry_at)
+  select r.id, r.space_id, r.private_to, m.item, m.version, m.thread, m.outcome, m.reason, learning_marked.note, lower(m.sender), m.at, m.because, m.interpretation, m.folder, m.parties,
          case when m.outcome = 'set aside' and learning_retryable(m.reason) then now() + interval '1 day' end
-  from jsonb_to_recordset(marks) as m (item text, version text, thread text, outcome text, reason text, sender text, at timestamptz, because text, interpretation text, folder text, unplaced boolean)
+  from jsonb_to_recordset(marks) as m (item text, version text, thread text, outcome text, reason text, sender text, at timestamptz, because text, interpretation text, folder text, parties text[])
   on conflict (run_id, item) do update
   set version = excluded.version, thread = excluded.thread, outcome = excluded.outcome, reason = excluded.reason,
       note = coalesce(excluded.note, learned_items.note), sender = excluded.sender, at = excluded.at, because = excluded.because,
-      interpretation = excluded.interpretation, folder = excluded.folder, unplaced = excluded.unplaced, again = false, processed_at = clock_timestamp(),
+      interpretation = excluded.interpretation, folder = excluded.folder, parties = excluded.parties, again = false, processed_at = clock_timestamp(),
       retry_at = case when excluded.retry_at is not null and not learned_items.retried then coalesce(learned_items.retry_at, excluded.retry_at) end;
   update learning_runs
   set claimed_until = greatest(claimed_until, now() + make_interval(secs => coalesce(lease_seconds, 60))), attempts = 0, waiting_for = null,
@@ -381,7 +423,7 @@ begin
         step->>'place' ~ id and jsonb_typeof(step->'routes') = 'array' and jsonb_array_length(step->'routes') <= 400
         and not exists (
           select from jsonb_array_elements(step->'routes') as route
-          where coalesce(route->>'who', '') = '' or coalesce(route->>'to' not in ('leave out', 'wait') and route->>'to' !~ id and route->>'to' !~ '^step [0-9]{1,3}$', true)
+          where not coalesce(route_names(route->>'who'), false) or coalesce(route->>'to' not in ('leave out', 'wait') and route->>'to' !~ id and route->>'to' !~ '^step [0-9]{1,3}$', true)
         )
         and (step->'rest' is null or step->'rest' = 'null'::jsonb or step->>'rest' in ('leave out', 'wait') or step->>'rest' ~ id or step->>'rest' ~ '^step [0-9]{1,3}$')
       else false
@@ -393,5 +435,5 @@ begin
 end
 $$;
 
-revoke execute on function learning_route_to, learning_rerouted, summarize_learning, learning_summarized, routes_fit, set_learning_map from public;
-grant execute on function summarize_learning, learning_summarized, set_learning_map to homing_app;
+revoke execute on function routes_fit, learning_mapped, summarize_learning, learning_summarized, set_learning_map, learning_reopened from public;
+grant execute on function summarize_learning, learning_summarized, set_learning_map, learning_reopened to homing_app;

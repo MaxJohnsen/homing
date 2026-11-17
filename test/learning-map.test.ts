@@ -24,6 +24,7 @@ import { Browser } from './browser.ts';
 import { generateMailbox, hostileText } from './mailbox.ts';
 import { MicrosoftStandIn, type Account, type Email } from './microsoft.ts';
 import { ModelStandIn, type Reply } from './model-provider.ts';
+import { migrate } from '../src/migrate.ts';
 import { freshDatabase } from './reset.ts';
 
 let sql: Sql;
@@ -213,12 +214,15 @@ test('with no model set up, Ana’s assistant reads who writes in her mailbox an
   const spaces = await spacesOf();
   const id = (name: string) => spaces.find((space) => space.name === name)!.id;
   assert.deepEqual(spaces.filter((space) => ['Northwind', 'Fabrikam'].includes(space.name)).map((space) => space.parentId), [clients, clients]);
-  assert.deepEqual((await run()).routes, [
-    { who: 'northwind.test', to: id('Northwind') },
-    { who: 'fabrikam.test', to: id('Fabrikam') },
-    { who: 'faktura@papirfabrikken.test', to: acme },
-    { who: 'weekly-digest.test', to: 'leave out' },
-    { who: 'mum@family.test', to: 'wait' },
+  // Who the map leaves out joins the senders she left out, a list of its own, which no map takes anything off.
+  assert.deepEqual([(await run()).routes, (await run()).excludedSenders], [
+    [
+      { who: 'northwind.test', to: id('Northwind') },
+      { who: 'fabrikam.test', to: id('Fabrikam') },
+      { who: 'faktura@papirfabrikken.test', to: acme },
+      { who: 'mum@family.test', to: 'wait' },
+    ],
+    ['weekly-digest.test'],
   ]);
   const mapped = (await claude.call('read', { ref })).text;
   assert.match(mapped, /- "northwind\.test" to "Northwind" \(space:[0-9a-f-]+\): \d+ emails in about \d+ threads/);
@@ -276,12 +280,12 @@ test('Homing’s own model answers the same question, and once Ana approves its 
   assert.deepEqual(await notesIn(northwind), ['Northwind budget: noted.', 'Northwind workshop: noted.']);
   assert.deepEqual(await notesIn(acme), ['Lunch 1: noted.', 'Lunch 2: noted.', 'Lunch 3: noted.']);
   assert.equal((await owner`select from content where agent = 'Homing' and private_to is null`).length, 0, 'nothing on a shared side');
-  const reasons = async () => Object.fromEntries((await marks()).map((mark) => [mark.sender, [mark.outcome === 'learned' ? 'learned' : mark.reason, mark.because, mark.unplaced]]));
+  const reasons = async () => Object.fromEntries((await marks()).map((mark) => [mark.sender, [mark.outcome === 'learned' ? 'learned' : mark.reason, mark.because]]));
   assert.deepEqual(await reasons(), {
-    'gunnar@northwind.test': ['learned', 'northwind.test', false],
-    'per@fabrikam.test': ['waiting', 'fabrikam.test', false],
-    'mum@family.test': ['excluded sender', 'family.test', false],
-    'tor@acme.test': ['learned', null, true],
+    'gunnar@northwind.test': ['learned', 'northwind.test'],
+    'per@fabrikam.test': ['waiting', 'fabrikam.test'],
+    'mum@family.test': ['excluded sender', 'family.test'],
+    'tor@acme.test': ['learned', null],
   });
   // A note cites only emails a model read, kept as sources where the mailbox is.
   const cited = await owner<{ reference: string; space: string }[]>`select s.reference, s.space_id as space from citations c join content n on n.id = c.content_id join sources s on s.id = c.source_id where n.agent = 'Homing' and n.private_to = ${ana.id}`;
@@ -303,7 +307,7 @@ test('Homing’s own model answers the same question, and once Ana approves its 
   await through(learning);
   assert.equal(provider.asked.length, waited, 'nothing until she approves');
   assert.equal((await decide(proposalOf(change.text))).status, 200);
-  assert.deepEqual((await run()).routes.find((route: { who: string }) => route.who === 'family.test'), { who: 'family.test', to: 'leave out' }, 'what she left out stays left out');
+  assert.deepEqual((await run()).excludedSenders, ['family.test'], 'what was left out stays left out, though this map doesn’t name it');
   await through(learning);
   assert.deepEqual(readSince(waited), ['Fabrikam offer']);
   assert.equal((await notesIn(acme)).includes('Fabrikam offer: noted.'), true);
@@ -414,37 +418,61 @@ test('a sender’s name and a subject written to turn whatever reads the summary
   assert.deepEqual((await proposals()).at(-1), { id, agent: 'ChatGPT', state: 'open' });
 });
 
-test('a thread follows the route of its oldest email whose sender a route names: the most exact route for an address, never its owner’s own, and otherwise where everything else goes', () => {
+test('a thread goes by who it is with: each by the most exact route, anyone left out leaves the whole thread out, the oldest email with someone a route names decides, and the owner’s own emails count for whom they were sent to', () => {
   const day = (of: number) => new Date(Date.UTC(2026, 0, of));
-  /** An email by its sender and day, with the emails of its thread it's read with. */
-  const email = (address: string, of: number, related: [string, number][] = []) =>
-    ({ thread: 't', item: { envelope: { id: `${address} ${of}`, author: { name: null, address }, at: day(of) }, related: related.map(([other, when]) => ({ author: { name: null, address: other }, at: day(when) })) } }) as unknown as Change;
+  const party = (address: string) => ({ name: null, address });
+  /** An email by its sender and day, to whom it went when that's known, with the emails of its thread it's read with. */
+  const email = (address: string, of: number, to: string[] = [], related: [string, number, string[]?][] = []) =>
+    ({
+      thread: 't',
+      item: {
+        envelope: { id: `${address} ${of}`, author: party(address), at: day(of), audience: to.length ? { people: to.map(party), more: 0 } : 'unknown' },
+        related: related.map(([other, when, sent]) => ({ id: `${other} ${when}`, author: party(other), at: day(when), audience: sent?.length ? { people: sent.map(party), more: 0 } : 'unknown' })),
+      },
+    }) as unknown as Change;
   const map = {
-    routes: [{ who: 'northwind.test', to: 'northwind' }, { who: 'gunnar@northwind.test', to: 'gunnar' }, { who: 'fabrikam.test', to: 'wait' }, { who: '@acme.test', to: 'acme' }, { who: 'family.test', to: 'leave out' }],
+    routes: [
+      { who: 'northwind.test', to: 'northwind' }, { who: 'gunnar@northwind.test', to: 'gunnar' }, { who: 'fabrikam.test', to: 'wait' }, { who: 'acme.test', to: 'acme' },
+      { who: 'family.test', to: 'leave out' }, { who: 'mum@family.test', to: 'mum' }, { who: 'firm.test', to: 'firm' }, { who: 'lawyer@firm.test', to: 'leave out' }, { who: 'twice.test', to: 'twice' }, { who: '@twice.test', to: 'leave out' },
+    ],
     rest: 'rest',
   };
   const cases: [string, Change[], string | null, string | null][] = [
     ['a domain names everyone at it', [email('Kari@Northwind.test', 2)], 'northwind', 'northwind.test'],
     ['and under it', [email('kari@mail.northwind.test', 2)], 'northwind', 'northwind.test'],
     ['but not a domain that only ends like it', [email('kari@notnorthwind.test', 2)], 'rest', null],
-    ['an address is more exact than its domain', [email('gunnar@northwind.test', 2)], 'gunnar', 'gunnar@northwind.test'],
+    ['an address beats its domain', [email('gunnar@northwind.test', 2)], 'gunnar', 'gunnar@northwind.test'],
+    ['an address beats its domain that is left out', [email('mum@family.test', 2)], 'mum', 'mum@family.test'],
+    ['an address left out beats its domain that leads to a space', [email('lawyer@firm.test', 2)], 'leave out', 'lawyer@firm.test'],
+    ['named twice as exactly, leave out wins', [email('kari@twice.test', 2)], 'leave out', '@twice.test'],
     ['the oldest email named decides, in whatever order they come', [email('kari@northwind.test', 3), email('per@fabrikam.test', 2)], 'wait', 'fabrikam.test'],
     ['whoever answers later', [email('kari@northwind.test', 2), email('per@fabrikam.test', 3)], 'northwind', 'northwind.test'],
-    ['among the thread it is read with too', [email('kari@northwind.test', 3, [['per@fabrikam.test', 1], ['kari@northwind.test', 3]])], 'wait', 'fabrikam.test'],
+    ['among the thread it is read with too', [email('kari@northwind.test', 3, [], [['per@fabrikam.test', 1], ['kari@northwind.test', 3]])], 'wait', 'fabrikam.test'],
     ['an email nobody names is passed over', [email('stranger@elsewhere.test', 1), email('kari@northwind.test', 2)], 'northwind', 'northwind.test'],
-    ['the owner’s own address never counts, though a route names its domain', [email('ana@acme.test', 1), email('kari@northwind.test', 2)], 'northwind', 'northwind.test'],
-    ['a colleague’s does', [email('ana@acme.test', 1), email('tor@acme.test', 2)], 'acme', '@acme.test'],
-    ['only the owner wrote: everything else', [email('ana@acme.test', 1)], 'rest', null],
+    ['leave out wins the thread, whoever wrote first', [email('kari@northwind.test', 1), email('aunt@family.test', 2)], 'leave out', 'family.test'],
+    ['and from among what it is read with', [email('kari@northwind.test', 3, [], [['aunt@family.test', 1]])], 'leave out', 'family.test'],
+    ['the owner’s own email goes by whom it was sent to', [email('ana@acme.test', 1, ['gunnar@northwind.test'])], 'gunnar', 'gunnar@northwind.test'],
+    ['so the thread she started stays together when its answer comes', [email('per@fabrikam.test', 2, ['ana@acme.test'], [['ana@acme.test', 1, ['kari@northwind.test']], ['per@fabrikam.test', 2]])], 'northwind', 'northwind.test'],
+    ['an email she sent to someone left out leaves the thread out', [email('ana@acme.test', 1, ['kari@northwind.test', 'aunt@family.test'])], 'leave out', 'family.test'],
+    ['her own address never counts, though a route names its domain', [email('ana@acme.test', 1, ['ana@acme.test']), email('kari@northwind.test', 2)], 'northwind', 'northwind.test'],
+    ['her own domain is a route like any: a colleague counts', [email('ana@acme.test', 1), email('tor@acme.test', 2)], 'acme', 'acme.test'],
+    ['only the owner wrote, to nobody known: everything else', [email('ana@acme.test', 1)], 'rest', null],
     ['nobody a route names: everything else', [email('stranger@elsewhere.test', 1)], 'rest', null],
   ];
-  for (const [what, thread, to, entry] of cases) assert.deepEqual(routeOf(thread, map, 'Ana@Acme.test'), { to, entry }, what);
+  for (const [what, thread, to, entry] of cases) {
+    const { parties, ...where } = routeOf(thread, map, 'Ana@Acme.test');
+    assert.deepEqual(where, { to, entry }, what);
+    assert.ok(!parties.includes('ana@acme.test'), what);
+  }
+  // Everyone the thread is with is said too, once each, which a run keeps with what it sets aside.
+  assert.deepEqual(routeOf([email('ana@acme.test', 1, ['Kari@Northwind.test', 'per@fabrikam.test']), email('kari@northwind.test', 2)], map, 'ana@acme.test').parties, ['kari@northwind.test', 'per@fabrikam.test']);
   // Without a map, everything goes to the place's own space, which null stands for.
-  assert.deepEqual(routeOf([email('kari@northwind.test', 2)], { routes: [], rest: null }, 'ana@acme.test'), { to: null, entry: null });
+  assert.deepEqual(routeOf([email('kari@northwind.test', 2)], { routes: [], rest: null }, 'ana@acme.test'), { to: null, entry: null, parties: ['kari@northwind.test'] });
 });
 
 test('a summary holds who wrote, how much and when, within bounds: a hundred senders and forty domains listed with the rest counted together, a few short subjects each, and never more senders kept than it can hold', () => {
   const at = new Date('2026-03-01T10:00:00Z');
-  const listed = (address: string | null, title: string, thread: string | null, name: string | null = null): Listed => ({ author: address ? { name, address } : null, title, at, thread });
+  const listed = (address: string | null, title: string, thread: string | null, name: string | null = null, folder: string | null = null): Listed => ({ author: address ? { name, address } : null, title, at, thread, folder });
   // 150 senders at 50 domains: sender 0 writes 150 emails, each in a thread of its own, sender 1 writes 149, and so on.
   const page: Listed[] = [];
   for (let sender = 0; sender < 150; sender++) for (let mail = 0; mail < 150 - sender; mail++) page.push(listed(`s${sender}@d${sender % 50}.test`, `Subject ${mail}`, `thread ${sender} ${mail}`));
@@ -509,7 +537,14 @@ test('a map is checked before it is proposed, whoever answers: each thing wrong 
     [{ routes: [{ who: 'Gunnar Lie', to: 'wait' }] }, /"Gunnar Lie" isn’t a sender’s address or a domain/],
     [{ routes: [{ who: 'northwind', to: 'wait' }] }, /isn’t a sender’s address or a domain/],
     [{ routes: [{ who: account.address.toUpperCase(), to: 'wait' }] }, /is the user’s own address, which no route names/],
-    [{ routes: [{ who: 'acme.test', to: 'wait' }] }, /is the domain of the user’s own address, which no route names/],
+    [{ routes: [{ who: 'news@shop.test', to: 'wait' }] }, /The user left "news@shop\.test" out, and only they take a sender off what’s left out/],
+    [{ routes: [{ who: 'Weekly-Digest.test', to: `space:${clients}` }] }, /The user left "weekly-digest\.test" out/],
+    // A sender is named in plain letters: nothing hidden in it, nothing that turns it around, and not too long to be one.
+    [{ routes: [{ who: 'gunnar@north\u202Ewind.test', to: 'leave out' }] }, /isn’t a sender’s address or a domain in plain letters/],
+    [{ routes: [{ who: 'gunnar\u200B@northwind.test', to: 'leave out' }] }, /isn’t a sender’s address or a domain in plain letters/],
+    [{ routes: [{ who: 'x@\u2066tset.dniwhtron\u2069.test', to: 'leave out' }] }, /isn’t a sender’s address or a domain in plain letters/],
+    [{ routes: [{ who: 'gunnar@nørthwind.test', to: 'wait' }] }, /isn’t a sender’s address or a domain in plain letters/],
+    [{ routes: [{ who: `${'a'.repeat(310)}@northwind.test`, to: 'wait' }] }, /./],
     [{ routes: [northwind, { who: 'Northwind.test', to: 'leave out' }] }, /"northwind\.test" has two routes/],
     [{ routes: [{ who: 'northwind.test', to: 'Nowhere' }] }, /"Nowhere" isn’t a space the user can open, a space this map creates, "leave out" or "wait"/],
     [{ routes: [northwind], else: 'Nowhere' }, /"Nowhere" isn’t a space the user can open/],
@@ -535,7 +570,13 @@ test('a map is checked before it is proposed, whoever answers: each thing wrong 
     assert.match(refused.text, why, JSON.stringify(input));
   }
   assert.equal((await owner`select from proposals where private_to = ${ana.id}`).length, 0, 'nothing was proposed');
-  assert.deepEqual([(await run()).routes.map((route: { to: string }) => route.to), (await spacesOf()).length], [['leave out', 'leave out'], 4]);
+  assert.deepEqual([(await run()).routes, (await run()).excludedSenders, (await spacesOf()).length], [[], ['news@shop.test', 'weekly-digest.test'], 4]);
+  // The database holds a route's sender to the same plain letters, whatever proposes it.
+  const { id: mapRun } = await run();
+  for (const who of ['gunnar@north\u202Ewind.test', 'Gunnar@northwind.test', 'northwind', '%.test']) {
+    await assert.rejects(withPrincipal(sql, me, (s) => s.tx`insert into proposals (space_id, private_to, action, change) values (${acme}, ${ana.id}, 'plan', ${s.tx.json({ steps: [{ action: 'learning map', place, routes: [{ who, to: 'wait' }], rest: null }] })})`), /violates check constraint/, who);
+    await assert.rejects(withPrincipal(sql, me, (s) => s.tx`select set_learning_map(${mapRun}::uuid, ${s.tx.json([{ who, to: 'wait' }])}, null)`), /each name a sender once, by address or domain/, who);
+  }
 
   // A plan that fails halfway makes nothing: its first spaces are made, the next can't be, and none of them is there afterwards.
   const halfway = { steps: [{ action: 'add space', name: 'Alpha', in: hers }, { action: 'add space', name: 'Beta', in: 'step 0' }, { action: 'add space', name: 'Beta', in: 'step 0' }, { action: 'learning map', place, routes: [{ who: 'northwind.test', to: 'step 1' }, { who: 'fabrikam.test', to: 'step 2' }], rest: null }] };
@@ -543,19 +584,25 @@ test('a map is checked before it is proposed, whoever answers: each thing wrong 
   const failed = await decide(broken);
   assert.notEqual(failed.status, 200);
   assert.match(JSON.stringify(failed.body), /Beta can’t be created/);
-  assert.deepEqual([(await spacesOf()).length, (await run()).routes.length, (await owner`select state from proposals where id = ${broken}`)[0].state], [4, 2, 'open']);
+  assert.deepEqual([(await spacesOf()).length, (await run()).routes.length, (await owner`select state from proposals where id = ${broken}`)[0].state], [4, 0, 'open']);
   await withPrincipal(sql, me, (s) => s.tx`update proposals set state = 'withdrawn' where id = ${broken}`);
 
-  // Only where everything else goes is a map too. What she left out stays left out, unless the map names that very sender.
+  // Only where everything else goes is a map too, and what she left out stays left out.
   const only = await claude.call('act', { action: 'learning.map', input: { from: ref, routes: [], else: `space:${clients}` } });
   assert.equal((await decide(proposalOf(only.text))).status, 200);
-  assert.deepEqual([(await run()).routes, (await run()).rest], [[{ who: 'news@shop.test', to: 'leave out' }, { who: 'weekly-digest.test', to: 'leave out' }], clients]);
-  const named = await claude.call('act', { action: 'learning.map', input: { from: ref, routes: [{ who: 'News@Shop.test', to: 'wait' }], else: `space:${clients}` } });
-  assert.equal((await decide(proposalOf(named.text))).status, 200);
-  assert.deepEqual((await run()).routes, [{ who: 'news@shop.test', to: 'wait' }, { who: 'weekly-digest.test', to: 'leave out' }]);
+  assert.deepEqual([(await run()).routes, (await run()).rest, (await run()).excludedSenders], [[], clients, ['news@shop.test', 'weekly-digest.test']]);
+  // A map that doesn't say where everything else goes leaves that as it is. And her own domain is a route like any other: only her own address is none.
+  const colleagues = await claude.call('act', { action: 'learning.map', input: { from: ref, routes: [{ who: '@Acme.test', to: 'wait' }] } });
+  assert.equal(colleagues.failed, false, colleagues.text);
+  const shownRest = (await ana.browser.json(`/api/proposals/${proposalOf(colleagues.text)}`)).body.proposal.plan.steps[0].map.rest;
+  assert.deepEqual([shownRest.to, shownRest.name], ['space', 'Clients'], 'shown as it stays');
+  assert.equal((await decide(proposalOf(colleagues.text))).status, 200);
+  assert.deepEqual([(await run()).routes, (await run()).rest, (await run()).excludedSenders], [[{ who: 'acme.test', to: 'wait' }], clients, ['news@shop.test', 'weekly-digest.test']]);
   // The same map again changes nothing, so it isn't proposed.
-  const same = await claude.call('act', { action: 'learning.map', input: { from: ref, routes: [], else: `space:${clients}` } });
-  assert.deepEqual([same.failed, /at least one route/.test(same.text)], [true, true]);
+  for (const input of [{ routes: [], else: `space:${clients}` }, { routes: [] }]) {
+    const same = await claude.call('act', { action: 'learning.map', input: { from: ref, ...input } });
+    assert.deepEqual([same.failed, /at least one route/.test(same.text)], [true, true]);
+  }
 });
 
 test('threads with several senders follow the rule: the oldest sender a route names decides, an address before its domain, and one left-out sender leaves the whole thread out', async () => {
@@ -654,7 +701,7 @@ test('with no model set up, a run goes by the map all the same: what waits or is
     return answer.text;
   };
   const approved = async (text: string) => assert.equal((await decide(proposalOf(text))).status, 200);
-  const state = async () => (await marks()).map((mark) => [mark.sender, mark.reason, mark.because, mark.unplaced, mark.again]).sort().map((row) => row.join(' | '));
+  const state = async () => (await marks()).map((mark) => [mark.sender, mark.reason, mark.because, mark.again]).sort().map((row) => row.join(' | '));
 
   // The summary, reading it, the map and its approval: all through her assistant, and in the app.
   await does('learning.summarize', { since: '2025-01-01' });
@@ -676,28 +723,274 @@ test('with no model set up, a run goes by the map all the same: what waits or is
   await through(without);
   assert.equal((await run()).state, 'following');
   assert.deepEqual(await state(), [
-    ...[1, 2, 3].map(() => 'gunnar@northwind.test | waiting |  | true | false'),
-    ...[1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | false | false'),
-    ...[1, 2].map(() => 'news@weekly-digest.test | excluded sender | weekly-digest.test | false | false'),
+    ...[1, 2, 3].map(() => 'gunnar@northwind.test | waiting |  | false'),
+    ...[1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | false'),
+    ...[1, 2].map(() => 'news@weekly-digest.test | excluded sender | weekly-digest.test | false'),
   ]);
   const going = await reads();
   for (const part of [/- 6 waiting, as the user’s map says/, /- 2 in threads with senders the user left out/, /Not placed, since no route names them: "gunnar@northwind\.test" \(3\)/, /- "mum@family\.test" waits, not read until a map says where it goes: 3 emails in about 3 threads/, /## Proposing a map/, /no model of its own, so the reading costs nothing in Homing/]) assert.match(going, part);
 
-  // A map change places Gunnar and takes the digest off what's left out: both are looked at again, without a model, and wait as the map now says.
-  await approved(await does('learning.map', { routes: [{ who: 'mum@family.test', to: 'wait' }, { who: 'weekly-digest.test', to: 'wait' }, { who: 'northwind.test', to: 'wait' }], else: 'wait' }));
+  // A map can't take the digest off what's left out: that stays hers to do, in Homing.
+  const off = await claude.call('act', { action: 'learning.map', input: { from: ref, routes: [{ who: 'weekly-digest.test', to: 'wait' }] } });
+  assert.deepEqual([off.failed, /The user left "weekly-digest\.test" out, and only they take a sender off what’s left out/.test(off.text)], [true, true]);
+  // A map change places Gunnar, and she takes the digest off herself: both are looked at again, without a model, and wait as the map now says.
+  await approved(await does('learning.map', { routes: [{ who: 'mum@family.test', to: 'wait' }, { who: 'northwind.test', to: 'wait' }] }));
+  assert.equal((await ana.browser.json(`/api/places/${place}/learning/left-out`, { senders: [], folders: [], kept: [] })).status, 200);
   await through(without);
   assert.deepEqual(await state(), [
-    ...[1, 2, 3].map(() => 'gunnar@northwind.test | waiting | northwind.test | false | false'),
-    ...[1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | false | false'),
-    ...[1, 2].map(() => 'news@weekly-digest.test | waiting | weekly-digest.test | false | false'),
+    ...[1, 2, 3].map(() => 'gunnar@northwind.test | waiting | northwind.test | false'),
+    ...[1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | false'),
+    ...[1, 2].map(() => 'news@weekly-digest.test | waiting |  | false'),
   ]);
   assert.doesNotMatch(await reads(), /Not placed|senders the user left out/);
   // And one that leads Mum's mail to a space has it wait to be read there: nothing more is asked of anyone, and it says what it waits for.
-  await approved(await does('learning.map', { routes: [{ who: 'mum@family.test', to: `space:${acme}` }, { who: 'weekly-digest.test', to: 'wait' }, { who: 'northwind.test', to: 'wait' }], else: 'wait' }));
-  assert.deepEqual((await state()).filter((row) => row.endsWith('true')), [1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | false | true'));
+  await approved(await does('learning.map', { routes: [{ who: 'mum@family.test', to: `space:${acme}` }, { who: 'northwind.test', to: 'wait' }] }));
+  assert.deepEqual((await state()).filter((row) => row.endsWith('true')), [1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | true'));
   const waiting = await reads();
   assert.match(waiting, /3 emails set aside before will be learned from after all, as the user asked\./);
   assert.match(waiting, /Homing has no model set up now, so it waits\./);
   assert.match(waiting, /- "mum@family\.test" to "Acme" \(space:[0-9a-f-]+\): 3 emails in about 3 threads/);
   assert.equal(provider.asked.length, asked, 'no model call in any of it');
+});
+
+// What two reviews of the map found, each as it was reproduced.
+
+const noted = (body: any) => (body.messages.length === 1 ? answerWith('yes') : answerWith(JSON.stringify({ keep: true, note: `${JSON.parse(body.messages[1].content).emails.map((email: { Subject: string }) => email.Subject).join(' + ')}: noted.` })));
+/** Each call's emails since a point, by subject. */
+const callsSince = (at: number) => provider.asked.slice(at).flatMap((asked) => (asked.body.messages.length > 1 && asked.body.messages[0].content.startsWith('You keep') ? [JSON.parse(asked.body.messages[1].content).emails.map((email: { Subject: string }) => email.Subject)] : []));
+const longAgo = new Date(Date.now() - 400 * day);
+
+/** Ana's mailbox summarized, with her assistant, and how she approves a map, starts her run and has it looked at again. */
+async function mapped(w: Awaited<ReturnType<typeof world>>, learning: Learning) {
+  provider.reply = noted;
+  assert.equal((await w.ana.browser.json(`/api/places/${w.place}/learning/summary`, { since: longAgo.toISOString() })).status, 200);
+  await through(learning);
+  const claude = await w.assistant(w.ana);
+  const me = { person: w.ana.id, direct: true } as const;
+  const propose = (input: Record<string, unknown>) => claude.call('act', { action: 'learning.map', input: { from: `learning:${w.place}`, ...input } });
+  const map = async (input: Record<string, unknown>) => {
+    const proposed = await propose(input);
+    assert.equal(proposed.failed, false, proposed.text);
+    assert.equal((await w.decide(proposalOf(proposed.text))).status, 200);
+  };
+  const start = async () => {
+    const estimated = await estimateLearning(learning, me, w.place, longAgo);
+    await withPrincipal(sql, me, (s) => startLearning(learning, s, estimated, 5));
+    await through(learning);
+    return estimated;
+  };
+  const again = async () => {
+    await owner`update learning_runs set next_at = now() where place_id = ${w.place}`;
+    await through(learning);
+  };
+  const leaveOut = async (senders: string[], folders: string[] = []) => assert.equal((await w.ana.browser.json(`/api/places/${w.place}/learning/left-out`, { senders, folders, kept: [] })).status, 200);
+  const notesBy = () => owner<{ space: string; body: string }[]>`select s.name as space, c.body from content c join spaces s on s.id = c.space_id where c.private_to = ${w.ana.id} and c.kind = 'text' and c.agent = 'Homing' and not exists (select from content n where n.supersedes = c.id) order by 1, 2`;
+  const shown = async () => (await w.ana.browser.json(`/api/spaces/${w.acme}/connections`)).body.places[0].learning;
+  return { claude, me, propose, map, start, again, leaveOut, notesBy, shown };
+}
+
+const [gunnar, kari, mum, per] = [from('Gunnar Lie', 'gunnar@northwind.test'), from('Kari Moe', 'kari@northwind.test'), from('Mum', 'mum@family.test'), from('Per Olsen', 'per@fabrikam.test')];
+
+test('a sender Ana leaves out after a map was proposed stays left out when she approves it: the map adds to who is left out and never takes anyone off, so that mail reaches no model', async () => {
+  const w = await world(modeled, () => [mail(gunnar, 'Contract', 30), mail(mum, 'Dinner', 20), mail(mum, 'Dinner 2', 19), mail(per, 'Offer', 10)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  // Two maps wait in turn: one that says nothing of Mum, and one that leads her very address to a space, proposed before she was left out.
+  const proposed = await t.propose({ create: [{ name: 'Northwind' }], routes: [{ who: 'northwind.test', to: 'Northwind' }, { who: 'mum@family.test', to: 'Northwind' }, { who: 'fabrikam.test', to: 'leave out' }] });
+  await t.leaveOut(['mum@family.test']);
+  const card = (await w.ana.browser.json(`/api/proposals/${proposalOf(proposed.text)}`)).body.proposal.plan.steps.at(-1).map.routes.map((route: { who: string; to: string }) => [route.who, route.to]);
+  assert.deepEqual(card, [['northwind.test', 'new space'], ['mum@family.test', 'leave out'], ['fabrikam.test', 'leave out']], 'she is shown what approving sets now');
+  assert.equal((await w.decide(proposalOf(proposed.text))).status, 200);
+  const { routes, excludedSenders } = await w.run();
+  assert.deepEqual([routes.map((route: { who: string }) => route.who), excludedSenders], [['northwind.test'], ['fabrikam.test', 'mum@family.test']]);
+  const at = provider.asked.length;
+  await t.start();
+  assert.deepEqual(callsSince(at), [['Contract']], 'neither Mum’s mail nor what the map left out is read');
+  // Her assistant leaving a sender out between proposing and approving holds the same way, and a later map can't route them anywhere.
+  const later = await t.propose({ routes: [{ who: 'northwind.test', to: 'wait' }] });
+  assert.equal((await t.claude.call('act', { action: 'learning.leave_out', input: { from: `learning:${w.place}`, senders: ['lawyer@firm.test'] } })).failed, false);
+  assert.equal((await w.decide(proposalOf(later.text))).status, 200);
+  assert.deepEqual((await w.run()).excludedSenders, ['fabrikam.test', 'lawyer@firm.test', 'mum@family.test']);
+  assert.match((await t.propose({ routes: [{ who: 'lawyer@firm.test', to: `space:${w.acme}` }] })).text, /The user left "lawyer@firm\.test" out/);
+});
+
+test('nothing of a sender or a folder Ana left out goes to Homing’s own model for a map, nor a space’s id, nor anything of a space with model processing off; and it is asked once, not while a map waits', async () => {
+  const lawyer = from('Lawyer Lund', 'lawyer@firm.test');
+  const w = await world(modeled, () => [...[1, 2, 3].map((n) => mail(gunnar, `Northwind ${n}`, 10 * n)), ...[1, 2].map((n) => mail(lawyer, `Your filing ${n}`, 5 * n)), ...[1, 2].map((n) => mail(per, `Private matter ${n}`, 3 * n, { folder: 'Private' }))]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  const [secret] = await withPrincipal(sql, t.me, async (s) => {
+    const [{ id: personal }] = await s.tx<{ id: string }[]>`select id from spaces where private_to = ${w.ana.id} and parent_id is null`;
+    return [await createSpace(s, { name: 'Secret merger Zeta', parentId: personal })];
+  });
+  await t.map({ routes: [{ who: 'northwind.test', to: `space:${secret}` }] });
+  await withPrincipal(sql, t.me, (s) => setModelProcessing(s, secret, false));
+  // Left out after the summary was made: the sender's subjects are no longer read from it, and the folder has it made again without its mail.
+  await t.leaveOut(['lawyer@firm.test'], ['Private']);
+  assert.deepEqual([(await w.run()).summary, (await w.run()).summarizing === null], [null, false]);
+  assert.equal((await w.ana.browser.json(`/api/places/${w.place}/learning/map`, {})).status, 409, 'not before the summary is made again');
+  await through(learning);
+  const summary = (await w.run()).summary;
+  assert.deepEqual(summary.senders.map((sender: { address: string; emails: number; subjects: string[]; name: string | null }) => [sender.address, sender.emails, sender.subjects.length, sender.name]), [['gunnar@northwind.test', 3, 3, 'Gunnar Lie'], ['lawyer@firm.test', 2, 0, null]]);
+  assert.doesNotMatch((await t.claude.call('read', { ref: `learning:${w.place}` })).text, /Your filing|Private matter|fabrikam/);
+  provider.reply = () => answerWith(JSON.stringify({ create: [], routes: [{ who: 'elsewhere.test', to: 'wait' }], else: null }));
+  const before = provider.asked.length;
+  const both = await Promise.all([w.ana.browser.json(`/api/places/${w.place}/learning/map`, {}), w.ana.browser.json(`/api/places/${w.place}/learning/map`, {})]);
+  assert.deepEqual([both.map((answer) => answer.status).sort(), provider.asked.length - before], [[200, 409], 1], 'one at a time');
+  const sent = provider.asked[before].body.messages[1].content as string;
+  for (const never of ['lawyer', 'firm.test', 'Your filing', 'Private matter', 'fabrikam', 'Secret merger Zeta', secret, w.acme, w.place]) assert.ok(!sent.includes(never), never);
+  assert.deepEqual([JSON.parse(sent).routesNow, JSON.parse(sent).placed, JSON.parse(sent).summary.domains.map((one: { domain: string }) => one.domain)], [[], ['northwind.test'], ['northwind.test']]);
+  // The route it wasn't shown stays as it is in what it proposes, and while that waits it isn't asked again.
+  const proposal = both.find((answer) => answer.status === 200)!.body.proposal;
+  const steps = (await owner`select change from proposals where id = ${proposal}`)[0].change.steps;
+  assert.deepEqual(steps.at(-1).routes, [{ who: 'elsewhere.test', to: 'wait' }, { who: 'northwind.test', to: secret }]);
+  const waiting = await w.ana.browser.json(`/api/places/${w.place}/learning/map`, {});
+  assert.deepEqual([waiting.status, /already waits for you/.test(waiting.body.message), provider.asked.length - before], [409, true, 1]);
+});
+
+test('a thread Ana starts goes where the one she wrote to goes, so her email and its answer make one note in one space', async () => {
+  const w = await world(modeled, () => [mail(gunnar, 'Old', 30)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  await t.map({ create: [{ name: 'Northwind' }], routes: [{ who: 'northwind.test', to: 'Northwind' }] });
+  await t.start();
+  const own = { name: w.account.name, address: w.account.address };
+  microsoft.deliver(w.account, { ...mail(own, 'Offer for Gunnar', 0.004, { conversation: 'offer', folder: 'sentitems' }), to: [gunnar] });
+  await t.again();
+  microsoft.deliver(w.account, { to: [own], ...mail(gunnar, 'Offer reply', 0.002, { conversation: 'offer' }) });
+  await t.again();
+  assert.deepEqual((await t.notesBy()).map((note) => [note.space, note.body]), [['Northwind', 'Offer reply: noted.'], ['Northwind', 'Old: noted.']]);
+  assert.deepEqual((await w.marks()).map((mark) => [mark.outcome, mark.because]), [1, 2, 3].map(() => ['learned', 'northwind.test']));
+});
+
+test('an address beats its domain, also one that is left out: that sender’s mail is read where the map says, and the estimate is shared among what is read', async () => {
+  const w = await world(modeled, () => [mail(gunnar, 'Contract', 30), mail(gunnar, 'Contract 2', 29), ...[1, 2, 3, 4, 5, 6].map((n) => mail(kari, `Status ${n}`, 20 + n / 10)), mail(per, 'Offer', 10), mail(per, 'Offer 2', 9)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  await t.map({ create: [{ name: 'Northwind' }], routes: [{ who: 'northwind.test', to: 'leave out' }, { who: 'gunnar@northwind.test', to: 'Northwind' }, { who: 'fabrikam.test', to: 'wait' }] });
+  const estimated = await estimateLearning(learning, t.me, w.place, longAgo);
+  const held = (await t.shown()).held as { who: string | null; threads: number; low?: number; high?: number }[];
+  assert.deepEqual(held.map((row) => [row.who, row.threads, row.high !== undefined]), [['gunnar@northwind.test', 2, true], ['fabrikam.test', 2, false], ['northwind.test', 6, false], [null, 0, true]]);
+  assert.deepEqual([estimated.estimate!.threads, held[0].high, held[0].low], [2, estimated.estimate!.high, estimated.estimate!.low], 'the estimate counts what is read, and the one route that is read has all of it');
+  const at = provider.asked.length;
+  await withPrincipal(sql, t.me, (s) => startLearning(learning, s, estimated, 5));
+  await through(learning);
+  assert.deepEqual([callsSince(at), (await t.notesBy()).map((note) => note.space)], [[['Contract'], ['Contract 2']], ['Northwind', 'Northwind']]);
+});
+
+test('a map change has every thread it may concern looked at again, whole: one that waited under its domain when an address in it gets a route, and one nobody placed, Ana’s own answers in it too', async () => {
+  const w = await world(modeled, (account) => [
+    mail(gunnar, 'Contract', 30), mail(kari, 'Status', 20),
+    mail(per, 'Deal 1', 40, { conversation: 'deal' }),
+    { ...mail({ name: account.name, address: account.address }, 'Deal 2 from Ana', 39, { conversation: 'deal', folder: 'sentitems' }), to: [per] },
+    mail(per, 'Deal 3', 38, { conversation: 'deal' }),
+  ]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  await t.map({ routes: [{ who: 'northwind.test', to: 'wait' }], else: 'wait' });
+  const at = provider.asked.length;
+  await t.start();
+  assert.deepEqual([callsSince(at), (await w.marks()).map((mark) => mark.reason)], [[], [1, 2, 3, 4, 5].map(() => 'waiting')]);
+  await t.map({ create: [{ name: 'Northwind' }], routes: [{ who: 'northwind.test', to: 'wait' }, { who: 'gunnar@northwind.test', to: 'Northwind' }, { who: 'fabrikam.test', to: `space:${w.acme}` }] });
+  await t.again();
+  await t.again();
+  assert.deepEqual(callsSince(at), [['Deal 1', 'Deal 2 from Ana', 'Deal 3'], ['Contract']]);
+  assert.deepEqual((await w.marks()).map((mark) => [mark.sender, mark.reason ?? mark.outcome, mark.again]).sort(), [[w.account.address, 'learned', false], ['gunnar@northwind.test', 'learned', false], ['kari@northwind.test', 'waiting', false], ['per@fabrikam.test', 'learned', false], ['per@fabrikam.test', 'learned', false]].sort());
+});
+
+test('a thread that waited is read like any other once it belongs in a space: with what came before it, and into a space that is open now, which one archived with the space above it is not', async () => {
+  const w = await world(modeled, () => [mail(gunnar, 'Long old', 500, { conversation: 'long' }), mail(gunnar, 'Long new', 30, { conversation: 'long' }), mail(per, 'Offer', 10)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  await t.map({ create: [{ name: 'Clients' }, { name: 'Fabrikam', under: 'Clients' }], routes: [{ who: 'northwind.test', to: 'wait' }, { who: 'fabrikam.test', to: 'Fabrikam' }] });
+  const clients = (await w.spacesOf()).find((space) => space.name === 'Clients')!.id;
+  await withPrincipal(sql, t.me, (s) => archiveSpace(s, clients, true));
+  const at = provider.asked.length;
+  await t.start();
+  assert.deepEqual([callsSince(at), (await t.notesBy()).length, (await w.marks()).map((mark) => mark.reason)], [[], 0, ['waiting', 'waiting']], 'nothing is written into a space archived with the one above it');
+  const looked = (await w.marks()).map((mark) => mark.processedAt.getTime());
+  await t.again();
+  assert.deepEqual((await w.marks()).map((mark) => mark.processedAt.getTime()), looked, 'and what waits for it isn’t fetched again while it is');
+  await withPrincipal(sql, t.me, (s) => archiveSpace(s, clients, false));
+  await t.map({ routes: [{ who: 'northwind.test', to: `space:${w.acme}` }, { who: 'fabrikam.test', to: `space:${(await w.spacesOf()).find((space) => space.name === 'Fabrikam')!.id}` }] });
+  await t.again();
+  await t.again();
+  assert.deepEqual(callsSince(at).sort(), [['Long old', 'Long new'], ['Offer']]);
+  const cited = await owner<{ reference: string }[]>`select s.reference from citations c join content n on n.id = c.content_id join sources s on s.id = c.source_id where n.agent = 'Homing' and n.private_to = ${w.ana.id}`;
+  const read = new Set((await w.marks()).filter((mark) => mark.outcome === 'learned' && mark.interpretation).map((mark) => mark.item));
+  assert.ok(cited.length === 3 && cited.every((source) => read.has(source.reference.split(':').at(-1)!)), 'nothing is cited unread');
+});
+
+test('the summary never holds up reading and one email can’t stop it: text is cut between characters, a failure is its own, tried again later and given up saying so, and asking again ends the claim that made the old one', async () => {
+  const w = await world(modeled, () => [mail(from(`${'n'.repeat(99)}\u{1F600}x`, 'gunnar@northwind.test'), `${'a'.repeat(79)}\u{1F600} tail`, 300), mail(per, 'New', 10)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  const made = (await w.run()).summary;
+  assert.deepEqual([made.senders.map((sender: { subjects: string[] }) => sender.subjects[0].length), made.senders[0].name.length], [[81, 3], 101], 'whole characters, and it was made');
+  // A run without a map has nobody not placed.
+  await t.start();
+  assert.deepEqual([(await t.shown()).notPlaced, (await w.marks()).length], [{ senders: [], more: 0 }, 2]);
+  // Asked for again while Microsoft can't list the mailbox: the run reads what arrives all the same, with its page size as it was.
+  microsoft.deliver(w.account, { to: [{ name: w.account.name, address: w.account.address }], ...mail(per, 'Arrived', 0) });
+  assert.equal((await w.ana.browser.json(`/api/places/${w.place}/learning/summary`, {})).status, 200);
+  const at = provider.asked.length;
+  const quiet = console.error;
+  console.error = () => {};
+  try {
+    microsoft.emptyPages(w.account, 'always');
+    await owner`update learning_runs set next_at = now() where place_id = ${w.place}`;
+    await learnPage(sql, learning, (await claim(sql, randomUUID(), 30))!, { pollSeconds: 3600, backoffSeconds: 30 });
+    const failed = await w.run();
+    assert.deepEqual([callsSince(at), failed.summarizing.tries, failed.summarizing.retryAt > Date.now() + 50_000, failed.pageSize, failed.attempts, failed.waitingFor, failed.state], [[['Arrived']], 1, true, null, 0, null, 'following']);
+    await through(learning);
+    assert.equal((await w.run()).summarizing.tries, 1, 'the run goes on, and the summary waits before it is tried again');
+    // Tried again when it's time, and given up after a few tries, which her assistant is told.
+    for (let tries = 2; tries <= 5; tries++) {
+      await owner`update learning_runs set summarizing = summarizing || '{"retryAt": 0}' where place_id = ${w.place} and not summarizing ? 'failed'`;
+      await through(learning);
+    }
+    assert.deepEqual([(await w.run()).summarizing, (await w.run()).summary.at], [{ since: (await w.run()).summarizing.since, failed: true }, made.at]);
+    assert.match((await t.claude.call('read', { ref: `learning:${w.place}` })).text, /Homing couldn’t look at who writes there: .* gave up\. learning\.summarize asks it to try again\./);
+    assert.equal(await claim(sql, randomUUID(), 30), undefined, 'and the run isn’t claimed for it any more');
+  } finally {
+    microsoft.emptyPages(w.account);
+    console.error = quiet;
+  }
+  // Asked for again with a worker on it: that worker's summary is never kept.
+  assert.equal((await w.ana.browser.json(`/api/places/${w.place}/learning/summary`, {})).status, 200);
+  const claimed = await claim(sql, randomUUID(), 30);
+  assert.equal((await w.ana.browser.json(`/api/places/${w.place}/learning/summary`, {})).status, 200);
+  await owner`update learning_runs set summary = null where place_id = ${w.place}`;
+  await learnPage(sql, learning, claimed!, { pollSeconds: 3600, backoffSeconds: 0 });
+  assert.deepEqual([(await w.run()).summary, (await w.run()).summarizing === null], [null, false]);
+  await through(learning);
+  assert.equal((await w.run()).summary.emails, 3);
+});
+
+test('two maps proposed for a mailbox at the same moment leave one waiting', async () => {
+  const w = await world(plain, () => [mail(gunnar, 'Contract', 30)]);
+  const t = await mapped(w, { broker, interpretation: notes });
+  const other = await w.assistant(w.ana, assistants.chatgpt);
+  const both = await Promise.all([t.propose({ routes: [{ who: 'northwind.test', to: 'wait' }] }), other.call('act', { action: 'learning.map', input: { from: `learning:${w.place}`, routes: [{ who: 'northwind.test', to: 'leave out' }] } })]);
+  assert.deepEqual(both.map((one) => one.failed), [false, false]);
+  assert.deepEqual((await owner`select state from proposals where private_to = ${w.ana.id} order by state`).map((row) => row.state), ['open', 'withdrawn']);
+});
+
+test('the senders a run left out before maps are still left out after the migration, on a list of their own', async () => {
+  const urls = await freshDatabase('learning_map_before', { before: '0046' });
+  const admin = connect(urls.admin);
+  try {
+    const ids = [randomUUID(), randomUUID()];
+    await admin.begin(async (tx) => {
+      await tx`set local session_replication_role = replica`;
+      await tx`insert into learning_runs (id, place_id, connection_id, space_id, private_to, since, excluded_senders, state) values
+        (${ids[0]}, ${randomUUID()}, ${randomUUID()}, ${randomUUID()}, ${randomUUID()}, now() - interval '1 year', ${['news@shop.test', 'weekly-digest.test', '@family.test']}, 'following'),
+        (${ids[1]}, ${randomUUID()}, ${randomUUID()}, ${randomUUID()}, ${randomUUID()}, now() - interval '1 year', ${Array.from({ length: 200 }, (_, at) => `s${at}@x.test`)}, 'estimating')`;
+    });
+    await migrate(urls.admin, urls.app, urls.auth);
+    const rows = await admin`select excluded_senders, routes, rest from learning_runs order by array_position(${ids}::uuid[], id)`;
+    assert.deepEqual([rows[0].excludedSenders, rows[0].routes, rows[0].rest, rows[1].excludedSenders.length, rows[1].routes], [['news@shop.test', 'weekly-digest.test', '@family.test'], [], null, 200, []]);
+  } finally {
+    await admin.end();
+  }
 });

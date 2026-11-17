@@ -127,8 +127,8 @@ export interface Follow {
   summary?(access: Access, from: string | null, scope: Scope): Promise<{ listed: Listed[]; next: string | null }>;
 }
 
-/** An item as a summary counts it: who wrote it, when, what it's called, and what it belongs with. */
-export type Listed = Pick<Envelope, 'title' | 'at' | 'author'> & { thread: string | null };
+/** An item as a summary counts it: who wrote it, when, what it's called, what it belongs with, and where it is there, such as its folder, by name. */
+export type Listed = Pick<Envelope, 'title' | 'at' | 'author'> & { thread: string | null; folder: string | null };
 
 /** What learning covers: from a time, and up to one, or on with what arrives. */
 export interface Scope {

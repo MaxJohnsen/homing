@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
-import { noModel, runsFor, type Estimate, type Route } from './learning.ts';
+import { mapOf, noModel, runsFor, type Estimate, type Route } from './learning.ts';
 import { holdings, summaryFor } from './map.ts';
 import { ownPlace, type Place as ConnectedPlace } from './places.ts';
 import { readSkill } from './skills.ts';
@@ -708,22 +708,34 @@ export async function proposeLearning(s: Session, input: { action: 'start learni
  * do. One map waits for a place at a time: an earlier one is withdrawn, since this one replaces it.
  */
 export async function proposeMap(s: Session, place: ConnectedPlace, steps: MapSteps, why?: string): Promise<Proposal> {
-  const earlier = await s.tx<{ id: string }[]>`
-    select id from proposals
-    where ${yours(s)} and state = 'open' and expires_at > now() and action = 'plan'
-      and exists (select from jsonb_array_elements(change -> 'steps') as step where step ->> 'action' = 'learning map' and step ->> 'place' = ${place.place})
-    for update
-  `;
-  for (const { id } of earlier) await s.tx`update proposals set state = 'withdrawn' where id = ${id}::uuid`;
+  // Held until the proposal is made, so two proposed at once can't both wait.
+  await s.tx`select pg_advisory_xact_lock(hashtext(${`homing.learning map ${place.place}`}))`;
+  for (const { id } of await mapsWaiting(s, place.place)) await s.tx`update proposals set state = 'withdrawn' where id = ${id}::uuid`;
   return insertProposal(s, { spaceId: place.space, action: 'plan', itemId: null, change: { steps }, request: false, reason: why?.trim() || null });
 }
 
-/** A map step as the reader sees it now: where each route leads, by name, what it holds going by the run's summary, and why it can't be set, if it can't. */
+/** The maps that wait for the person to decide, for one of their places. */
+const mapsWaiting = (s: Session, place: string) => s.tx<{ id: string }[]>`
+  select id from proposals
+  where ${yours(s)} and state = 'open' and expires_at > now() and action = 'plan'
+    and exists (select from jsonb_array_elements(change -> 'steps') as step where step ->> 'action' = 'learning map' and step ->> 'place' = ${place})
+`;
+
+/** Whether a map for one of the person's places waits for them to decide. */
+export const mapWaits = async (s: Session, place: string) => (await mapsWaiting(s, place)).length > 0;
+
+/**
+ * A map step as the reader sees it now: where each route leads, by name, what it holds going by
+ * the run's summary, and why it can't be set, if it can't. While it waits, it's shown as approving
+ * it would set it now: with everyone the run leaves out, who stay left out, and with where
+ * everything else goes as it is when the map doesn't say.
+ */
 async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { action: 'learning map' }>, steps: (PlanStep | MapStep)[], spaces: Space[], open: boolean): Promise<Pick<PlanStepView, 'map' | 'problem' | 'cant'>> {
   const place = await ownPlace(s, step.place);
   const run = place ? (await runsFor(s, [step.place])).get(step.place) : undefined;
   const summary = run ? await summaryFor(s, run) : null;
-  const held = summary ? holdings(summary, { routes: step.routes, rest: step.rest }) : [];
+  const set = open && run ? mapOf(step.routes, run.leftOut.senders, step.rest ?? run.map.rest) : { routes: step.routes, rest: step.rest };
+  const held = summary ? holdings(summary, set) : [];
   const words = step.words ?? { place: 'mailbox', items: 'emails' };
   let missing = false;
   const leads = (who: string | null, to: string | null): Leads => {
@@ -736,7 +748,7 @@ async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { a
     if (!space || space.archived) missing = true;
     return { to: 'space', name: space ? (space.privateTo !== null && space.parentId === null ? 'Your personal space' : space.name) : null, ...counts };
   };
-  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: step.routes.map((route) => ({ who: route.who, ...leads(route.who, route.to) })), rest: leads(null, step.rest) };
+  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: set.routes.map((route) => ({ who: route.who, ...leads(route.who, route.to) })), rest: leads(null, set.rest) };
   let problem: string | null = null;
   if (open) {
     if (!place || !run) problem = `That ${words.place} isn’t connected here any more, so there’s nothing to set.`;
@@ -1227,7 +1239,8 @@ async function makeStep(s: Session, spaceId: string, step: PlanStep | MapStep, s
       const routes = step.routes.map((route) => ({ who: route.who, to: lead(route.to) }));
       const rest = step.rest === null ? null : lead(step.rest);
       if (routes.some((route) => !route.to) || rest === undefined) throw new Undecidable('changed', 'A space it leads to wasn’t created.');
-      // As the person, directly, which the database checks, as it does that each space is one they can open.
+      // As the person, directly, which the database checks, as it does that each space is one they can open. It keeps
+      // everyone the run leaves out now, and where everything else goes when the map doesn't say.
       await s.tx`select set_learning_map(${run.id}::uuid, ${s.tx.json(routes as never)}, ${rest})`;
       return;
     }

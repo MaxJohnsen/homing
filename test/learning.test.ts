@@ -17,7 +17,7 @@ import { connect, withPrincipal, type Principal, type Session, type Sql } from '
 import { notes, type Interpretation } from '../src/interpret.ts';
 import { insertItem, updateItem } from '../src/knowledge.ts';
 import { claim, learnPage, type LearnerOptions } from '../src/learner.ts';
-import { estimateExtension, estimateLearning, extendLearning, forgetExtension, leftOutIn, LearningRefused, pauseLearning, progressOf, resumeLearning, retryLearning, runsFor, setAside, setAsideSenders, setLeftOut, setLearningLimit, startLearning, suggestedLimit, type Learning } from '../src/learning.ts';
+import { estimateExtension, estimateLearning, extendLearning, forgetExtension, LearningRefused, mapOf, pauseLearning, progressOf, resumeLearning, retryLearning, routeOf, runsFor, setAside, setAsideSenders, setLeftOut, setLearningLimit, startLearning, suggestedLimit, type Learning } from '../src/learning.ts';
 import { learningRef, readLearning } from '../src/learning-mcp.ts';
 import { automatedEmail } from '../src/mail.ts';
 import { followMail, microsoftConnector } from '../src/microsoft.ts';
@@ -648,6 +648,12 @@ test('mail that needs no model is told by its headers and its sender, and what i
     version: 'v', thread: null, folder, setAside: aside,
   });
   const leftOut = { senders: ['billing@fjord.test', 'shop.test', '@lists.acme.test'], folders: ['Receipts'], kept: ['kari@acme.test', 'digest.test'] };
+  // By its own signs and its folder first, and then by who its thread is with, as the worker sorts it.
+  const leftOutIn = (changes: Change[], by: typeof leftOut) => {
+    const { to, entry } = routeOf(changes, mapOf([], by.senders, null), 'ana@acme.test');
+    return to === 'leave out' ? entry! : undefined;
+  };
+  const aside = (one: Change, by: typeof leftOut) => setAside(one, by) ?? (leftOutIn([one], by) ? { reason: 'excluded sender', because: leftOutIn([one], by) } : undefined);
   for (const [address, folder, expected] of [
     ['billing@fjord.test', 'Inbox', { reason: 'excluded sender', because: 'billing@fjord.test' }],
     ['Billing@Fjord.test', 'Inbox', { reason: 'excluded sender', because: 'billing@fjord.test' }],
@@ -660,7 +666,7 @@ test('mail that needs no model is told by its headers and its sender, and what i
     ['ana@acme.test', 'Receipts 2025', undefined],
     ['ana@acme.test', null, undefined],
   ] as const) {
-    assert.deepEqual(setAside(change(address, folder), leftOut), expected, `${address} in ${folder}`);
+    assert.deepEqual(aside(change(address, folder), leftOut), expected, `${address} in ${folder}`);
   }
   // What the system's own signs say comes first, unless Ana keeps the sender: then only what an email says about itself gives way.
   assert.deepEqual(setAside(change('billing@fjord.test', 'Receipts', 'newsletter'), leftOut), { reason: 'newsletter' });
@@ -2288,7 +2294,7 @@ test('a folder left out doesn’t count among a thread’s earlier emails and is
   await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, subjects[at]])), from);
 });
 
-test('a failure on the call that carries a thread’s earlier emails leaves the thread without a mark, so all of it is done again. Once that call is answered, nothing earlier is fetched again, and no note cites an email no model read', async () => {
+test('a failure on the call that carries a thread’s earlier emails leaves the thread with nothing a model read, so all of it is done again. Once that call is answered, nothing earlier is fetched again, and no note cites an email no model read', async () => {
   const thread = `AAQk${randomUUID()}=`;
   const auto = { headers: { 'Auto-Submitted': 'auto-replied' } };
   const steps = Array.from({ length: 12 }, (_, at) => `Step ${at + 1}`);
@@ -2310,8 +2316,8 @@ test('a failure on the call that carries a thread’s earlier emails leaves the 
     // The ten before the first email a model reads are fetched, and go with it, but for the automatic one. The provider fails on that call.
     const first = await tryPage(place);
     assert.deepEqual([subjectsOf(sentSince(sent)), microsoft.asked.reads - reads], [[[...earlier, 'Step done'], ['Other']], 10]);
-    // Nothing of the thread is marked, not even what needed no model, on the page or before it: only the other thread is.
-    assert.deepEqual([(await marks()).map((mark) => mark.item), failuresOf(first.now), first.now.checkpoint], [[ids[15]], [['main', thread, 1]], null]);
+    // No model has read anything of the thread: only what needed no model is marked, on the page and before it, and the other thread.
+    assert.deepEqual([(await marks()).map((mark) => [mark.item, mark.interpretation === null]).sort(), failuresOf(first.now), first.now.checkpoint], [[[ids[6], true], [ids[12], true], [ids[15], false]].sort(), [['main', thread, 1]], null]);
   } finally {
     provider.reply = noteReply;
   }
@@ -2326,12 +2332,12 @@ test('a failure on the call that carries a thread’s earlier emails leaves the 
     },
   };
   await quietly(() => page({ interpretation: stopping }));
-  assert.deepEqual([subjectsOf(sentSince(sent).slice(2)), microsoft.asked.reads - reads, (await marks()).length, (await run()).checkpoint], [[[...earlier, 'Step done']], 20, 11, null]);
+  assert.deepEqual([subjectsOf(sentSince(sent).slice(2)), microsoft.asked.reads - reads, (await marks()).length, (await run()).checkpoint], [[[...earlier, 'Step done']], 20, 13, null]);
   // The next worker finds the thread marked, fetches nothing, and reads what's left of it with the note.
   await through();
   assert.deepEqual([subjectsOf(sentSince(sent).slice(3)), sentSince(sent)[3].earlierNote, microsoft.asked.reads - reads], [[['Step closed']], 'Step done: noted.', 20]);
   const all = new Map((await marks()).map((mark) => [mark.item, mark.reason ?? mark.outcome]));
-  assert.deepEqual(subjects.map((_, at) => all.get(ids[at])), [undefined, undefined, ...earlier.slice(0, 4).map(() => 'learned'), undefined, ...earlier.slice(4).map(() => 'learned'), 'automated', 'learned', 'learned', 'learned']);
+  assert.deepEqual(subjects.map((_, at) => all.get(ids[at])), [undefined, undefined, ...earlier.slice(0, 4).map(() => 'learned'), 'automated', ...earlier.slice(4).map(() => 'learned'), 'automated', 'learned', 'learned', 'learned']);
   assert.equal((await run()).state, 'following');
   await onlyCitesWhatWasRead(place, new Map(ids.map((item, at) => [item, subjects[at]])), from);
 });
@@ -2370,22 +2376,22 @@ test('a thread first met while the run follows, or on its way further back, is r
   const fetched = () => microsoft.read.filter((item) => [0, 1, 2, 3, 5].some((at) => ids[at] === item)).length;
   const fresh = await arrives('New matter');
   assert.deepEqual([calls(sent + 2), fetched()], [[['New matter']], 2]);
-  // A thread with a mark, even for what needed no model, was met: what arrives in it is read by itself.
+  // A thread with a mark only for what needed no model is one no model has read anything of: what arrives in it is read with what came before.
   const approved = await arrives('Leave approved', away);
-  assert.deepEqual([calls(sent + 3), (await marks()).length, fetched()], [[['Leave approved']], 7, 2]);
+  assert.deepEqual([calls(sent + 3), (await marks()).length, fetched()], [[['Leave', 'Leave approved']], 8, 3]);
 
   // Going further back meets the other thread, at an email that quotes nothing: the one before it is read with it, against the run's limit.
   assert.ok(await extend(250));
   await through();
-  assert.deepEqual([calls(sent + 4), await history(), (await marks()).length, fetched()], [[['Audit', 'Audit findings']], [true, false, false, false, true], 9, 3]);
-  // Further back still is where those began, read already. What's left is the start of the thread met at an automatic reply, which is read as background to its note.
+  assert.deepEqual([calls(sent + 4), await history(), (await marks()).length, fetched()], [[['Audit', 'Audit findings']], [true, false, false, false, true], 10, 4]);
+  // Further back still is where those began, read already, the start of the thread met at an automatic reply among them: nothing is read twice.
   assert.ok(await extend(365));
   await through();
-  assert.deepEqual([calls(sent + 5), (await marks()).length, fetched()], [[['Leave, older']], 10, 3]);
+  assert.deepEqual([calls(sent + 5), (await marks()).length, fetched()], [[], 10, 4]);
   await onlyCitesWhatWasRead(place, new Map([...ids.map((item, at): [string, string] => [item, subjects[at]]), [reply, 'Lease signed'], [fresh, 'New matter'], [approved, 'Leave approved']]), from);
 });
 
-test('an email Microsoft couldn’t give, tried again while it still couldn’t, is left without its thread: learned from again once it can be read, it’s read as it is, with nothing earlier fetched, and the run goes on', async () => {
+test('an email Microsoft couldn’t give, tried again while it still couldn’t, is left without its thread: learned from again once it can be read, it’s read like any thread no model has read, with what came before it, and the run goes on', async () => {
   const thread = `AAQk${randomUUID()}=`;
   const { ana, account, begin, marks, mine, run, place, ids } = await world([email('Old', 300, { conversation: thread }), email('Broken', 20, { conversation: thread })]);
   await begin(100);
@@ -2404,10 +2410,10 @@ test('an email Microsoft couldn’t give, tried again while it still couldn’t,
   } finally {
     microsoft.poison(account, ids[1], false);
   }
-  // Readable now, its thread has no mark and an email before it. Nothing earlier is fetched where emails are learned from again: it's read by itself.
+  // Readable now, no model has read anything of its thread, which has an email before it: that's fetched and read with it, as on any walk.
   const [sent, reads] = [provider.asked.length, microsoft.asked.reads];
   await again();
-  assert.deepEqual([subjectsSince(sent), microsoft.asked.reads - reads, (await marks()).map((mark) => [mark.item, mark.outcome])], [['Broken'], 1, [[ids[1], 'learned']]]);
+  assert.deepEqual([subjectsSince(sent), microsoft.asked.reads - reads, (await marks()).map((mark) => [mark.item, mark.outcome]).sort()], [['Old', 'Broken'], 2, [[ids[0], 'learned'], [ids[1], 'learned']].sort()]);
   assert.deepEqual([(await run()).state, (await run()).waitingFor, (await run()).attempts], ['following', null, 0]);
 });
 

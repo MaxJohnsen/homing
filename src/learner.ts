@@ -2,9 +2,10 @@
 // a run that needs work and claims it for a while, so one worker works on a run at a time, across
 // restarts and deploys. Then, as the run's owner, it fetches one page of the place's changes,
 // outside any transaction, skips what the run already processed, sets aside what needs no model,
-// and hands each thread to the interpretation step, whose model calls the run's own limit holds.
-// A thread it meets for the first time at an item that doesn't carry what came before it, it reads
-// with the last few items from before it.
+// sorts each thread by its owner's map, and hands those that belong in a space to the
+// interpretation step, whose model calls the run's own limit holds. A thread no model has read
+// anything of, met at an item that doesn't carry what came before it, it reads with the last few
+// items from before it.
 // What a thread taught is written on the owner's private side in the same transaction that marks
 // its items processed, so a crash repeats only what wasn't marked. Only then does the run's
 // checkpoint move on. It sends nothing more once its owner pauses the run, waits and tries again
@@ -20,11 +21,11 @@ import type { Access, Change, Changes } from './connectors.ts';
 import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } from './db.ts';
 import { Unusable, type Ask, type Learned } from './interpret.ts';
 import { addSource, createPage, insertItem, updateItem, visible } from './knowledge.ts';
-import { asOwner, batchesOf, folderLeftOut, leftOutBy, leftOutIn, routeOf, senderOf, setAside, type Learning, type Route, type Run } from './learning.ts';
+import { asOwner, batchesOf, folderLeftOut, mapOf, routeOf, senderOf, setAside, type Learning, type Route, type Run } from './learning.ts';
 import { count, summaryOf, type Summarizing, type Summary } from './map.ts';
-import { callModel, ModelFailed, ModelRefused } from './model.ts';
+import { callModel, ModelFailed, ModelRefused, modelOn } from './model.ts';
 import { ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
-import { accessibleSpaces } from './spaces.ts';
+import { listSpaces } from './spaces.ts';
 
 /** How the worker paces itself. Tests set it faster. */
 export interface LearnerOptions {
@@ -54,8 +55,9 @@ const pageSizes = [50, 10, 1];
  * them: the newest, and never more than one call takes, so they're read whole or not at all.
  */
 const earlierRead = 10;
-/** How long one claim works on a summary of a place before it keeps how far it came and hands the run back. */
+/** How long one claim works on a summary of a place before it keeps how far it came, and how often it may fail in a row before Homing gives it up. */
 const summaryTime = 20_000;
+const summaryTries = 5;
 /** How many items set aside before are learned from again at once. */
 const againAtOnce = 20;
 /** How often the provider may fail on one thread, hours apart, while it answers otherwise, before the thread is set aside. */
@@ -164,7 +166,7 @@ interface Claim extends Run {
 
 type Trouble = 'provider' | 'system' | 'error' | 'throttled' | 'limited' | 'sign in again' | 'not set up' | 'monthly limit' | 'model processing off';
 type Walk = 'main' | 'extension' | 'again';
-type Mark = ReturnType<typeof markOf>;
+type Mark = MarkOf;
 
 /** The claim no longer holds: the run was claimed again, its scope changed, or its owner can't open its space. */
 const lost = (error: unknown) => error instanceof postgres.PostgresError && error.code === '42501';
@@ -185,15 +187,15 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       {
         id: string; place: string; space: string; connection: string; state: Run['state']; reason: Run['reason']; waitingFor: Run['waitingFor']; waitingAtLimit: boolean;
         since: Date; learnedUpTo: Date | null; caughtUpAt: Date | null; extensionSince: Date | null; extensionUntil: Date | null; spendingLimit: string;
-        routes: Route[]; rest: string | null; summarizing: Summarizing | null; excludedFolders: string[]; keptSenders: string[]; startedAt: Date | null;
+        routes: Route[]; rest: string | null; summarizing: Summarizing | null; excludedSenders: string[]; excludedFolders: string[]; keptSenders: string[]; startedAt: Date | null;
         checkpoint: string | null; extensionCheckpoint: string | null; attempts: number; failures: Failure[] | null; refused: number; pageSize: number | null; polledAt: Date | null;
-        followedPartly: boolean;
+        followedPartly: boolean; walkDue: boolean;
       }[]
     >`
       select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
              r.since, r.learned_up_to, r.caught_up_at, r.extension_since, r.extension_until, r.spending_limit,
-             r.routes, r.rest, r.summarizing, r.excluded_folders, r.kept_senders, r.started_at,
-             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at, r.followed_partly
+             r.routes, r.rest, r.summarizing, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
+             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at, r.followed_partly, r.next_at <= now() as walk_due
       from learning_runs r
       where r.id = ${claimed.run}::uuid and r.claim = ${claim}::uuid
     `;
@@ -203,18 +205,19 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
   });
   if (!found) return;
   const { row, place, again } = found;
-  const { extensionSince, extensionUntil, spendingLimit, routes, rest: elsewhere, summarizing, excludedFolders, keptSenders, ...rest } = row;
+  const { extensionSince, extensionUntil, spendingLimit, routes, rest: elsewhere, summarizing, excludedSenders, excludedFolders, keptSenders, walkDue, ...rest } = row;
   const run: Claim = {
     ...rest,
-    map: { routes, rest: elsewhere },
+    map: mapOf(routes, excludedSenders, elsewhere),
     summarizing: summarizing !== null,
     summarized: null,
+    summaryFailed: false,
     owner: claimed.person,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
     limit: Number(spendingLimit),
     estimate: null,
     proposed: null,
-    leftOut: { senders: leftOutBy(routes), folders: excludedFolders, kept: keptSenders },
+    leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
     // Kept as a list, since a thread's id is no name for the database's client to reword.
     failures: row.failures ?? [],
   };
@@ -237,6 +240,44 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     if (!place || signal.aborted) return await later(0);
     const connector = l.broker.connectors.get(place.connector);
     const follow = kindOf(connector, place.kind)?.follow;
+    const words = wordsOf(connector, place.kind);
+    // What the place gives, outside any transaction, as its owner, within a time limit.
+    const fetched = <T>(read: (access: Access) => Promise<T>) => asOwner(l.broker, principal, place, AbortSignal.any([signal, AbortSignal.timeout(pageTimeLimit)]), read);
+
+    // A summary of the place was asked for: who writes there, counted from the connector's listing, a
+    // few pages at a time, with how far it came kept between them. No model, and nothing of any
+    // item's text. It's a step of its own, before the run's page if one is due: when the place can't
+    // be listed, or what was counted can't be kept, the summary waits and is tried again, longer each
+    // time, and after a few tries Homing gives it up and says so. Nothing else about the run changes
+    // with it, so its walks go on whatever becomes of the summary.
+    const walking = walkDue && (run.state === 'learning history' || run.state === 'following');
+    if (summarizing && !summarizing.failed && (summarizing.retryAt ?? 0) <= Date.now()) {
+      const keep = (working: Summarizing | null, summary: Summary | null) =>
+        withPrincipal(sql, principal, (s) => s.tx`
+          select learning_summarized(${run.id}::uuid, ${claim}::uuid, ${working ? s.tx.json(working as never) : null}::jsonb, ${summary ? s.tx.json(summary as never) : null}::jsonb, ${!walking})
+        `);
+      const list = follow?.summary;
+      let working = summarizing;
+      const until = Date.now() + summaryTime;
+      try {
+        // A place that can't be listed has no summary: the request is let go of.
+        if (list) {
+          do {
+            const listed = await fetched((access) => list(access, working.next ?? null, { since: new Date(working.since) }));
+            working = { ...count(working, listed.listed, place.address, run), next: listed.next };
+          } while (working.next && Date.now() < until && !signal.aborted);
+        }
+        await keep(list && working.next ? working : null, list && !working.next ? summaryOf(working) : null);
+      } catch (error) {
+        if (lost(error)) return;
+        // Counted with the summary as it was last kept. Homing stopping is no failure.
+        const tries = (summarizing.tries ?? 0) + (signal.aborted ? 0 : 1);
+        if (!signal.aborted) console.error(`learning: the summary of a ${words.place} failed (${messageOf(error)})${tries >= summaryTries ? ', and is given up' : ''}`);
+        await keep(tries >= summaryTries ? { since: summarizing.since, failed: true } : { ...summarizing, tries, ...(!signal.aborted && { retryAt: Date.now() + Math.min(pace.backoffSeconds * 2 ** tries, 3600) * 1000 }) }, null);
+      }
+      if (!walking) return;
+    }
+    if (!walking) return await later(0);
     if (!connector || !follow) return await later(0, 'not set up');
 
     // Which walk: through history, a range added to its scope and what its owner asked for again come
@@ -249,8 +290,6 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     const scope = walk === 'extension' ? run.extending! : { since: run.since };
     const size = run.pageSize ?? pageSizes[0];
 
-    // What the place gives, outside any transaction, as its owner, within a time limit.
-    const fetched = <T>(read: (access: Access) => Promise<T>) => asOwner(l.broker, principal, place, AbortSignal.any([signal, AbortSignal.timeout(pageTimeLimit)]), read);
     const unfetched = async (error: unknown) => {
       if (signal.aborted) return await later(0);
       if (error instanceof ConnectionUnusable) return await (error.reason === 'gone' ? later(0) : later(0, error.reason === 'needs attention' ? 'sign in again' : 'not set up'));
@@ -259,36 +298,12 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       if (wait !== undefined) return await later(wait, 'throttled');
       const meaning = connector.refused(error);
       if (!(error instanceof Unanswered) && meaning !== 'try later') {
-        console.error(meaning ? `learning: ${connector.vendor} refused following a ${wordsOf(connector, place.kind).place} (${messageOf(error)})` : error);
+        console.error(meaning ? `learning: ${connector.vendor} refused following a ${words.place} (${messageOf(error)})` : error);
       }
       // A page the system couldn't serve, or not in time, is asked for again in smaller parts: fewer
       // at once, then one at a time, where an item it can't give is set aside.
       return await backoff('system', { pageSize: pageSizes.find((smaller) => smaller < size) ?? 1 });
     };
-    // A summary of the place was asked for: who writes there, counted from the connector's listing, a
-    // few pages at a time, with how far it came kept between them. No model, and nothing of any
-    // item's text. It comes before the run's walks, and a run that isn't started has nothing else.
-    if (summarizing) {
-      const keep = (working: Summarizing | null, summary: Summary | null) =>
-        withPrincipal(sql, principal, (s) => s.tx`
-          select learning_summarized(${run.id}::uuid, ${claim}::uuid, ${working ? s.tx.json(working as never) : null}::jsonb, ${summary ? s.tx.json(summary as never) : null}::jsonb)
-        `);
-      const list = follow.summary;
-      // A place that can't be listed has no summary: the request is let go of.
-      if (!list) return void (await keep(null, null));
-      let working = summarizing;
-      const until = Date.now() + summaryTime;
-      try {
-        do {
-          const listed = await fetched((access) => list(access, working.next ?? null, { since: new Date(working.since) }));
-          working = { ...count(working, listed.listed, place.address), next: listed.next };
-        } while (working.next && Date.now() < until && !signal.aborted);
-      } catch (error) {
-        if (error instanceof ConnectionUnusable) return void (await keep(null, null));
-        return await unfetched(error);
-      }
-      return void (await keep(working.next ? working : null, working.next ? null : summaryOf(working)));
-    }
 
     let page: Changes;
     try {
@@ -324,8 +339,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       return walk === 'again' || !mark || mark.again || mark.version !== change.version || moved(mark, change);
     });
 
-    // What needs no model is set aside at once, and counted: by its own signs, by where it is, by who
-    // sent it, and whole threads that hold mail from a sender its owner left out.
+    // What needs no model is set aside at once, and counted: by its own signs, and by where it is.
     const aside: Mark[] = [];
     let kept: Change[] = [];
     const sort = (given: Change[]) => {
@@ -336,44 +350,54 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       }
     };
     sort(fresh);
-    for (const thread of batchesOf(kept, Number.MAX_SAFE_INTEGER)) {
-      const entry = leftOutIn(thread.changes, run.leftOut);
-      if (!entry) continue;
-      aside.push(...thread.changes.map((change) => markOf(change, 'set aside', 'excluded sender', entry)));
-      kept = kept.filter((change) => !thread.changes.includes(change));
+
+    // The spaces the map leads to that can take a note now: those their owner can write in, as
+    // anywhere in Homing, where model processing is on. What waited for one of them is learned from
+    // after all, by the entry it waited under.
+    const named = [...new Set([...run.map.routes.map((route) => route.to), ...(run.map.rest === null ? [] : [run.map.rest])])].filter((to) => to !== 'leave out' && to !== 'wait');
+    const takes = new Set<string>();
+    if (named.length) {
+      const reopened = await withPrincipal(sql, principal, async (s) => {
+        const writable = (await listSpaces(s)).filter((space) => !space.archived && named.includes(space.id)).map((space) => space.id);
+        for (const space of await modelOn(s, writable)) takes.add(space);
+        const [{ again: woken }] = await s.tx<{ again: number }[]>`
+          select learning_reopened(${run.id}::uuid, ${claim}::uuid, ${s.tx.array(run.map.routes.filter((route) => takes.has(route.to)).map((route) => route.who))}::text[], ${run.map.rest !== null && takes.has(run.map.rest)}) as again
+        `;
+        return woken;
+      });
+      // On their own walk, which comes next when this page had nothing else to do.
+      if (reopened > 0 && walk !== 'again' && fresh.length === 0) return await later(0);
     }
 
-    // Where each thread that's left belongs, by its owner's map: a space they can open, which gets
-    // its note, or the place's own without a map. One that's to wait, or whose space they can't open
-    // now, is set aside as waiting, and what everything else is left out by is left out: neither is
-    // read, and neither costs anything.
-    const named = [...new Set([...run.map.routes.map((route) => route.to), run.map.rest ?? 'wait'])].filter((to) => to !== 'leave out' && to !== 'wait');
-    const reachable = new Set(
-      named.length ? (await withPrincipal(sql, principal, (s) => s.tx<{ id: string }[]>`select id from spaces where id in ${s.tx(named)} and archived_at is null and id in (${accessibleSpaces(s)})`)).map((space) => space.id) : [],
-    );
+    // Where each thread that's left belongs, by its owner's map: a space that can take its note, or
+    // the place's own without a map. One the map leaves out is left out whole, and one that's to
+    // wait, or whose space can't take it now, is set aside as waiting: neither is read, and neither
+    // costs anything. Each says who its thread is with, so a map that changes for one of them has it
+    // looked at again.
     const routed = new Map<string, Routed>();
     for (const thread of batchesOf(kept, Number.MAX_SAFE_INTEGER)) {
-      const { to, entry } = routeOf(thread.changes, run.map, place.address);
-      if (to === null || reachable.has(to)) {
+      const { to, entry, parties } = routeOf(thread.changes, run.map, place.address);
+      if (to === null || takes.has(to)) {
         routed.set(thread.thread ?? thread.changes[0].item.envelope.id, { space: to ?? place.space, entry });
         continue;
       }
-      aside.push(...thread.changes.map((change) => markOf(change, 'set aside', to === 'leave out' ? 'excluded sender' : 'waiting', entry, null, entry === null)));
+      aside.push(...thread.changes.map((change) => ({ ...markOf(change, 'set aside', to === 'leave out' ? 'excluded sender' : 'waiting', entry), parties })));
       kept = kept.filter((change) => !thread.changes.includes(change));
     }
 
-    // A thread the run meets for the first time, at an item that doesn't carry what came before it:
+    // A thread no model has read anything of, met at an item that doesn't carry what came before it:
     // the last few from before it are fetched and read first, all in the thread's first call, and
-    // marked like the rest, so going further back later finds them read. What's set aside of such a
-    // thread is marked only once the page's calls are done: until its first call is, the thread has
-    // no mark, and a page that stopped before that does all of this again. Nothing is fetched for
-    // what's learned from again: it was set aside, so its thread has marks, and the odd one without loses nothing.
-    const met = follow.earlier && walk !== 'again' ? await firstMet(sql, principal, run, kept, new Set(changes.map((change) => change.item.envelope.id)), Math.min(earlierRead, l.interpretation.most)) : [];
+    // marked like the rest, so going further back later finds them read. A thread that waited is one
+    // of these once it belongs in a space. Until its first call is answered or set aside, no model
+    // has read anything of it, so a page that stopped before that does this again. What's learned
+    // from again is fetched with the folders of the run's main walk, and without one, nothing is.
+    const checkpoint = walk === 'again' ? run.checkpoint : page.next;
+    const met = follow.earlier && checkpoint ? await firstMet(sql, principal, run, kept, new Set(changes.map((change) => change.item.envelope.id)), Math.min(earlierRead, l.interpretation.most)) : [];
     if (met.length) {
       const earlier: Change[] = [];
       try {
         await fetched(async (access) => {
-          for (const { change, ids } of met) earlier.push(...(await follow.earlier!(access, change, ids, { from: page.next, size })));
+          for (const { change, ids } of met) earlier.push(...(await follow.earlier!(access, change, ids, { from: checkpoint!, size })));
         });
       } catch (error) {
         return await unfetched(error);
@@ -381,15 +405,13 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       if (signal.aborted) return await later(0);
       sort(earlier);
     }
-    const withEarlier = new Set(met.map(({ change }) => change.thread));
-    const [held, now] = [aside.filter((mark) => withEarlier.has(mark.thread)), aside.filter((mark) => !withEarlier.has(mark.thread))];
     // What was asked for again and isn't there any more has nothing left to learn from.
     if (walk === 'again') {
       for (const item of again.filter((id) => !changes.some((change) => change.item.envelope.id === id))) {
-        now.push({ item, version: 'gone', thread: null, outcome: 'set aside', reason: 'gone', sender: null, at: null, because: null, interpretation: null, folder: null, unplaced: false });
+        aside.push({ item, version: 'gone', thread: null, outcome: 'set aside', reason: 'gone', sender: null, at: null, because: null, interpretation: null, folder: null });
       }
     }
-    if (now.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, now, null));
+    if (aside.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, aside, null));
 
     const read = `${l.interpretation.name} ${l.interpretation.version}`;
     // How many of this page's calls a model answered, in this try, and how many threads in a row the
@@ -407,7 +429,6 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     /** Whether the provider answers otherwise: a call of this page was answered, or else one that carries nothing is, asked once. */
     let pinged: Promise<boolean> | undefined;
     const answersOtherwise = async () => answered > 0 || (await (pinged ??= answers(call, place.space)));
-    const words = wordsOf(connector, place.kind);
     const batches = batchesOf(kept, l.interpretation.most);
     type Batch = (typeof batches)[number];
     const keyOf = (batch: Batch) => batch.thread ?? batch.changes[0].item.envelope.id;
@@ -435,7 +456,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     const to = (batch: Batch) => routed.get(keyOf(batch)) ?? { space: place.space, entry: null };
     const asideFor = async (batch: Batch, reason: string, by: string | null = read) => {
       const { entry } = to(batch);
-      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => markOf(change, 'set aside', reason, entry, by, entry === null)), null));
+      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => markOf(change, 'set aside', reason, entry, by)), null));
       settle(batch);
     };
     // Those it failed on in this try: followed by a call it answered, which shows the fault was with
@@ -491,8 +512,8 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
           if (error.reason === 'claim lost') return;
           // Model processing is off where it lands: the one place Homing calls a model refused it before
           // anything was sent. The run waits, with nothing set aside, and carries on once it's turned on.
-          // Off only where this thread belongs: the thread waits, set aside without a model, and the
-          // others carry on. It's learned from once it's turned on there, or its route leads elsewhere.
+          // Turned off only where this thread belongs, since this page began: the thread waits, set
+          // aside without a model, and the others carry on.
           if (error.reason === 'model processing off' && where.space !== place.space && !error.spaces.includes(place.space)) {
             await asideFor(batch, 'waiting', null);
             continue;
@@ -576,7 +597,6 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       return await later(run.caughtUpAt === null ? wait : Math.min(wait, pace.pollSeconds), 'limited', { counted: countedNow() });
     }
 
-    if (held.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, held, null));
     // Never silently: the person is told on the run, and whoever looks after Homing here, once.
     if (walk === 'main' && page.partly && !run.followedPartly) {
       console.warn(`learning: a ${words.place} holds more than Homing follows, so what arrives in the rest of it isn’t learned from`);
@@ -594,9 +614,10 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
 }
 
 /**
- * The threads among these items that the run has no mark for, and whose oldest item here doesn't
- * carry what came before it, by what its change names as earlier: that item, with the ids of the
- * newest of those, so many at most, but for those the page gave itself and those in a folder left out.
+ * The threads among these items that no model has read anything of, going by the run's marks, and
+ * whose oldest item here doesn't carry what came before it, by what its change names as earlier:
+ * that item, with the ids of the newest of those, so many at most, but for those the page gave
+ * itself and those in a folder left out.
  */
 async function firstMet(sql: Sql, principal: Principal, run: Claim, kept: Change[], given: Set<string>, most: number): Promise<{ change: Change; ids: string[] }[]> {
   const found = batchesOf(kept, Number.MAX_SAFE_INTEGER).flatMap(({ thread, changes: [change] }) => {
@@ -605,10 +626,10 @@ async function firstMet(sql: Sql, principal: Principal, run: Claim, kept: Change
     return ids.length ? [{ change, ids }] : [];
   });
   if (found.length === 0) return [];
-  const marked = await withPrincipal(sql, principal, (s) => s.tx<{ thread: string }[]>`
-    select distinct thread from learned_items where run_id = ${run.id}::uuid and thread in ${s.tx(found.map(({ change }) => change.thread!))}
+  const read = await withPrincipal(sql, principal, (s) => s.tx<{ thread: string }[]>`
+    select distinct thread from learned_items where run_id = ${run.id}::uuid and interpretation is not null and thread in ${s.tx(found.map(({ change }) => change.thread!))}
   `);
-  return found.filter(({ change }) => !marked.some((one) => one.thread === change.thread));
+  return found.filter(({ change }) => !read.some((one) => one.thread === change.thread));
 }
 
 /** Whether the model's provider answers at all, by a call that carries nothing of anyone's. */
@@ -622,8 +643,23 @@ async function answers(call: Ask, space: string): Promise<boolean> {
 }
 
 /** A processed item as the run marks it: who sent it and when, where it was, why it was set aside and for which entry of its owner's, and which interpretation read it. */
-function markOf(change: Change, outcome: 'learned' | 'set aside', reason: string | null, because: string | null = null, interpretation: string | null = null, unplaced = false) {
-  return { item: change.item.envelope.id, version: change.version, thread: change.thread, outcome, reason, sender: senderOf(change) ?? null, at: change.item.envelope.at, because, interpretation, folder: change.folder, unplaced };
+function markOf(change: Change, outcome: 'learned' | 'set aside', reason: string | null, because: string | null = null, interpretation: string | null = null): MarkOf {
+  return { item: change.item.envelope.id, version: change.version, thread: change.thread, outcome, reason, sender: senderOf(change) ?? null, at: change.item.envelope.at, because, interpretation, folder: change.folder };
+}
+
+/** A mark, which says who its thread is with when the map set it aside. */
+interface MarkOf {
+  item: string;
+  version: string;
+  thread: string | null;
+  outcome: 'learned' | 'set aside';
+  reason: string | null;
+  sender: string | null;
+  at: Date | null;
+  because: string | null;
+  interpretation: string | null;
+  folder: string | null;
+  parties?: string[];
 }
 
 /** Where a thread belongs: the space its note goes in, and the route's entry that says so, or null when no route named anyone in it. */
@@ -645,7 +681,7 @@ function mark(s: Session, run: Run, claim: string, marks: Mark[], note: string |
  * the note goes beside it.
  */
 async function write(s: Session, l: Learning, run: Claim, claim: string, place: Place, where: Routed, changes: Change[], learned: Learned, read: string): Promise<void> {
-  const marked = (outcome: 'learned' | 'set aside', reason: string | null) => changes.map((change) => markOf(change, outcome, reason, where.entry, read, where.entry === null));
+  const marked = (outcome: 'learned' | 'set aside', reason: string | null) => changes.map((change) => markOf(change, outcome, reason, where.entry, read));
   if ('nothing' in learned) {
     await mark(s, run, claim, marked('set aside', learned.nothing), null);
     return;

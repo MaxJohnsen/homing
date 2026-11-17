@@ -1301,9 +1301,9 @@ function learningData(run: Run, progress: Progress, words: { item: string; items
   };
 }
 
-/** A run's map as the app shows it: each route and everything else, with what it holds, whether a summary is there or being made, and who isn't placed. */
+/** A run's map as the app shows it: each route and everything else, with what it holds, whether a summary is there, being made or given up, and who isn't placed. */
 function mapData(run: Run, held: Held[], unplaced: Awaited<ReturnType<typeof notPlaced>>) {
-  return { map: run.map, summarizing: run.summarizing, summarized: run.summarized, held, notPlaced: unplaced };
+  return { map: run.map, summarizing: run.summarizing, summarized: run.summarized, summaryFailed: run.summaryFailed, held, notPlaced: unplaced };
 }
 
 function answer(res: ServerResponse, status: number, body: unknown): true {
