@@ -85,7 +85,7 @@ export async function placesIn(s: Session, spaceId: string): Promise<PlaceInSpac
   const rows = await s.tx<(ConnectionRow & { id: string; kind: string; addedAt: Date; began: Date | null; reached: Date | null; neverSenders: string[] | null; neverFolders: string[] | null })[]>`
     select p.id, p.kind, p.added_at, c.id as connection_id, c.provider, c.address, c.name, c.scopes, c.status, c.connected_at, c.refreshed_at,
            r.began, r.reached, r.never_senders, r.never_folders
-    from places p join connections c on c.id = p.connection_id left join readings r on r.place_id = p.id
+    from places p join connections c on c.id = p.connection_id left join readings r on (r.connection_id, r.kind, r.resource) = (p.connection_id, p.kind, p.resource)
     where p.space_id = ${spaceId}::uuid and p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
     order by p.added_at, p.id
   `;

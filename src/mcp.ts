@@ -2319,8 +2319,7 @@ function describeListing(links: Links, listing: Exclude<Listing, { outcome: 'ref
         ? [
             'Already in Homing from it: ' +
               conversation.held.items.map((item) => `${ref('item', item.id)} in ${item.space}${item.page ? `, on the page ${quoted(item.page, 100)}` : ''}: ${quoted(item.text, 120)}`).join('; ') +
-              (conversation.held.more ? `; and ${conversation.held.more} more` : '') +
-              '.',
+              (conversation.held.more ? `; and ${conversation.held.more} more` : ''),
           ]
         : []),
       ...conversation.lines.map(line),

@@ -318,7 +318,7 @@ describe('straight against the database', () => {
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
         const conversations = await s.tx`select conversation from sources where conversation is not null`;
-        const readings = await s.tx`select place_id, never_senders from readings`;
+        const readings = await s.tx`select connection_id, never_senders from readings`;
         const modelCalls = await s.tx`select id, spaces from model_calls`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
@@ -340,7 +340,7 @@ describe('straight against the database', () => {
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(conversations.map((row) => row.conversation), [`AAQk${connection.address}`]);
-        assert.deepEqual(readings.map((row) => [row.placeId, row.neverSenders]), [[connection.place, [`news@${connection.address.split('@')[1]}`]]]);
+        assert.deepEqual(readings.map((row) => [row.connectionId, row.neverSenders]), [[connection.id, [`news@${connection.address.split('@')[1]}`]]]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
@@ -408,7 +408,7 @@ describe('straight against the database', () => {
         await assert.rejects(as(principal, (s) => s.tx`select * from begin_reading(${target.connection.place}::uuid, now(), now(), null, null)`), refused);
         await assert.rejects(as(principal, (s) => s.tx`select * from hand_out_stretch(${target.connection.place}::uuid, now(), now(), null, null, null)`), refused);
         await assert.rejects(as(principal, (s) => s.tx`select change_never_read(${target.connection.place}::uuid, false, ${`news@${target.connection.address.split('@')[1]}`}, null, '{}')`), refused);
-        await assert.rejects(as(principal, (s) => s.tx`update readings set never_senders = '{}' where place_id = ${target.connection.place}`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`update readings set never_senders = '{}' where connection_id = ${target.connection.id}`), refused);
       }
 
       // Nor send the other client's space to Homing's model, settle the other's call, or turn

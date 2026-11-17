@@ -80,7 +80,7 @@ export async function placesFor(s: Session, spaceId?: string): Promise<Place[]> 
     select * from (
       select distinct on (c.id, p.kind, p.resource)
         p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status, ${readingColumns(s)}
-      from places p join connections c on c.id = p.connection_id left join readings r on r.place_id = p.id
+      from places p join connections c on c.id = p.connection_id left join readings r on (r.connection_id, r.kind, r.resource) = (p.connection_id, p.kind, p.resource)
       where p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
         and p.space_id in (${accessibleSpaces(s)})
         ${spaceId
@@ -256,7 +256,7 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   const [named] = await s.tx<(Place & { removed: boolean; tenant: string; account: string })[]>`
     select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status, ${readingColumns(s)},
            c.tenant, c.account, p.removed_at is not null or c.revoked_at is not null as removed
-    from places p join connections c on c.id = p.connection_id left join readings r on r.place_id = p.id
+    from places p join connections c on c.id = p.connection_id left join readings r on (r.connection_id, r.kind, r.resource) = (p.connection_id, p.kind, p.resource)
     where p.id = ${ref.place}::uuid and p.private_to = ${person}::uuid and c.person_id = ${person}::uuid and c.provider = ${ref.connector}
       and p.space_id in (${accessibleSpaces(s)})
   `;
@@ -265,7 +265,7 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   if (!place.removed) return place;
   const [again] = await s.tx<Place[]>`
     select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status, ${readingColumns(s)}
-    from places p join connections c on c.id = p.connection_id left join readings r on r.place_id = p.id
+    from places p join connections c on c.id = p.connection_id left join readings r on (r.connection_id, r.kind, r.resource) = (p.connection_id, p.kind, p.resource)
     where p.space_id = ${place.space}::uuid and p.private_to = ${person}::uuid and p.kind = ${place.kind} and p.resource = ${place.resource} and p.removed_at is null
       and c.person_id = ${person}::uuid and c.revoked_at is null and c.provider = ${place.connector} and c.tenant = ${tenant} and c.account = ${account}
     order by p.added_at desc

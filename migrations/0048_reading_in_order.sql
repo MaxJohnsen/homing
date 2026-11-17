@@ -3,8 +3,9 @@
 -- item to its newest, a stretch at a time, and decides for itself what each
 -- is about and what is worth keeping. Homing holds where reading began, the
 -- place it has reached, the stretch handed out now, and what is never read
--- there. Only the place's owner sees any of it, as with the place itself, and
--- it changes only through the functions below.
+-- there: once for each thing a connection reaches, such as a mailbox, in
+-- whichever spaces it's connected. Only its owner sees any of it, as with the
+-- connection itself, and it changes only through the functions below.
 
 -- What's never read, as it's kept: senders by an address or a domain, in
 -- plain lower-case ASCII, and folders by name, on one line.
@@ -25,7 +26,10 @@ language sql immutable
 as $$ select at is null or date_trunc('second', at at time zone 'UTC') = at at time zone 'UTC' $$;
 
 create table readings (
-  place_id uuid primary key references places (id) on delete cascade,
+  -- What it's of: what a connection reaches, as its places name it.
+  connection_id uuid not null references connections (id) on delete cascade,
+  kind text not null,
+  resource text not null,
   private_to uuid not null references people (id) on delete cascade,
   -- Where reading began, and the place it has reached: everything that came
   -- before it is read.
@@ -43,14 +47,15 @@ create table readings (
   check ((began is null) = (reached is null)),
   check ((token is null) = (stretch_ends is null) and (token is null) = (lapses_at is null)),
   check (token is null or (reached is not null and stretch_ends > reached)),
-  check (never_read_fits(never_senders, never_folders))
+  check (never_read_fits(never_senders, never_folders)),
+  primary key (connection_id, kind, resource)
 );
 
 alter table readings enable row level security;
 
--- Only its owner sees it, while they can see the place.
+-- Only its owner sees it, as they see the connection.
 create policy own on readings for select
-using (private_to = current_person_id() and place_id in (select id from places));
+using (private_to = current_person_id() and connection_id in (select id from connections));
 
 grant select on readings to homing_app;
 
@@ -84,18 +89,19 @@ language plpgsql security definer set search_path = public, pg_temp
 as $$
 -- In the conflict target below, the reading's fields name columns.
 #variable_conflict use_column
+declare
+  found places := own_place(place);
 begin
-  perform own_place(place);
   if begin_reading.reached < begin_reading.began then
     raise exception 'reading reaches no further back than it began' using errcode = 'check_violation';
   end if;
   return query
-  insert into readings as r (place_id, private_to, began, reached, token, stretch_ends, lapses_at)
+  insert into readings as r (connection_id, kind, resource, private_to, began, reached, token, stretch_ends, lapses_at)
   values (
-    begin_reading.place, current_person_id(), begin_reading.began, begin_reading.reached, begin_reading.token, begin_reading.stretch_ends,
+    found.connection_id, found.kind, found.resource, current_person_id(), begin_reading.began, begin_reading.reached, begin_reading.token, begin_reading.stretch_ends,
     case when begin_reading.token is null then null else now() + interval '1 hour' end
   )
-  on conflict (place_id) do update
+  on conflict (connection_id, kind, resource) do update
   set began = excluded.began, reached = excluded.reached, token = excluded.token, stretch_ends = excluded.stretch_ends, lapses_at = excluded.lapses_at
   returning r.lapses_at;
 end
@@ -115,16 +121,16 @@ as $$
 -- In the updates below, the reading's fields name columns.
 #variable_conflict use_column
 declare
+  found places := own_place(place);
   lapses timestamptz := case when hand_out_stretch.token is null then null else now() + interval '1 hour' end;
 begin
-  perform own_place(place);
   if hand_out_stretch.reached < hand_out_stretch.from_at then
     raise exception 'reading moves only on' using errcode = 'check_violation';
   end if;
   return query
   update readings r
   set reached = hand_out_stretch.reached, token = hand_out_stretch.token, stretch_ends = hand_out_stretch.stretch_ends, lapses_at = lapses
-  where r.place_id = hand_out_stretch.place
+  where (r.connection_id, r.kind, r.resource) = (found.connection_id, found.kind, found.resource)
     and case when hand_out_stretch.after is not null
       then r.token = hand_out_stretch.after and r.stretch_ends = hand_out_stretch.from_at
       else r.reached = hand_out_stretch.from_at and (r.token is null or r.lapses_at <= now())
@@ -141,19 +147,20 @@ create function change_never_read(place uuid, adding boolean, sender text, folde
 language plpgsql security definer set search_path = public, pg_temp
 as $$
 declare
+  found places := own_place(place);
   was readings;
   senders text[];
   folders text[];
 begin
-  perform own_place(place);
   if (sender is null) = (folder is null) then
     raise exception 'a sender or a folder, one at a time' using errcode = 'check_violation';
   end if;
   if not adding and not direct_edit() then
     raise exception 'only the person takes something off what is never read, in Homing itself' using errcode = 'insufficient_privilege';
   end if;
-  insert into readings (place_id, private_to) values (place, current_person_id()) on conflict (place_id) do nothing;
-  select * into was from readings r where r.place_id = change_never_read.place for update;
+  insert into readings (connection_id, kind, resource, private_to) values (found.connection_id, found.kind, found.resource, current_person_id())
+  on conflict (connection_id, kind, resource) do nothing;
+  select * into was from readings r where (r.connection_id, r.kind, r.resource) = (found.connection_id, found.kind, found.resource) for update;
   senders := coalesce(was.never_senders, '{}');
   folders := coalesce(was.never_folders, start_folders);
   if sender is not null and adding and not sender = any (senders) then
@@ -168,7 +175,8 @@ begin
   if senders = coalesce(was.never_senders, '{}') and folders = coalesce(was.never_folders, start_folders) then
     return false;
   end if;
-  update readings r set never_senders = senders, never_folders = folders where r.place_id = change_never_read.place;
+  update readings r set never_senders = senders, never_folders = folders
+  where (r.connection_id, r.kind, r.resource) = (found.connection_id, found.kind, found.resource);
   return true;
 end
 $$;

@@ -356,7 +356,7 @@ type Folders = (id: string | null, draft: boolean) => Promise<{ name: string | n
 /**
  * A mailbox's folders, as one use finds them out: each folder by its id, read once, with its name
  * and the folder it's in, up to the top. A draft counts as in Drafts wherever it is. Undefined for
- * a folder Graph doesn't have, or one this use has no requests left to find.
+ * a folder Graph doesn't have; one this use has no requests left to find throws AskedEnough.
  */
 function foldersOf(get: Mailbox['get']): Folders {
   let known: Promise<{ top: string | null; ids: Map<string, string> }> | undefined;

@@ -51,7 +51,7 @@ async function connect(who: Member, space: string, account: Account): Promise<st
   const callback = new URL(microsoft.signIn(started.body.url as string, account));
   const answer = await who.browser.fetch(callback.pathname + callback.search);
   assert.equal(answer.headers.get('location'), `/spaces/${space}/connections?connection=connected`);
-  const [{ id }] = await admin<{ id: string }[]>`select p.id from places p join connections c on c.id = p.connection_id where c.person_id = ${who.id} and c.account = ${account.oid} and c.revoked_at is null`;
+  const [{ id }] = await admin<{ id: string }[]>`select p.id from places p join connections c on c.id = p.connection_id where c.person_id = ${who.id} and c.account = ${account.oid} and c.revoked_at is null and p.space_id = ${space}`;
   return id;
 }
 
@@ -85,6 +85,12 @@ function stretchOf(text: string) {
   const conversations = text.split('\n## Conversation ').slice(1).map((block) => [...block.matchAll(/ \(microsoft:[0-9a-f-]{36}:([A-Za-z0-9_=-]+)\)$/gm)].map((match) => match[1]));
   return { token, conversations, ids: conversations.flat() };
 }
+
+/** Where reading the mailbox a place reaches stands, as the database keeps it. */
+const readingOf = async (place: string) =>
+  (await admin<{ reached: Date; token: string | null; stretchEnds: Date | null; lapsesAt: Date | null; neverSenders: string[] | null }[]>`
+    select r.* from readings r join places p on (p.connection_id, p.kind, p.resource) = (r.connection_id, r.kind, r.resource) where p.id = ${place}
+  `)[0];
 
 /** Asks for the list, as the assistant does with `act`. */
 const list = (session: Session, input: Record<string, unknown> = {}) => session.call('act', { action: 'mailbox.list', input });
@@ -165,7 +171,7 @@ describe('reading a year of the mailbox to its end, in several sessions', () => 
     assert.ok(microsoft.listings.every((filter) => /^receivedDateTime ge \S+ and receivedDateTime lt \S+$/.test(filter)));
 
     // Context and the app say how far reading has come, and which skill says how to carry on.
-    const [{ reached }] = await admin<{ reached: Date }[]>`select reached from readings where place_id = ${place}`;
+    const { reached } = await readingOf(place);
     assert.match((await session.call('context', { request: 'Northwind budget' })).text, new RegExp(`Reading the user's mailbox ${account.address} in order began from ${dayOf(emails[0].at)} and has reached ${reached.toISOString().slice(0, 16).replace('T', ' ')} UTC; the skill learn-from-a-mailbox says how to carry on\\.`));
     const uses = await admin`select operation, agent from connection_uses where place_id = ${place} and operation = 'list'`;
     assert.ok(uses.length >= confirmed.length && uses.some((use) => use.agent === 'ChatGPT'));
@@ -212,7 +218,7 @@ describe('a stretch ends between two seconds', () => {
 });
 
 test('mail that arrives after the list reached today comes in the next stretch, once it has settled', async () => {
-  const { account, session } = await world();
+  const { account, place, session } = await world();
   microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'Last week', html: '<p>Hi</p>', at: new Date(Date.now() - 7 * day) });
   // What arrived in the last few minutes isn't handed out yet.
   const settling = microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'Just now', html: '<p>Hi</p>', at: new Date(Date.now() - 60_000) });
@@ -221,7 +227,7 @@ test('mail that arrives after the list reached today comes in the next stretch, 
   assert.doesNotMatch(first.text, /Just now/);
   const { token } = stretchOf(first.text);
   // Something arrives at the very moment reading reached.
-  const [{ ends }] = await admin<{ ends: Date }[]>`select stretch_ends as ends from readings r join places p on p.id = r.place_id join connections c on c.id = p.connection_id where c.account = ${account.oid}`;
+  const ends = (await readingOf(place)).stretchEnds!;
   const later = microsoft.deliver(account, { from: { name: 'Ingrid Moe', address: 'ingrid@northwind.test' }, to: [owner(account)], subject: 'Arrived later', html: '<p>Hi</p>', at: ends });
   await new Promise((resolve) => setTimeout(resolve, 1100));
   const next = await list(session, { token });
@@ -232,7 +238,7 @@ test('mail that arrives after the list reached today comes in the next stretch, 
 
 describe('one token is the whole of confirming a stretch', () => {
   test('a stretch that isn’t confirmed comes again, to another session too, which is told so', async () => {
-    const { ana, account, acme, session } = await world();
+    const { ana, account, place, session } = await world();
     for (let one = 0; one < 4; one++) microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Note ${one}`, html: '<p>Hi</p>', at: new Date(Date.now() - (10 - one) * day) });
     const first = await list(session, { from: dayOf(new Date(Date.now() - 11 * day)), lines: 2 });
     const handed = stretchOf(first.text);
@@ -247,14 +253,17 @@ describe('one token is the whole of confirming a stretch', () => {
     const next = stretchOf((await list(other, { token: handed.token })).text);
     assert.equal(next.ids.length, 2);
     // The first session's token isn't the current one any more: nothing changes.
-    const [{ reached: before }] = await admin<{ reached: Date }[]>`select reached from readings r join places p on p.id = r.place_id where p.space_id = ${acme}`;
+    const { reached: before } = await readingOf(place);
     const stale = await list(session, { token: handed.token });
     assert.ok(stale.failed);
     assert.match(stale.text, /^That token isn't the current one, so nothing changed: reading the user's mailbox .* has reached /);
-    const [{ reached: after }] = await admin<{ reached: Date }[]>`select reached from readings r join places p on p.id = r.place_id where p.space_id = ${acme}`;
+    const { reached: after } = await readingOf(place);
     assert.deepEqual(after, before);
-    // A made-up token too.
+    // A made-up token too, and the database checks it as well, in the statement that moves reading on.
     assert.match((await list(session, { token: crypto.randomUUID() })).text, /isn't the current one, so nothing changed/);
+    const ends = (await readingOf(place)).stretchEnds!;
+    const moved = await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select * from hand_out_stretch(${place}::uuid, ${ends}, ${ends}, null, null, ${handed.token!}::uuid)`);
+    assert.equal(moved.length, 0);
     assert.match((await list(session, { token: 'not a token' })).text, /isn't the current one, so nothing changed/);
     // Asking without a token while the next is handed out gives that one, not the confirmed one.
     assert.deepEqual(stretchOf((await list(session)).text).ids, next.ids);
@@ -266,9 +275,9 @@ describe('one token is the whole of confirming a stretch', () => {
     const { account, place, session } = await world();
     for (let one = 0; one < 3; one++) microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Note ${one}`, html: '<p>Hi</p>', at: new Date(Date.now() - (10 - one) * day) });
     const first = stretchOf((await list(session, { from: dayOf(new Date(Date.now() - 11 * day)), lines: 2 })).text);
-    const [{ lapses }] = await admin<{ lapses: Date }[]>`select lapses_at as lapses from readings where place_id = ${place}`;
+    const lapses = (await readingOf(place)).lapsesAt!;
     assert.ok(Math.abs(lapses.getTime() - Date.now() - hour) < 60_000);
-    await admin`update readings set lapses_at = now() - interval '1 second' where place_id = ${place}`;
+    await admin`update readings r set lapses_at = now() - interval '1 second' from places p where p.id = ${place} and (p.connection_id, p.kind, p.resource) = (r.connection_id, r.kind, r.resource)`;
     const afresh = await list(session, { lines: 3 });
     assert.doesNotMatch(afresh.text, /isn't done yet/);
     const got = stretchOf(afresh.text);
@@ -418,10 +427,9 @@ describe('never read', () => {
     }
     assert.ok((await session.call('act', { action: 'mailbox.never_read', input: { sender: 'news@weekly-digest.test', folder: 'Nyhetsbrev' } })).failed);
     assert.match((await session.call('act', { action: 'mailbox.never_read', input: { sender: '  News@Weekly-Digest.TEST ' } })).text, /^Added news@weekly-digest\.test/);
-    const [{ senders }] = await admin<{ senders: string[] }[]>`select never_senders as senders from readings where place_id = ${place}`;
-    assert.deepEqual(senders, ['news@weekly-digest.test']);
+    assert.deepEqual((await readingOf(place)).neverSenders, ['news@weekly-digest.test']);
     // Nor does the database keep one, whoever writes it.
-    await assert.rejects(admin`update readings set never_senders = '{*@x.test}' where place_id = ${place}`, { code: '23514' });
+    await assert.rejects(admin`update readings r set never_senders = '{*@x.test}' from places p where p.id = ${place} and (p.connection_id, p.kind, p.resource) = (r.connection_id, r.kind, r.resource)`, { code: '23514' });
     await session.close();
   });
 });
@@ -469,7 +477,7 @@ describe('a second person, and a colleague in the same space, get nothing of it'
         await assert.rejects(as(principal, (s) => s.tx`select * from begin_reading(${place}::uuid, now(), now(), null, null)`), refused);
         await assert.rejects(as(principal, (s) => s.tx`select * from hand_out_stretch(${place}::uuid, now(), now(), null, null, ${handed.token!}::uuid)`), refused);
         await assert.rejects(as(principal, (s) => s.tx`select change_never_read(${place}::uuid, true, 'x@x.test', null, '{}')`), refused);
-        await assert.rejects(as(principal, (s) => s.tx`insert into readings (place_id, private_to) values (${place}, ${who.id})`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`insert into readings (connection_id, kind, resource, private_to) select connection_id, kind, resource, ${who.id} from places where id = ${place}`), refused);
       }
       await theirs.close();
     }
@@ -512,13 +520,14 @@ describe('a fault at Microsoft says so plainly and loses no place', () => {
     const found = await world(account);
     for (let one = 0; one < 3; one++) microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Note ${one}`, html: '<p>Hi</p>', at: new Date(Date.now() - (10 - one) * day) });
     const first = stretchOf((await list(found.session, { from: dayOf(new Date(Date.now() - 11 * day)), lines: 1 })).text);
-    const [{ reached }] = await admin<{ reached: Date }[]>`select reached from readings where place_id = ${found.place}`;
+    const { reached } = await readingOf(found.place);
     return { ...found, first, reached };
   }
 
   /** The place reached and the token stay, and the stretch is confirmed once Microsoft answers again. */
   async function lostNothing({ session, place, first, reached }: Awaited<ReturnType<typeof handedOut>>) {
-    assert.deepEqual((await admin`select reached, token from readings where place_id = ${place}`).map((row) => [row.reached, row.token]), [[reached, first.token]]);
+    const now = await readingOf(place);
+    assert.deepEqual([now.reached, now.token], [reached, first.token]);
     const next = await list(session, { token: first.token, lines: 1 });
     assert.ok(!next.failed, next.text);
     assert.equal(stretchOf(next.text).ids.length, 1);
@@ -544,7 +553,8 @@ describe('a fault at Microsoft says so plainly and loses no place', () => {
     const answer = await list(world.session, { token: world.first.token });
     assert.match(answer.text, new RegExp(`^The user's mailbox ${world.account.address} needs them to sign in to Microsoft again in Homing, at .*/spaces/${world.acme}/connections, before Homing can list it\\. Nothing moved: `));
     microsoft.allow(world.account);
-    assert.deepEqual((await admin`select reached, token from readings where place_id = ${world.place}`).map((row) => [row.reached, row.token]), [[world.reached, world.first.token]]);
+    const now = await readingOf(world.place);
+    assert.deepEqual([now.reached, now.token], [world.reached, world.first.token]);
   });
 
   test('a mailbox that doesn’t answer in time', async () => {
@@ -555,6 +565,21 @@ describe('a fault at Microsoft says so plainly and loses no place', () => {
     microsoft.slow(world.account, 0);
     await lostNothing(world);
   });
+});
+
+test('a mailbox connected in two spaces is read once, with one never-read list', async () => {
+  const { ana, account, session } = await world();
+  const personal = await connect(ana, ana.personalSpaceId, account);
+  microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'Budget', html: '<p>Budget</p>', at: new Date(Date.now() - 2 * day) });
+  microsoft.deliver(account, { from: { name: 'Weekly Digest', address: 'news@weekly-digest.test' }, to: [owner(account)], subject: 'Budget tips', html: '<p>Budget</p>', at: new Date(Date.now() - 2 * day) });
+  const { token } = stretchOf((await list(session, { from: dayOf(new Date(Date.now() - 3 * day)) })).text);
+  await list(session, { token });
+  await session.call('act', { action: 'mailbox.never_read', input: { sender: 'weekly-digest.test' } });
+  const there = `space:${ana.personalSpaceId}`;
+  assert.match((await session.call('context', { request: 'Budget', space: there })).text, /in order began from .* and has reached /);
+  const found = (await session.call('search', { query: 'Budget', space: there })).text;
+  assert.ok(found.includes(`microsoft:${personal}:`) && found.includes('"Budget"') && !found.includes('Budget tips'), found);
+  await session.close();
 });
 
 test('the app shows how far reading has come, and nothing before it begins', async () => {

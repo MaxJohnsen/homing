@@ -115,7 +115,9 @@ export async function listStretch(broker: Broker, principal: AgentPrincipal, inp
     const place = await placeNamed(s, broker, input.mailbox);
     if (typeof place === 'string') return place;
     const [standing] = await s.tx<Standing[]>`
-      select token, stretch_ends, lapses_at, lapses_at <= now() as lapsed from readings where place_id = ${place.place}::uuid
+      select r.token, r.stretch_ends, r.lapses_at, r.lapses_at <= now() as lapsed
+      from readings r join places p on (p.connection_id, p.kind, p.resource) = (r.connection_id, r.kind, r.resource)
+      where p.id = ${place.place}::uuid
     `;
     return { place, standing: standing as Standing | undefined };
   });
@@ -144,7 +146,7 @@ export async function listStretch(broker: Broker, principal: AgentPrincipal, inp
         outcome: 'refused',
         text:
           `That token isn't the current one, so nothing changed: reading the user's mailbox ${oneLine(place.address)} has reached ${at(reached)}. ` +
-          'The stretch it was for was handed out again once it lapsed, or reading began again since. Ask again without a token for the stretch handed out now.',
+          'The stretch it was for was confirmed already, or handed out again once it lapsed, or reading began again since. Ask again without a token for the stretch handed out now.',
       };
     }
     from = standing.stretchEnds!;
