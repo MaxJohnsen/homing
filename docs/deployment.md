@@ -91,11 +91,13 @@ An organization decides in its own Entra ID who may connect, under Enterprise ap
 - **Admin consent.** Many organizations let people allow only apps from verified publishers, so their admin approves Homing first, for everyone there. An admin connects their own mailbox and ticks "Consent on behalf of your organization" on Microsoft's page, or, under Enterprise applications, opens Homing and chooses Permissions, then "Grant admin consent".
 - **Assignment required.** To let only some people connect, open Homing under Enterprise applications, set "Assignment required?" to Yes in its Properties, and add those people or their groups under Users and groups. Microsoft turns everyone else away on its own page.
 
+Microsoft limits how often an app may ask about one mailbox. Homing asks at most 40 times for one stretch of a mailbox in order, a search or an email, and when Microsoft says to wait, the assistant is told for how long; nothing is lost. Reading a mailbox in order also reads its folders' names, under the same `Mail.Read`.
+
 Revoking an account in Homing deletes Homing's sign-in for it. Someone who also wants to withdraw their consent on Microsoft's side does it at [My Apps](https://myapps.microsoft.com) for a work account, or at [account.live.com/consent/Manage](https://account.live.com/consent/Manage) for a personal one. An organization that deletes or disables Homing under its Enterprise applications, or withdraws its consent, stops it for everyone there: each of their connections needs attention the next time Homing uses it. If Microsoft instead refuses Homing itself, as with a certificate or secret it doesn't know, nobody's connection is marked: the log says which setting to check.
 
 ## A model
 
-Homing works without a model: people's assistants keep its knowledge up to date. A model of its own is for learning in the background, which isn't built yet. You bring the key, and pay the provider for what Homing uses, within a monthly limit you set. Homing speaks the OpenAI-compatible API that OpenRouter, OpenAI and local servers such as Ollama offer.
+Homing works without a model: people's assistants keep its knowledge up to date, and learn from a connected mailbox by reading it in order. A model of its own is for work Homing does by itself, such as upkeep, which isn't built yet. You bring the key, and pay the provider for what Homing uses, within a monthly limit you set. Homing speaks the OpenAI-compatible API that OpenRouter, OpenAI and local servers such as Ollama offer.
 
 The simplest is OpenRouter, where Homing knows which models to use and what they cost:
 
@@ -136,7 +138,7 @@ Migrations run before the server starts. Back up the database and `.env` togethe
 
 If you ran Homing from main while it learned from mailboxes on its own, updating removes that. The migration drops the learning runs, what they processed and their maps, and the proposals to start or extend learning or to set a map, decided or not. The notes learning wrote stay, and so do the model calls it made, which all count toward this month's limit now. Nothing else changes.
 
-Claude.ai keeps the list of Homing's tools it got when someone connected it. After an update that changes the tools, such as one that adds the approval card, people disconnect Homing in Claude.ai's connector settings and connect it again.
+Claude.ai keeps the list of Homing's tools it got when someone connected it. After an update that changes the tools, such as one that adds the approval card or the mailbox's actions in `act`, people disconnect Homing in Claude.ai's connector settings and connect it again.
 
 ## When someone can't sign in
 

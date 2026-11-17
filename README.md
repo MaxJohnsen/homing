@@ -28,7 +28,7 @@ Every space has a shared side for its members and a private side for each of the
 
 > Homing learns automatically, shares deliberately, and changes behavior consciously.
 
-Agents connect over MCP, so Homing is designed to work from Claude, ChatGPT, Copilot or Claude Code. It runs on your own server, and it is useful without an AI model of its own. Connecting one lets it learn in the background.
+Agents connect over MCP, so Homing is designed to work from Claude, ChatGPT, Copilot or Claude Code. It runs on your own server, and it is useful without an AI model of its own. Connecting one lets it do work of its own, such as keeping knowledge tidy.
 
 ## An example
 
@@ -41,7 +41,7 @@ Later, a client moves a launch date. Homing learns about it on your private side
 Homing is being designed and built in the open, in three increments:
 
 1. [**The core**](https://github.com/MaxJohnsen/homing/milestone/1), released as [0.1.0](https://github.com/MaxJohnsen/homing/releases/tag/v0.1.0): spaces, guidance, knowledge and simple tasks, used from your assistant over MCP and explored in the web app. No AI model needed. Tested with Claude; ChatGPT is tried next.
-2. [**Learning**](https://github.com/MaxJohnsen/homing/milestone/2), being built now: you can connect your mailbox, and your assistant searches and reads its mail through Homing. Learning from it isn't built yet.
+2. [**Learning**](https://github.com/MaxJohnsen/homing/milestone/2), being built now: you can connect your mailbox, and your assistant searches its mail through Homing and reads it from the oldest to the newest to learn from it.
 3. [**Records**](https://github.com/MaxJohnsen/homing/milestone/3): tasks and events in the systems where they live, such as Asana, and planning across them.
 
 ## Read more
