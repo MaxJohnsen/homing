@@ -13,8 +13,9 @@ import { oneLine, plainValue, when, withoutHidden } from './places.ts';
 
 /** A thread's items that are new to learning, or changed, with what they're read with. */
 export interface Batch {
-  /** The space what it teaches lands in: the place's. Every call about the batch carries it. */
+  /** The space what it teaches lands in, and the one its place is connected in, when that's another. Every call about the batch carries both. */
   space: string;
+  from?: string;
   /** How the place and its items are worded, such as a mailbox and its emails. */
   words: Words;
   /** What the items belong to there, such as their conversation, or null for an item on its own. */
@@ -97,7 +98,7 @@ function request(batch: Batch): Omit<ModelCall, 'run'> {
   const related = (items.at(-1)?.related ?? []).slice(-25);
   return {
     purpose: 'sort',
-    spaces: [batch.space],
+    spaces: [...new Set([batch.from ?? batch.space, batch.space])],
     maxTokens: noteTokens,
     schema: {
       name: 'note',

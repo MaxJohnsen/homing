@@ -9,7 +9,7 @@ import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar, dateOf } from '@/components/screen';
 import { usd } from '@/lib/model';
-import { placeOf, precedenceOf, type IncludeData, type LearningProposalData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
+import { placeOf, precedenceOf, type IncludeData, type LeadsData, type MapData, type LearningProposalData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -126,6 +126,8 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
 
 /** One change of a plan once it's decided, greyed. */
 function SettledStep({ step }: { step: PlanStepData }) {
+  if (step.space) return <ProposedChange kind="preference" label="New space" text={step.space.name} settled />;
+  if (step.map) return <ProposedChange kind="preference" label={`Where the mail in ${step.map.address} belongs`} text={routeLines(step.map)} settled />;
   if (step.member) return <Who member={step.member} settled />;
   if (step.item) return <ProposedChange kind="preference" label={`On ${step.item.page}`} text={step.item.text} settled />;
   if (step.task) return <ProposedChange kind="preference" label="Task" text={step.task.title} settled />;
@@ -176,6 +178,18 @@ function PlanDetails({ proposal, plan, idPrefix }: { proposal: ProposalData; pla
 /** One change in a plan, as its own decision would show it, more briefly. */
 function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; place: string; sees: PlanData['sees']; personal: boolean; id: string }) {
   const gone = (what: string) => <p className="rounded-xl bg-muted px-4 py-3 text-base">{what}</p>;
+  if (step.space) return <ProposedChange kind="preference" label={`New space in ${step.space.in ?? 'your personal space'}`} text={step.space.name} onlyYou />;
+  if (step.map) {
+    const { map } = step;
+    return (
+      <>
+        <ProposedChange kind="preference" label={`Where the mail in ${map.address} belongs`} text={routeLines(map)} onlyYou />
+        <p className="text-sm text-muted-foreground">
+          A thread follows the route of the first sender in it that a route names. What Homing learns from it is kept only for you, in the space its route names. What it learned before stays where it is.
+        </p>
+      </>
+    );
+  }
   if (step.action === 'publish') {
     const { publication } = step;
     if (!publication) return step.item ? <ProposedChange kind="preference" label={`Share on ${step.item.page}`} text={step.item.text} /> : gone('Something to share that you can’t see anymore.');
@@ -478,6 +492,13 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
       )}
     </>
   );
+}
+
+/** "northwind.test → Northwind, a new space · 124 emails", one route on each line, then where everything else goes. */
+function routeLines(map: MapData): string {
+  const leads = (to: LeadsData) => (to.to === 'leave out' ? 'left out' : to.to === 'wait' ? 'waits' : to.to === 'new space' ? `${to.name}, a new space` : (to.name ?? 'a space you can’t open'));
+  const holds = (to: LeadsData) => (to.emails === null ? '' : ` · ${thousands(to.emails)} ${to.emails === 1 ? map.words.items.replace(/s$/, '') : map.words.items}`);
+  return [...map.routes.map((route) => `${route.who} → ${leads(route)}${holds(route)}`), `Everything else → ${leads(map.rest)}${holds(map.rest)}`].join('\n');
 }
 
 const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);

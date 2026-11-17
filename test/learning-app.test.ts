@@ -840,8 +840,10 @@ test('without a model, starting to learn says plainly that Homing has none, and 
     const [asked, graph] = [provider.asked.length, microsoft.asked.graph];
     const none = 'Homing has no model set up, so it can’t learn from a connected source yet. Whoever looks after Homing can set one up.';
 
-    // Context offers nothing that can't work, and asking for it anyway says why not.
-    assert.doesNotMatch((await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text, /learn/i);
+    // Context doesn't offer learning, which can't work, only working out where the mail belongs, which needs no model. Asking to learn anyway says why not.
+    const context = (await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text;
+    assert.doesNotMatch(context, /can learn from/i);
+    assert.match(context, /Homing can work out where the mail belongs in/);
     for (const input of [{ since: '2025-01-01' }, { since: '2025-01-01', limit: 1 }]) {
       const answer = await claude.call('act', { action: 'learning.start', input: { from: `learning:${place}`, ...input } });
       assert.ok(answer.failed);

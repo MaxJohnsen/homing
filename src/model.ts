@@ -187,9 +187,9 @@ function nearby(hostname: string): boolean {
   return host === 'localhost' || host.endsWith('.localhost') || host === 'host.docker.internal' || !host.includes('.');
 }
 
-/** What a call is for, which picks the model unless it names one: sorting goes to the cheaper model. */
-export type Purpose = 'understand' | 'upkeep' | 'sort';
-const purposes: Purpose[] = ['understand', 'upkeep', 'sort'];
+/** What a call is for, which picks the model unless it names one: sorting goes to the cheaper model. A map is where a place's mail belongs. */
+export type Purpose = 'understand' | 'upkeep' | 'sort' | 'map';
+const purposes: Purpose[] = ['understand', 'upkeep', 'sort', 'map'];
 
 /** A call to the model, for a person. */
 export interface ModelCall {

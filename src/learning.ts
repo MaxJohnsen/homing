@@ -32,6 +32,21 @@ export interface LeftOut {
   kept: string[];
 }
 
+/**
+ * A route of a run's map: who, a sender by address or domain, and where their mail belongs: a
+ * space, by its id, or leave out, or wait.
+ */
+export interface Route {
+  who: string;
+  to: string;
+}
+
+/** A run's map: its routes, and where everything else goes, which is the place's own space when it's null. */
+export interface LearningMap {
+  routes: Route[];
+  rest: string | null;
+}
+
 /** What learning from a scope may cost, as Homing estimated it before the pass. It's rough. */
 export type Estimate = {
   /** The scope it's for: from when, and up to when for a scope extended further back. */
@@ -81,6 +96,11 @@ export interface Run {
   /** The estimate for a range further back its owner asked about, which isn't learned from until they say so. */
   proposed: Estimate | null;
   leftOut: LeftOut;
+  /** Where its mail belongs. The senders left out are its routes to leave out. */
+  map: LearningMap;
+  /** Whether a summary of the place is being made, and when the one it has was made. */
+  summarizing: boolean;
+  summarized: string | null;
   startedAt: Date | null;
 }
 
@@ -140,20 +160,27 @@ interface RunRow {
   extensionEstimate: Estimate | null;
   spendingLimit: string;
   estimate: Estimate | null;
-  excludedSenders: string[];
+  routes: Route[];
+  rest: string | null;
   excludedFolders: string[];
   keptSenders: string[];
+  summarizing: boolean;
+  summarized: string | null;
   startedAt: Date | null;
 }
 
+/** The senders a map leaves out: its routes to leave out. */
+export const leftOutBy = (routes: Route[]) => routes.filter((route) => route.to === 'leave out').map((route) => route.who);
+
 function runOf(row: RunRow): Run {
-  const { extensionSince, extensionUntil, extensionEstimate, spendingLimit, excludedSenders, excludedFolders, keptSenders, ...run } = row;
+  const { extensionSince, extensionUntil, extensionEstimate, spendingLimit, routes, rest, excludedFolders, keptSenders, ...run } = row;
   return {
     ...run,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
     limit: Number(spendingLimit),
     proposed: extensionEstimate,
-    leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
+    leftOut: { senders: leftOutBy(routes), folders: excludedFolders, kept: keptSenders },
+    map: { routes, rest },
   };
 }
 
@@ -167,7 +194,7 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
            r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
-           r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at
+           r.routes, r.rest, r.excluded_folders, r.kept_senders, r.summarizing is not null as summarizing, r.summary ->> 'at' as summarized, r.started_at
     from learning_runs r
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid
   `;
@@ -285,11 +312,81 @@ export function leftOutIn(changes: Change[], leftOut: LeftOut): string | undefin
 }
 
 /** Whether an address is the one an entry names, or at the domain it names, written as northwind.test or @northwind.test. */
-function sentBy(entry: string, address: string): boolean {
+export function sentBy(entry: string, address: string): boolean {
   const named = entry.trim().toLowerCase();
   if (named.includes('@') && !named.startsWith('@')) return address === named;
   const domain = named.replace(/^@/, '');
   return domain !== '' && (address.endsWith(`@${domain}`) || address.endsWith(`.${domain}`));
+}
+
+/** The route that names an address, the most exact one: the address itself before its domain, and a domain before one above it. */
+export function routeFor(routes: Route[], address: string): Route | undefined {
+  return routes.filter((route) => sentBy(route.who, address)).sort((a, b) => b.who.replace(/^@/, '').length - a.who.replace(/^@/, '').length)[0];
+}
+
+/**
+ * Where a thread belongs by its owner's map. Leave out wins, which is settled before this: a thread
+ * with mail from a sender left out is left out whole. Otherwise the thread follows the route of its
+ * oldest email whose sender a route names, among these items and what they're read with, and the
+ * owner's own address never counts. With none, it goes where everything else goes, and says no
+ * route named it. The space is null for the place's own.
+ */
+export function routeOf(changes: Change[], map: LearningMap, own: string): { to: string | null; entry: string | null } {
+  const routes = map.routes.filter((route) => route.to !== 'leave out');
+  if (routes.length) {
+    const written = changes.flatMap((change) => [change.item.envelope, ...change.item.related]).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0));
+    for (const { author } of written) {
+      const address = author?.address?.trim().toLowerCase();
+      const route = address && address !== own.trim().toLowerCase() ? routeFor(routes, address) : undefined;
+      if (route) return { to: route.to, entry: route.who };
+    }
+  }
+  return { to: map.rest, entry: null };
+}
+
+/** How many emails a sender no route names has before they're listed as not placed, and how many are listed. */
+const addsUp = 3;
+const notPlacedShown = 20;
+
+/**
+ * The senders no route of the person's run names whose mail adds up, most first, with how many
+ * there are beside those: what the run met that the map says nothing about. Their own address
+ * isn't one.
+ */
+export async function notPlaced(s: Session, run: Run, own: string): Promise<{ senders: Sender[]; more: number }> {
+  const rows = await s.tx<Sender[]>`
+    select sender, count(*)::integer as items from learned_items
+    where run_id = ${run.id}::uuid and unplaced and sender is not null and sender <> ${own.trim().toLowerCase()}
+    group by sender having count(*) >= ${addsUp}
+    order by 2 desc, 1
+    limit 500
+  `;
+  const open = rows.filter((row) => !run.map.routes.some((route) => sentBy(route.who, row.sender)));
+  return { senders: open.slice(0, notPlacedShown), more: Math.max(0, open.length - notPlacedShown) };
+}
+
+/**
+ * Asks for a summary of one of the person's places back to a day, for them or their assistant.
+ * Homing's worker makes it (learner.ts), without a model. A place that has no run yet gets one,
+ * which waits to be started; a started run is summarized over its own scope.
+ */
+export async function summarizeLearning(l: Learning, principal: Principal, placeId: string, since?: Date): Promise<Run> {
+  const found = await ownRun(l, principal, placeId);
+  if (!found) throw new LearningRefused(nothingThere);
+  const connector = l.broker.connectors.get(found.place.connector);
+  const words = wordsOf(connector, found.place.kind);
+  if (!kindOf(connector, found.place.kind)?.follow?.summary) throw new LearningRefused(`Homing can’t summarize a ${words.place} of that kind.`);
+  const started = found.run && found.run.state !== 'estimating';
+  if (!started && !since) throw new LearningRefused('Say how far back to look, such as 2024-11-15.');
+  if (!started) checked(since!);
+  return refusing(() =>
+    withPrincipal(l.broker.sql, principal, async (s) => {
+      const already = started ? undefined : await elsewhere(s, found.place, words);
+      if (already) throw new LearningRefused(already);
+      await s.tx`select summarize_learning(${placeId}::uuid, ${started ? found.run!.since : since!})`;
+      return (await runsFor(s, [placeId])).get(placeId)!;
+    }),
+  );
 }
 
 /**
@@ -602,6 +699,8 @@ export function setAsideWords(reason: string, items: number, words: { item: stri
       return `${count} in threads with senders ${who} left out`;
     case 'excluded folder':
       return `${count} in folders ${who} left out`;
+    case 'waiting':
+      return `${count} waiting, as ${who === 'you' ? 'your' : 'the user’s'} map says, or until model processing is on where they belong`;
     case 'unreadable':
       return `${count} the service couldn’t give`;
     case 'gone':
