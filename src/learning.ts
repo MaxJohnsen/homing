@@ -475,7 +475,7 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
 }
 
 /** Dollars rounded up to the cent, so an estimate never reads as free when it isn't. */
-const cents = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
+export const cents = (value: number) => Math.ceil(value * 100 - 1e-9) / 100;
 
 /** The limit Homing suggests for a run: a round amount with room above the most the estimate says, and at least a dollar. */
 export function suggestedLimit(high: number): number {

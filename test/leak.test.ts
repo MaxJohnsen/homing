@@ -1201,6 +1201,12 @@ describe('through the app’s endpoints', () => {
       for (const answer of refusals) assert.deepEqual([answer.failed, answer.text], [true, nothing.text]);
       for (const answer of [...answers, ...refusals]) assert.doesNotMatch(answer.text, hers);
     }
+    // Nor does the database let Dag, who can open the space her mailbox is in, ask for its summary or set its map.
+    for (const who of [{ person: dag.id, direct: true as const }, { person: dag.id, agent: 'Claude' }]) {
+      await assert.rejects(as(who, (s) => s.tx`select summarize_learning(${ana.connection.place}::uuid, now() - interval '1 year')`), refused);
+      await assert.rejects(as(who, (s) => s.tx`select set_learning_map(${ana.connection.run}::uuid, '[]', 'leave out')`), refused);
+      assert.equal((await as(who, (s) => s.tx`select from learning_runs`)).length, 0);
+    }
     // Ben's own map can't lead to Ana's space, or to a new space under it.
     for (const input of [{ routes: [{ who: 'northwind.test', to: `space:${ana.space}` }] }, { routes: [], else: `space:${ana.personalSpaceId}` }, { create: [{ name: 'Way in', under: `space:${ana.space}` }], routes: [{ who: 'northwind.test', to: 'Way in' }] }]) {
       const answer = await bens.call('act', { action: 'learning.map', input: { from: `learning:${ben.connection.place}`, ...input } });

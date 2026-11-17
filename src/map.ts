@@ -14,7 +14,7 @@ import * as z from 'zod';
 import { routineAgent } from './assistants.ts';
 import type { Listed } from './connectors.ts';
 import { withPrincipal, type Session } from './db.ts';
-import { LearningRefused, nothingThere, routeFor, runsFor, sentBy, type Estimate, type Learning, type LearningMap, type Route, type Run } from './learning.ts';
+import { cents, LearningRefused, nothingThere, routeFor, runsFor, sentBy, type Estimate, type Learning, type LearningMap, type Route, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused, type ModelCall } from './model.ts';
 import { oneLine, ownPlace, placeName, wordsOf, type Place } from './places.ts';
 import { proposeMap, type MapSteps, type Proposal } from './proposals.ts';
@@ -173,7 +173,8 @@ export interface Held {
  * What each route of a map holds, and everything else, going by the summary: its listed senders
  * each by the route that names them most exactly, and the rest of a listed domain by the route that
  * names the domain. No request to the place. With the run's estimate, each route that leads to a
- * space gets its share of it, by threads. It's rough, as the estimate is.
+ * space gets its share of it, by threads, rounded up to the cent as the estimate is, so no share
+ * reads as free when it isn't. It's rough, as the estimate is.
  */
 export function holdings(summary: Summary, map: LearningMap, estimate?: Estimate | null): Held[] {
   const held = new Map<string, { emails: number; threads: number }>(map.routes.map((route) => [route.who, { emails: 0, threads: 0 }]));
@@ -194,7 +195,6 @@ export function holdings(summary: Summary, map: LearningMap, estimate?: Estimate
     { who: null, to: map.rest, emails: Math.max(0, summary.emails - named.emails), threads: Math.max(0, summary.threads - named.threads) },
   ];
   if (!estimate || summary.threads === 0) return rows;
-  const cents = (value: number) => Math.round(value * 100) / 100;
   return rows.map((row) => (row.to === 'leave out' || row.to === 'wait' ? row : { ...row, low: cents((estimate.low * row.threads) / summary.threads), high: cents((estimate.high * row.threads) / summary.threads) }));
 }
 
@@ -269,7 +269,9 @@ export async function checkMap(s: Session, place: Place, run: Run, answer: MapAn
   for (const route of answer.routes) {
     const who = route.who.trim().toLowerCase();
     if (!address.test(who) && !domain.test(who)) throw new LearningRefused(`${JSON.stringify(oneLine(route.who))} isn’t a sender’s address or a domain, such as gunnar@northwind.test or northwind.test. Nothing was proposed.`);
-    if (sentBy(who, place.address.trim().toLowerCase())) throw new LearningRefused(`${JSON.stringify(who)} is the user’s own address, which no route names: a thread goes by who else writes in it. Nothing was proposed.`);
+    if (sentBy(who, place.address.trim().toLowerCase())) {
+      throw new LearningRefused(`${JSON.stringify(who)} is ${address.test(who) ? '' : 'the domain of '}the user’s own address, which no route names: a thread goes by who else writes in it${address.test(who) ? '' : ', so name the senders there one by one'}. Nothing was proposed.`);
+    }
     if (routes.some((other) => other.who === who)) throw new LearningRefused(`${JSON.stringify(who)} has two routes. Give each sender one. Nothing was proposed.`);
     routes.push({ who, to: lead(route.to) });
   }
