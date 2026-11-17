@@ -9,7 +9,6 @@
 
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { createServer, type AddressInfo } from 'node:net';
 import { after, before, test } from 'node:test';
 import { connect, withPrincipal, type Sql } from '../src/db.ts';
 import { callModel, inputTokensOf, ModelFailed, ModelRefused, worstCase, type Message, type Model, type ModelCall } from '../src/model.ts';
@@ -189,45 +188,6 @@ test('a call the provider refuses costs nothing, and one that fails may have, so
   provider.reply = () => plainReply();
 });
 
-test('a call that never reached the provider, because no connection to it could be made, costs nothing, while one cut off on the way, or that lost its route to the provider, counts at its worst case', async () => {
-  // A provider that's gone: nothing listens at its address any more, so the request is never sent.
-  const gone = await new ModelStandIn().start();
-  const unreachable = gone.model();
-  await gone.close();
-  await assert.rejects(callModel({ sql, model: unreachable }, ana.id, { purpose: 'understand', spaces: [acme], messages }), (error: Error) => error instanceof ModelFailed && /couldn’t be reached/.test(error.message));
-  const unsent = (await calls(ana)).at(-1)!;
-  assert.deepEqual([unsent.state, unsent.costFrom, Number(unsent.cost)], ['failed', 'not sent', 0]);
-
-  // One that takes the request and hangs up without answering may have run a model, so it counts.
-  const hangsUp = createServer((socket) => socket.once('data', () => socket.destroy()));
-  await new Promise<void>((resolve) => hangsUp.listen(0, '127.0.0.1', resolve));
-  try {
-    const cut = new ModelStandIn();
-    cut.url = `http://127.0.0.1:${(hangsUp.address() as AddressInfo).port}`;
-    await assert.rejects(callModel({ sql, model: cut.model() }, ana.id, { purpose: 'understand', spaces: [acme], messages }), (error: Error) => error instanceof ModelFailed && /couldn’t be reached/.test(error.message));
-    const recorded = (await calls(ana)).at(-1)!;
-    assert.deepEqual([recorded.state, recorded.costFrom, Number(recorded.cost)], ['failed', 'worst case', Number(recorded.reserved)]);
-    // The month's spending is the whole Homing's, and the tests after this one count from it.
-    await owner`delete from model_calls where id in ${owner([unsent.id, recorded.id])}`;
-  } finally {
-    await new Promise((resolve) => hangsUp.close(resolve));
-  }
-
-  // No route to the host, or to its network, can also end a connection the request already went out on, so that counts too.
-  const fetching = globalThis.fetch;
-  for (const code of ['EHOSTUNREACH', 'ENETUNREACH']) {
-    globalThis.fetch = () => Promise.reject(new TypeError('fetch failed', { cause: Object.assign(new Error(`read ${code}`), { code }) }));
-    try {
-      await assert.rejects(callModel({ sql, model }, ana.id, { purpose: 'understand', spaces: [acme], messages }), (error: Error) => error instanceof ModelFailed && /couldn’t be reached/.test(error.message));
-    } finally {
-      globalThis.fetch = fetching;
-    }
-    const lost = (await calls(ana)).at(-1)!;
-    assert.deepEqual([lost.state, lost.costFrom, Number(lost.cost)], ['failed', 'worst case', Number(lost.reserved)], code);
-    await owner`delete from model_calls where id = ${lost.id}`;
-  }
-});
-
 test('a model Homing has no prices for is never called', async () => {
   const asked = provider.asked.length;
   const refused = await refusal(call(ana, [acme], { model: 'someone/unpriced' }));
@@ -394,15 +354,6 @@ test('when what was spent leaves no room for a call, learning pauses and says wh
   await assert.rejects(withPrincipal(sql, { person: ana.id }, (s) => s.tx`select * from model_usage_this_month()`), { code: '42501' });
   await assert.rejects(withPrincipal(sql, { person: ida.id, agent: 'Claude' }, (s) => s.tx`select set_model_limit(1000)`), { code: '42501' });
   assert.equal((await ida.browser.json('/api/admin/model-limit', { limit: 'lots' })).status, 400);
-  // The same for the most a learning run may spend, which is $25 until whoever looks after Homing sets it.
-  assert.equal((await ida.browser.json('/api/admin')).body.model.runCeiling, 25);
-  assert.equal((await ana.browser.json('/api/admin/model-limit', { ceiling: 1000 })).status, 403);
-  await assert.rejects(withPrincipal(sql, { person: ana.id, direct: true }, (s) => s.tx`select set_run_ceiling(1000)`), { code: '42501' });
-  await assert.rejects(withPrincipal(sql, { person: ida.id, agent: 'Claude' }, (s) => s.tx`select set_run_ceiling(1000)`), { code: '42501' });
-  assert.equal((await ida.browser.json('/api/admin/model-limit', { ceiling: 'lots' })).status, 400);
-  assert.equal((await ida.browser.json('/api/admin/model-limit', { ceiling: '$40' })).status, 200);
-  assert.deepEqual([(await ida.browser.json('/api/admin')).body.model.runCeiling, (await ida.browser.json('/api/admin')).body.model.limit], [40, limit], 'one without the other');
-  assert.equal((await ida.browser.json('/api/admin/model-limit', { ceiling: 25 })).status, 200);
 
   // Setting it again, even to the same, resumes: the small call goes, and the big one pauses it again.
   assert.equal((await ida.browser.json('/api/admin/model-limit', { limit })).status, 200);

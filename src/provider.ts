@@ -42,34 +42,19 @@ export class ProviderRefused extends Error {
   override name = 'ProviderRefused';
   /** In USD, if the provider said it charged anything. */
   readonly cost?: number;
-  /** The status it answered with. */
-  readonly status?: number;
-  /** How many seconds it asked to wait before asking again, when it said. */
-  readonly retryAfter?: number;
-  constructor(reason: string, cost?: number, status?: number, retryAfter?: number) {
+  constructor(reason: string, cost?: number) {
     super(reason);
     this.cost = cost;
-    this.status = status;
-    this.retryAfter = retryAfter;
   }
 }
 
-/** The provider failed, or didn't answer in time, maybe after a model ran. It may have charged for it, unless the request never reached it. */
+/** The provider failed, or didn't answer in time, maybe after a model ran. It may have charged for it. */
 export class ProviderFailed extends Error {
   override name = 'ProviderFailed';
   /** In USD, if the provider said what it charged. */
   readonly cost?: number;
-  /** The status it answered with, if it answered. */
-  readonly status?: number;
-  /** How many seconds it asked to wait before asking again, when it said. */
-  readonly retryAfter?: number;
-  /** No connection to the provider could be made, so the request never reached it and nothing was charged. */
-  readonly unsent: boolean;
-  constructor(reason: string, cost?: number, status?: number, retryAfter?: number, unsent = false) {
+  constructor(reason: string, cost?: number) {
     super(reason);
     this.cost = cost;
-    this.status = status;
-    this.retryAfter = retryAfter;
-    this.unsent = unsent;
   }
 }

@@ -7,8 +7,6 @@ import { fromChange } from '@/lib/versions';
 export function madeBy(version: { by: Author; agent: string | null; editAgent?: string | null }): string {
   const agent = version.agent ?? version.editAgent;
   const person = nameIn(version.by);
-  // What Homing learned for someone itself goes by Homing's name, which no assistant has.
-  if (agent === 'Homing') return 'Homing';
   if (agent) return person === 'you' ? `your assistant ${agent}` : person ? `${person}’s assistant ${agent}` : agent;
   return person ?? (version.by ? 'someone' : 'Homing');
 }

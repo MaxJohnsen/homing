@@ -231,8 +231,6 @@ function whoProposes(item: OverviewData['waiting'][number]): string {
   if (item.action === 'plan') return item.text ? `${assistant} proposes this space, with ${item.changes === 1 ? 'a change' : `${item.changes} changes`} in it` : `${assistant} proposes them together`;
   if (item.request && !item.request.yours) return `${item.request.by ?? 'A member'} asks`;
   switch (item.action) {
-    case 'start learning': return `${assistant} proposes that Homing learn from it`;
-    case 'extend learning': return `${assistant} proposes that Homing learn further back in it`;
     case 'publish': return `${assistant} proposes sharing this`;
     case 'share task': return `${assistant} proposes sharing this task`;
     case 'archive space': return `${assistant} suggests archiving it`;

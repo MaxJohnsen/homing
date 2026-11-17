@@ -6,11 +6,9 @@ export type Sql = postgres.Sql;
  * Who a request or routine acts for. Every transaction runs as exactly one.
  * The agent, if any, is what acts for them, such as "Claude Code". A person
  * editing directly, as in the web app or the command line, is marked direct:
- * only then can they change guidance. A person's routine, such as learning
- * from their mailbox, is an agent that names the routine too: under every
- * check an agent is under, and never their assistant.
+ * only then can they change guidance.
  */
-export type Principal = ({ person: string; direct?: true } | { space: string }) & { agent?: string; routine?: string };
+export type Principal = ({ person: string; direct?: true } | { space: string }) & { agent?: string };
 
 /** A transaction running as a principal. */
 export interface Session {
@@ -49,9 +47,6 @@ export async function withPrincipal<T>(
   const person = 'person' in principal ? principal.person : '';
   const space = 'space' in principal ? principal.space : '';
   const direct = 'person' in principal && principal.direct ? 'true' : '';
-  if (principal.routine !== undefined && (!('person' in principal) || !principal.agent || principal.direct)) {
-    throw new TypeError('A person’s routine acts for them as an agent, never directly.');
-  }
   return (await sql.begin(snapshot ? 'isolation level repeatable read read only' : '', async (tx) => {
     // Also how PostgreSQL plans, per transaction so it works through any pooler. Row-level security
     // makes the planner overestimate costs, so JIT compiled queries that take milliseconds, for up to a
@@ -61,7 +56,6 @@ export async function withPrincipal<T>(
              set_config('homing.space_id', ${space}, true),
              set_config('homing.agent', ${principal.agent ?? ''}, true),
              set_config('homing.direct', ${direct}, true),
-             set_config('homing.routine', ${principal.routine ?? ''}, true),
              set_config('jit', 'off', true),
              set_config('plan_cache_mode', 'force_custom_plan', true)
     `;

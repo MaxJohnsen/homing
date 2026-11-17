@@ -604,16 +604,12 @@ test('what an email quotes from earlier ones is told apart from what its sender 
   assert.deepEqual(splitQuoted('> Does it hold?\nIt holds,\r\nas far as I know.\n\nGunnar'), { own: ['It holds, as far as I know.', 'Gunnar'], earlier: ['Does it hold?'] });
 });
 
-test('what search, read, remember and act say keeps their descriptions short enough for assistants to read whole', async () => {
+test('what search, read and remember say about mail keeps their descriptions short enough for assistants to read whole', async () => {
   const { claude } = await world();
   const { tools } = await claude.client.listTools();
   for (const tool of tools.filter((tool) => ['search', 'read', 'remember'].includes(tool.name))) {
     assert.ok((tool.description ?? '').length < 2_048, `${tool.name}: ${tool.description?.length}`);
   }
-  // `act` does the most, so it says the most. Learning adds one sentence to it, and the rest is in what `read` gives for a learning:… reference.
-  const act = tools.find((tool) => tool.name === 'act')!;
-  assert.ok((act.description ?? '').length < 4_200, `act: ${act.description?.length}`);
-  assert.equal((act.description ?? '').match(/learning\.\w+/g)?.length, 6, 'each of learning’s actions is named once');
   await claude.close();
 });
 

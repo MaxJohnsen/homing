@@ -116,10 +116,6 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
               ? proposal.suggestion?.asked
                 ? `Create this space in ${placeOf(proposal)}?`
                 : `Create the space ${proposal.assistant} suggests?`
-              : proposal.action === 'learn'
-              ? `Have Homing learn from ${proposal.learning?.address ?? 'it'}?`
-              : proposal.action === 'learn further'
-              ? `Have Homing learn further back in ${proposal.learning?.address ?? 'it'}?`
               : proposal.action === 'members' && proposal.member
               ? memberQuestion(proposal, proposal.member)
               : proposal.action === 'publish'
@@ -144,8 +140,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.learning?.why ?? proposal.plan?.why ?? proposal.why) && (
-            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.learning?.why ?? proposal.plan?.why ?? proposal.why}”</p>
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why}”</p>
           )}
           <ProposalDetails
             proposal={proposal}
