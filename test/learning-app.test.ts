@@ -793,7 +793,7 @@ test('what the model’s provider wouldn’t take is listed as set aside, and An
     assert.deepEqual(aside.map((one: Record<string, unknown>) => [one.reason, one.items, one.words, one.retry, one.senders, one.more]), [['provider refused', 2, '2 the model’s provider wouldn’t take', true, [{ sender: gunnar.address, items: 2 }], 0]]);
     const read = (await claude.call('read', { ref: learning })).text;
     assert.match(read, /- 2 the model’s provider wouldn’t take, from "gunnar@northwind\.test" \(2\)\. learning\.try_again tries these again\n/);
-    assert.match(read, /learning\.try_again has it try again what it set aside because the model’s provider or Microsoft failed on it, or the model’s answer couldn’t be used, which Homing also does by itself once, a day later\./);
+    assert.match(read, /learning\.try_again has it try again what it set aside because the model’s provider or Microsoft failed on it, or an answer couldn’t be used, which Homing also does by itself once, a day later\./);
 
     // Her assistant has Homing try again, without asking her: it stays within the run she started, and its limit. One passes now.
     refuses.delete('Contract');
@@ -826,8 +826,8 @@ test('what the model’s provider wouldn’t take is listed as set aside, and An
   await caras.close();
 });
 
-test('without a model, starting to learn says plainly that Homing has none, and nothing runs', async () => {
-  // This Homing has no model, and it's the only one running on the database.
+test('without a model, Ana starts learning in the app all the same: Homing’s worker follows her mailbox and counts what waits, her assistant reads it, and nothing is sent to a model or recorded as spent', async () => {
+  // This Homing has no model, and it's the only one running on the database. Its worker runs as it does with one.
   await homing.close();
   const bare = await start({ port: 0, model: null });
   try {
@@ -835,39 +835,55 @@ test('without a model, starting to learn says plainly that Homing has none, and 
     const acme = await withPrincipal(sql, { person: ana.id, direct: true }, (s) => createSpace(s, { name: 'Acme' }));
     const account = work('Ana');
     const place = await connectMailbox(ana, acme, account);
-    microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, subject: 'Budget', html: '<p>The budget is approved.</p>', at: new Date(Date.now() - 86_400_000) });
+    const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
+    microsoft.deliver(account, { from: gunnar, subject: 'Budget', html: '<p>The budget is approved.</p>', at: new Date(Date.now() - 86_400_000) });
+    microsoft.deliver(account, { from: { name: 'The Weekly Digest', address: 'news@weekly-digest.test' }, subject: 'This week', html: '<p>Read on.</p>', at: new Date(Date.now() - 80_000_000), headers: { 'List-Unsubscribe': '<https://weekly-digest.test/u>' } });
     const claude = await (await assistantOf(ana, bare)).open();
-    const [asked, graph] = [provider.asked.length, microsoft.asked.graph];
-    const none = 'Homing has no model set up, so it can’t learn from a connected source yet. Whoever looks after Homing can set one up.';
+    const asked = provider.asked.length;
+    const learning = `learning:${place}`;
+    const context = async () => (await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text;
+    const shown = async () => (await ana.browser.json(`/api/spaces/${acme}/connections`)).body;
+    /** Her assistant takes the reading it is handed and answers each thread, once. */
+    const reads = async () => {
+      const handed = (await claude.call('act', { action: 'learning.read', input: { from: learning } })).text;
+      const answers = [...handed.matchAll(/^## Thread (\S+)\n(.+)$/gm)].map(([, thread, json]) => ({ thread, keep: true, note: `${JSON.parse(json).emails.at(-1).Subject}: noted.` }));
+      return answers.length ? (await claude.call('act', { action: 'learning.read', input: { from: learning, claim: /, claim ([0-9a-f-]{36})\./.exec(handed)![1], answers } })).text : handed;
+    };
 
-    // Context doesn't offer learning, which can't work, only working out where the mail belongs, which needs no model. Asking to learn anyway says why not.
-    const context = (await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text;
-    assert.doesNotMatch(context, /can learn from/i);
-    assert.match(context, /Homing can work out where the mail belongs in/);
-    for (const input of [{ since: '2025-01-01' }, { since: '2025-01-01', limit: 1 }]) {
-      const answer = await claude.call('act', { action: 'learning.start', input: { from: `learning:${place}`, ...input } });
-      assert.ok(answer.failed);
-      assert.equal(answer.text, none);
-    }
-    assert.ok((await claude.call('read', { ref: `learning:${place}` })).text.endsWith(`Homing hasn’t learned from it. ${none}`));
-    const inApp = await ana.browser.json(`/api/places/${place}/learning/estimate`, { since: '2025-01-01' });
-    assert.deepEqual([inApp.status, inApp.body.message], [409, none]);
-    const shown = (await ana.browser.json(`/api/spaces/${acme}/connections`)).body;
-    assert.deepEqual([shown.model, shown.places[0].learns, shown.places[0].learning], [null, true, null]);
+    // Context offers learning, and the app says who would read: her assistant, at no cost in Homing.
+    assert.ok((await context()).includes(`Homing can learn from ${account.address} when the user asks (${learning}).`));
+    assert.deepEqual([(await shown()).model, (await shown()).places[0].learns, (await shown()).places[0].learning], [null, true, null]);
+    assert.equal((await ana.browser.json(`/api/places/${place}/learning/estimate`, { since: '2025-01-01' })).status, 200);
+    const estimated = (await shown()).places[0].learning;
+    assert.deepEqual([estimated.state, estimated.estimate.items, estimated.estimate.low, estimated.estimate.high, estimated.estimate.limit, estimated.estimate.unpriced], ['estimating', 2, 0, 0, 0, true]);
+    // Nothing is fetched to read, handed out or marked before she starts it, which only she does.
+    const early = await claude.call('act', { action: 'learning.read', input: { from: learning } });
+    assert.ok(early.failed && /Homing hasn't started learning from/.test(early.text), early.text);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.deepEqual([(await runOf(place)).state, (await marksOf(place)).length], ['estimating', 0]);
+    assert.equal((await ana.browser.json(`/api/places/${place}/learning/start`, { limit: 0, since: estimated.since, estimated: estimated.estimate.at })).status, 200);
 
-    // Nothing was estimated, started, fetched or sent, and no worker runs to pick anything up.
-    assert.equal(await runOf(place), undefined);
-    assert.deepEqual([provider.asked.length, microsoft.asked.graph], [asked, graph]);
-    // Even a run that was started while Homing had a model stays where it is.
-    await owner`
-      insert into learning_runs (place_id, connection_id, space_id, private_to, since, state, spending_limit, estimate)
-      select p.id, p.connection_id, p.space_id, p.private_to, now() - interval '30 days', 'learning history', 5, null from places p where p.id = ${place}
-    `;
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    assert.deepEqual([(await runOf(place)).checkpoint, (await marksOf(place)).length, provider.asked.length, microsoft.asked.graph], [null, 0, asked, graph]);
-    assert.match((await claude.call('read', { ref: `learning:${place}` })).text, /\nHoming has no model set up now, so it waits\.\n/);
-    const resumed = await ana.browser.json(`/api/places/${place}/learning/resume`, {});
-    assert.deepEqual([resumed.status, resumed.body.message], [409, none]);
+    // The worker sets the newsletter aside and counts the thread that waits. It stays in history until someone has read it.
+    await until(async () => (await runOf(place)).unread === 1);
+    assert.deepEqual([(await runOf(place)).state, (await marksOf(place)).map((mark) => mark.reason)], ['learning history', ['newsletter']]);
+    assert.match(await context(), /learning history back to 2025-01-01 \(learning:[0-9a-f-]{36}\)\. Its history waits to be read, which you can do when the user asks: `read` it for how\./);
+    assert.match(await reads(), /^Homing took 1 answer\. Nothing in the user's mailbox \S+ waits to be read now\. It is history learned back to 2025-01-01, now following what arrives\.$/);
+    assert.deepEqual([(await shown()).places[0].learning.state, (await shown()).places[0].learning.learned, (await shown()).places[0].learning.spent], ['following', 1, 0]);
+
+    // Mail arrives. The worker lists it by itself, and context says a thread waits, until her assistant has read it.
+    microsoft.deliver(account, { from: gunnar, subject: 'Workshop', html: '<p>The workshop is on Thursday.</p>', at: new Date() });
+    await until(async () => (await runOf(place)).unread === 1);
+    assert.match(await context(), /now following what arrives \(learning:[0-9a-f-]{36}\)\. 1 thread waits to be read, which you can do when the user asks: `read` it for how\./);
+    assert.match(await reads(), /^Homing took 1 answer\. Nothing in the user's mailbox \S+ waits to be read now\./);
+    assert.equal((await runOf(place)).unread, 0);
+    assert.doesNotMatch(await context(), /waits to be read/);
+    const notes = await owner`select body, agent, private_to from content where space_id = ${acme} and kind = 'text' order by created_at`;
+    assert.deepEqual(notes.map((note) => [note.body, note.agent, note.privateTo]), [['Budget: noted.', 'Homing', ana.id], ['Workshop: noted.', 'Homing', ana.id]]);
+    assert.deepEqual((await marksOf(place)).filter((mark) => mark.outcome === 'learned').map((mark) => [mark.interpretation, mark.reader]), [['notes 1', 'Claude'], ['notes 1', 'Claude']]);
+
+    // No model was called, and nothing was spent.
+    assert.equal(provider.asked.length, asked);
+    assert.equal((await owner`select from model_calls where person_id = ${ana.id}`).length, 0);
     await owner`update learning_runs set state = 'done', reason = 'removed' where place_id = ${place}`;
     await claude.close();
   } finally {

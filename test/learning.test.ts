@@ -1087,7 +1087,7 @@ test('once a run follows what arrives, its calls count against the monthly limit
     assert.deepEqual([(await run()).state, (await run()).reason], ['paused', 'monthly limit']);
     assert.equal((await marks()).length, 1);
     // Ana resuming it changes nothing while the month's limit holds.
-    await withPrincipal(sql, { person: ana.id, direct: true }, async (s) => resumeLearning(learning, s, (await runsFor(s, [place])).get(place)!));
+    await withPrincipal(sql, { person: ana.id, direct: true }, async (s) => resumeLearning(s, (await runsFor(s, [place])).get(place)!));
     await through();
     assert.deepEqual([(await run()).state, (await run()).reason, provider.asked.length], ['paused', 'monthly limit', asked]);
 
@@ -1196,7 +1196,7 @@ test('pausing stops a run at once: the thread under way is finished, and nothing
   assert.equal(await pause(), false, 'pausing again changes nothing');
 
   // Resumed, it carries on with what's left.
-  await withPrincipal(sql, me, async (s) => resumeLearning(learning, s, (await runsFor(s, [place])).get(place)!));
+  await withPrincipal(sql, me, async (s) => resumeLearning(s, (await runsFor(s, [place])).get(place)!));
   await through();
   assert.deepEqual(subjectsSince(asked), ['Alpha', 'Bravo', 'Charlie', 'Delta']);
   assert.equal((await run()).state, 'following');
@@ -2793,7 +2793,7 @@ test('learning that an assistant proposes starts only when the person approves i
   // Homing reads with another provider or model by now, or with none: the estimate she saw doesn't hold, and nothing starts.
   await assert.rejects(approve(me, { model: { ...reads, provider: 'elsewhere.test' } }), /Homing’s model changed since this was proposed, so the estimate doesn’t hold any more/);
   await assert.rejects(approve(me, { model: { ...reads, cheaper: 'test/another' } }), /Homing’s model changed since this was proposed/);
-  await assert.rejects(approve(me, { model: null }), /Homing has no model set up/);
+  await assert.rejects(approve(me, { model: null }), /Homing’s model changed since this was proposed/);
   await assert.rejects(approve(me, { shown: `${shown}x` }), /What this shows changed after you opened it/);
   assert.equal((await run()).state, 'estimating');
   // The ceiling was lowered under the limit she was shown: the database refuses, and she's told why.

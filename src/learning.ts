@@ -3,6 +3,8 @@
 // app or by approving what their assistant proposes. Before that, Homing estimates what it may
 // cost, from how many items the system counts there and a small sample, and suggests its limit.
 // The run then learns through the place's history and carries on with what arrives (learner.ts).
+// Homing's own model does the reading where it has one, and the person's assistant can, which is
+// how a run works where Homing has none: it starts all the same, and its reading costs nothing here.
 // Only its owner sees a run, its progress and what it spent, and only they raise its limit, or
 // have it learn from more than it would: taking something off what's left out, or keeping a sender.
 
@@ -11,15 +13,18 @@ import { ConnectionUnusable, kindOf, Unanswered, using, type Broker } from './co
 import type { Change, Envelope, Follow, Scope } from './connectors.ts';
 import { personOf, withPrincipal, type Principal, type Session } from './db.ts';
 import type { Interpretation } from './interpret.ts';
+import type { LearnerOptions } from './learner.ts';
 import { callCost, monthlyLimit, type Model } from './model.ts';
 import { ownPlace, quoted, wordsOf, type Place } from './places.ts';
 import { accessibleSpaces } from './spaces.ts';
 
-/** What learning needs from the server: connections, Homing's model if it has one, and how a batch is read. */
+/** What learning needs from the server: connections, Homing's model if it has one, and how a batch is read, by that model or by a person's assistant. */
 export interface Learning {
   broker: Broker;
   model?: Model;
   interpretation: Interpretation;
+  /** How learning paces itself, when not as usual, for Homing's worker and for an assistant's reading alike. Tests set it faster. */
+  pace?: LearnerOptions;
 }
 
 export type RunState = 'estimating' | 'learning history' | 'following' | 'paused' | 'needs attention' | 'done';
@@ -68,6 +73,8 @@ export type Estimate = {
   /** How many items the sample held. */
   sampled: number;
   at: string;
+  /** Made where Homing has no model of its own: the person's assistant reads, so it holds no cost and no limit. */
+  unpriced?: true;
 };
 
 /** A learning run, as its owner sees it. */
@@ -106,6 +113,8 @@ export interface Run {
   summarized: string | null;
   summaryFailed: boolean;
   startedAt: Date | null;
+  /** How many threads of the page it stands at wait for someone to read them, as whoever looked last counted. */
+  unread: number;
 }
 
 /** How far a run has come. */
@@ -143,8 +152,8 @@ export class LearningRefused extends Error {
   override name = 'LearningRefused';
 }
 
-/** What's said when Homing has no model, wherever learning is asked for. */
-export const noModel = 'Homing has no model set up, so it can’t learn from a connected source yet. Whoever looks after Homing can set one up.';
+/** What's said when an estimate that holds no cost is to be started or extended where Homing now has a model, which would cost. */
+const pricedSince = 'Homing has a model of its own since this was estimated, so the reading would cost something now. Estimate it again.';
 
 interface RunRow {
   id: string;
@@ -173,6 +182,7 @@ interface RunRow {
   summarized: string | null;
   summaryFailed: boolean;
   startedAt: Date | null;
+  unread: number;
 }
 
 /**
@@ -225,7 +235,7 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
            r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
-           r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
+           r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at, r.unread,
            r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed
     from learning_runs r
     where r.place_id in ${s.tx(places)} and r.private_to = ${person}::uuid
@@ -467,10 +477,10 @@ const latestSampled = 30 * 24 * 60 * 60 * 1000;
  * model or are left out or wait by the run's map, how many threads the rest make, and what reading those costs at the model's prices. A
  * handful of requests to the system, no scan, and no model call. It's rough: the rest of the scope
  * may differ from the sample. The limit it suggests is at most what whoever looks after Homing
- * lets a run spend.
+ * lets a run spend. Where Homing has no model, the person's assistant reads, and the estimate
+ * holds the counts with no cost and no limit.
  */
 export async function estimate(l: Learning, principal: Principal, place: Place, scope: Scope, { leftOut, map }: Pick<Run, 'leftOut' | 'map'>, ceiling: number): Promise<Estimate> {
-  if (!l.model) throw new LearningRefused(noModel);
   const model = l.model;
   const connector = l.broker.connectors.get(place.connector);
   const follow = kindOf(connector, place.kind)?.follow;
@@ -499,9 +509,9 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
     aside += kept.length - read.length;
     for (const batch of batchesOf(read, l.interpretation.most)) {
       threads++;
-      for (const call of l.interpretation.calls({ space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: null, earlierUpTo: null })) {
-        const cost = callCost(model, call);
-        if (!cost) throw new LearningRefused(noModel);
+      for (const call of model ? l.interpretation.calls({ space: place.space, words, thread: batch.thread, items: batch.changes.map((change) => change.item), earlier: null, earlierUpTo: null }) : []) {
+        const cost = callCost(model!, call);
+        if (!cost) throw new LearningRefused('Homing doesn’t know what its model costs, so there’s no estimate. Whoever looks after Homing can set its prices.');
         most += cost.most;
         about += cost.about;
       }
@@ -517,9 +527,10 @@ export async function estimate(l: Learning, principal: Principal, place: Place, 
     setAside: Math.round(each(aside)),
     low: Math.min(cents(each(about)), high),
     high,
-    limit: Math.min(suggestedLimit(high), ceiling),
+    limit: model ? Math.min(suggestedLimit(high), ceiling) : 0,
     sampled,
     at: new Date().toISOString(),
+    ...(!model && { unpriced: true as const }),
   };
 }
 
@@ -642,16 +653,42 @@ export async function estimateLearning(l: Learning, principal: Principal, placeI
  * the limit they chose, or the one the estimate suggested. A run estimated again since isn't what
  * they saw, and doesn't start. Only the person does, in Homing itself, directly or by approving
  * what their assistant proposed. The database checks all of it, and that the limit is within what
- * a run may spend here.
+ * a run may spend here. An estimate made where Homing had no model holds no cost, so it starts
+ * nothing once Homing has one.
  */
 export async function startLearning(l: Learning, s: Session, shown: Pick<Run, 'id' | 'place' | 'since' | 'estimate'>, limit?: number): Promise<void> {
-  if (!l.model) throw new LearningRefused(noModel);
   if (!shown.estimate) throw new LearningRefused('Learning is estimated before it starts.');
+  if (shown.estimate.unpriced && l.model) throw new LearningRefused(pricedSince);
   const cap = limit ?? shown.estimate.limit;
   const place = await ownPlace(s, shown.place);
   const already = place && (await elsewhere(s, place, wordsOf(l.broker.connectors.get(place.connector), place.kind)));
   if (already) throw new LearningRefused(already);
   await refusing(() => s.tx`select start_learning(${shown.id}::uuid, ${cap}::numeric, ${shown.since}, ${shown.estimate!.at}::timestamptz)`);
+}
+
+/** A run taken for the person's assistant to read: its claim, and what was handed out under the claim the assistant held. Or why not, and until when. */
+export interface Taken {
+  claim: string | null;
+  handed: string[] | null;
+  refused: 'not reading' | 'held' | 'waits' | null;
+  until: Date | null;
+}
+
+/**
+ * Takes the person's run for their assistant to read, under a claim of its own each time: when
+ * nobody holds the run, or the assistant names the claim it holds. One reads at a time, so it's
+ * refused while Homing's own worker or another conversation holds it, while the run hands out
+ * nothing, as when it's paused, or while it waits for the system it reads.
+ */
+export async function takeLearning(s: Session, run: Run, held: string | undefined, leaseSeconds: number): Promise<Taken> {
+  const [taken] = await refusing(() => s.tx<Taken[]>`select * from take_learning_run(${run.id}::uuid, ${held ?? null}::uuid, ${leaseSeconds}::integer)`);
+  return taken;
+}
+
+/** Whether the person's run has a page to look at now. */
+export async function learningDue(s: Session, run: Run): Promise<boolean> {
+  const [due] = await s.tx`select from learning_runs r where r.id = ${run.id}::uuid and r.next_at <= now()`;
+  return due !== undefined;
 }
 
 /** Pauses the person's run. It keeps where it is. Whether it changed anything. */
@@ -661,8 +698,7 @@ export async function pauseLearning(s: Session, run: Run): Promise<boolean> {
 }
 
 /** Resumes the person's run where it stopped. One paused at its limit resumes only when the person sets its limit. The state it's in now. */
-export async function resumeLearning(l: Learning, s: Session, run: Run): Promise<RunState> {
-  if (!l.model) throw new LearningRefused(noModel);
+export async function resumeLearning(s: Session, run: Run): Promise<RunState> {
   const [{ state }] = await refusing(() => s.tx<{ state: RunState }[]>`select resume_learning(${run.id}::uuid) as state`);
   return state;
 }
@@ -699,7 +735,7 @@ export async function forgetExtension(s: Session, run: Run): Promise<void> {
  * from what that adds, and only from that. The run's limit stays as it is.
  */
 export async function extendLearning(l: Learning, s: Session, run: Run, since: Date): Promise<void> {
-  if (!l.model) throw new LearningRefused(noModel);
+  if (run.proposed?.unpriced && l.model) throw new LearningRefused(pricedSince);
   await refusing(() => s.tx`select extend_learning(${run.id}::uuid, ${since})`);
 }
 
@@ -763,7 +799,7 @@ export function setAsideWords(reason: string, items: number, words: { item: stri
     case 'nothing to keep':
       return `${count} with nothing to keep`;
     case 'no usable answer':
-      return `${count} the model gave no usable answer for`;
+      return `${count} that got no usable answer`;
     case 'provider refused':
       return `${count} the model’s provider wouldn’t take`;
     case 'provider failed':

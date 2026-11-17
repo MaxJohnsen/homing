@@ -28,7 +28,7 @@ Every space has a shared side for its members and a private side for each of the
 
 > Homing learns automatically, shares deliberately, and changes behavior consciously.
 
-Agents connect over MCP, so Homing is designed to work from Claude, ChatGPT, Copilot or Claude Code. It runs on your own server, and it is useful without an AI model of its own. Connecting one lets it learn in the background.
+Agents connect over MCP, so Homing is designed to work from Claude, ChatGPT, Copilot or Claude Code. It runs on your own server, and it is useful without an AI model of its own: your assistant can read your mailbox for it. Connecting a model lets it learn in the background.
 
 ## An example
 

@@ -83,16 +83,14 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
 
   let body: ReactNode;
   if (!run || (run.state === 'estimating' && open === 'scope')) {
-    body = !model ? (
-      <p className="text-sm text-muted-foreground">Homing has no model set up, so it can’t learn from this {words.place} yet. Whoever looks after Homing can set one up.</p>
-    ) : (
+    body = (
       <>
         <p className="text-sm text-muted-foreground">
-          Homing reads through this {words.place} and keeps what it learns as notes only you see, each with the {words.items} it came from. It sends the {words.items} it learns
-          from to {model.provider} ({model.cheaper}) to understand them, and sets aside newsletters and automated mail without sending them. You see what it may cost before
-          anything starts.
+          {model
+            ? `Homing reads through this ${words.place} and keeps what it learns as notes only you see, each with the ${words.items} it came from. It sends the ${words.items} it learns from to ${model.provider} (${model.cheaper}) to understand them, and sets aside newsletters and automated mail without sending them. You see what it may cost before anything starts.`
+            : `Homing goes through this ${words.place} and keeps what it learns as notes only you see, each with the ${words.items} it came from. This Homing has no model of its own, so your assistant does the reading, a few ${words.thread}s at a time, when you ask it to. That costs nothing in Homing. Newsletters and automated mail are set aside unread. You see what is there before anything starts.`}
         </p>
-        {actions && <ScopeForm label="How far back should it learn?" action="See what it would cost" busy={busy} from={run?.since} onChoose={(since) => act(() => actions.estimate(place.id, since))} />}
+        {actions && <ScopeForm label="How far back should it learn?" action={model ? 'See what it would cost' : 'See what is there'} busy={busy} from={run?.since} onChoose={(since) => act(() => actions.estimate(place.id, since))} />}
       </>
     );
   } else if (run.state === 'estimating') {
@@ -102,7 +100,14 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
         {(run.leftOut.senders.length > 0 || run.leftOut.folders.length > 0) && (
           <p className="text-sm text-muted-foreground">It leaves out {leftOutWords(run)}.</p>
         )}
-        {actions && run.estimate && open !== 'leave out' && (
+        {actions && run.estimate?.unpriced && open !== 'leave out' && (
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => act(() => actions.start(place.id, '0', run.since, run.estimate!.at))}>Start learning</Button>
+            <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => setOpen('scope')}>Change how far back</Button>
+            <Button type="button" variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => setOpen('leave out')}>Leave something out</Button>
+          </div>
+        )}
+        {actions && run.estimate && !run.estimate.unpriced && open !== 'leave out' && (
           <LimitForm
             label="Limit for this run, in dollars"
             value={run.estimate.limit}
@@ -137,11 +142,13 @@ export function Learning({ place, model, ceiling, actions }: { place: PlaceData;
             {run.setAside.length > 0 && ` Set aside: ${run.setAside.map((aside) => aside.words).join(', ')}.`}
             {(run.again ?? 0) > 0 && ` ${capitalize(count(run.again ?? 0, words.item, words.items))} set aside before will be learned from after all.`}
           </p>
-          <p>
-            Its history has cost {usd(run.spent)} of its {usd(run.limit)} limit.
-            {run.followed > 0 && ` What arrived since has cost ${usd(run.followed)}, which counts against Homing’s monthly limit.`}
-          </p>
-          {!model && <p>Homing has no model set up now, so it waits.</p>}
+          {(model || run.spent > 0 || run.followed > 0) && (
+            <p>
+              Its history has cost {usd(run.spent)} of its {usd(run.limit)} limit.
+              {run.followed > 0 && ` What arrived since has cost ${usd(run.followed)}, which counts against Homing’s monthly limit.`}
+            </p>
+          )}
+          {!model && <p>This Homing has no model of its own, so what is left to read waits for your assistant: ask it to read your {words.place} for Homing. That costs nothing in Homing.</p>}
         </div>
         {actions && !open && !run.proposed && (
           <div className="flex flex-wrap gap-2">
@@ -268,7 +275,7 @@ function estimateSentence(estimate: EstimateData, words: { item: string; items: 
   if (estimate.items === 0) return `${service} counts no ${words.items} ${range}, so there’s nothing there to learn from yet.`;
   return (
     `${service} counts ${count(estimate.items, words.item, words.items)} ${range}. About ${thousands(estimate.setAside)} of them need no model and are set aside, ` +
-    `and the rest make about ${count(estimate.threads, words.thread, `${words.thread}s`)} for the model to read.`
+    `and the rest make about ${count(estimate.threads, words.thread, `${words.thread}s`)} ${estimate.unpriced ? 'to read' : 'for the model to read'}.`
   );
 }
 
@@ -280,7 +287,9 @@ function EstimateText({ estimate, words, service, model }: { estimate: EstimateD
       {estimate.items > 0 && (
         <>
           <p className="text-base font-semibold">
-            Estimated model cost: {usd(estimate.low)} to {usd(estimate.high)}{model ? `, with ${model.cheaper} at ${model.provider}` : ''}.
+            {estimate.unpriced
+              ? 'Reading them costs nothing in Homing: your assistant does it, when you ask it to.'
+              : `Estimated model cost: ${usd(estimate.low)} to ${usd(estimate.high)}${model ? `, with ${model.cheaper} at ${model.provider}` : ''}.`}
           </p>
           <p className="text-sm text-muted-foreground">
             This is a rough estimate. It goes by that count and a sample of {count(estimate.sampled, words.item, words.items)}, and the rest may be longer or shorter.

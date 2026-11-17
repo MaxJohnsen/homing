@@ -52,7 +52,7 @@ export interface ServerOptions {
   connectors?: Connector[];
   /** Homing's own model, for learning. By default from the model settings in the environment; null for none. */
   model?: ModelSettings | null;
-  /** How the worker that learns from connected places paces itself, or false for none. It runs only with a model. */
+  /** How the worker that learns from connected places paces itself, or false for none. Without a model it follows, sets aside and sorts, and leaves the reading to people's assistants. */
   learner?: LearnerOptions | false;
   /** How learning reads a batch of a place's items. Tests replace it. */
   interpretation?: Interpretation;
@@ -145,7 +145,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   const broker = { sql, vault: vault(secret), connectors };
   const model = modelSettings && modelOf(modelSettings);
   // Learning from connected places: what estimating, directing and doing it need.
-  const learning: Learning = { broker, model, interpretation: options.interpretation ?? notes };
+  const learning: Learning = { broker, model, interpretation: options.interpretation ?? notes, ...(options.learner && { pace: options.learner }) };
   const handler = createMcpHandler(({ authInfo }) => {
     const principal = authInfo?.extra?.principal as AgentPrincipal;
     return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer }, broker, learning });
@@ -162,8 +162,8 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, connectors, model, learning };
   // What imports left on the way, when Homing stopped during one, goes, and keeps going.
   const stopTidying = keepTidy(sql);
-  // Without a model nothing is learned, so no worker runs.
-  const learner = model && options.learner !== false ? startLearner(sql, learning, options.learner) : undefined;
+  // It needs no model: it follows each place, summarizes it, and sets aside and sorts what arrives. What is left to read waits for the person's assistant.
+  const learner = options.learner !== false ? startLearner(sql, learning, options.learner) : undefined;
 
   return {
     url,

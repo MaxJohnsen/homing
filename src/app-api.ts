@@ -1008,7 +1008,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           microsoft,
           // Whoever looks after Homing is told how to set it up; nobody else is offered anything that can't work.
           looksAfter: !microsoft && (await looksAfter()),
-          // Which provider reads what Homing learns from, or null when Homing has no model, so it can't learn yet.
+          // Which provider reads what Homing learns from, or null when Homing has no model, so the person's assistant does the reading.
           model: modelStatement(app.model),
           // The most a learning run may spend on history here, which whoever looks after Homing sets.
           runCeiling: ceiling,
@@ -1108,7 +1108,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
                 await retryLearning(s, run, reason);
               }
               else if (route.name === 'pause learning') await pauseLearning(s, run);
-              else if (route.name === 'resume learning') await resumeLearning(app.learning, s, run);
+              else if (route.name === 'resume learning') await resumeLearning(s, run);
               else if (route.name === 'extend learning') await extendLearning(app.learning, s, run, since!);
               else if (route.name === 'learning limit') await setLearningLimit(s, run, limit!);
               else await setLeftOut(s, run, { senders: senders!, folders: folders!, kept: kept! });

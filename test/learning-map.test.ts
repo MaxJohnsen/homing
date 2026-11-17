@@ -721,10 +721,9 @@ test('with no model set up, a run goes by the map all the same: what waits or is
   const none = await ana.browser.json(`/api/places/${place}/learning/map`, {});
   assert.deepEqual([none.status, none.body.message], [409, 'Homing has no model set up, so nothing was sent.']);
 
-  // The run was started while this Homing had a model, which it has no more. Its worker needs none for what the map sets aside.
+  // The run starts without a model too, and its worker needs none for what the map sets aside.
   const me = { person: ana.id, direct: true } as const;
-  const had: Learning = { ...without, model: provider.model() };
-  await withPrincipal(sql, me, async (s) => startLearning(had, s, await estimateLearning(had, me, place, new Date('2025-01-01')), 5));
+  await withPrincipal(sql, me, async (s) => startLearning(without, s, await estimateLearning(without, me, place, new Date('2025-01-01'))));
   await through(without);
   assert.equal((await run()).state, 'following');
   assert.deepEqual(await state(), [
@@ -748,12 +747,12 @@ test('with no model set up, a run goes by the map all the same: what waits or is
     ...[1, 2].map(() => 'news@weekly-digest.test | waiting |  | false'),
   ]);
   assert.doesNotMatch(await reads(), /Not placed|senders the user left out/);
-  // And one that leads Mum's mail to a space has it wait to be read there: nothing more is asked of anyone, and it says what it waits for.
+  // And one that leads Mum's mail to a space has it wait to be read there, by her assistant: no model is asked, and it says what it waits for.
   await approved(await does('learning.map', { routes: [{ who: 'mum@family.test', to: `space:${acme}` }, { who: 'northwind.test', to: 'wait' }] }));
   assert.deepEqual((await state()).filter((row) => row.endsWith('true')), [1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | true'));
   const waiting = await reads();
   assert.match(waiting, /3 emails set aside before will be learned from after all, as the user asked\./);
-  assert.match(waiting, /Homing has no model set up now, so it waits\./);
+  assert.match(waiting, /This Homing has no model of its own, so the reading is yours to do, when the user asks\./);
   assert.match(waiting, /- "mum@family\.test" to "Acme" \(space:[0-9a-f-]+\): 3 emails in about 3 threads/);
   assert.equal(provider.asked.length, asked, 'no model call in any of it');
 });

@@ -549,19 +549,19 @@ function LearningDetails({ place, learning }: { place: string; learning: Learnin
         <div className="flex flex-col gap-1">
           <p className="text-base">
             {learning.service} counts {counted(estimate.items, words.item, words.items)} there. About {thousands(estimate.setAside)} of them need no model and are set aside, and the rest
-            make about {counted(estimate.threads, words.thread, `${words.thread}s`)} for the model to read.
+            make about {counted(estimate.threads, words.thread, `${words.thread}s`)} {learning.provider ? 'for the model to read' : 'to read'}.
           </p>
-          <p className="text-base font-semibold">Estimated model cost: {usd(estimate.low)} to {usd(estimate.high)}.</p>
+          <p className="text-base font-semibold">{learning.provider ? `Estimated model cost: ${usd(estimate.low)} to ${usd(estimate.high)}.` : 'Reading them costs nothing in Homing.'}</p>
           <p className="text-sm text-muted-foreground">
             This is a rough estimate. It goes by that count and a sample of {counted(estimate.sampled, words.item, words.items)}, and the rest may be longer or shorter.
           </p>
         </div>
       )}
       <p className="text-base">
-        {learning.further
-          ? `Its limit stays ${usd(learning.limit)}. There, what this adds waits until you raise it.`
-          : `Its limit is ${usd(learning.limit)}. Homing pauses there, until you raise it.`}{' '}
-        Homing sends the {words.items} it learns from to {learning.provider} ({learning.model}) to understand them. What it learns is only yours.
+        {learning.provider
+          ? `${learning.further ? `Its limit stays ${usd(learning.limit)}. There, what this adds waits until you raise it.` : `Its limit is ${usd(learning.limit)}. Homing pauses there, until you raise it.`} Homing sends the ${words.items} it learns from to ${learning.provider} (${learning.model}) to understand them.`
+          : `This Homing has no model of its own, so your assistant reads the ${words.items}, a few ${words.thread}s at a time, when you ask it to.`}{' '}
+        What it learns is only yours.
       </p>
       {learning.problem && <FieldError className="text-base">{learning.problem}</FieldError>}
     </>

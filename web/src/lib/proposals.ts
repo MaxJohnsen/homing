@@ -346,12 +346,12 @@ export interface LearningProposalData {
   /** How far back, and for learning further back, up to where it learns from already. */
   since: string;
   /** The estimate you're shown: what the service counts there, about what a model would read, and what that may cost. It's rough. */
-  estimate: { since: string; until: string | null; items: number; threads: number; setAside: number; low: number; high: number; limit: number; sampled: number };
+  estimate: { since: string; until: string | null; items: number; threads: number; setAside: number; low: number; high: number; limit: number; sampled: number; unpriced?: true };
   /** In dollars: the limit it would start with, or the limit it has, which stays. */
   limit: number;
-  /** Who reads what it learns from: the provider and the model. */
-  provider: string;
-  model: string;
+  /** Who reads what it learns from: the provider and the model, or neither where Homing has no model and your assistant reads. */
+  provider: string | null;
+  model: string | null;
   further: boolean;
   /** Why it can't be approved as it is, if it can't. */
   problem: string | null;

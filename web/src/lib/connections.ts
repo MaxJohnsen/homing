@@ -32,6 +32,8 @@ export interface EstimateData {
   sampled: number;
   /** When Homing made it, which starting sends back, so only the estimate you saw starts. */
   at: string;
+  /** Made where Homing has no model of its own: your assistant reads, so it holds no cost and no limit. */
+  unpriced?: true;
 }
 
 /** Who sent what a run set aside, and how many. */

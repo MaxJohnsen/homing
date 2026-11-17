@@ -1889,9 +1889,10 @@ function describeProposal(proposal: Proposal): string {
   if (proposal.action === 'add space') return `Create a space called ${quote(change.name!)}, ${change.who === 'just me' ? 'just for the user' : 'with others'}${change.closed ? ', closed' : ''}`;
   if (proposal.action === 'start learning' || proposal.action === 'extend learning') {
     const from = `the user's ${change.words?.place ?? 'place'} ${quote(change.address ?? '')}`;
-    const cost = change.estimate ? `, estimated at ${usd(change.estimate.low)}–${usd(change.estimate.high)}` : '';
+    // Where Homing has no model, the user's assistant reads, which costs nothing in Homing.
+    const cost = !change.provider ? ', read by the user’s assistant' : change.estimate ? `, estimated at ${usd(change.estimate.low)}–${usd(change.estimate.high)}` : '';
     return proposal.action === 'start learning'
-      ? `Have Homing learn from ${from} back to ${day(new Date(change.since!))}, with a limit of ${usd(change.limit ?? change.estimate?.limit ?? 0)}${cost} (learning:${change.place})`
+      ? `Have Homing learn from ${from} back to ${day(new Date(change.since!))}${change.provider ? `, with a limit of ${usd(change.limit ?? change.estimate?.limit ?? 0)}` : ''}${cost} (learning:${change.place})`
       : `Have Homing learn from ${from} further back, to ${day(new Date(change.since!))}${cost} (learning:${change.place})`;
   }
   if (proposal.action === 'publish') return `Share ${ref('item', proposal.itemId!)} with everyone in the space`;
@@ -1995,7 +1996,9 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     case 'approved':
       if (proposal.action === 'change members') return `The user approved it on ${day(proposal.decidedAt!)}, and it applies now.`;
       if (proposal.action === 'start learning' || proposal.action === 'extend learning') {
-        return `The user approved it on ${day(proposal.decidedAt!)}, and Homing learns from it in the background now. \`read\` learning:${proposal.change.place} says how far it is.`;
+        return proposal.change.provider
+          ? `The user approved it on ${day(proposal.decidedAt!)}, and Homing learns from it in the background now. \`read\` learning:${proposal.change.place} says how far it is.`
+          : `The user approved it on ${day(proposal.decidedAt!)}, so it has started. Homing has no model of its own, so its reading waits for you: \`read\` learning:${proposal.change.place} says how.`;
       }
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user shared it on ${day(proposal.decidedAt!)}. Everyone in the space sees it now.`;
       if (proposal.action === 'share space') return `The user shared it on ${day(proposal.decidedAt!)}. It's out of their personal space now; add people with members.change.`;

@@ -2,7 +2,7 @@ import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
-import { mapOf, noModel, runsFor, type Estimate, type Route } from './learning.ts';
+import { mapOf, runsFor, type Estimate, type Route } from './learning.ts';
 import { holdings, summaryFor } from './map.ts';
 import { ownPlace, type Place as ConnectedPlace } from './places.ts';
 import { readSkill } from './skills.ts';
@@ -16,8 +16,9 @@ export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 
 /**
  * Learning from one of the person's places, started or taken further back (spec §8): the place,
  * as the person knows it and as its items are worded, the day it would go back to, the estimate
- * they're shown, with the provider and model that would read it, and, to start it, its limit. All
- * as it was when it was proposed, so approving starts exactly that.
+ * they're shown, with the provider and model that would read it, or neither where Homing has no
+ * model and the person's assistant reads, and, to start it, its limit. All as it was when it was
+ * proposed, so approving starts exactly that.
  */
 export interface LearningChange {
   place: string;
@@ -27,8 +28,8 @@ export interface LearningChange {
   since: string;
   limit?: number;
   estimate: Estimate;
-  provider: string;
-  model: string;
+  provider: string | null;
+  model: string | null;
 }
 
 /**
@@ -1872,8 +1873,7 @@ export async function decide(
       const learning = await learningNow(s, proposal);
       if (!learning || learning.problem) throw new Undecidable('changed', learning?.problem ?? 'There’s nothing to decide any more.');
       if (decision.shown !== learning.shown) throw new Undecidable('changed', 'What this shows changed after you opened it. Check it again before you approve it.');
-      if (!decision.model) throw new Undecidable('changed', noModel);
-      if (decision.model.provider !== learning.provider || decision.model.cheaper !== learning.model) {
+      if ((decision.model?.provider ?? null) !== learning.provider || (decision.model?.cheaper ?? null) !== learning.model) {
         throw new Undecidable('changed', 'Homing’s model changed since this was proposed, so the estimate doesn’t hold any more. Ask for it again.');
       }
       const run = (await runsFor(s, [learning.place])).get(learning.place)!;
