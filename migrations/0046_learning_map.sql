@@ -38,9 +38,10 @@ $$;
 
 -- What a run set aside because of a route is learned from after all once
 -- the route no longer says so: a thread left out whose sender isn't any more,
--- and one that waited once its route leads to a space its owner can open
--- where model processing is on, or, when no route named it, once one names
--- its sender. The run reads each as the map has it then. How many.
+-- and one that waited once its route leads to a space its owner can open,
+-- that isn't archived, where model processing is on, or, when no route named
+-- it, once one names its sender. The run reads each as the map has it then.
+-- How many.
 create function learning_rerouted(run uuid) returns integer
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -58,7 +59,7 @@ begin
     or (i.reason = 'excluded sender' and now_to.dest <> 'leave out')
     or (i.reason = 'waiting' and now_to.dest = 'leave out')
     or (i.reason = 'waiting' and now_to.dest not in ('leave out', 'wait')
-        and exists (select from space_access a where a.space_id = now_to.dest::uuid and a.person_id = r.private_to)
+        and exists (select from space_access a join spaces s on s.id = a.space_id where a.space_id = now_to.dest::uuid and a.person_id = r.private_to and s.archived_at is null)
         and not exists (select from model_off(array[now_to.dest::uuid])))
   );
   get diagnostics again = row_count;

@@ -314,6 +314,12 @@ test('Homing’s own model answers the same question, and once Ana approves its 
   await through(learning);
   assert.deepEqual(readSince(off), ['Lunch 4']);
   assert.deepEqual([(await run()).state, (await marks()).find((mark) => mark.reason === 'waiting')?.sender], ['following', 'gunnar@northwind.test']);
+  // While it's off there, the thread that waits isn't looked at again, however often the run is.
+  const lookedAt = async () => (await marks()).find((mark) => mark.reason === 'waiting')!.processedAt.getTime();
+  const last = await lookedAt();
+  await owner`update learning_runs set next_at = now() where place_id = ${place}`;
+  await through(learning);
+  assert.equal(await lookedAt(), last);
   await withPrincipal(sql, me, (s) => setModelProcessing(s, northwind, true));
   await owner`update learning_runs set next_at = now() where place_id = ${place}`;
   await through(learning);
@@ -550,7 +556,7 @@ test('a map is checked before it is proposed, whoever answers: each thing wrong 
 
 test('threads with several senders follow the rule: the oldest sender a route names decides, an address before its domain, and one left-out sender leaves the whole thread out', async () => {
   const [kari, gunnar, per, mum] = [from('Kari Moe', 'kari@northwind.test'), from('Gunnar Lie', 'gunnar@northwind.test'), from('Per Olsen', 'per@fabrikam.test'), from('Mum', 'mum@family.test')];
-  const { ana, acme, place, marks, spacesOf, assistant, decide } = await world(modeled, (account) => [
+  const { ana, acme, account, place, marks, spacesOf, assistant, decide } = await world(modeled, (account) => [
     // Ana wrote first, then Per, then Kari: Per is the oldest a route names.
     mail({ name: account.name, address: account.address }, 'Kickoff', 50, { conversation: 'kickoff', folder: 'sentitems' }),
     mail(per, 'Kickoff', 49, { conversation: 'kickoff' }),
@@ -597,6 +603,26 @@ test('threads with several senders follow the rule: the oldest sender a route na
   assert.deepEqual(aside, [['gunnar@northwind.test', 'waiting', 'gunnar@northwind.test'], ['kari@northwind.test', 'excluded sender', 'family.test'], ['mum@family.test', 'excluded sender', 'family.test']]);
   // Each email of the kickoff followed Per's route, Kari's among them.
   assert.deepEqual([...new Set((await marks()).filter((mark) => mark.outcome === 'learned' && mark.because === 'fabrikam.test').map((mark) => mark.sender))].filter((sender) => !sender.endsWith('@acme.test')).sort(), ['kari@northwind.test', 'per@fabrikam.test']);
+  // A space archived after the map was set can't take a note: what belongs there waits, isn't looked at again while it's archived, and is read once it's reopened.
+  const northwind = await space('Northwind');
+  await withPrincipal(sql, me, (s) => archiveSpace(s, northwind, true));
+  microsoft.deliver(account, { to: [{ name: account.name, address: account.address }], ...mail(kari, 'Invoice', 0) });
+  microsoft.deliver(account, { to: [{ name: account.name, address: account.address }], ...mail(per, 'Offer', 0) });
+  const again = async () => {
+    await owner`update learning_runs set next_at = now() where place_id = ${place}`;
+    await through(learning);
+  };
+  const archived = provider.asked.length;
+  await again();
+  assert.deepEqual(readSince(archived), ['Offer'], 'the others carry on');
+  const invoice = async () => (await marks()).find((mark) => mark.sender === 'kari@northwind.test' && mark.reason === 'waiting')!.processedAt.getTime();
+  const lookedAt = await invoice();
+  await again();
+  assert.equal(await invoice(), lookedAt);
+  await withPrincipal(sql, me, (s) => archiveSpace(s, northwind, false));
+  await again();
+  await again();
+  assert.deepEqual([readSince(archived), await notesIn(northwind)], [['Offer', 'Invoice'], ['Invoice: noted.', 'Status: noted.']]);
   // One email from a stranger doesn't add up, so nobody is listed as not placed.
   assert.deepEqual((await ana.browser.json(`/api/spaces/${acme}/connections`)).body.places[0].learning.notPlaced, { senders: [], more: 0 });
 });
