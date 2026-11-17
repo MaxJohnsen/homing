@@ -617,10 +617,11 @@ test('what search, read, remember and act say keeps their descriptions short eno
   for (const tool of tools.filter((tool) => ['search', 'read', 'remember'].includes(tool.name))) {
     assert.ok((tool.description ?? '').length < 2_048, `${tool.name}: ${tool.description?.length}`);
   }
-  // `act` does the most, so it says the most. Learning adds one sentence to it, with the map's two actions, and the rest is in what `read` gives for a learning:… reference.
+  // `act` does the most, so it says the most. Learning adds one sentence to it, and the rest is in what `read` gives for a learning:… reference: the map's two actions too, which it only points to.
   const act = tools.find((tool) => tool.name === 'act')!;
-  assert.ok((act.description ?? '').length < 4_250, `act: ${act.description?.length}`);
-  assert.equal((act.description ?? '').match(/learning\.\w+/g)?.length, 8, 'each of learning’s actions is named once');
+  assert.ok((act.description ?? '').length < 4_200, `act: ${act.description?.length}`);
+  assert.deepEqual((act.description ?? '').match(/learning\.\w+/g), ['learning.start', 'learning.extend', 'learning.pause', 'learning.resume', 'learning.leave_out', 'learning.try_again'], 'each named once');
+  assert.match(act.description ?? '', /`read` its learning:… reference first: it says how, and how to map its mail\./);
   await claude.close();
 });
 

@@ -134,6 +134,10 @@ test('with no model set up, Ana’s assistant reads who writes in her mailbox an
 
   // Context names it though Homing has no model, and the summary is made without one, by the worker.
   assert.match((await claude.call('context', { request: 'Sort out my mailbox', space: `space:${acme}` })).text, new RegExp(ref));
+  // Reading that reference says how, before anything was asked for: `act` only points here for the map's two actions.
+  const how = (await claude.call('read', { ref })).text;
+  assert.match(how, /`act` with learning\.summarize, this reference and since/);
+  assert.match(how, /how to propose where the mail belongs with learning\.map/);
   const since = new Date(Date.now() - 900 * day).toISOString().slice(0, 10);
   const asked = await claude.call('act', { action: 'learning.summarize', input: { from: ref, since } });
   assert.match(asked.text, /uses no model and reads no email's text/);
