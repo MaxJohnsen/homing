@@ -180,4 +180,4 @@ It reads like a picture book, one chapter per idea.
 
 `npm run dev:web` serves every screen with sample data, and its start page lists them, each state at its own address. The real pages come from Homing itself: run `npm run build:web`, then start the server. The landing page is `/landing` there, and `npm run build:site` builds homing.place as static files.
 
-The app was first designed as a clickable prototype with sample data. It's a starting point, not a specification. Each change to a screen follows this page, says in its pull request where it differs from the prototype and why, and is looked at with an empty Homing and one with years of knowledge, on a desktop and a phone.
+Each change to a screen follows this page and is looked at with an empty Homing and one with years of knowledge, on a desktop and a phone.
