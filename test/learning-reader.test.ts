@@ -407,7 +407,7 @@ test('an answer counts only for a thread handed out under a claim that holds, as
   assert.equal((await state()).filter((mark) => mark.endsWith('learned |  | notes 1 | Claude')).length, 2);
 
   // What was set aside for its answer is tried again when she asks, handed out like the rest, and read then.
-  assert.match((await claude.call('act', { action: 'learning.try_again', input: { from: ref } })).text, /^Homing tries 1 email again that it had set aside\. They wait to be read, like the rest: learning\.read hands them out\.$/);
+  assert.match((await claude.call('act', { action: 'learning.try_again', input: { from: ref } })).text, /^Homing tries 1 email again that it had set aside\. It waits to be read, like the rest: learning\.read hands it out\.$/);
   const retried = await reads(claude, ref);
   assert.deepEqual(retried.read.map((sent) => sent.emails[0].Subject), ['Contract']);
   assert.ok((await state()).every((mark) => mark.endsWith('learned |  | notes 1 | Claude')));

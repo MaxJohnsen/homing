@@ -516,7 +516,7 @@ export async function actOnLearning(
         const tried = await retryLearning(s, now);
         return tried
           ? `Homing tries ${counted(tried, words.item, words.items)} again that it had set aside. ` +
-              (l.model ? `What that costs counts against the run's limit of ${usd(now.limit)}, as its history does.` : 'They wait to be read, like the rest: learning.read hands them out.')
+              (l.model ? `What that costs counts against the run's limit of ${usd(now.limit)}, as its history does.` : `${tried === 1 ? 'It waits' : 'They wait'} to be read, like the rest: learning.read hands ${tried === 1 ? 'it' : 'them'} out.`)
           : `Homing has set nothing aside in ${what} that it can try again, so nothing changed.`;
       });
     case 'learning.extend': {
