@@ -128,6 +128,8 @@ describe('reading a year of the mailbox to its end, in several sessions', () => 
         const answer = await list(current, from ? { from, lines: 40 } : { token, lines: 40 });
         assert.ok(!answer.failed, answer.text);
         assert.ok(microsoft.asked.graph - asked <= mostRequests, `${microsoft.asked.graph - asked} requests`);
+        // No sign-in of Ana's ever reaches her assistant.
+        for (const issued of microsoft.issued) assert.ok(!answer.text.includes(issued));
         from = undefined;
         today = /It reaches the newest mail/.test(answer.text);
         const got = stretchOf(answer.text);
