@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, changesIn, mapOf, declineOnly, isSending, outcomeOf, placeOf, planBlocked, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, declineOnly, isSending, outcomeOf, placeOf, planBlocked, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
@@ -109,9 +109,7 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
         <>
           <p className="text-base font-semibold">
             {proposal.action === 'plan' && proposal.plan
-              ? mapOf(proposal.plan)
-                ? `Set where the mail in ${mapOf(proposal.plan)!.address} belongs?`
-                : proposal.plan.create
+              ? proposal.plan.create
                 ? `Create ${proposal.plan.create.name} in ${placeOf(proposal)} and make ${proposal.plan.steps.length === 1 ? 'this change' : `these ${proposal.plan.steps.length} changes`} in it?`
                 : `Make these ${proposal.plan.steps.length} changes in ${placeOf(proposal)}?`
               : proposal.action === 'space'

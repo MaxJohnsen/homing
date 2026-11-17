@@ -525,8 +525,8 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   const inScope = within(100);
   const marks = await marksOf(place);
   const count = (reason: string) => marks.filter((mark) => mark.reason === reason).length;
-  // A thread is read whole, so one Tor wrote in at any time is his, whenever its other emails came, and so is one she wrote to him in.
-  const withTor = new Set(mailbox.filter((email) => [email.from, ...(email.from.address === account.address ? [...(email.to ?? []), ...(email.cc ?? [])] : [])].some((party) => party.address === 'tor@acme.test')).map((email) => email.conversation));
+  // A thread is read whole, so one Tor wrote in at any time is his, whenever its other emails came.
+  const withTor = new Set(mailbox.filter((email) => email.from.address === 'tor@acme.test').map((email) => email.conversation));
   const [receipts, tors] = [inScope.filter((email) => email.kind === 'receipt'), inScope.filter((email) => withTor.has(email.conversation) && kept(email) && email.kind !== 'receipt')];
   assert.ok(receipts.length > 0 && tors.length > 0);
   assert.deepEqual([count('excluded folder'), count('excluded sender')], [receipts.length, tors.length]);
@@ -840,10 +840,8 @@ test('without a model, starting to learn says plainly that Homing has none, and 
     const [asked, graph] = [provider.asked.length, microsoft.asked.graph];
     const none = 'Homing has no model set up, so it can’t learn from a connected source yet. Whoever looks after Homing can set one up.';
 
-    // Context doesn't offer learning, which can't work, only working out where the mail belongs, which needs no model. Asking to learn anyway says why not.
-    const context = (await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text;
-    assert.doesNotMatch(context, /can learn from/i);
-    assert.match(context, /Homing can work out where the mail belongs in/);
+    // Context offers nothing that can't work, and asking for it anyway says why not.
+    assert.doesNotMatch((await claude.call('context', { request: 'Learn from my mailbox', space: `space:${acme}` })).text, /learn/i);
     for (const input of [{ since: '2025-01-01' }, { since: '2025-01-01', limit: 1 }]) {
       const answer = await claude.call('act', { action: 'learning.start', input: { from: `learning:${place}`, ...input } });
       assert.ok(answer.failed);

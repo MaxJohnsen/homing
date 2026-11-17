@@ -9,7 +9,7 @@ import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar, dateOf } from '@/components/screen';
 import { usd } from '@/lib/model';
-import { placeOf, precedenceOf, type IncludeData, type LeadsData, type MapData, type LearningProposalData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
+import { placeOf, precedenceOf, type IncludeData, type LearningProposalData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -126,8 +126,6 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
 
 /** One change of a plan once it's decided, greyed. */
 function SettledStep({ step }: { step: PlanStepData }) {
-  if (step.space) return <ProposedChange kind="preference" label="New space" text={step.space.name} settled />;
-  if (step.map) return <Routes map={step.map} settled />;
   if (step.member) return <Who member={step.member} settled />;
   if (step.item) return <ProposedChange kind="preference" label={`On ${step.item.page}`} text={step.item.text} settled />;
   if (step.task) return <ProposedChange kind="preference" label="Task" text={step.task.title} settled />;
@@ -178,22 +176,6 @@ function PlanDetails({ proposal, plan, idPrefix }: { proposal: ProposalData; pla
 /** One change in a plan, as its own decision would show it, more briefly. */
 function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; place: string; sees: PlanData['sees']; personal: boolean; id: string }) {
   const gone = (what: string) => <p className="rounded-xl bg-muted px-4 py-3 text-base">{what}</p>;
-  if (step.space) return <ProposedChange kind="preference" label={`New space in ${step.space.in ?? 'your personal space'}`} text={step.space.name} onlyYou />;
-  if (step.map) {
-    const all = [...step.map.routes, step.map.rest];
-    const [waits, leftOut] = [all.some((row) => row.to === 'wait'), all.some((row) => row.to === 'leave out')];
-    return (
-      <>
-        <Routes map={step.map} />
-        <p className="text-sm text-muted-foreground">
-          A thread goes by who it’s with: whoever wrote in it, and whoever you wrote to. An address goes before its domain, and if several are listed here, the first in the thread decides. What Homing learns from it is kept only for you, in the space it goes to.{' '}
-          {waits && 'Mail that waits isn’t read until you say where it goes. '}
-          {leftOut && 'A thread with anyone left out is never read, whatever else is listed here. '}
-          What Homing learned before stays where it is.
-        </p>
-      </>
-    );
-  }
   if (step.action === 'publish') {
     const { publication } = step;
     if (!publication) return step.item ? <ProposedChange kind="preference" label={`Share on ${step.item.page}`} text={step.item.text} /> : gone('Something to share that you can’t see anymore.');
@@ -495,35 +477,6 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
         </div>
       )}
     </>
-  );
-}
-
-/**
- * A map's change, set apart as the change being decided: each sender on a line of its own with
- * where their mail goes, then everything else, and how much each is, when Homing has counted.
- * Decided, it's greyed and names the mailbox, which the heading no longer does.
- */
-function Routes({ map, settled = false }: { map: MapData; settled?: boolean }) {
-  const rows = [...map.routes.map((route) => ({ who: route.who, leads: route as LeadsData })), { who: 'Everything else', leads: map.rest }];
-  const where = (to: LeadsData) => (to.to === 'leave out' ? 'left out' : to.to === 'wait' ? 'waits' : to.to === 'new space' ? `${to.name}, a new space` : (to.name ?? 'a space you can’t open'));
-  return (
-    <figure className={cn('flex flex-col gap-1.5 rounded-lg px-4 py-3.5', settled ? 'bg-muted' : 'bg-change')}>
-      <figcaption className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-        {settled ? `Where the mail in ${map.address} goes` : 'Where each sender’s mail goes'}
-        {!settled && <OnlyYou />}
-      </figcaption>
-      <ul className={cn('flex flex-col gap-2 text-base leading-snug', settled && 'text-muted-foreground')}>
-        {rows.map(({ who, leads }) => (
-          <li key={who} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:justify-between sm:gap-x-4">
-            <span className="[overflow-wrap:anywhere]">
-              {who} <span aria-hidden="true">→</span>
-              <span className="sr-only">{leads.to === 'leave out' ? 'is' : leads.to === 'wait' ? '' : 'to'}</span> {where(leads)}
-            </span>
-            {leads.emails !== null && <span className="text-sm text-muted-foreground">{thousands(leads.emails)} {leads.emails === 1 ? map.words.items.replace(/s$/, '') : map.words.items}</span>}
-          </li>
-        ))}
-      </ul>
-    </figure>
   );
 }
 

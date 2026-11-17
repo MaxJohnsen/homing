@@ -60,8 +60,8 @@ export interface Email {
   attachments: string[];
 }
 
-/** An email as a list of them shows it, such as a search or its thread, with whom it was sent to where the list says. */
-export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'> & { to?: Party[] };
+/** An email as a list of them shows it, such as a search or its thread. */
+export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'>;
 
 /** How many of an email's recipients its audience keeps. */
 const audienceKept = 100;
@@ -94,7 +94,7 @@ export function emailItem(email: Email, thread: EmailSummary[], moreInThread: bo
     fields,
     text: email.body,
     parts: { own: own.join('\n\n'), quoted: quotedPart(email.body, own).join('\n\n') },
-    related: thread.map((summary) => envelopeOf(summary, summary.to?.length ? { people: summary.to.slice(0, audienceKept), more: Math.max(0, summary.to.length - audienceKept) } : 'unknown')),
+    related: thread.map((summary) => envelopeOf(summary)),
     moreRelated: moreInThread,
     excerpt: (words) => emailExcerpt(email, words),
   };

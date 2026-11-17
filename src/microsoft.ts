@@ -12,7 +12,7 @@
 import { createHash, createPrivateKey, randomUUID, X509Certificate, type KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { decodeJwt, SignJWT } from 'jose';
-import type { Change, Changes, Connector, Grant, Listed, Party, Scope, SetAside, Tokens } from './connectors.ts';
+import type { Change, Changes, Connector, Grant, Party, Scope, SetAside, Tokens } from './connectors.ts';
 import { automatedEmail, carriesEarlier, emailFound, emailItem, mailbox } from './mail.ts';
 import { contentVersion } from './places.ts';
 
@@ -196,7 +196,6 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
           changes: async (access, from, scope, options) => followMail(set(), await access.token(), from, scope, options, access.signal),
           items: async (access, ids) => mailItems(set(), await access.token(), ids, access.signal),
           count: async (access, scope) => countMail(set(), await access.token(), scope, access.signal),
-          summary: async (access, from, scope) => listMail(set(), await access.token(), from, scope, access.signal),
           earlier: async (access, change, ids, options) => earlierMail(set(), await access.token(), change, ids, options, access.signal),
         },
       },
@@ -412,7 +411,7 @@ const lightFields = 'id,conversationId,receivedDateTime,parentFolderId,isDraft';
 /** How many emails a page of history holds at most, and how many changes a page of delta, each of which is read by its id. */
 const pageSize = 50;
 const deltaSize = 20;
-/** How many emails of a thread following lists, by sender, recipients, date, subject and folder: one page, in whatever order Graph gives it. */
+/** How many emails of a thread following lists, by sender, date, subject and folder: one page, in whatever order Graph gives it. */
 const threadLength = 100;
 /** The folders following leaves out, with everything in them, by their well-known names, and why. */
 const asideFolders: Record<string, SetAside> = { junkemail: 'junk', deleteditems: 'deleted', drafts: 'draft', outbox: 'draft' };
@@ -472,9 +471,37 @@ export async function followMail(
   // More folders than Homing follows: what arrives in the rest isn't given, which the run says.
   const partly = tree.more ? { partly: true as const } : {};
   if (kept.by === 'date') {
-    const { fresh, there, more, after } = await arrived(settings, access, { ...kept, tree }, scope, size, careful ? lightFields : followFields, signal);
+    const walk = kept;
+    const start = walk.after ?? scope.since.toISOString();
+    const skip = walk.skip ?? 0;
+    const filter = `receivedDateTime ge ${start}${scope.until ? ` and receivedDateTime lt ${scope.until.toISOString()}` : ''}`;
+    let body = await graph(
+      settings,
+      access,
+      `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime%20asc&$top=${size}${skip ? `&$skip=${skip}` : ''}&$select=${careful ? lightFields : followFields}`,
+      { prefer: [immutableIds, textBodies], signal },
+    );
+    // A page may hold nothing and still not be the last. Only its link leads on, since asking the
+    // same again gives the same. One empty page after another is Graph failing, which is waited out.
+    for (let empty = 0; listOf(body).length === 0 && typeof body['@odata.nextLink'] === 'string'; empty++) {
+      if (empty === emptyPages) throw new MicrosoftUnreachable('Graph');
+      body = await graph(settings, access, body['@odata.nextLink'], { prefer: [immutableIds, textBodies], signal });
+    }
+    const page = listOf(body);
+    // Graph says whether there's more: a page may hold fewer than asked for, and still not be the last.
+    const more = typeof body['@odata.nextLink'] === 'string';
+    const fresh = page.filter((message) => !walk.seen.includes(String(message.id ?? '')));
     const fetched: Fetched[] = careful ? await readEach(settings, access, fresh, true, signal) : fresh.map((message) => ({ message }));
     const changes = await changesOf(settings, access, fetched, tree, given);
+    const received = (message: Record<string, unknown>) => summaryOf(message).at?.toISOString() ?? null;
+    const last = fresh.length ? received(fresh.at(-1)!) : null;
+    const same = last !== null && last === walk.after;
+    const after = last ?? walk.after;
+    const seen = last ? [...(same ? walk.seen : []), ...fresh.filter((message) => received(message) === last).map((message) => String(message.id ?? ''))] : walk.seen;
+    // A page that held only what was given before, with more to come: the next passes over it, and
+    // so do those after it, until the walk is past that moment.
+    const pass = fresh.length === 0 && more ? skip + page.length : same && skip ? skip + page.length : 0;
+    const there: Walk = { v: 2, by: 'date', after, seen, ...(pass && { skip: pass }), tree };
     if (more) return { changes, next: JSON.stringify(there), caughtUp: false, ...partly };
     // History caught up. With an end, that's all; without one, Graph's delta carries on from a day
     // before the last email, since one that arrived around then may show in the mailbox only later.
@@ -582,66 +609,6 @@ export async function followMail(
   return { changes: [], next: there(), caughtUp: true, ...partly };
 }
 
-/**
- * One page of the mailbox's emails by the date each arrived, across all its folders, oldest first,
- * from where a walk stands, with these fields: those not given before, where the walk stands after
- * it, and whether Graph says there's more.
- */
-async function arrived(settings: MicrosoftSettings, access: string, walk: Extract<Walk, { by: 'date' }>, scope: Scope, size: number, fields: string, signal?: AbortSignal) {
-  const start = walk.after ?? scope.since.toISOString();
-  const skip = walk.skip ?? 0;
-  const filter = `receivedDateTime ge ${start}${scope.until ? ` and receivedDateTime lt ${scope.until.toISOString()}` : ''}`;
-  let body = await graph(
-    settings,
-    access,
-    `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=receivedDateTime%20asc&$top=${size}${skip ? `&$skip=${skip}` : ''}&$select=${fields}`,
-    { prefer: [immutableIds, textBodies], signal },
-  );
-  // A page may hold nothing and still not be the last. Only its link leads on, since asking the
-  // same again gives the same. One empty page after another is Graph failing, which is waited out.
-  for (let empty = 0; listOf(body).length === 0 && typeof body['@odata.nextLink'] === 'string'; empty++) {
-    if (empty === emptyPages) throw new MicrosoftUnreachable('Graph');
-    body = await graph(settings, access, body['@odata.nextLink'], { prefer: [immutableIds, textBodies], signal });
-  }
-  const page = listOf(body);
-  // Graph says whether there's more: a page may hold fewer than asked for, and still not be the last.
-  const more = typeof body['@odata.nextLink'] === 'string';
-  const fresh = page.filter((message) => !walk.seen.includes(String(message.id ?? '')));
-  const received = (message: Record<string, unknown>) => summaryOf(message).at?.toISOString() ?? null;
-  const last = fresh.length ? received(fresh.at(-1)!) : null;
-  const same = last !== null && last === walk.after;
-  const after = last ?? walk.after;
-  const seen = last ? [...(same ? walk.seen : []), ...fresh.filter((message) => received(message) === last).map((message) => String(message.id ?? ''))] : walk.seen;
-  // A page that held only what was given before, with more to come: the next passes over it, and
-  // so do those after it, until the walk is past that moment.
-  const pass = fresh.length === 0 && more ? skip + page.length : same && skip ? skip + page.length : 0;
-  const there: Walk = { v: 2, by: 'date', after, seen, ...(pass && { skip: pass }), tree: walk.tree };
-  return { fresh, there, more, after };
-}
-
-/** What a summary lists of each email, and how many a page of it holds: no text, so many more than a page that's read. */
-const listedFields = 'id,conversationId,subject,from,receivedDateTime,parentFolderId,isDraft';
-const listedSize = 500;
-
-/**
- * One page of the mailbox's emails for a summary (connectors.ts): who sent each, when, its subject,
- * its conversation and its folder, by the date it arrived, as history is walked, and never its text. Drafts
- * and what's in junk, deleted items and the outbox are left out, as following leaves them out.
- */
-export async function listMail(settings: MicrosoftSettings, access: string, from: string | null, scope: Scope, signal?: AbortSignal): Promise<{ listed: Listed[]; next: string | null }> {
-  const walk: Walk = from ? walkOf(from) : { v: 2, by: 'date', after: null, seen: [], tree: await treeOf(settings, access, signal) };
-  if (walk.by !== 'date') throw new MicrosoftRefused('bad_checkpoint');
-  const { fresh, there, more } = await arrived(settings, access, walk, scope, listedSize, listedFields, signal);
-  const names = new Map(walk.tree.folders.map(([id, name]) => [id, name]));
-  const listed = fresh
-    .filter((message) => message.isDraft !== true && !walk.tree.aside[String(message.parentFolderId ?? '')])
-    .map((message) => {
-      const mail = summaryOf(message);
-      return { title: mail.subject, at: mail.at, author: mail.from, thread: mail.conversationId, folder: names.get(String(message.parentFolderId ?? '')) ?? null };
-    });
-  return { listed, next: more ? JSON.stringify(there) : null };
-}
-
 /** These emails as they are now, by their ids, each with its thread. One that's gone is left out, and one Graph can't give comes set aside. */
 export async function mailItems(settings: MicrosoftSettings, access: string, ids: string[], signal?: AbortSignal): Promise<Change[]> {
   const tree = await treeOf(settings, access, signal);
@@ -743,11 +710,10 @@ async function changesOf(
   // Never silently: without its headers an email can't be told from a newsletter, so it's read as a person's.
   if (headerless) console.warn(`microsoft: ${headerless} ${headerless === 1 ? 'email' : 'emails'} came without headers, even by id, so Homing couldn’t check them for newsletters`);
   const conversations = related ? [...new Set(found.filter((one) => !one.setAside && one.mail.conversationId).map((one) => one.mail.conversationId!))] : [];
-  const threads = new Map<string, { thread: (MailSummary & { to: Party[]; folder: string | null })[]; more: boolean }>();
+  const threads = new Map<string, { thread: (MailSummary & { folder: string | null })[]; more: boolean }>();
   for (const conversation of conversations) {
-    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields},parentFolderId,toRecipients,ccRecipients`, { prefer: [immutableIds], signal });
-    // With whom each was sent to, so a thread is known by who it is with, whoever wrote first.
-    const listed = listOf(body).map((message) => ({ ...summaryOf(message), to: [...addressesOf(message.toRecipients), ...addressesOf(message.ccRecipients)], folder: typeof message.parentFolderId === 'string' ? message.parentFolderId : null }));
+    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields},parentFolderId`, { prefer: [immutableIds], signal });
+    const listed = listOf(body).map((message) => ({ ...summaryOf(message), folder: typeof message.parentFolderId === 'string' ? message.parentFolderId : null }));
     threads.set(conversation, { thread: listed.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)), more: typeof body['@odata.nextLink'] === 'string' });
   }
   const named = (folder: string | null) => (folder ? (names.get(folder) ?? null) : null);

@@ -117,18 +117,7 @@ export interface Follow {
    * set aside. A kind whose items belong to nothing has none.
    */
   earlier?(access: Access, change: Change, ids: string[], options: { from: string; size?: number }): Promise<Change[]>;
-  /**
-   * One page of what the scope holds, each item by who wrote it, when, what it's called and what it
-   * belongs with, and nothing of its text: what Homing makes a summary of the place from. Oldest
-   * first, from a checkpoint it gave before, or from the start of the scope, until `next` is null.
-   * Without what the connector leaves out everywhere, such as junk and drafts. A kind that can't
-   * list itself this way has none, and then has no summary.
-   */
-  summary?(access: Access, from: string | null, scope: Scope): Promise<{ listed: Listed[]; next: string | null }>;
 }
-
-/** An item as a summary counts it: who wrote it, when, what it's called, what it belongs with, and where it is there, such as its folder, by name. */
-export type Listed = Pick<Envelope, 'title' | 'at' | 'author'> & { thread: string | null; folder: string | null };
 
 /** What learning covers: from a time, and up to one, or on with what arrives. */
 export interface Scope {

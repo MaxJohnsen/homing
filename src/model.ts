@@ -187,9 +187,9 @@ function nearby(hostname: string): boolean {
   return host === 'localhost' || host.endsWith('.localhost') || host === 'host.docker.internal' || !host.includes('.');
 }
 
-/** What a call is for, which picks the model unless it names one: sorting goes to the cheaper model. A map is where a place's mail belongs. */
-export type Purpose = 'understand' | 'upkeep' | 'sort' | 'map';
-const purposes: Purpose[] = ['understand', 'upkeep', 'sort', 'map'];
+/** What a call is for, which picks the model unless it names one: sorting goes to the cheaper model. */
+export type Purpose = 'understand' | 'upkeep' | 'sort';
+const purposes: Purpose[] = ['understand', 'upkeep', 'sort'];
 
 /** A call to the model, for a person. */
 export interface ModelCall {
@@ -529,15 +529,6 @@ export interface ModelProcessing {
 export async function modelProcessingOf(s: Session, spaceId: string): Promise<ModelProcessing | undefined> {
   const [row] = await s.tx<Omit<ModelProcessing, 'on'>[]>`select * from model_processing_of(${spaceId}::uuid)`;
   return row && { on: row.offAt === null && !row.offAbove, ...row };
-}
-
-/** Which of these spaces the person can open have model processing on, in themselves and in every space above them. */
-export async function modelOn(s: Session, spaces: string[]): Promise<string[]> {
-  if (spaces.length === 0) return [];
-  const rows = await s.tx<{ id: string }[]>`
-    select space.id from unnest(${s.tx.array(spaces)}::uuid[]) as space (id), model_processing_of(space.id) as m where m.off_at is null and not m.off_above
-  `;
-  return rows.map((row) => row.id);
 }
 
 /** Turns model processing off in a space the person looks after, or back on. Whether it changed anything. */

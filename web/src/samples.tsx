@@ -7,7 +7,7 @@ import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleLearning, sampleLearningConnections, sampleSenders, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
-import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, learningProposal, learningFurtherProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal, mapProposal } from '@/sample';
+import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, learningProposal, learningFurtherProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -208,8 +208,6 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/plan/new-space': { label: 'Confirm a plan that creates a space others would see', render: () => <SampleConfirm proposal={newSpacePlanProposal} /> },
   '/confirm/plan/blocked': { label: 'A plan with a change that can’t be made now', render: () => <SampleConfirm proposal={blockedPlanProposal} /> },
   '/confirm/plan/approved': { label: 'A plan approved', render: () => <SampleConfirm proposal={{ ...planProposal, state: 'approved' }} /> },
-  '/confirm/map': { label: 'Confirm a map: where a mailbox’s mail belongs, with the spaces it creates', render: () => <SampleConfirm proposal={mapProposal} /> },
-  '/confirm/map/set': { label: 'A map set', render: () => <SampleConfirm proposal={{ ...mapProposal, state: 'approved' }} /> },
   '/confirm/removed': { label: 'Rule removed', render: () => <SampleConfirm proposal={{ ...removeProposal, state: 'approved', rule: { ...removeProposal.rule!, current: false } }} /> },
   '/confirm/expired': { label: 'Request expired', render: () => <SampleConfirm proposal={{ ...proposal, state: 'expired' }} /> },
   '/confirm/gone': { label: 'Rule removed before deciding', render: () => <SampleConfirm proposal={{ ...changeProposal, rule: { ...changeProposal.rule!, current: false } }} /> },
@@ -232,7 +230,6 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview/learning': { label: 'The card for learning from your mailbox', render: () => <CardPreview sample="learning" /> },
   '/card-preview/members': { label: 'The card for adding someone to a space', render: () => <CardPreview sample="members" /> },
   '/card-preview/plan': { label: 'The card for a plan of several changes', render: () => <CardPreview sample="plan" /> },
-  '/card-preview/map': { label: 'The card for a map of where a mailbox’s mail belongs', render: () => <CardPreview sample="map" /> },
   '/card-preview/plan-blocked': { label: 'The card for a plan with a change that can’t be made now', render: () => <CardPreview sample="plan-blocked" /> },
   '/card-preview/space': { label: 'The card for a space Claude suggests', render: () => <CardPreview sample="space" /> },
   '/card-preview/done': { label: 'The card after a change that needed no approval', render: () => <CardPreview sample="done" /> },

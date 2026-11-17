@@ -44,7 +44,7 @@ import {
 } from './knowledge.ts';
 import { modelProcessingOf, modelStatement, setModelProcessing, usd } from './model.ts';
 import { afterDecision, type Notifier } from './notify.ts';
-import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePlan, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, searchProposals, suggestArchive, requestsIn, suggestSpace, Undecidable, type MapStep, type PlanStep, type Proposal, type ProposalView } from './proposals.ts';
+import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePlan, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, searchProposals, suggestArchive, requestsIn, suggestSpace, Undecidable, type PlanStep, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor, skillsMatching } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, searchTasks, TaskRefused, tasksIn, type Task } from './tasks.ts';
@@ -323,7 +323,7 @@ export function mcpServer(
       description:
         'Reads a space, a page, an item with its history, a source, or a proposal and whether it was approved, by its reference. ' +
         "An email's microsoft:… reference opens it live in the user's mailbox, with its thread. " +
-        'A learning:… reference says how far Homing has learned from a mailbox, what it cost, who writes there and where their mail belongs.',
+        'A learning:… reference says how far Homing has learned from a mailbox, and what it cost.',
       inputSchema: z.object({ ref: text().describe('A reference, such as page:…') }),
       annotations: { readOnlyHint: true },
     },
@@ -452,7 +452,7 @@ export function mcpServer(
         'space.export gives the link where the user downloads a space as they see it, with the spaces in it they can open, when they ask for an export or a copy. ' +
         "space.model_off turns model processing off in a space the user is an admin of, when they ask: Homing then sends nothing in it, or in the spaces in it, to its own model. " +
         'It changes nothing about what you can read. Only the user turns it back on, in Homing. ' +
-        "learning.start and learning.extend propose learning from the user's mailbox, or further back, which they approve with its estimate; learning.pause, learning.resume, learning.leave_out and learning.try_again direct it. `read` its learning:… reference first: it says how, and how to map its mail. " +
+        "learning.start and learning.extend propose that Homing learn from the user's connected mailbox, or further back in it, for them to approve with the estimate; learning.pause, learning.resume, learning.leave_out and learning.try_again direct it. `read` its learning:… reference first, which says how. " +
         'plan.propose proposes several of these changes as one decision, when one request needs them together, such as sharing what is known in a space, adding someone to it and a rule: ' +
         'they are all in one space, the user approves the whole plan as it is or declines it, and approving makes every change at once, or none. ' +
         'Only what the user decides alone goes in: a request to a space\'s admins goes on its own, and routine work, such as keeping knowledge or a space only the user will have, is done first, outside the plan. ' +
@@ -1925,19 +1925,8 @@ function describeProposal(proposal: Proposal): string {
 }
 
 /** One change of a plan, for an agent. */
-function describeStep(step: PlanStep | MapStep, _index?: number, steps: (PlanStep | MapStep)[] = []): string {
+function describeStep(step: PlanStep): string {
   switch (step.action) {
-    case 'add space':
-      return `create a space called ${quote(step.name)}, only the user's`;
-    case 'learning map': {
-      const leads = (to: string | null) => {
-        const made = to?.startsWith('step ') ? steps[Number(to.slice(5))] : undefined;
-        if (made?.action === 'add space') return `to the new space ${quote(made.name)}`;
-        return to === 'leave out' ? 'is left out' : to === 'wait' ? 'waits' : to === null ? 'to the space it is connected in' : `to ${ref('space', to)}`;
-      };
-      const routes = step.routes.map((route) => `${quote(route.who)} ${leads(route.to)}`);
-      return `set where the mail of the user's ${step.words?.place ?? 'place'} ${quote(step.address ?? '')} belongs (learning:${step.place}): ${[...routes, `everything else ${leads(step.rest)}`].join(', ')}`;
-    }
     case 'publish':
       return `share ${ref('item', step.item)}`;
     case 'share task':

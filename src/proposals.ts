@@ -2,9 +2,8 @@ import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
-import { mapOf, noModel, runsFor, type Estimate, type Route } from './learning.ts';
-import { holdings, summaryFor } from './map.ts';
-import { ownPlace, type Place as ConnectedPlace } from './places.ts';
+import { noModel, runsFor, type Estimate } from './learning.ts';
+import { ownPlace } from './places.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
 import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
@@ -107,19 +106,8 @@ export interface Proposal {
 export interface PlanChange {
   /** The space it creates, if it creates one. */
   space?: SpaceChange;
-  steps: (PlanStep | MapStep)[];
+  steps: PlanStep[];
 }
-
-/**
- * The changes of a map (spec §8), which make a plan of their own: spaces only the person will
- * have, each with its name and the space it goes in, and then the routes of the run that learns
- * from one of their places, with where everything else goes. A route, or a new space, may name a
- * space an earlier step creates, as "step 0" for the plan's first.
- */
-export type MapStep =
-  | { action: 'add space'; name: string; in: string }
-  | { action: 'learning map'; place: string; address?: string; words?: { place: string; items: string }; routes: Route[]; rest: string | null };
-export type MapSteps = MapStep[];
 
 /** One change in a plan. */
 export type PlanStep =
@@ -239,11 +227,7 @@ export interface PlanView {
 
 /** One change in a plan as the person sees it now. While it waits, why it can't be made now, if it can't. */
 export interface PlanStepView {
-  action: PlanStep['action'] | MapStep['action'];
-  /** A space a map creates: its name, and the space it goes in, by name. */
-  space: { name: string; in: string | null } | null;
-  /** A map: what it's for, each route with where it leads and what it holds, and where everything else goes. */
-  map: MapView | null;
+  action: PlanStep['action'];
   /** Sharing an item: what sharing it would do, while it can be shared. */
   publication: Publication | null;
   /** Sharing an item: what it says and the page it's on, shared or not. */
@@ -255,23 +239,6 @@ export interface PlanStepView {
   problem: string | null;
   /** What can't be made if it can't, such as "Jonas Berg can’t be added", to say why nothing changed. */
   cant: string;
-}
-
-/** Where a route leads, as the person sees it: a space by name, one the plan creates, leave out, or wait; and what it holds, when a summary says. */
-export interface Leads {
-  to: 'space' | 'new space' | 'leave out' | 'wait';
-  name: string | null;
-  emails: number | null;
-  threads: number | null;
-}
-
-/** A map as the person decides it. */
-export interface MapView {
-  place: string;
-  address: string;
-  words: { place: string; items: string };
-  routes: ({ who: string } & Leads)[];
-  rest: Leads;
 }
 
 /**
@@ -702,61 +669,6 @@ export async function proposeLearning(s: Session, input: { action: 'start learni
   return insertProposal(s, { spaceId: input.spaceId, action: input.action, itemId: null, change: input.change, request: false, reason: input.why?.trim() || null });
 }
 
-/**
- * Proposes a map for one of the person's places (spec §8), as checked steps: the spaces it
- * creates and its routes, one plan they approve as it is or decline. Nothing changes until they
- * do. One map waits for a place at a time: an earlier one is withdrawn, since this one replaces it.
- */
-export async function proposeMap(s: Session, place: ConnectedPlace, steps: MapSteps, why?: string): Promise<Proposal> {
-  // Held until the proposal is made, so two proposed at once can't both wait.
-  await s.tx`select pg_advisory_xact_lock(hashtext(${`homing.learning map ${place.place}`}))`;
-  for (const { id } of await mapsWaiting(s, place.place)) await s.tx`update proposals set state = 'withdrawn' where id = ${id}::uuid`;
-  return insertProposal(s, { spaceId: place.space, action: 'plan', itemId: null, change: { steps }, request: false, reason: why?.trim() || null });
-}
-
-/** The maps that wait for the person to decide, for one of their places. */
-const mapsWaiting = (s: Session, place: string) => s.tx<{ id: string }[]>`
-  select id from proposals
-  where ${yours(s)} and state = 'open' and expires_at > now() and action = 'plan'
-    and exists (select from jsonb_array_elements(change -> 'steps') as step where step ->> 'action' = 'learning map' and step ->> 'place' = ${place})
-`;
-
-/** Whether a map for one of the person's places waits for them to decide. */
-export const mapWaits = async (s: Session, place: string) => (await mapsWaiting(s, place)).length > 0;
-
-/**
- * A map step as the reader sees it now: where each route leads, by name, what it holds going by
- * the run's summary, and why it can't be set, if it can't. While it waits, it's shown as approving
- * it would set it now: with everyone the run leaves out, who stay left out, and with where
- * everything else goes as it is when the map doesn't say.
- */
-async function mapNow(s: Session, proposal: Proposal, step: Extract<MapStep, { action: 'learning map' }>, steps: (PlanStep | MapStep)[], spaces: Space[], open: boolean): Promise<Pick<PlanStepView, 'map' | 'problem' | 'cant'>> {
-  const place = await ownPlace(s, step.place);
-  const run = place ? (await runsFor(s, [step.place])).get(step.place) : undefined;
-  const summary = run ? await summaryFor(s, run) : null;
-  const set = open && run ? mapOf(step.routes, run.leftOut.senders, step.rest ?? run.map.rest) : { routes: step.routes, rest: step.rest };
-  const held = summary ? holdings(summary, set) : [];
-  const words = step.words ?? { place: 'mailbox', items: 'emails' };
-  let missing = false;
-  const leads = (who: string | null, to: string | null): Leads => {
-    const holds = held.find((row) => row.who === who);
-    const counts = { emails: holds?.emails ?? null, threads: holds?.threads ?? null };
-    if (to === 'leave out' || to === 'wait') return { to, name: null, ...counts };
-    const made = to?.startsWith('step ') ? steps[Number(to.slice(5))] : undefined;
-    if (made?.action === 'add space') return { to: 'new space', name: made.name, ...counts };
-    const space = spaces.find((candidate) => candidate.id === (to ?? proposal.spaceId));
-    if (!space || space.archived) missing = true;
-    return { to: 'space', name: space ? (space.privateTo !== null && space.parentId === null ? 'Your personal space' : space.name) : null, ...counts };
-  };
-  const map: MapView = { place: step.place, address: step.address ?? place?.name ?? place?.address ?? '', words, routes: set.routes.map((route) => ({ who: route.who, ...leads(route.who, route.to) })), rest: leads(null, set.rest) };
-  let problem: string | null = null;
-  if (open) {
-    if (!place || !run) problem = `That ${words.place} isn’t connected here any more, so there’s nothing to set.`;
-    else if (missing) problem = 'A space it leads to is archived, or you can’t open it any more.';
-  }
-  return { map, problem, cant: 'the map can’t be set' };
-}
-
 /** Learning as a proposal holds it, with the run and its place as they are now, for the person it's for. */
 async function learningNow(s: Session, proposal: Proposal): Promise<LearningView | null> {
   if (proposal.action !== 'start learning' && proposal.action !== 'extend learning') return null;
@@ -991,7 +903,7 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
 
   const views: PlanStepView[] = [];
   for (const step of steps) {
-    const base = { publication: null, item: null, task: null, member: null, rule: null, space: null, map: null, problem: null };
+    const base = { publication: null, item: null, task: null, member: null, rule: null, problem: null };
     if (step.action === 'publish') {
       const [item] = await s.tx<{ text: string; pageId: string; page: string | null; shared: boolean; spaceId: string }[]>`
         select c.body as text, c.page_id, c.private_to is null as shared, c.space_id,
@@ -1079,23 +991,6 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
         problem,
         cant: `the ${kind} can’t be ${step.action === 'change rule' ? 'changed' : 'removed'}`,
       });
-    } else if (step.action === 'add space') {
-      // Only theirs: in their personal tree, or in a space the plan creates there.
-      const inStep = step.in.startsWith('step ') ? steps[Number(step.in.slice(5))] : undefined;
-      const parent = spaces.find((space) => space.id === step.in);
-      let problem: string | null = null;
-      if (open && !inStep) {
-        try {
-          await placeSpace(s, { name: step.name, who: 'just me', in: step.in });
-        } catch (error) {
-          if (!(error instanceof SpaceRefused)) throw error;
-          problem = error.message;
-        }
-      }
-      const above = inStep?.action === 'add space' ? inStep.name : parent ? (parent.parentId === null ? 'your personal space' : parent.name) : null;
-      views.push({ ...base, action: step.action, space: { name: step.name, in: above }, problem, cant: `${step.name} can’t be created` });
-    } else if (step.action === 'learning map') {
-      views.push({ ...base, action: step.action, ...(await mapNow(s, proposal, step, steps, spaces, open)) });
     } else {
       // Nothing else is ever stored in a plan, but if it were, it could still only be declined.
       views.push({ ...base, action: (step as { action: PlanStep['action'] }).action, problem: 'Homing can’t make this change.', cant: 'a change can’t be made' });
@@ -1110,12 +1005,10 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
     spaceId: where,
     steps: views,
     audience: { people: reach?.members.length ?? 0, above: reach?.reachedFromAbove ?? false, adding },
-    sees: open && adding.length ? await seenThere(s, { where, parent: create?.in ?? null }, steps as PlanStep[], views, spaces) : null,
+    sees: open && adding.length ? await seenThere(s, { where, parent: create?.in ?? null }, steps, views, spaces) : null,
     shown: JSON.stringify([
       create?.name ?? '',
-      ...views.map((step) =>
-        step.item ? `${step.item.page}\n${step.item.text}` : step.task ? step.task.shown : step.space ? `${step.space.name}\n${step.space.in}` : step.map ? JSON.stringify([step.map.routes.map((route) => [route.who, route.to, route.name]), step.map.rest.to, step.map.rest.name]) : step.rule?.now ?? '',
-      ),
+      ...views.map((step) => (step.item ? `${step.item.page}\n${step.item.text}` : step.task ? step.task.shown : step.rule?.now ?? '')),
     ]),
   };
 }
@@ -1210,11 +1103,9 @@ async function approvePlan(s: Session, proposal: Proposal, decision: { shown?: s
     }
   }
   const spaceId = created ?? proposal.spaceId;
-  // The spaces its steps created, by each step's place in the plan, for the steps after it.
-  const made: (string | undefined)[] = [];
   for (const [index, step] of steps.entries()) {
     try {
-      made[index] = await makeStep(s, spaceId, step, plan.steps[index], made, decision.findAccount);
+      await makeStep(s, spaceId, step, plan.steps[index], decision.findAccount);
     } catch (error) {
       throw failed(plan.steps[index].cant, error);
     }
@@ -1223,27 +1114,8 @@ async function approvePlan(s: Session, proposal: Proposal, decision: { shown?: s
 }
 
 /** Makes one change of a plan as it was shown, checked again as it's made. */
-async function makeStep(s: Session, spaceId: string, step: PlanStep | MapStep, shown: PlanStepView, made: (string | undefined)[], findAccount?: FindAccount): Promise<string | undefined> {
-  // A space named by the step that creates it, in this plan.
-  const spaceOf = (to: string) => (to.startsWith('step ') ? made[Number(to.slice(5))] : to);
+async function makeStep(s: Session, spaceId: string, step: PlanStep, shown: PlanStepView, findAccount?: FindAccount): Promise<void> {
   switch (step.action) {
-    case 'add space': {
-      const parent = spaceOf(step.in);
-      if (!parent) throw new Undecidable('changed', 'The space it goes in wasn’t created.');
-      return (await newSpace(s, { name: step.name, who: 'just me', in: parent })).id;
-    }
-    case 'learning map': {
-      const run = (await runsFor(s, [step.place])).get(step.place);
-      if (!run) throw new Undecidable('changed', 'It isn’t connected here any more.');
-      const lead = (to: string) => (to === 'leave out' || to === 'wait' ? to : spaceOf(to));
-      const routes = step.routes.map((route) => ({ who: route.who, to: lead(route.to) }));
-      const rest = step.rest === null ? null : lead(step.rest);
-      if (routes.some((route) => !route.to) || rest === undefined) throw new Undecidable('changed', 'A space it leads to wasn’t created.');
-      // As the person, directly, which the database checks, as it does that each space is one they can open. It keeps
-      // everyone the run leaves out now, and where everything else goes when the map doesn't say.
-      await s.tx`select set_learning_map(${run.id}::uuid, ${s.tx.json(routes as never)}, ${rest})`;
-      return;
-    }
     case 'publish': {
       const publication = await publicationOf(s, step.item);
       if (!publication?.current || publication.item.spaceId !== spaceId || !shown.item) throw new Undecidable('changed', 'It was changed, replaced or shared since.');
@@ -1988,7 +1860,7 @@ export function publicationData(publication: Publication, audience: { people: nu
 export const shortAction = {
   'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task',
   'archive space': 'archive', 'share space': 'convert', 'archive page': 'archive page', 'reopen page': 'reopen page',
-  'add include': 'include', 'remove include': 'exclude', plan: 'plan', 'start learning': 'learn', 'extend learning': 'learn further', 'learning map': 'map',
+  'add include': 'include', 'remove include': 'exclude', plan: 'plan', 'start learning': 'learn', 'extend learning': 'learn further',
 } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
@@ -2083,8 +1955,6 @@ export function proposalData(proposal: ProposalView) {
             task: step.task,
             member: step.member,
             rule: step.rule,
-            space: step.space,
-            map: step.map,
             problem: step.problem,
           })),
           audience: proposal.plan.audience,
@@ -2110,7 +1980,7 @@ async function insertProposal(
   const [inserted] = await s.tx<Proposal[]>`
     insert into proposals (space_id, private_to, action, item_id, task_id, page_id, include_id, change, request, reason)
     values (${proposal.spaceId}::uuid, ${personOf(s.principal)!}::uuid, ${proposal.action},
-            ${proposal.itemId}::uuid, ${proposal.taskId ?? null}::uuid, ${proposal.pageId ?? null}::uuid, ${proposal.includeId ?? null}::uuid, ${s.tx.json(proposal.change as never)}, ${proposal.request}, ${proposal.reason})
+            ${proposal.itemId}::uuid, ${proposal.taskId ?? null}::uuid, ${proposal.pageId ?? null}::uuid, ${proposal.includeId ?? null}::uuid, ${s.tx.json(proposal.change)}, ${proposal.request}, ${proposal.reason})
     returning ${columns(s)}
   `;
   return inserted;

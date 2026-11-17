@@ -20,9 +20,9 @@ export interface ModelProcessingData {
 }
 
 /** What a call to the model was for. */
-export type Purpose = 'understand' | 'upkeep' | 'sort' | 'map';
+export type Purpose = 'understand' | 'upkeep' | 'sort';
 
-export const purposes: Record<Purpose, string> = { understand: 'Understanding', upkeep: 'Upkeep', sort: 'Sorting', map: 'Mapping' };
+export const purposes: Record<Purpose, string> = { understand: 'Understanding', upkeep: 'Upkeep', sort: 'Sorting' };
 
 /** What Homing's model did for you this month, and the limit everyone here shares. */
 export interface ModelUseData {
