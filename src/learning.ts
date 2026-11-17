@@ -175,11 +175,18 @@ interface RunRow {
   startedAt: Date | null;
 }
 
-/** A map as it works, from the routes a run keeps and the senders it leaves out, who stay a list of their own. */
-export const mapOf = (routes: Route[], leftOut: string[], rest: string | null): LearningMap => ({
-  routes: [...routes.filter((route) => route.to !== 'leave out' && !leftOut.includes(route.who)), ...[...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])].map((who) => ({ who, to: 'leave out' }))],
-  rest,
-});
+/**
+ * A map as it works, from the routes a run keeps and the senders it leaves out, who stay a list of
+ * their own: each of them a route to leave out, and no other route for anyone that list covers,
+ * since what is left out is never read, whatever else names it.
+ */
+export const mapOf = (routes: Route[], leftOut: string[], rest: string | null): LearningMap => {
+  const out = [...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])];
+  return { routes: [...routes.filter((route) => route.to !== 'leave out' && !leftOutBy(out, route.who)), ...out.map((who) => ({ who, to: 'leave out' }))], rest };
+};
+
+/** The entry among those left out that covers a route's sender: that address, or the whole of the domain it names. */
+export const leftOutBy = (leftOut: string[], who: string) => leftOut.find((entry) => sentBy(entry, who.includes('@') && !who.startsWith('@') ? who : `someone@${who.replace(/^@/, '')}`));
 
 /** Whether a map says anything beyond who is left out: a run without one behaves as it did before maps. */
 export const hasMap = (map: LearningMap) => map.rest !== null || map.routes.some((route) => route.to !== 'leave out');
@@ -321,12 +328,15 @@ export function sentBy(entry: string, address: string): boolean {
 }
 
 /**
- * The route that names an address, the most exact one: the address itself before its domain, and a
- * domain before one above it. Named twice as exactly, leave out wins.
+ * The route that names an address. Whoever is left out is left out, whatever else names them: a
+ * route that leaves them out, by their address or their domain, comes before any other. Among the
+ * rest it is the most exact one: the address itself before its domain, and a domain before one
+ * above it.
  */
 export function routeFor(routes: Route[], address: string): Route | undefined {
   const exact = (route: Route) => route.who.replace(/^@/, '').length;
-  return routes.filter((route) => sentBy(route.who, address)).sort((a, b) => exact(b) - exact(a) || Number(b.to === 'leave out') - Number(a.to === 'leave out'))[0];
+  const out = (route: Route) => Number(route.to === 'leave out');
+  return routes.filter((route) => sentBy(route.who, address)).sort((a, b) => out(b) - out(a) || exact(b) - exact(a))[0];
 }
 
 /**
@@ -344,8 +354,9 @@ export function partiesOf(envelope: Envelope, own: string): string[] {
 /**
  * Where a thread belongs by its owner's map: the one rule, which reading, the estimate, what's not
  * placed and looking again all go by. A thread is routed by who it is with, among these items and
- * what they're read with, and each of them by the most exact route that names them. If that leaves
- * any of them out, the whole thread is left out, since a reply quotes what it answers. Otherwise
+ * what they're read with, and each of them by the route that names them (routeFor): left out
+ * first, then the most exact. If any of them is left out, the whole thread is, since a reply quotes
+ * what it answers. Otherwise
  * the oldest item that is with someone a route names decides. With none, the thread goes where
  * everything else goes, and says no route named it. The space is null for the place's own. It also
  * says everyone the thread is with, which a run keeps with what it sets aside by this.

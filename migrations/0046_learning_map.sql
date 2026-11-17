@@ -15,6 +15,15 @@ as $$
   select length(who) <= 320 and who ~ '^([a-z0-9.!#$%&''*+/=?^_`{|}~-]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$'
 $$;
 
+-- Whether one of the senders left out covers a route's sender: that
+-- address, or the whole of the domain it names. What is left out is never
+-- read, whatever route names it.
+create function route_left_out(who text, senders text[]) returns boolean
+language sql immutable
+as $$
+  select exists (select from unnest(senders) as l (entry) where sender_matches(l.entry, case when who like '%@%' then who else 'x@' || who end))
+$$;
+
 -- Whether a list of routes is whole: each names a sender once, and leads to
 -- a space, leave out, or wait.
 create function routes_fit(routes jsonb) returns boolean
@@ -39,7 +48,10 @@ alter table learning_runs
   -- how far the worker has come: senders, counts, dates and subjects, never
   -- an email's text. A summary Homing gave up on says so there.
   add column summary jsonb check (jsonb_typeof(summary) = 'object' and pg_column_size(summary) < 400000),
-  add column summarizing jsonb check (jsonb_typeof(summarizing) = 'object' and pg_column_size(summarizing) < 8000000);
+  add column summarizing jsonb check (jsonb_typeof(summarizing) = 'object' and pg_column_size(summarizing) < 8000000),
+  -- Until when Homing's own model is being asked for a map of the place, so
+  -- it is asked once at a time. It ends by itself, should Homing stop meanwhile.
+  add column map_asked_until timestamptz;
 
 -- Who a thread was with, as far as Homing saw, when this item of it was set
 -- aside by the map, to wait or as left out: everyone who wrote in it, and
@@ -54,6 +66,8 @@ create index learned_items_waiting on learned_items (run_id) where reason = 'wai
 -- that waits or was left out, in a thread where one was set aside by an
 -- entry that changed, or holds someone an entry that changed names, by
 -- address or domain, or went where everything else goes when that changed.
+-- An item set aside before a run kept who its thread is with goes by its
+-- sender.
 -- Where a thread belongs is the worker's to say, which sorts each again.
 -- Looking at too many costs a request; this never decides. How many.
 create function learning_mapped(r learning_runs, routes jsonb, rest text, senders text[]) returns integer
@@ -82,7 +96,7 @@ begin
       where p.run_id = r.id and p.outcome = 'set aside' and p.reason in ('excluded sender', 'waiting')
         and (p.because = any (changed)
           or (p.because is null and r.rest is distinct from learning_mapped.rest)
-          or exists (select from unnest(changed) as c (entry), unnest(p.parties) as w (address) where sender_matches(c.entry, w.address)))
+          or exists (select from unnest(changed) as c (entry), unnest(coalesce(p.parties, array[p.sender])) as w (address) where sender_matches(c.entry, w.address)))
     );
   get diagnostics again = row_count;
   if again > 0 and r.state in ('learning history', 'following') then
@@ -97,7 +111,8 @@ $$;
 -- needs no model and no estimate. A place without a run gets one, which
 -- waits to be started. A started run is summarized over its own scope.
 -- Whatever worker has the run loses it, so a summary it was making for an
--- earlier request is never kept.
+-- earlier request is never kept. When the run walks next stays as it is: a
+-- run that waits, as its place or the model's provider asked, isn't hurried.
 create function summarize_learning(place uuid, since timestamptz) returns uuid
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -137,7 +152,7 @@ begin
     update learning_runs set since = summarize_learning.since, estimate = null where id = r.id returning * into r;
   end if;
   update learning_runs
-  set summarizing = jsonb_build_object('since', to_jsonb(r.since)), next_at = least(next_at, now()),
+  set summarizing = jsonb_build_object('since', to_jsonb(r.since)),
       claimed_by = null, claim = null, claimed_until = null, changed_at = clock_timestamp()
   where id = r.id;
   return r.id;
@@ -165,9 +180,10 @@ $$;
 -- Sets a run's map: its routes and where everything else goes, which stays
 -- as it is when the map doesn't say. Only the person does, in Homing itself,
 -- which approving a proposed map is. The senders the run leaves out now all
--- stay left out, with those the map leaves out added, and a route for a
--- sender who is left out is dropped: a map never takes anyone off that
--- list. A route names only a space they can open. Whatever worker has the
+-- stay left out, with those the map leaves out added, and a route for
+-- anyone that list covers, by address or by domain, is dropped: a map never
+-- takes anyone off that list, and no route reads what is left out. A route
+-- names only a space they can open. Whatever worker has the
 -- run loses it, so nothing is written by the map as it was.
 create function set_learning_map(run uuid, routes jsonb, rest text) returns void
 language plpgsql security definer set search_path = public, pg_temp
@@ -190,7 +206,7 @@ begin
   );
   select coalesce(jsonb_agg(route order by place), '[]') into kept
   from jsonb_array_elements(routes) with ordinality as given (route, place)
-  where route ->> 'to' <> 'leave out' and not route ->> 'who' = any (leaves);
+  where route ->> 'to' <> 'leave out' and not route_left_out(route ->> 'who', leaves);
   if cardinality(leaves) > 200 or jsonb_array_length(kept) > 200 then
     raise exception 'a map holds up to 200 routes, and a run leaves out up to 200 senders' using errcode = 'check_violation';
   end if;
@@ -207,7 +223,8 @@ end
 $$;
 
 -- Sets what a run leaves out and keeps, as 0045 has it. A sender left out
--- takes the place of a route for that very sender, and what the run set
+-- takes the place of every route it covers, for that address or for anyone
+-- at that domain, and what the run set
 -- aside by its map or its left-out senders is looked at again where they
 -- changed, as when a map changes. A folder left out since the run's summary
 -- was made is in that summary, so the summary is made again without it.
@@ -236,7 +253,7 @@ begin
   where id = r.id;
   if not left_folders <@ r.excluded_folders and (r.summary is not null or r.summarizing is not null) then
     update learning_runs
-    set summary = null, summarizing = jsonb_build_object('since', to_jsonb(r.since)), next_at = least(next_at, now()),
+    set summary = null, summarizing = jsonb_build_object('since', to_jsonb(r.since)),
         claimed_by = null, claim = null, claimed_until = null
     where id = r.id;
   end if;
@@ -251,12 +268,31 @@ begin
   get diagnostics again = row_count;
   again := again + learning_mapped(
     r,
-    (select coalesce(jsonb_agg(route order by place), '[]') from jsonb_array_elements(r.routes) with ordinality as had (route, place) where not route ->> 'who' = any (left_senders)),
+    (select coalesce(jsonb_agg(route order by place), '[]') from jsonb_array_elements(r.routes) with ordinality as had (route, place) where not route_left_out(route ->> 'who', left_senders)),
     r.rest, left_senders
   );
   if again > 0 and r.state in ('learning history', 'following') then
     update learning_runs set next_at = now() where id = r.id;
   end if;
+end
+$$;
+
+-- Marks that Homing's own model is being asked for a map of the person's
+-- run, for a few minutes at most, or takes the mark off: only the person
+-- asks, in Homing itself. Whether it was marked now, which it isn't while
+-- another ask holds the mark.
+create function learning_map_asking(run uuid, asking boolean) returns boolean
+language plpgsql security definer set search_path = public, pg_temp
+as $$
+begin
+  if current_person_id() is null or current_agent() is not null or current_routine() is not null then
+    raise exception 'only the person asks Homing''s model for a map, in Homing itself' using errcode = 'insufficient_privilege';
+  end if;
+  update learning_runs r
+  set map_asked_until = case when asking then now() + interval '5 minutes' end
+  where r.id = learning_map_asking.run and r.private_to = current_person_id() and r.space_id in (select accessible_spaces())
+    and (not asking or r.map_asked_until is null or r.map_asked_until < now());
+  return found;
 end
 $$;
 
@@ -435,5 +471,5 @@ begin
 end
 $$;
 
-revoke execute on function routes_fit, learning_mapped, summarize_learning, learning_summarized, set_learning_map, learning_reopened from public;
-grant execute on function summarize_learning, learning_summarized, set_learning_map, learning_reopened to homing_app;
+revoke execute on function routes_fit, learning_mapped, summarize_learning, learning_summarized, set_learning_map, learning_map_asking, learning_reopened from public;
+grant execute on function summarize_learning, learning_summarized, set_learning_map, learning_map_asking, learning_reopened to homing_app;

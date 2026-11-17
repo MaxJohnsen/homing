@@ -189,13 +189,14 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
         since: Date; learnedUpTo: Date | null; caughtUpAt: Date | null; extensionSince: Date | null; extensionUntil: Date | null; spendingLimit: string;
         routes: Route[]; rest: string | null; summarizing: Summarizing | null; excludedSenders: string[]; excludedFolders: string[]; keptSenders: string[]; startedAt: Date | null;
         checkpoint: string | null; extensionCheckpoint: string | null; attempts: number; failures: Failure[] | null; refused: number; pageSize: number | null; polledAt: Date | null;
-        followedPartly: boolean; walkDue: boolean;
+        followedPartly: boolean; walkDue: boolean; summaryDue: boolean;
       }[]
     >`
       select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
              r.since, r.learned_up_to, r.caught_up_at, r.extension_since, r.extension_until, r.spending_limit,
              r.routes, r.rest, r.summarizing, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at,
-             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at, r.followed_partly, r.next_at <= now() as walk_due
+             r.checkpoint, r.extension_checkpoint, r.attempts, r.failures, r.refused, r.page_size, r.polled_at, r.followed_partly, r.next_at <= now() as walk_due,
+             coalesce(not r.summarizing ? 'failed' and coalesce((r.summarizing ->> 'retryAt')::numeric, 0) <= extract(epoch from now()) * 1000, false) as summary_due
       from learning_runs r
       where r.id = ${claimed.run}::uuid and r.claim = ${claim}::uuid
     `;
@@ -205,7 +206,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
   });
   if (!found) return;
   const { row, place, again } = found;
-  const { extensionSince, extensionUntil, spendingLimit, routes, rest: elsewhere, summarizing, excludedSenders, excludedFolders, keptSenders, walkDue, ...rest } = row;
+  const { extensionSince, extensionUntil, spendingLimit, routes, rest: elsewhere, summarizing, excludedSenders, excludedFolders, keptSenders, walkDue, summaryDue, ...rest } = row;
   const run: Claim = {
     ...rest,
     map: mapOf(routes, excludedSenders, elsewhere),
@@ -249,9 +250,10 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     // item's text. It's a step of its own, before the run's page if one is due: when the place can't
     // be listed, or what was counted can't be kept, the summary waits and is tried again, longer each
     // time, and after a few tries Homing gives it up and says so. Nothing else about the run changes
-    // with it, so its walks go on whatever becomes of the summary.
+    // with it, so its walks go on whatever becomes of the summary. Whether it's due is the database's
+    // to say, as for the claim, so the two never disagree by their clocks.
     const walking = walkDue && (run.state === 'learning history' || run.state === 'following');
-    if (summarizing && !summarizing.failed && (summarizing.retryAt ?? 0) <= Date.now()) {
+    if (summarizing && summaryDue) {
       const keep = (working: Summarizing | null, summary: Summary | null) =>
         withPrincipal(sql, principal, (s) => s.tx`
           select learning_summarized(${run.id}::uuid, ${claim}::uuid, ${working ? s.tx.json(working as never) : null}::jsonb, ${summary ? s.tx.json(summary as never) : null}::jsonb, ${!walking})
@@ -378,7 +380,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     for (const thread of batchesOf(kept, Number.MAX_SAFE_INTEGER)) {
       const { to, entry, parties } = routeOf(thread.changes, run.map, place.address);
       if (to === null || takes.has(to)) {
-        routed.set(thread.thread ?? thread.changes[0].item.envelope.id, { space: to ?? place.space, entry });
+        routed.set(thread.thread ?? thread.changes[0].item.envelope.id, { space: to ?? place.space, entry, parties });
         continue;
       }
       aside.push(...thread.changes.map((change) => ({ ...markOf(change, 'set aside', to === 'leave out' ? 'excluded sender' : 'waiting', entry), parties })));
@@ -453,10 +455,11 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       counts.delete(keyOf(batch));
       settled.add(batch);
     };
-    const to = (batch: Batch) => routed.get(keyOf(batch)) ?? { space: place.space, entry: null };
+    const to = (batch: Batch) => routed.get(keyOf(batch)) ?? { space: place.space, entry: null, parties: [] };
     const asideFor = async (batch: Batch, reason: string, by: string | null = read) => {
-      const { entry } = to(batch);
-      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => markOf(change, 'set aside', reason, entry, by)), null));
+      const { entry, parties } = to(batch);
+      // What waits says who its thread is with, as when the map set it aside, so a map that changes for one of them has it looked at again.
+      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => ({ ...markOf(change, 'set aside', reason, entry, by), ...(reason === 'waiting' && { parties }) })), null));
       settle(batch);
     };
     // Those it failed on in this try: followed by a call it answered, which shows the fault was with
@@ -662,10 +665,11 @@ interface MarkOf {
   parties?: string[];
 }
 
-/** Where a thread belongs: the space its note goes in, and the route's entry that says so, or null when no route named anyone in it. */
+/** Where a thread belongs: the space its note goes in, the route's entry that says so, or null when no route named anyone in it, and who the thread is with. */
 interface Routed {
   space: string;
   entry: string | null;
+  parties: string[];
 }
 
 function mark(s: Session, run: Run, claim: string, marks: Mark[], note: string | null) {
