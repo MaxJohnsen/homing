@@ -231,11 +231,12 @@ export function Learning({ place, here, model, ceiling, actions }: {
 }
 
 /**
- * Where the mail in something of yours goes: its map, line by line as a proposal shows one, and
- * the senders no route names. Without a map, where everything goes and how to get one. A map is
- * worked out from who writes there, which Homing looks at here without a model, and it changes
- * only through a proposal you approve: from your assistant, or from Homing's own model where one
- * is set up. While one is being suggested, or waits for you, it says so.
+ * Where the mail in something of yours goes. What stands now comes first, with what to do about
+ * it: without a map, where everything goes and how to get one; a map that waits for you, or one
+ * being suggested; and when Homing looked at who writes there, which it does here without a model
+ * and a map is worked out from. Then its map, line by line as a proposal shows one, and the
+ * senders no route names. A map changes only through a proposal you approve: from your assistant,
+ * or from Homing's own model where one is set up, which says what it sends and costs first.
  */
 function WhereItGoes({ place, here, words, model, actions }: { place: PlaceData; here: string; words: Words; model: ModelStatement | null | undefined; actions?: LearningActions }) {
   const run = place.learning;
@@ -264,31 +265,28 @@ function WhereItGoes({ place, here, words, model, actions }: { place: PlaceData;
   const unplaced = run?.notPlaced ?? { senders: [], more: 0 };
   const looked = run?.summary && run.summarized ? { ...run.summary, at: run.summarized } : undefined;
   const looking = run?.summarizing === true;
+  const failed = !looking && run?.summaryFailed === true;
   const suggesting = busy === 'suggesting' || run?.suggesting === true;
   const waiting = run?.waiting ?? undefined;
   // Who can propose a map: your assistant always, and Homing's own model where one is set up, once Homing has looked at who writes.
   const suggests = Boolean(model) && looked !== undefined && !looking;
   const propose = (what: string) => `ask your assistant to propose ${what}${suggests ? ', or have Homing suggest one' : ''}`;
   const back = (since: string) => (since.startsWith('1990') ? 'as far back as it goes' : `back to ${dateOf(since)}`);
+  // What looking keeps, in the words an assistant is told it in.
+  const keeps = `It keeps who writes, how much and when, and a few subjects each. It uses no model and reads no ${words.item}’s text.`;
+  // How far back is still open while nothing has started and nothing is estimated, so looking asks.
+  const asks = !run || (run.state === 'estimating' && !run.estimate);
 
   return (
     <section aria-label={`Where the mail in ${place.connection.address} goes`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
       <h3 className="text-base font-semibold">Where its mail goes</h3>
-      {mapped ? (
-        <RouteList map={{ ...mapped, words }} />
-      ) : (
+      {!mapped && (
         <p className="text-base">
           There’s no map yet, so everything goes to {here}
           {waiting || suggesting || looking ? '.' : looked ? `: ${propose('one')}.` : `: to get one, first have Homing look at who writes here.`}
         </p>
       )}
-      {unplaced.senders.length > 0 && (
-        <div className="flex flex-col gap-2">
-          <span className="text-base font-semibold">Not placed</span>
-          <MapLines rows={unplaced.senders.map((one) => ({ key: one.sender, line: one.sender, holds: count(one.items, words.item, words.items) }))} />
-          {unplaced.more > 0 && <p className="text-sm text-muted-foreground">And {count(unplaced.more, 'more sender', 'more senders')}.</p>}
-        </div>
-      )}
+      {/* What stands now, and what to do about it, come before the map, so a long one doesn't bury them. */}
       {waiting ? (
         <div className="flex flex-col gap-1">
           <p className="text-base">A map waits for you to approve. Nothing changes until you do.</p>
@@ -296,42 +294,62 @@ function WhereItGoes({ place, here, words, model, actions }: { place: PlaceData;
         </div>
       ) : suggesting ? (
         <p role="status" className="text-base">Homing’s model is working out a map. It waits for you here once it’s made, and nothing changes until you approve it.</p>
-      ) : mapped ? (
-        <p className="text-sm text-muted-foreground">
-          {unplaced.senders.length > 0
-            ? `No route names them, so their mail goes where everything else does. To place them, ${propose('a change to the map')}.`
-            : `The map changes only when you approve a new one: ${propose('a change')}.`}
-        </p>
       ) : null}
       {looking ? (
         <p role="status" className="text-sm text-muted-foreground">
-          Homing is looking at who writes here{looked ? ' again' : ''}, {back(run!.since)}. It uses no model and reads no {words.item}’s text, and a large {words.place} takes a few minutes.
+          Homing is looking at who writes here{looked ? ' again' : ''}, {back(run!.since)}, which takes a few minutes for a large {words.place}. {keeps}
         </p>
-      ) : run?.summaryFailed ? (
-        <p className="text-sm text-destructive">Homing couldn’t look at who writes here: {place.connection.service} or Homing kept failing, so it gave up.</p>
-      ) : looked ? (
+      ) : failed ? (
+        <p className="text-sm text-destructive">
+          Homing couldn’t look at who writes here{looked ? ' again' : ''}: {place.connection.service} or Homing kept failing, so it gave up.
+        </p>
+      ) : (
+        !looked && !mapped && <p className="text-sm text-muted-foreground">{keeps}</p>
+      )}
+      {looked && (
         <p className="text-sm text-muted-foreground">
           Homing looked at who writes here on {dateOf(looked.at)}, {back(looked.since)}: {count(looked.emails, words.item, words.items)} from {count(looked.senders, 'sender', 'senders')}.
           {mapped && ' What each line holds goes by that.'}
         </p>
-      ) : (
-        !mapped && <p className="text-sm text-muted-foreground">It counts who writes, how much and when, without a model and without reading any {words.item}’s text.</p>
       )}
       {actions && !asking && !looking && !suggesting && (
-        <div className="flex flex-wrap gap-2">
-          {suggests && !waiting && <Button variant="outline" size="sm" disabled={busy !== undefined} onClick={suggest}>Suggest a map</Button>}
-          <Button variant="outline" size="sm" disabled={busy !== undefined} onClick={() => (run ? look(run.since) : setAsking(true))}>
-            {looked || run?.summaryFailed ? 'Look again' : 'Look at who writes here'}
-          </Button>
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-wrap gap-2">
+            {suggests && !waiting && <Button variant="outline" size="sm" disabled={busy !== undefined} onClick={suggest}>Suggest a map</Button>}
+            <Button variant="outline" size="sm" disabled={busy !== undefined} onClick={() => (asks ? setAsking(true) : look(run.since))}>
+              {looked || failed ? 'Look again' : 'Look at who writes here'}
+            </Button>
+          </div>
+          {suggests && !waiting && model && (
+            <p className="text-sm text-muted-foreground">
+              Suggesting a map sends the senders’ names and addresses and a few subjects each to {model.provider} ({model.capable}), counts against Homing’s monthly limit, and
+              ends in a map you approve.
+            </p>
+          )}
         </div>
       )}
       {actions && asking && (
         <Panel label="Look at who writes here">
-          <ScopeForm label="How far back should it look?" action="Look at who writes here" busy={busy === 'looking'} onChoose={look} onCancel={() => setAsking(false)} />
+          <ScopeForm label="How far back should it look?" action={looked || failed ? 'Look again' : 'Look at who writes here'} busy={busy === 'looking'} onChoose={look} onCancel={() => setAsking(false)} />
         </Panel>
       )}
       {note && <p role="status" className="text-sm text-muted-foreground">{note}</p>}
       {problem && <FieldError>{problem}</FieldError>}
+      {mapped && <RouteList map={{ ...mapped, words }} />}
+      {mapped && unplaced.senders.length === 0 && !waiting && !suggesting && (
+        <p className="text-sm text-muted-foreground">The map changes only when you approve a new one: {propose('a change')}.</p>
+      )}
+      {unplaced.senders.length > 0 && (
+        <div className="flex flex-col gap-2">
+          <span className="text-base font-semibold">Not placed</span>
+          <MapLines rows={unplaced.senders.map((one) => ({ key: one.sender, line: one.sender, holds: count(one.items, words.item, words.items) }))} />
+          {unplaced.more > 0 && <p className="text-sm text-muted-foreground">And {count(unplaced.more, 'more sender', 'more senders')}.</p>}
+          <p className="text-sm text-muted-foreground">
+            No route names them, so their mail goes where everything else does. Their counts are what learning has gone through so far.
+            {!waiting && !suggesting && ` To place them, ${propose('a change to the map')}.`}
+          </p>
+        </div>
+      )}
     </section>
   );
 }

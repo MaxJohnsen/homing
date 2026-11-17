@@ -187,7 +187,7 @@ function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; pla
       <>
         <Routes map={step.map} />
         <p className="text-sm text-muted-foreground">
-          A thread goes by who it’s with, and an address goes before its domain.
+          A thread goes by who it’s with: an address goes before its domain, and when several are listed, the earliest in the thread decides.
           {leftOut && ' A thread with anyone left out is never read, whatever else is listed here.'}
           {waits && ' Mail that waits isn’t read until you say where it goes.'}
         </p>
@@ -519,11 +519,14 @@ function Routes({ map, settled = false }: { map: MapData; settled?: boolean }) {
  * Where a line of a map leads, in words: "Northwind", "Fabrikam, a new space", "left out" or
  * "waits". A route whose sender you left out says where it leads and what leaves them out, such as
  * "Zeta, left out with zeta.test", since it does nothing until you take that off what's left out.
+ * One whose space can't take its mail now says that it waits and why, in the same form, such as
+ * "Zeta, waits while it’s archived".
  */
 function leadsTo(who: string, leads: LeadsData): string {
   const where = leads.to === 'leave out' ? 'left out' : leads.to === 'wait' ? 'waits' : leads.to === 'new space' ? `${leads.name}, a new space` : (leads.name ?? 'a space you can’t open');
-  if (leads.leftOut === undefined) return where;
-  return `${where}, left out${leads.leftOut === who ? '' : ` with ${leads.leftOut}`}`;
+  if (leads.leftOut !== undefined) return `${where}, left out${leads.leftOut === who ? '' : ` with ${leads.leftOut}`}`;
+  if (leads.waits) return `${where}, waits while ${leads.waits === 'archived' ? 'it’s archived' : 'model processing is off'}`;
+  return where;
 }
 
 /**

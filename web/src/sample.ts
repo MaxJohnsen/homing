@@ -189,7 +189,7 @@ const sampleUnstarted: LearningData = { ...sampleRun, state: 'estimating', estim
 const withCosts = (leads: NonNullable<LearningData['mapped']>['rest']) => (leads.to === 'space' && !leads.leftOut ? { ...leads, low: Math.ceil((0.86 * (leads.threads ?? 0)) / 15.83) / 100, high: Math.ceil((2.94 * (leads.threads ?? 0)) / 15.83) / 100 } : leads);
 
 /** Ana's mailbox at each point on the way to a map, and with one. */
-export const sampleMaps: Record<'looking' | 'looked' | 'suggesting' | 'waiting' | 'mapped' | 'estimated' | 'failed', LearningData> = {
+export const sampleMaps: Record<'looking' | 'looked' | 'suggesting' | 'waiting' | 'mapped' | 'estimated' | 'failed' | 'failedAgain' | 'nowhere' | 'long', LearningData> = {
   looking: { ...sampleUnstarted, summarizing: true },
   looked: { ...sampleUnstarted, ...sampleLooked },
   suggesting: { ...sampleUnstarted, ...sampleLooked, suggesting: true },
@@ -202,6 +202,39 @@ export const sampleMaps: Record<'looking' | 'looked' | 'suggesting' | 'waiting' 
     mapped: { routes: sampleMapped.routes.map((route) => ({ ...route, ...withCosts(route) })), rest: withCosts(sampleMapped.rest) },
   },
   failed: { ...sampleUnstarted, summaryFailed: true },
+  // Homing gave up looking again, so the lines keep what it counted before.
+  failedAgain: { ...sampleLearning.following, ...sampleLooked, summaryFailed: true, mapped: sampleMapped, notPlaced: sampleNotPlaced },
+  // A space archived since, and one where model processing was turned off: their mail waits, and each line says why.
+  nowhere: {
+    ...sampleLearning.following,
+    ...sampleLooked,
+    mapped: {
+      routes: [
+        ...sampleMapped.routes.slice(0, 1),
+        { who: 'fabrikam.example', to: 'space', name: 'Fabrikam', emails: 386, threads: 97, waits: 'archived' },
+        { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Accounting', emails: 48, threads: 48, waits: 'model processing off' },
+        ...sampleMapped.routes.slice(3),
+      ],
+      rest: sampleMapped.rest,
+    },
+  },
+  // Years in: a map of eighty routes, with a new one that waits.
+  long: {
+    ...sampleLearning.following,
+    ...sampleLooked,
+    waiting: 'map',
+    mapped: {
+      routes: Array.from({ length: 80 }, (_, at) => ({
+        who: at % 3 ? `client-${at + 1}.example` : `person.${at + 1}@client-${at + 1}.example`,
+        to: at % 11 === 10 ? ('wait' as const) : at % 7 === 6 ? ('leave out' as const) : ('space' as const),
+        name: at % 11 === 10 || at % 7 === 6 ? null : `Client ${at + 1}`,
+        emails: 1200 - at * 14,
+        threads: 300 - at * 3,
+      })),
+      rest: sampleMapped.rest,
+    },
+    notPlaced: sampleNotPlaced,
+  },
 };
 
 /** A space's connections with Ana's mailbox at a point in learning from it. */
@@ -1004,6 +1037,18 @@ export const mapLeftOutProposal: ProposalData = {
             },
           }
         : step,
+    ),
+  },
+};
+
+/** The same map with a route to a space where model processing is off: its mail waits, and the line says why. */
+export const mapWaitsProposal: ProposalData = {
+  ...mapProposal,
+  id: 'map-waits',
+  plan: {
+    ...mapProposal.plan!,
+    steps: mapProposal.plan!.steps.map((step) =>
+      step.map ? { ...step, map: { ...step.map, routes: step.map.routes.map((route) => (route.who.startsWith('faktura@') ? { ...route, name: 'Accounting', waits: 'model processing off' as const } : route)) } } : step,
     ),
   },
 };

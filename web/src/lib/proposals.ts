@@ -140,7 +140,8 @@ export interface PlanStepData {
 /**
  * Where a route leads: a space by name, one the map creates, leave out, or wait; and what it holds,
  * when Homing has counted. A route whose sender you left out still says where it leads, with the
- * entry of what's left out that covers them, which may be the sender itself.
+ * entry of what's left out that covers them, which may be the sender itself. One whose space can't
+ * take its mail now says why it waits.
  */
 export interface LeadsData {
   to: 'space' | 'new space' | 'leave out' | 'wait';
@@ -148,6 +149,8 @@ export interface LeadsData {
   emails: number | null;
   threads: number | null;
   leftOut?: string;
+  /** Why its mail waits now, though it leads to a space: the space is archived, or model processing is off there. */
+  waits?: 'archived' | 'model processing off';
   /** In dollars: about what reading it costs, while there's an estimate to share. */
   low?: number;
   high?: number;
