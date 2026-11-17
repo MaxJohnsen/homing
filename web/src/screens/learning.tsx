@@ -262,14 +262,13 @@ function standing(run: LearningData, words: { place: string }, service: string):
   }
 }
 
-/** "Microsoft 365 counts 4,812 emails since November 15, 2024. About 1,900 need no model… Threads that began earlier are read from their beginning." */
+/** "Microsoft 365 counts 4,812 emails since November 15, 2024. About 1,900 need no model…" */
 function estimateSentence(estimate: EstimateData, words: { item: string; items: string; thread: string }, service: string): string {
   const range = estimate.until ? `from ${dateOf(estimate.since)} to ${dateOf(estimate.until)}` : estimate.since.startsWith('1990') ? 'in it' : `since ${dateOf(estimate.since)}`;
   if (estimate.items === 0) return `${service} counts no ${words.items} ${range}, so there’s nothing there to learn from yet.`;
   return (
     `${service} counts ${count(estimate.items, words.item, words.items)} ${range}. About ${thousands(estimate.setAside)} of them need no model and are set aside, ` +
-    `and the rest make about ${count(estimate.threads, words.thread, `${words.thread}s`)} for the model to read.` +
-    (estimate.until || !estimate.since.startsWith('1990') ? ` ${capitalize(words.thread)}s that began earlier are read from their beginning.` : '')
+    `and the rest make about ${count(estimate.threads, words.thread, `${words.thread}s`)} for the model to read.`
   );
 }
 

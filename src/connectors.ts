@@ -95,8 +95,7 @@ export interface PlaceKind {
 /**
  * Following a place, for learning: its history, oldest first, then what arrives. One method
  * serves both. How the connector walks the place, such as by date and then by the system's own
- * record of changes, stays in its checkpoint, which Homing keeps and hands back as it was. A
- * thread that began before the scope is read from its beginning, which the connector gives apart.
+ * record of changes, stays in its checkpoint, which Homing keeps and hands back as it was.
  */
 export interface Follow {
   /**
@@ -112,11 +111,12 @@ export interface Follow {
   /** How many items the scope holds, as the system counts them, for an estimate. */
   count(access: Access, scope: Scope): Promise<number>;
   /**
-   * What these threads hold from before a time, oldest first, each as changes gives it, so a thread
-   * is learned from its beginning. Asked for one at a time, it gives an item it can't read as set
-   * aside. A kind whose items belong to nothing has none.
+   * Items of a change's thread by their ids, from among those the change names as earlier, oldest
+   * first, each as changes gives it and read with what the change is read with. `from` is the
+   * checkpoint the change's page gave. Asked for one at a time, it gives an item it can't read as
+   * set aside. A kind whose items belong to nothing has none.
    */
-  earlier?(access: Access, threads: string[], before: Date, options?: { size?: number }): Promise<Change[]>;
+  earlier?(access: Access, change: Change, ids: string[], options: { from: string; size?: number }): Promise<Change[]>;
 }
 
 /** What learning covers: from a time, and up to one, or on with what arrives. */
@@ -146,6 +146,8 @@ export interface Change {
   thread: string | null;
   /** Where it is there, such as its folder, by name. */
   folder: string | null;
+  /** What its thread holds from before it, newest first, by id and where each is, but for what lies where the connector leaves everything out, such as junk. */
+  earlier?: { id: string; folder: string | null }[];
   /** Why it needs no model, by the system's own signs, such as a newsletter's headers. */
   setAside?: SetAside;
 }

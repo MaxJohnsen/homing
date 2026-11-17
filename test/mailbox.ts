@@ -280,7 +280,8 @@ export function generateMailbox(owner: Person, options: MailboxOptions = {}): Ge
   }
 
   // Matters that go on for months: the same two people pick one up again every few weeks, so
-  // wherever learning starts, some threads began before it. The last was settled a while ago.
+  // wherever learning starts, some threads began before it. In every other one they write each
+  // status as a new email in the thread, quoting nothing. The last was settled a while ago.
   for (let number = 0; number < 4; number++) {
     const conversation = `AAQkGen${seed}standing${number}=`;
     const client = clients[number % clients.length];
@@ -292,7 +293,7 @@ export function generateMailbox(owner: Person, options: MailboxOptions = {}): Ge
       const from = turn % 2 ? owner : contact;
       const own = paragraph(`${client.name} retainer, status ${turn + 1}: ${40 + ((turn * 7 + number * 3) % 50)} hours used, and ${['the report is due next week', 'the invoice went out', 'the team stays as it is', 'the steering group meets next month'][turn % 4]}.`) + paragraph(from.name.split(' ')[0]);
       const email: Generated = {
-        kind: 'work', conversation, from, to: [turn % 2 ? contact : owner], subject: `${turn ? 'Re: ' : ''}${client.name} retainer status`, html: last ? quoting(own, last) : own, unique: own,
+        kind: 'work', conversation, from, to: [turn % 2 ? contact : owner], subject: `${turn ? 'Re: ' : ''}${client.name} retainer status`, html: last && number % 2 === 0 ? quoting(own, last) : own, unique: own,
         at: at(when), folder: from === owner ? 'sentitems' : 'inbox',
       };
       emails.push(email);

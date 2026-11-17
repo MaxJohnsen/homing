@@ -190,7 +190,6 @@ test('Ana’s assistant proposes that Homing learn from her mailbox, and once sh
   assert.ok(!proposed.failed, proposed.text);
   assert.match(proposed.text, new RegExp(`^Waiting for the user's approval \\(proposal:[0-9a-f-]{36}\\)\\. Nothing has started\\. Homing would learn from the user's mailbox ${account.address} back to ${since}, with a limit of \\$1\\.00 for its history, where it pauses\\. `));
   assert.match(proposed.text, /Microsoft counts [\d,]+ emails back to \d{4}-\d{2}-\d{2}\. About [\d,]+ of them need no model and are set aside, and the rest make about [\d,]+ threads for the model to read\. /);
-  assert.match(proposed.text, /for the model to read\. Threads that began earlier are read from their beginning, which that count leaves out\. Estimated model cost: /);
   assert.match(proposed.text, /Estimated model cost: \$\d+\.\d\d–\$\d+\.\d\d, with test\/cheaper at 127\.0\.0\.1:\d+\. The estimate is rough: it goes by that count and a sample of \d+ emails, and the rest may differ\./);
   assert.match(proposed.text, /Homing shows them the estimate in a card here, to approve or not\. If they can't see the card, give them this link instead: \S+\/proposals\/[0-9a-f-]{36}\n\nOnly they can decide, so never say it has started until `read` shows it is approved\.$/);
   assert.equal(Number(/counts ([\d,]+) emails/.exec(proposed.text)![1].replace(',', '')), mailbox.length);
@@ -533,40 +532,57 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   assert.deepEqual([count('excluded folder'), count('excluded sender')], [receipts.length, tors.length]);
   /** Whether a model should read an email, with what Ana left out. */
   const reads = (email: Generated) => kept(email) && email.kind !== 'receipt' && !withTor.has(email.conversation);
+  /** Whether an email carries what came before it, as the generator writes a reply and a forward: more than its sender's own words. */
+  const carries = (email: Generated) => email.unique !== undefined && email.html !== email.unique;
   /**
    * What the run takes in when it walks a period, going by the rule and never by the code under
-   * test: the period's emails it hasn't taken in, and, for each thread a model reads something of
-   * there, what the thread holds from before the period that it hasn't taken in either.
+   * test: the period's emails it hasn't taken in, and, for each thread it meets there for the first
+   * time at an email that carries nothing of what came before, the ten emails before that one.
    */
   const taken = new Set<Generated>();
   const walking = (from: number, to = -1) => {
     const period = within(from, to).filter((email) => !taken.has(email));
-    const met = new Set(period.filter(reads).map((email) => email.conversation));
-    const earlier = mailbox.filter((email) => !taken.has(email) && email.at < new Date(days(from)) && met.has(email.conversation));
+    const earlier: Generated[] = [];
+    for (const conversation of new Set(period.filter(reads).map((email) => email.conversation))) {
+      const thread = mailbox.filter((email) => email.conversation === conversation);
+      const first = period.find((email) => email.conversation === conversation)!;
+      assert.ok(reads(first), 'the first of a thread a model reads in a period is one it reads');
+      if (thread.some((email) => taken.has(email)) || carries(first)) continue;
+      earlier.push(...thread.filter((email) => email.at < first.at && !['junkemail', 'deleteditems', 'drafts', 'Receipts'].includes(email.folder ?? 'inbox')).slice(-10));
+    }
     for (const email of [...period, ...earlier]) taken.add(email);
     return { earlier, sent: [...period, ...earlier].filter(reads) };
   };
-  // A thread that began before the start was read from its beginning: its earlier emails went to the model too, each once, and are marked like the rest.
+  // Threads that began before the start are met at a reply that quotes what came before it, which is read as it is, or at an email that quotes nothing, which is read after those before it.
   const started = walking(100);
-  assert.ok(started.earlier.length > 20 && new Set(started.earlier.map((email) => email.conversation)).size > 4, `${started.earlier.length} earlier emails in ${new Set(started.earlier.map((email) => email.conversation)).size} threads`);
+  const crossing = new Set(inScope.filter(reads).filter((email) => mailbox.some((one) => one.conversation === email.conversation && one.at < new Date(days(100)))).map((email) => email.conversation));
+  assert.ok(crossing.size > 4 && started.earlier.length >= 6 && new Set(started.earlier.map((email) => email.conversation)).size === 1, `${crossing.size} threads cross the start, ${started.earlier.length} earlier emails`);
   const sent = sentSince(asked);
   for (const email of [...receipts, ...tors]) assert.ok(!sent.includes(keyOf(email)), email.subject);
   assert.equal(new Set(sent).size, sent.length, 'no email was sent twice');
   assert.deepEqual([...sent].sort(), started.sent.map(keyOf).sort());
   assert.equal(marks.length, inScope.length + started.earlier.length);
-  // One that has gone on for months: eight emails before the start. They were sent with its first email after the start, oldest first, and its note rests on all of them.
-  const standing = mailbox.filter((email) => email.conversation === mailbox.find((one) => one.subject === 'Contoso retainer status')!.conversation);
-  const [old, recent] = [standing.filter((email) => email.at < new Date(days(100))), standing.filter((email) => email.at >= new Date(days(100)))];
-  assert.ok(old.length >= 6 && recent.length >= 2, `${old.length} before the start, ${recent.length} after`);
-  const about = provider.asked.slice(asked).map((one) => sentIn(one.body)).filter((call) => /^(Re: )?Contoso retainer status$/.test(call.emails[0].Subject));
-  assert.deepEqual(about.flatMap((call) => call.emails.map((email) => `${email.Date}, ${email.From}, ${email.Subject}`)), standing.map(keyOf));
-  assert.deepEqual([about[0].emails.length > old.length, about[0].earlierNote, about[0].emails.some((email) => email.older)], [true, undefined, false]);
-  assert.match(about[0].emails[0].text, /^Contoso retainer, status 1: \d+ hours used/);
   const idOf = new Map([...ids].map(([id, key]) => [key, id]));
-  const ofStanding = marks.filter((mark) => standing.some((email) => idOf.get(keyOf(email)) === mark.item));
-  assert.deepEqual([ofStanding.length, new Set(ofStanding.map((mark) => mark.note)).size, ofStanding.every((mark) => mark.outcome === 'learned')], [standing.length, 1, true]);
-  const [noted] = await owner`select c.body, (select count(*)::integer from citations ci where ci.content_id = c.id) as sources from content c where c.id = ${ofStanding[0].note}`;
-  assert.deepEqual([noted.sources, /^Re: Contoso retainer status: noted from \d+ emails?, again\.$/.test(noted.body)], [standing.length, true]);
+  const about = (subject: string) => provider.asked.slice(asked).map((one) => sentIn(one.body)).filter((call) => call.emails[0].Subject.replace(/^Re: /, '') === subject);
+  const standingOf = (number: number) => {
+    const all = mailbox.filter((email) => email.conversation.endsWith(`standing${number}=`));
+    return { all, subject: all[0].subject, old: all.filter((email) => email.at < new Date(days(100))), recent: all.filter((email) => email.at >= new Date(days(100))) };
+  };
+  // One that has gone on for months, each status a new email that quotes nothing: the eight from before the start were sent with the first after it, oldest first, and its note rests on all of them.
+  const plain = standingOf(1);
+  assert.ok(plain.old.length >= 6 && plain.old.length <= 10 && plain.recent.length >= 2 && !plain.all.some(carries), `${plain.old.length} before the start, ${plain.recent.length} after`);
+  assert.deepEqual(about(plain.subject).flatMap((call) => call.emails.map((email) => `${email.Date}, ${email.From}, ${email.Subject}`)), plain.all.map(keyOf));
+  assert.deepEqual([about(plain.subject)[0].emails.length, about(plain.subject)[0].earlierNote, about(plain.subject)[0].emails.some((email) => email.older)], [plain.old.length + 1, undefined, false]);
+  const ofPlain = marks.filter((mark) => plain.all.some((email) => idOf.get(keyOf(email)) === mark.item));
+  assert.deepEqual([ofPlain.length, new Set(ofPlain.map((mark) => mark.note)).size, ofPlain.every((mark) => mark.outcome === 'learned')], [plain.all.length, 1, true]);
+  const [noted] = await owner`select c.body, (select count(*)::integer from citations ci where ci.content_id = c.id) as sources from content c where c.id = ${ofPlain[0].note}`;
+  assert.deepEqual([noted.sources, /retainer status: noted from \d+ emails?, again\.$/.test(noted.body)], [plain.all.length, true]);
+  // Another, where each reply quotes the one before: only what's from after the start was sent, each with what it quotes, and nothing from before it is marked.
+  const quoted = standingOf(0);
+  assert.ok(quoted.old.length >= 6 && quoted.recent.length >= 2 && quoted.recent.every(carries));
+  assert.deepEqual(about(quoted.subject).flatMap((call) => call.emails.map((email) => `${email.Date}, ${email.From}, ${email.Subject}`)), quoted.recent.map(keyOf));
+  assert.match(about(quoted.subject)[0].emails[0].quotes ?? '', /wrote: .* retainer, status \d+: \d+ hours used/);
+  assert.equal(marks.filter((mark) => quoted.old.some((email) => idOf.get(keyOf(email)) === mark.item)).length, 0);
   const progress = (await shown()).places[0].learning;
   assert.deepEqual(progress.setAside.filter((aside: { reason: string }) => aside.reason.startsWith('excluded')).map((aside: { words: string }) => aside.words).sort(), [
     `${receipts.length} in folders you left out`, `${tors.length} in threads with senders you left out`,
@@ -626,16 +642,21 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
   const further = walking(200, 100);
   await until(async () => (await runOf(place)).extensionSince === null && (await marksOf(place)).length === taken.size);
   assert.equal((await runOf(place)).state, 'following', 'it never stopped following');
-  // Of what the range adds, only what wasn't read went to the model, once. The earlier emails of threads that carried on past the old start were read with them then, and none is sent again.
+  // Of what the range adds, only what wasn't read went to the model, once: not the emails read at the start with the thread that quotes nothing.
   const added = sentSince(then);
   assert.equal(new Set([...sent, ...added]).size, sent.length + added.length, 'nothing was sent twice');
   assert.deepEqual([...added].sort(), further.sent.map(keyOf).sort());
-  const carriedOn = within(200, 100).filter((email) => started.earlier.includes(email));
+  const readBefore = within(200, 100).filter((email) => started.earlier.includes(email));
+  assert.ok(readBefore.length >= 3, `${readBefore.length} emails of the range were read at the start`);
+  for (const email of readBefore) assert.ok(!added.includes(keyOf(email)), email.subject);
+  // The older ones of a thread that already has its note went with that note, marked as older than what it holds.
+  const withNote = new Set(started.sent.map((email) => email.conversation));
+  const carriedOn = further.sent.filter((email) => withNote.has(email.conversation));
   assert.ok(carriedOn.length > 10, `${carriedOn.length} emails of threads that carried on into what it had learned from`);
-  for (const email of carriedOn) assert.ok(!added.includes(keyOf(email)), email.subject);
-  assert.ok(provider.asked.slice(then).every((one) => !sentIn(one.body).emails.some((email) => email.older)), 'nothing came as background to a note');
-  // A thread first met in the range, which began before it and was settled before the old start, was read from its beginning as well.
-  assert.ok(further.earlier.some((email) => /^(Re: )?Tailspin retainer status$/.test(email.subject)), `${further.earlier.length} emails from before the range`);
+  const background = provider.asked.slice(then).map((one) => sentIn(one.body)).flatMap((call) => call.emails.filter((email) => email.older).map((email) => (call.earlierNote ? `${email.Date}, ${email.From}, ${email.Subject}` : 'without its note')));
+  assert.deepEqual(background.sort(), carriedOn.map(keyOf).sort());
+  // A thread first met in the range, settled before the old start, at an email that quotes nothing, was read after those from before the range.
+  assert.ok(further.earlier.length >= 3 && further.earlier.every((email) => email.conversation.endsWith('standing3=') && email.at < new Date(days(200))), `${further.earlier.length} emails from before the range`);
   // Each is marked as learned from, with its thread's note, by the interpretation that read it.
   const learned = (await marksOf(place)).filter((mark) => mark.outcome !== 'set aside');
   assert.equal(learned.length, [...taken].filter(reads).length);

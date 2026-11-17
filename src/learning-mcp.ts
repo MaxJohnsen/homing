@@ -147,7 +147,7 @@ export function learningLines(l: Learning, places: Place[], runs: Map<string, Ru
   });
 }
 
-/** An estimate in sentences, with the provider and model that would read it, saying plainly that it's rough, and that a thread is read from its beginning. */
+/** An estimate in sentences, with the provider and model that would read it, saying plainly that it's rough. */
 function estimateText(l: Learning, estimate: Estimate, words: Words, vendor: string): string {
   const range = estimate.until ? `from ${day(estimate.since)} to ${day(estimate.until)}` : `back to ${day(estimate.since)}`;
   if (estimate.items === 0) return `${vendor} counts no ${words.items} ${range}, so there is nothing there to learn from.`;
@@ -156,7 +156,6 @@ function estimateText(l: Learning, estimate: Estimate, words: Words, vendor: str
   return (
     `${vendor} counts ${counted(estimate.items, words.item, words.items)} ${range}. About ${estimate.setAside.toLocaleString('en-US')} of them need no model and are set aside, ` +
     `and the rest make about ${counted(estimate.threads, thread, `${thread}s`)} for the model to read. ` +
-    (words.related ? `${thread[0].toUpperCase()}${thread.slice(1)}s that began earlier are read from their beginning, which that count leaves out. ` : '') +
     `Estimated model cost: ${usd(estimate.low)}–${usd(estimate.high)}${model ? `, with ${model.cheaper} at ${model.provider}` : ''}. ` +
     `The estimate is rough: it goes by that count and a sample of ${counted(estimate.sampled, words.item, words.items)}, and the rest may differ.`
   );

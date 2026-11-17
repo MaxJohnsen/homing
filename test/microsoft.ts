@@ -8,8 +8,7 @@
 // moves, and immutable ones that don't, for whoever asks for those. It lists
 // a mailbox's emails by the date they arrived, and follows each folder's
 // changes with delta links, as Graph documents them: a page may hold fewer
-// than asked for and still have a next link; a list filtered by something
-// it isn't ordered by first is refused its order; delta gives changes in no
+// than asked for and still have a next link; delta gives changes in no
 // promised order, an email that changed with no more than its id and what
 // changed, or with what was asked for as well, and one that was only marked
 // read even when it doesn't fit the filter; a delta with a filter returns
@@ -332,8 +331,8 @@ export class MicrosoftStandIn {
   /** What Homing asked of a mailbox's history by date, as Graph got each filter. */
   readonly history: string[] = [];
 
-  /** What Homing asked of conversations from before a time, as Graph got each filter. */
-  readonly earlier: string[] = [];
+  /** The emails Homing read one at a time, by their ids, in order. */
+  readonly read: string[] = [];
 
   /** The folders Homing asked for their changes, in order, by name. */
   readonly deltasOf: string[] = [];
@@ -478,6 +477,7 @@ export class MicrosoftStandIn {
     if (one) {
       this.asked.reads++;
       const email = found(decodeURIComponent(one[1]));
+      if (email) this.read.push(email.id);
       if (email && failing([email])) return broken;
       return email ? { status: 200, body: this.fieldsOf(mailbox, email, select, prefer) } : notFound;
     }
@@ -501,40 +501,18 @@ export class MicrosoftStandIn {
         .sort((a, b) => b.at.getTime() - a.at.getTime());
       return { status: 200, body: { value: matches.slice(0, top).map(fields), ...(matches.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
     }
-    // To the second, as Graph keeps the time an email arrived.
-    const second = (email: Kept) => Math.floor(email.at.getTime() / 1000);
-    const skip = Number(url.searchParams.get('$skip') ?? 0);
-    const linked = (change: (params: URLSearchParams) => void) => {
-      const next = new URL(url);
-      change(next.searchParams);
-      return next.toString();
-    };
-    // A conversation's emails, all of them or those that arrived before a time.
-    const conversation = filter && /^conversationId eq '((?:[^']|'')*)'(?: and receivedDateTime lt (\S+))?$/.exec(filter);
+    const conversation = filter && /^conversationId eq '(.*)'$/.exec(filter)?.[1]?.replace(/''/g, "'");
     if (conversation) {
-      // As Graph: what a list is ordered by comes first in its filter, in that order. Otherwise it refuses the order.
-      const ordered = (url.searchParams.get('$orderby') ?? '').split(',').map((by) => by.trim().split(/\s+/)[0]).filter(Boolean);
-      const filtered = ['conversationId', ...(conversation[2] ? ['receivedDateTime'] : [])];
-      if (ordered.some((property, at) => filtered[at] !== property)) {
-        return { status: 400, body: { error: { code: 'InefficientFilter', message: 'The restriction or sort order is too complex for this operation.' } } };
-      }
-      const thread = mailbox.emails.filter((email) => email.conversation === conversation[1].replace(/''/g, "'"));
-      if (!conversation[2]) return { status: 200, body: { value: thread.slice(0, top).map(fields), ...(thread.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
-      const before = Date.parse(conversation[2]);
-      if (Number.isNaN(before)) return { status: 400, body: { error: { code: 'BadRequest' } } };
-      this.earlier.push(filter);
-      // In no order that was asked for: newest first here, a page at a time, with a link to the next.
-      const earlier = thread.filter((email) => second(email) * 1000 < before).sort((a, b) => second(b) - second(a));
-      const size = Math.min(top, mailbox.pageCap ?? top);
-      const page = earlier.slice(skip, skip + size);
-      if (failing(page)) return broken;
-      return { status: 200, body: { value: page.map(fields), ...(earlier.length > skip + size && { '@odata.nextLink': linked((params) => params.set('$skip', String(skip + size))) }) } };
+      const thread = mailbox.emails.filter((email) => email.conversation === conversation);
+      return { status: 200, body: { value: thread.slice(0, top).map(fields), ...(thread.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
     }
     // The whole mailbox by the date each email arrived, as Graph filters it, oldest first when asked.
     const dated = filter && /^receivedDateTime ge (\S+?)(?: and receivedDateTime lt (\S+))?$/.exec(filter);
     if (dated) {
       const [from, until] = [Date.parse(dated[1]), dated[2] ? Date.parse(dated[2]) : Infinity];
       if (Number.isNaN(from) || Number.isNaN(until)) return { status: 400, body: { error: { code: 'BadRequest' } } };
+      // To the second, as Graph keeps the time an email arrived.
+      const second = (email: Kept) => Math.floor(email.at.getTime() / 1000);
       const within = mailbox.emails.filter((email) => second(email) * 1000 >= from && second(email) * 1000 < until);
       if (url.searchParams.get('$count') === 'true') return { status: 200, body: { '@odata.count': within.length, value: within.slice(0, top).map(fields) } };
       const order = url.searchParams.get('$orderby');
@@ -542,6 +520,12 @@ export class MicrosoftStandIn {
       this.asked.history++;
       this.history.push(filter);
       const sorted = order ? [...within].sort((a, b) => second(a) - second(b) || a.id.localeCompare(b.id)) : within;
+      const skip = Number(url.searchParams.get('$skip') ?? 0);
+      const linked = (change: (params: URLSearchParams) => void) => {
+        const next = new URL(url);
+        change(next.searchParams);
+        return next.toString();
+      };
       // As Graph: a page may hold nothing and still not be the last. Asked for again, it's as empty: only its link leads on.
       if (mailbox.empty === 'always' || (mailbox.empty === 'first' && !url.searchParams.has('$skiptoken'))) {
         return { status: 200, body: { value: [], '@odata.nextLink': linked((params) => params.set('$skiptoken', String(Number(params.get('$skiptoken') ?? 0) + 1))) } };

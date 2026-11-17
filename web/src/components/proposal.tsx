@@ -503,7 +503,6 @@ function LearningDetails({ place, learning }: { place: string; learning: Learnin
           <p className="text-base">
             {learning.service} counts {counted(estimate.items, words.item, words.items)} there. About {thousands(estimate.setAside)} of them need no model and are set aside, and the rest
             make about {counted(estimate.threads, words.thread, `${words.thread}s`)} for the model to read.
-            {(estimate.until || !estimate.since.startsWith('1990')) && ` ${capitalized(words.thread)}s that began earlier are read from their beginning.`}
           </p>
           <p className="text-base font-semibold">Estimated model cost: {usd(estimate.low)} to {usd(estimate.high)}.</p>
           <p className="text-sm text-muted-foreground">
