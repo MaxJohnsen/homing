@@ -12,7 +12,7 @@ import { connectorsFor, type Change, type Listed } from '../src/connectors.ts';
 import { connect, withPrincipal, type Sql } from '../src/db.ts';
 import { notes } from '../src/interpret.ts';
 import { claim, learnPage } from '../src/learner.ts';
-import { estimateLearning, routeOf, runsFor, startLearning, type Learning } from '../src/learning.ts';
+import { estimateLearning, routeOf, runsFor, sentBy, startLearning, type Learning } from '../src/learning.ts';
 import { checkMap, count, summaryOf, type Summarizing } from '../src/map.ts';
 import { ownPlace } from '../src/places.ts';
 import { decide as decideProposal, proposeMap } from '../src/proposals.ts';
@@ -807,7 +807,7 @@ test('a sender Ana leaves out after a map was proposed stays left out when she a
   assert.deepEqual(card, [['northwind.test', 'new space'], ['mum@family.test', 'leave out'], ['fabrikam.test', 'leave out']], 'she is shown what approving sets now');
   assert.equal((await w.decide(proposalOf(proposed.text))).status, 200);
   const { routes, excludedSenders } = await w.run();
-  assert.deepEqual([routes.map((route: { who: string }) => route.who), excludedSenders], [['northwind.test'], ['fabrikam.test', 'mum@family.test']]);
+  assert.deepEqual([routes.map((route: { who: string }) => route.who), excludedSenders], [['northwind.test', 'mum@family.test'], ['fabrikam.test', 'mum@family.test']], 'her route is kept, and does nothing while she is left out');
   const at = provider.asked.length;
   await t.start();
   assert.deepEqual(callsSince(at), [['Contract']], 'neither Mum’s mail nor what the map left out is read');
@@ -897,7 +897,7 @@ test('an address goes before its domain among routes to a space or to wait: that
   assert.deepEqual([callsSince(at), (await t.notesBy()).map((note) => note.space)], [contracts.map((subject) => [subject]), contracts.map(() => 'Northwind')]);
 });
 
-test('what Ana left out is never read, whatever route names it: an address at a domain she left out can’t be routed, and a route she approved is gone once she leaves its domain out', async () => {
+test('what Ana left out is never read, whatever route names it: an address at a domain she left out can’t be routed, and a route she approved stays, shows as left out and does nothing until she takes its domain off the list, when it works again without a new map', async () => {
   const lawyer = from('Lawyer Lund', 'lawyer@firm.test');
   const w = await world(modeled, () => [mail(gunnar, 'Contract', 30), mail(lawyer, 'Your filing', 20), mail(lawyer, 'Your filing 2', 19)]);
   const learning: Learning = { broker, model: provider.model(), interpretation: notes };
@@ -911,26 +911,161 @@ test('what Ana left out is never read, whatever route names it: an address at a 
   const both = await t.propose({ routes: [{ who: 'family.test', to: 'leave out' }, { who: 'mum@family.test', to: acme }] });
   assert.deepEqual([both.failed, /This map leaves "family\.test" out, so "mum@family\.test" can’t go anywhere else/.test(both.text)], [true, true], both.text);
   assert.equal((await owner`select from proposals where private_to = ${w.ana.id}`).length, 0, 'nothing was proposed');
-  // Proposed while the domain wasn't left out, which she then leaves out before she approves: she is shown the route is gone, and approving sets none for the lawyer.
+  // Proposed while the domain wasn't left out, which she then leaves out before she approves: she is shown the route as left out, and approving keeps it that way.
   await t.leaveOut([]);
   const waiting = await t.propose({ routes: [{ who: 'lawyer@firm.test', to: acme }, { who: 'northwind.test', to: acme }] });
   await t.leaveOut(['firm.test']);
   const card = (await w.ana.browser.json(`/api/proposals/${proposalOf(waiting.text)}`)).body.proposal.plan.steps.at(-1).map.routes.map((route: { who: string; to: string }) => [route.who, route.to]);
-  assert.deepEqual(card, [['northwind.test', 'space'], ['firm.test', 'leave out']]);
+  assert.deepEqual(card, [['lawyer@firm.test', 'leave out'], ['northwind.test', 'space'], ['firm.test', 'leave out']]);
   assert.equal((await w.decide(proposalOf(waiting.text))).status, 200);
-  assert.deepEqual(await set(), [['northwind.test'], ['firm.test']]);
-  // Approved first, and its domain left out in the app afterwards: the route is gone, the lawyer's mail reaches no model, and her assistant reads no route for it.
+  assert.deepEqual(await set(), [['lawyer@firm.test', 'northwind.test'], ['firm.test']]);
+  // Approved first, and its domain left out in the app afterwards: the route stays and shows as left out, in the app and for her assistant, and the lawyer's mail reaches no model.
   await t.leaveOut([]);
-  await t.map({ routes: [{ who: 'lawyer@firm.test', to: acme }, { who: 'northwind.test', to: acme }] });
+  await t.map({ routes: [{ who: 'lawyer@firm.test', to: acme }, { who: 'northwind.test', to: 'wait' }] });
   assert.deepEqual(await set(), [['lawyer@firm.test', 'northwind.test'], []]);
   await t.leaveOut(['firm.test']);
-  assert.deepEqual(await set(), [['northwind.test'], ['firm.test']]);
+  assert.deepEqual(await set(), [['lawyer@firm.test', 'northwind.test'], ['firm.test']]);
+  assert.deepEqual((await t.shown()).map.routes, [{ who: 'lawyer@firm.test', to: 'leave out' }, { who: 'northwind.test', to: 'wait' }, { who: 'firm.test', to: 'leave out' }]);
   const at = provider.asked.length;
   await t.start();
-  assert.deepEqual(callsSince(at), [['Contract']]);
-  assert.deepEqual((await w.marks()).filter((mark) => mark.sender === 'lawyer@firm.test').map((mark) => [mark.reason, mark.because]), [1, 2].map(() => ['excluded sender', 'firm.test']));
+  assert.deepEqual(callsSince(at), []);
+  assert.deepEqual((await w.marks()).filter((mark) => mark.sender === 'lawyer@firm.test').map((mark) => [mark.reason, sentBy('firm.test', mark.because)]), [1, 2].map(() => ['excluded sender', true]));
   const read = (await t.claude.call('read', { ref: `learning:${w.place}` })).text;
-  assert.deepEqual([/"firm\.test" left out/.test(read), /"lawyer@firm\.test" to /.test(read)], [true, false], read);
+  assert.deepEqual([/- "firm\.test" left out, never read/.test(read), /- "lawyer@firm\.test" left out with "firm\.test", never read, until the user takes that off/.test(read), /"lawyer@firm\.test" to /.test(read)], [true, true, false], read);
+  // She takes the domain off the list: the route she approved works again, with no new map, and only its mail is read.
+  const proposals = (await owner`select from proposals where private_to = ${w.ana.id}`).length;
+  await t.leaveOut([]);
+  assert.deepEqual((await t.shown()).map.routes, [{ who: 'lawyer@firm.test', to: w.acme }, { who: 'northwind.test', to: 'wait' }]);
+  await through(learning);
+  assert.deepEqual([callsSince(at), (await t.notesBy()).map((note) => [note.space, note.body]), (await owner`select from proposals where private_to = ${w.ana.id}`).length], [[['Your filing'], ['Your filing 2']], [['Acme', 'Your filing 2: noted.'], ['Acme', 'Your filing: noted.']], proposals]);
+});
+
+test('a sender to leave out is a plain address or a domain: “%” or “n_rthwind.test” from her assistant is refused, in the app and by the database too, so the routes Ana approved stay and what waits isn’t read; and a sender her assistant does leave out keeps their route, which works again once she takes them off the list', async () => {
+  const boss = from('Zeta Boss', 'boss@zeta.test');
+  const w = await world(modeled, () => [...[1, 2].map((n) => mail(gunnar, `Northwind waits ${n}`, 10 * n)), mail(boss, 'Zeta plan', 6), mail(per, 'Offer', 3)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  await t.map({ create: [{ name: 'Zeta' }], routes: [{ who: 'northwind.test', to: 'wait' }, { who: 'boss@zeta.test', to: 'Zeta' }] });
+  const before = provider.asked.length;
+  await t.start();
+  assert.deepEqual(callsSince(before).flat().sort(), ['Offer', 'Zeta plan']);
+  const { id: run } = await w.run();
+  const set = async () => [(await w.run()).routes.map((route: { who: string }) => route.who), (await w.run()).excludedSenders];
+  const waits = async () => (await w.marks()).filter((mark) => mark.reason === 'waiting' && !mark.again).length;
+  const leave = (senders: string[]) => t.claude.call('act', { action: 'learning.leave_out', input: { from: `learning:${w.place}`, senders } });
+  // Nothing in what's left out stands for anything else: an entry that isn't an address or a domain is refused, whoever gives it.
+  const at = provider.asked.length;
+  for (const entry of ['%', 'n_rthwind.test', '%.test', '@@northwind.test', 'Gunnar Lie', 'nørthwind.test', '\u00a0north\u202Ewind.test']) {
+    const left = await leave([entry]);
+    assert.deepEqual([left.failed, /isn’t a sender’s address or a domain in plain letters, such as news@shop\.test or shop\.test\. Nothing was changed\./.test(left.text)], [true, true], `${entry}: ${left.text}`);
+    const inApp = await w.ana.browser.json(`/api/places/${w.place}/learning/left-out`, { senders: [entry], folders: [], kept: [] });
+    assert.deepEqual([inApp.status, /isn’t a sender’s address or a domain in plain letters/.test(inApp.body.message)], [409, true], entry);
+    await assert.rejects(withPrincipal(sql, t.me, (s) => s.tx`select set_learning_exclusions(${run}::uuid, ${s.tx.array([entry])}::text[], '{}', '{}')`), /a sender to leave out is an address or a domain in plain letters/, entry);
+  }
+  await through(learning);
+  assert.deepEqual([await set(), await waits(), callsSince(at)], [[['northwind.test', 'boss@zeta.test'], []], 2, []], 'her routes are as she approved them, and nothing that waits was read');
+  // What her assistant may leave out, written as people write it: a route for one of them stays, shows as left out, and nothing of theirs is read.
+  const left = await leave(['zeta.test', ' @Fabrikam.test', 'northwind.test']);
+  assert.equal(left.failed, false, left.text);
+  assert.deepEqual(await set(), [['northwind.test', 'boss@zeta.test'], ['fabrikam.test', 'northwind.test', 'zeta.test']]);
+  assert.deepEqual((await t.shown()).map.routes, [{ who: 'boss@zeta.test', to: 'leave out' }, ...['fabrikam.test', 'northwind.test', 'zeta.test'].map((who) => ({ who, to: 'leave out' }))]);
+  assert.match((await t.claude.call('read', { ref: `learning:${w.place}` })).text, /- "boss@zeta\.test" left out with "zeta\.test", never read, until the user takes that off/);
+  microsoft.deliver(w.account, { to: [{ name: w.account.name, address: w.account.address }], ...mail(boss, 'Zeta budget', 0.002) });
+  // Two looks: one at what her assistant's change woke, one at what arrived.
+  await t.again();
+  await t.again();
+  assert.deepEqual([callsSince(at), (await w.marks()).filter((mark) => mark.reason === 'excluded sender').map((mark) => mark.sender).sort()], [[], ['boss@zeta.test', 'gunnar@northwind.test', 'gunnar@northwind.test']]);
+  // Leaving out someone else has nothing looked at again for a sender who is left out and has a route too.
+  assert.equal((await leave(['elsewhere.test'])).failed, false);
+  assert.equal((await w.marks()).filter((mark) => mark.again).length, 0);
+  // Ana takes them off the list, in the app: the routes work again as she approved them, with no new map.
+  const proposals = (await owner`select from proposals where private_to = ${w.ana.id}`).length;
+  await t.leaveOut([]);
+  const zeta = (await w.spacesOf()).find((space) => space.name === 'Zeta')!.id;
+  assert.deepEqual((await t.shown()).map.routes, [{ who: 'northwind.test', to: 'wait' }, { who: 'boss@zeta.test', to: zeta }]);
+  await through(learning);
+  assert.deepEqual([callsSince(at), (await t.notesBy()).map((note) => [note.space, note.body]), await waits(), (await owner`select from proposals where private_to = ${w.ana.id}`).length], [[['Zeta budget']], [['Acme', 'Offer: noted.'], ['Zeta', 'Zeta budget: noted.'], ['Zeta', 'Zeta plan: noted.']], 2, proposals]);
+  // What was on the list before only plain senders could be put there stays as it is written, and her assistant still adds to it.
+  await owner`update learning_runs set excluded_senders = ${['@family.test', 'old news']} where id = ${run}`;
+  assert.equal((await leave(['Shop.test'])).failed, false);
+  assert.deepEqual((await w.run()).excludedSenders, ['@family.test', 'old news', 'shop.test']);
+});
+
+test('whether an entry names an address means one thing, letter by letter, for Homing and for its database: one table of cases through both', async () => {
+  const g = 'gunnar@northwind.test';
+  const cases: [address: string, entry: string, matches: boolean][] = [
+    [g, 'gunnar@northwind.test', true],
+    [g, 'northwind.test', true],
+    [g, '@northwind.test', true],
+    [g, 'test', true],
+    ['gunnar@mail.northwind.test', 'northwind.test', true],
+    ['gunnar@mail.northwind.test', 'mail.northwind.test', true],
+    ['gunnar@northwind.test', 'mail.northwind.test', false],
+    ['a@b', '@a@b', true],
+    ['a@😀.test', '😀.test', true],
+    // A domain that only ends alike, and an address that only ends alike.
+    ['gunnar@notnorthwind.test', 'northwind.test', false],
+    ['per.gunnar@northwind.test', 'gunnar@northwind.test', false],
+    [g, 'orthwind.test', false],
+    [g, '.test', false],
+    // Nothing stands for anything else.
+    [g, '%', false],
+    [g, '%.test', false],
+    [g, '%@northwind.test', false],
+    [g, 'n_rthwind.test', false],
+    [g, '_unnar@northwind.test', false],
+    [g, 'gunnar@northwind_test', false],
+    [g, 'northwind\\.test', false],
+    [g, '.*', false],
+    ['%', '%', false],
+    ['%@northwind.test', '%@northwind.test', true],
+    // One @ before a domain, never two.
+    ['gunnar@x', '@@x', false],
+    ['gunnar@@x', '@@x', false],
+    [g, '@', false],
+    [g, '', false],
+    // As they are kept: nobody folds case or trims here.
+    [g, 'Northwind.test', false],
+    [g, 'GUNNAR@NORTHWIND.TEST', false],
+    ['Gunnar@Northwind.test', 'northwind.test', false],
+    [g, '\u00a0northwind.test', false],
+    [g, ' northwind.test', false],
+    [g, 'northwind.test ', false],
+    [g, '\u00a0gunnar@northwind.test', false],
+  ];
+  const inDatabase = await owner<{ matches: boolean }[]>`select sender_matches(c.entry, c.address) as matches from unnest(${owner.array(cases.map(([, entry]) => entry))}::text[], ${owner.array(cases.map(([address]) => address))}::text[]) with ordinality as c (entry, address, at) order by c.at`;
+  for (const [at, [address, entry, matches]] of cases.entries()) {
+    assert.deepEqual([sentBy(entry, address), inDatabase[at].matches], [matches, matches], `${JSON.stringify(entry)} for ${JSON.stringify(address)}`);
+  }
+});
+
+test('Homing’s model is asked about no sender whose mail goes to a space with model processing off, by a route or as everything else does, and is told so; and its leaving out a domain doesn’t undo a route it wasn’t shown', async () => {
+  const [vera, siv] = [from('Vera Vik', 'vera@zenith.test'), from('Siv Dahl', 'siv@contoso.test')];
+  const w = await world(modeled, () => [mail(gunnar, 'Contract', 30), ...[1, 2, 3].map((n) => mail(vera, `Zenith ${n}`, 10 * n)), mail(siv, 'Contoso plan', 4), mail(siv, 'Contoso budget', 3)]);
+  const learning: Learning = { broker, model: provider.model(), interpretation: notes };
+  const t = await mapped(w, learning);
+  const [secret] = await withPrincipal(sql, t.me, async (s) => {
+    const [{ id: personal }] = await s.tx<{ id: string }[]>`select id from spaces where private_to = ${w.ana.id} and parent_id is null`;
+    return [await createSpace(s, { name: 'Secret merger Zeta', parentId: personal })];
+  });
+  // Vera by her address, and everyone no route names, belong in a space where model processing then goes off.
+  await t.map({ routes: [{ who: 'vera@zenith.test', to: `space:${secret}` }, { who: 'northwind.test', to: `space:${w.acme}` }], else: `space:${secret}` });
+  await withPrincipal(sql, t.me, (s) => setModelProcessing(s, secret, false));
+  provider.reply = () => answerWith(JSON.stringify({ create: [], routes: [{ who: 'Zenith.test', to: 'Leave out' }, { who: 'northwind.test', to: 'wait' }], else: null }));
+  const before = provider.asked.length;
+  const asked = await w.ana.browser.json(`/api/places/${w.place}/learning/map`, {});
+  assert.deepEqual([asked.status, provider.asked.length - before], [200, 1], JSON.stringify(asked.body));
+  // In the whole of what it was sent: Gunnar, whose mail goes to Acme, and nothing of Vera, nor of Siv, whom no route names.
+  const whole = JSON.stringify(provider.asked[before].body).toLowerCase();
+  for (const never of ['siv', 'contoso', 'vera', 'zenith', 'Secret merger', secret, w.acme, w.place]) assert.ok(!whole.includes(never.toLowerCase()), never);
+  const sent = JSON.parse(provider.asked[before].body.messages[1].content);
+  assert.deepEqual([sent.summary.senders.map((one: { address: string }) => one.address), sent.summary.domains.map((one: { domain: string }) => one.domain), sent.routesNow, 'elseNow' in sent], [['gunnar@northwind.test'], ['northwind.test'], [{ who: 'northwind.test', to: sent.connectedIn }], false]);
+  assert.equal(asked.body.message, 'Homing’s model wasn’t asked about 2 senders whose mail goes to a space that isn’t sent to a model.');
+  // Its answer stands without the domain it left out, which Vera's route is at: her route stays as it is, and nobody is left out.
+  const steps = (await owner`select change from proposals where id = ${asked.body.proposal}`)[0].change.steps;
+  assert.deepEqual([steps.at(-1).routes, steps.at(-1).rest], [[{ who: 'northwind.test', to: 'wait' }, { who: 'vera@zenith.test', to: secret }], null]);
+  assert.equal((await w.decide(asked.body.proposal)).status, 200);
+  assert.deepEqual([(await w.run()).routes, (await w.run()).rest, (await w.run()).excludedSenders], [[{ who: 'northwind.test', to: 'wait' }, { who: 'vera@zenith.test', to: secret }], secret, []]);
 });
 
 test('a map change has every thread it may concern looked at again, whole: one that waited under its domain when an address in it gets a route, and one nobody placed, Ana’s own answers in it too', async () => {

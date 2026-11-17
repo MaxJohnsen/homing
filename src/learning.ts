@@ -12,7 +12,7 @@ import type { Change, Envelope, Follow, Scope } from './connectors.ts';
 import { personOf, withPrincipal, type Principal, type Session } from './db.ts';
 import type { Interpretation } from './interpret.ts';
 import { callCost, monthlyLimit, type Model } from './model.ts';
-import { ownPlace, wordsOf, type Place } from './places.ts';
+import { ownPlace, quoted, wordsOf, type Place } from './places.ts';
 import { accessibleSpaces } from './spaces.ts';
 
 /** What learning needs from the server: connections, Homing's model if it has one, and how a batch is read. */
@@ -177,16 +177,28 @@ interface RunRow {
 
 /**
  * A map as it works, from the routes a run keeps and the senders it leaves out, who stay a list of
- * their own: each of them a route to leave out, and no other route for anyone that list covers,
- * since what is left out is never read, whatever else names it.
+ * their own: each of them a route to leave out, and so is every other route for anyone that list
+ * covers, since what is left out is never read, whatever else names it. The run keeps such a route
+ * as it was, so it works again once its sender is off the list.
  */
 export const mapOf = (routes: Route[], leftOut: string[], rest: string | null): LearningMap => {
   const out = [...new Set([...leftOut, ...routes.filter((route) => route.to === 'leave out').map((route) => route.who)])];
-  return { routes: [...routes.filter((route) => route.to !== 'leave out' && !leftOutBy(out, route.who)), ...out.map((who) => ({ who, to: 'leave out' }))], rest };
+  const others = routes.filter((route) => !out.includes(route.who)).map((route) => (leftOutBy(out, route.who) ? { who: route.who, to: 'leave out' } : route));
+  return { routes: [...others, ...out.map((who) => ({ who, to: 'leave out' }))], rest };
 };
 
 /** The entry among those left out that covers a route's sender: that address, or the whole of the domain it names. */
-export const leftOutBy = (leftOut: string[], who: string) => leftOut.find((entry) => sentBy(entry, who.includes('@') && !who.startsWith('@') ? who : `someone@${who.replace(/^@/, '')}`));
+export const leftOutBy = (leftOut: string[], who: string) => leftOut.find((entry) => sentBy(entry, who.includes('@') ? who : `someone@${who}`));
+
+/**
+ * Whether a text names a sender, for a route or for what's left out: a plain address or a domain,
+ * in lower case, of ASCII only, so it names who it looks like it names and nothing in it stands
+ * for anything else. The database holds the same (route_names).
+ */
+export const namesSender = (who: string) => who.length <= 320 && /^([a-z0-9.!#$%&'*+/=?^_`{|}~-]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(who);
+
+/** A sender as someone wrote it, the way it's kept: in lower case, without the @ a domain may be written with. */
+export const senderNamed = (who: string) => who.trim().toLowerCase().replace(/^@/, '');
 
 /** Whether a map says anything beyond who is left out: a run without one behaves as it did before maps. */
 export const hasMap = (map: LearningMap) => map.rest !== null || map.routes.some((route) => route.to !== 'leave out');
@@ -319,12 +331,16 @@ export function folderLeftOut(folder: string | null, leftOut: Pick<LeftOut, 'fol
   return named ? leftOut.folders.find((name) => name.trim().toLowerCase() === named) : undefined;
 }
 
-/** Whether an address is the one an entry names, or at the domain it names, written as northwind.test or @northwind.test. */
+/**
+ * Whether an address is the one an entry names, or at the domain it names or one under it. Both as
+ * they are kept, in lower case, and compared letter by letter: nothing in an entry stands for
+ * anything else. An entry may begin with one @, as @northwind.test. The database says the same
+ * (sender_matches), and one table of cases is run through both.
+ */
 export function sentBy(entry: string, address: string): boolean {
-  const named = entry.trim().toLowerCase();
-  if (named.includes('@') && !named.startsWith('@')) return address === named;
-  const domain = named.replace(/^@/, '');
-  return domain !== '' && (address.endsWith(`@${domain}`) || address.endsWith(`.${domain}`));
+  const named = entry.replace(/^@/, '');
+  if (named.includes('@')) return address === named;
+  return named !== '' && (address.endsWith(`@${named}`) || address.endsWith(`.${named}`));
 }
 
 /**
@@ -694,12 +710,18 @@ export async function setLearningLimit(s: Session, run: Run, limit: number): Pro
 
 /**
  * Sets what the person's run leaves out without a model, and the senders it keeps. Their assistant
- * only adds to what's left out. What was set aside for something no longer left out, or from a
- * sender now kept, is learned from after all.
+ * only adds to what's left out. A sender to leave out is a plain address or a domain, as a route's
+ * is, and one already on the list stays as it's written there. The run's routes stay: one for a
+ * sender left out does nothing until they're taken off the list. What was set aside for something
+ * no longer left out, or from a sender now kept, is learned from after all.
  */
 export async function setLeftOut(s: Session, run: Run, leftOut: LeftOut): Promise<void> {
+  const had = (who: string) => run.leftOut.senders.includes(who);
+  const senders = leftOut.senders.map((who) => (had(who) ? who : senderNamed(who)));
+  const odd = senders.find((who) => !had(who) && !namesSender(who));
+  if (odd !== undefined) throw new LearningRefused(`${quoted(odd, 80)} isn’t a sender’s address or a domain in plain letters, such as news@shop.test or shop.test. Nothing was changed.`);
   await refusing(() => s.tx`
-    select set_learning_exclusions(${run.id}::uuid, ${s.tx.array(leftOut.senders)}::text[], ${s.tx.array(leftOut.folders)}::text[], ${s.tx.array(leftOut.kept)}::text[])
+    select set_learning_exclusions(${run.id}::uuid, ${s.tx.array(senders)}::text[], ${s.tx.array(leftOut.folders)}::text[], ${s.tx.array(leftOut.kept)}::text[])
   `);
 }
 

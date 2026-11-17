@@ -14,7 +14,7 @@ import * as z from 'zod';
 import { routineAgent } from './assistants.ts';
 import type { Listed } from './connectors.ts';
 import { withPrincipal, type Session } from './db.ts';
-import { cents, folderLeftOut, leftOutBy, LearningRefused, nothingThere, routeFor, runsFor, type Estimate, type Learning, type LearningMap, type Route, type Run } from './learning.ts';
+import { cents, folderLeftOut, leftOutBy, LearningRefused, namesSender, nothingThere, routeFor, runsFor, senderNamed, type Estimate, type Learning, type LearningMap, type Route, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused, modelOn, type ModelCall } from './model.ts';
 import { oneLine, ownPlace, placeName, quoted, wordsOf, type Place } from './places.ts';
 import { mapWaits, proposeMap, type MapSteps, type Proposal } from './proposals.ts';
@@ -239,8 +239,6 @@ export const mapForm =
   'Everything no route names goes where `else` says. Route by what the senders are to the user, such as a client, a supplier or private, and ask the user when that isn’t clear from who they are. ' +
   'Prefer a domain to single addresses, the spaces the user has to new ones, and few routes to many. What is learned is kept on the user’s private side of the space, whoever else has that space.';
 
-/** Who a route names: a plain address or a domain, in lower case, of ASCII only, so it names who it looks like it names. The database holds the same (route_names). */
-const sender = /^([a-z0-9.!#$%&'*+/=?^_`{|}~-]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$/;
 const uuid = /^(?:space:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
 /**
@@ -287,8 +285,8 @@ export async function checkMap(s: Session, place: Place, run: Run, answer: MapAn
   };
   const routes: Route[] = [];
   for (const route of answer.routes) {
-    const who = route.who.trim().toLowerCase().replace(/^@/, '');
-    if (who.length > 320 || !sender.test(who)) throw new LearningRefused(`${quoted(route.who, 80)} isn’t a sender’s address or a domain in plain letters, such as gunnar@northwind.test or northwind.test. Nothing was proposed.`);
+    const who = senderNamed(route.who);
+    if (!namesSender(who)) throw new LearningRefused(`${quoted(route.who, 80)} isn’t a sender’s address or a domain in plain letters, such as gunnar@northwind.test or northwind.test. Nothing was proposed.`);
     if (who === place.address.trim().toLowerCase()) throw new LearningRefused(`${JSON.stringify(who)} is the user’s own address, which no route names: a thread goes by who else it is with. Nothing was proposed.`);
     if (routes.some((other) => other.who === who)) throw new LearningRefused(`${JSON.stringify(who)} has two routes. Give each sender one. Nothing was proposed.`);
     routes.push({ who, to: lead(route.to) });
@@ -342,16 +340,18 @@ export function spaceTree(spaces: Space[]): { reference: string; name: string; u
 /**
  * The question as Homing's own model gets it: the instructions, then the summary, the spaces and
  * the routes there are as quoted data. A space is named by a number of its own here, never by its
- * id. Nothing of a sender the run leaves out is in it, nor of one whose route leads to a space the
- * call doesn't carry, such as one with model processing off: not their address, their subjects, or
- * their counts by name. The spaces are those the call may carry.
+ * id. Nothing of a sender the run leaves out is in it, nor of one whose mail goes to a space the
+ * call doesn't carry, such as one with model processing off, by a route or as everything else
+ * does: not their address, their subjects, or their counts by name. The spaces are those the call
+ * may carry. It also says how many of the summary's senders it holds nothing of for such a space.
  */
-function question(place: Place, summary: Summary, spaces: Space[], run: Run): { call: Omit<ModelCall, 'spaces'>; refs: Map<string, string> } {
+function question(place: Place, summary: Summary, spaces: Space[], run: Run): { call: Omit<ModelCall, 'spaces'>; refs: Map<string, string>; unasked: number } {
   const text = { type: 'string' };
   const refs = new Map(spaces.map((space, index) => [space.id, `s${index + 1}`]));
+  const off = (to: string) => to !== 'wait' && to !== 'leave out' && !refs.has(to);
   const unsaid = (address: string) => {
     const route = routeFor(run.map.routes, address);
-    return route !== undefined && route.to !== 'wait' && !refs.has(route.to);
+    return route ? route.to === 'leave out' || off(route.to) : off(run.map.rest ?? place.space);
   };
   const senders = summary.senders.filter((one) => !unsaid(one.address));
   const gone = summary.senders.filter((one) => unsaid(one.address));
@@ -365,6 +365,7 @@ function question(place: Place, summary: Summary, spaces: Space[], run: Run): { 
   const shown = (to: string | null) => (to === null ? refs.get(place.space) : to === 'wait' ? to : refs.get(to));
   return {
     refs,
+    unasked: gone.filter((one) => routeFor(run.map.routes, one.address)?.to !== 'leave out').length,
     call: {
       purpose: 'map',
       maxTokens: 4_000,
@@ -422,9 +423,10 @@ const routineFor = (person: string) => ({ person, agent: routineAgent, routine: 
  * is marked on the place's run, in a moment, once the place is known to be theirs, and unmarked
  * when the answer is in: nothing is held while the model answers, and a mark Homing never took off
  * ends by itself. The call names the place's space and every space it lists, which are those with
- * model processing on, and the place's own refuses it otherwise.
+ * model processing on, and the place's own refuses it otherwise. With the proposal, how many of
+ * the summary's senders the model wasn't asked about, since their mail goes to a space no call carries.
  */
-export async function suggestMap(l: Learning, person: string, placeId: string): Promise<Proposal> {
+export async function suggestMap(l: Learning, person: string, placeId: string): Promise<{ proposal: Proposal; unasked: number }> {
   const unusable = 'Homing’s model didn’t give a map this time. Try again in a moment.';
   const { place, run, summary, spaces, kept } = await withPrincipal(l.broker.sql, { person }, async (s) => {
     const found = await material(l, s, placeId);
@@ -437,7 +439,7 @@ export async function suggestMap(l: Learning, person: string, placeId: string): 
     return { ...found, spaces, kept: hidden(found.run, new Map(spaces.map((space) => [space.id, ''])), open) };
   });
   try {
-    const { call, refs } = question(place, summary, spaces, run);
+    const { call, refs, unasked } = question(place, summary, spaces, run);
     let said;
     try {
       said = await callModel({ sql: l.broker.sql, model: l.model }, person, { ...call, spaces: [...new Set([place.space, ...spaces.map((space) => space.id)])] });
@@ -448,12 +450,14 @@ export async function suggestMap(l: Learning, person: string, placeId: string): 
     }
     const answer = mapAnswer.safeParse(said.json);
     if (!answer.success) throw new LearningRefused(unusable);
-    // The model's references back to the spaces they stand for, and the routes it wasn't shown as they are, whatever it answered.
+    // The model's references back to the spaces they stand for, and the routes it wasn't shown as they are, whatever it answered:
+    // a route of its own for one of those senders is dropped, and so is leaving out a domain one of them is at.
     const ids = new Map([...refs].map(([id, ref]) => [ref, `space:${id}`]));
     const named = (to: string) => ids.get(to.trim().toLowerCase()) ?? to;
+    const stands = (route: Route) => !kept.some((other) => other.who === route.who || (route.to === 'leave out' && leftOutBy([route.who], other.who)));
     const given = {
       create: answer.data.create?.map((space) => ({ ...space, ...(space.under && { under: named(space.under) }) })),
-      routes: [...answer.data.routes.filter((route) => !kept.some((other) => other.who === route.who.trim().toLowerCase().replace(/^@/, ''))).map((route) => ({ who: route.who, to: named(route.to) })), ...kept.map((route) => ({ who: route.who, to: `space:${route.to}` }))],
+      routes: [...answer.data.routes.filter((route) => stands({ who: senderNamed(route.who), to: route.to.trim().toLowerCase() })).map((route) => ({ who: route.who, to: named(route.to) })), ...kept.map((route) => ({ who: route.who, to: `space:${route.to}` }))],
       else: answer.data.else ? named(answer.data.else) : null,
     };
     return await withPrincipal(l.broker.sql, routineFor(person), async (s) => {
@@ -463,7 +467,7 @@ export async function suggestMap(l: Learning, person: string, placeId: string): 
       const steps = await checkMap(s, place, now, given).catch((error: unknown) => {
         throw error instanceof LearningRefused ? new LearningRefused(unusable) : error;
       });
-      return proposeMap(s, place, steps);
+      return { proposal: await proposeMap(s, place, steps), unasked };
     });
   } finally {
     await withPrincipal(l.broker.sql, { person }, (s) => s.tx`select learning_map_asking(${run.id}::uuid, false)`).catch(() => {});

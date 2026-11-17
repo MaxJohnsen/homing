@@ -1078,7 +1078,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             await summarizeLearning(app.learning, { person, direct: true }, route.id, since);
           } else if (route.name === 'suggest map') {
             // Homing's own model answers where the mail belongs, and its answer waits as a proposal, as an assistant's does.
-            return answer(res, 200, { proposal: (await suggestMap(app.learning, person, route.id)).id });
+            const { proposal, unasked } = await suggestMap(app.learning, person, route.id);
+            const note = unasked > 0 && `Homing’s model wasn’t asked about ${unasked.toLocaleString('en-US')} ${unasked === 1 ? 'sender' : 'senders'} whose mail goes to a space that isn’t sent to a model.`;
+            return answer(res, 200, { proposal: proposal.id, ...(note && { message: note }) });
           } else if (route.name === 'estimate learning' || route.name === 'estimate extension') {
             if (!since) return answer(res, 400, { field: 'since', message: 'Choose how far back to learn.' });
             if (route.name === 'estimate learning') await estimateLearning(app.learning, { person, direct: true }, route.id, since);

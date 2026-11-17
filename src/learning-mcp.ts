@@ -17,6 +17,7 @@ import {
   estimateLearning,
   hasMap,
   LearningRefused,
+  leftOutBy,
   noModel,
   notPlaced,
   pauseLearning,
@@ -29,6 +30,7 @@ import {
   summarizeLearning,
   type Estimate,
   type Learning,
+  type Route,
   type Run,
 } from './learning.ts';
 import { checkMap, holdings, mapAnswer, mapForm, spaceTree, summaryFor, type Summary } from './map.ts';
@@ -201,6 +203,8 @@ async function mapLines(s: Session, l: Learning, place: Place, run: Run, summary
     const space = spaces.find((candidate) => candidate.id === (to ?? place.space));
     return space ? `to ${q(space.privateTo !== null && space.parentId === null ? 'the user’s personal space' : space.name)} (space:${space.id})` : 'to a space the user can’t open now, so it waits';
   };
+  // A route of its own for someone an entry of what's left out covers: the run keeps it, and it does nothing until that entry is taken off.
+  const under = (route: Route) => (route.to === 'leave out' && !run.leftOut.senders.includes(route.who) ? leftOutBy(run.leftOut.senders, route.who) : undefined);
   const estimate = run.state === 'estimating' ? run.estimate : null;
   const held = summary ? holdings(summary, run.map, estimate) : [];
   const holds = (who: string | null) => {
@@ -214,7 +218,7 @@ async function mapLines(s: Session, l: Learning, place: Place, run: Run, summary
     '## The map',
     ...(mapped || run.map.routes.length
       ? [
-          ...run.map.routes.map((route) => `- ${q(route.who)} ${leads(route.to)}${holds(route.who)}`),
+          ...run.map.routes.map((route) => `- ${q(route.who)} ${under(route) ? `left out with ${q(under(route)!)}, never read, until the user takes that off what’s left out` : leads(route.to)}${holds(route.who)}`),
           `- everything else ${leads(run.map.rest)}${holds(null)}`,
           ...(held.length ? [`What each holds goes by the summary${estimate ? ', and what reading costs by the estimate, which is rough' : ''}.`] : []),
           ...(l.model ? [] : ['This Homing has no model of its own, so the reading costs nothing in Homing.']),

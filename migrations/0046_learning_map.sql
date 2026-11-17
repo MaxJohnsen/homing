@@ -15,13 +15,19 @@ as $$
   select length(who) <= 320 and who ~ '^([a-z0-9.!#$%&''*+/=?^_`{|}~-]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$'
 $$;
 
--- Whether one of the senders left out covers a route's sender: that
--- address, or the whole of the domain it names. What is left out is never
--- read, whatever route names it.
-create function route_left_out(who text, senders text[]) returns boolean
+-- Whether an address is the sender an entry names, or at the domain it
+-- names or one under it. Both as they are kept, in lower case, and compared
+-- letter by letter: nothing in an entry stands for anything else. An entry
+-- may begin with one @, as @northwind.test. `sentBy` in learning.ts says the
+-- same, and one table of cases is run through both.
+create or replace function sender_matches(entry text, address text) returns boolean
 language sql immutable
 as $$
-  select exists (select from unnest(senders) as l (entry) where sender_matches(l.entry, case when who like '%@%' then who else 'x@' || who end))
+  select case
+    when position('@' in named) > 0 then address = named
+    else named <> '' and right(address, length(named) + 1) in ('@' || named, '.' || named)
+  end
+  from (select regexp_replace(entry, '^@', '') as named) as one
 $$;
 
 -- Whether a list of routes is whole: each names a sender once, and leads to
@@ -67,7 +73,8 @@ create index learned_items_waiting on learned_items (run_id) where reason = 'wai
 -- entry that changed, or holds someone an entry that changed names, by
 -- address or domain, or went where everything else goes when that changed.
 -- An item set aside before a run kept who its thread is with goes by its
--- sender.
+-- sender. A route for a sender who is on the left-out list by that name
+-- counts as left out, so it changes nothing while they stay on the list.
 -- Where a thread belongs is the worker's to say, which sorts each again.
 -- Looking at too many costs a request; this never decides. How many.
 create function learning_mapped(r learning_runs, routes jsonb, rest text, senders text[]) returns integer
@@ -79,9 +86,9 @@ declare
 begin
   changed := array(
     select who
-    from (select route ->> 'who' as who, route ->> 'to' as dest from jsonb_array_elements(r.routes) as route
+    from (select route ->> 'who' as who, route ->> 'to' as dest from jsonb_array_elements(r.routes) as route where not route ->> 'who' = any (r.excluded_senders)
           union all select e, 'leave out' from unnest(r.excluded_senders) as e) as before
-    full join (select route ->> 'who' as who, route ->> 'to' as dest from jsonb_array_elements(learning_mapped.routes) as route
+    full join (select route ->> 'who' as who, route ->> 'to' as dest from jsonb_array_elements(learning_mapped.routes) as route where not route ->> 'who' = any (senders)
                union all select e, 'leave out' from unnest(senders) as e) as after using (who)
     where before.dest is distinct from after.dest
   );
@@ -180,10 +187,10 @@ $$;
 -- Sets a run's map: its routes and where everything else goes, which stays
 -- as it is when the map doesn't say. Only the person does, in Homing itself,
 -- which approving a proposed map is. The senders the run leaves out now all
--- stay left out, with those the map leaves out added, and a route for
--- anyone that list covers, by address or by domain, is dropped: a map never
--- takes anyone off that list, and no route reads what is left out. A route
--- names only a space they can open. Whatever worker has the
+-- stay left out, with those the map leaves out added: a map never takes
+-- anyone off that list. A route for someone the list covers is kept and does
+-- nothing while they are left out, since whoever reads goes by the list
+-- first. A route names only a space they can open. Whatever worker has the
 -- run loses it, so nothing is written by the map as it was.
 create function set_learning_map(run uuid, routes jsonb, rest text) returns void
 language plpgsql security definer set search_path = public, pg_temp
@@ -206,7 +213,7 @@ begin
   );
   select coalesce(jsonb_agg(route order by place), '[]') into kept
   from jsonb_array_elements(routes) with ordinality as given (route, place)
-  where route ->> 'to' <> 'leave out' and not route_left_out(route ->> 'who', leaves);
+  where route ->> 'to' <> 'leave out';
   if cardinality(leaves) > 200 or jsonb_array_length(kept) > 200 then
     raise exception 'a map holds up to 200 routes, and a run leaves out up to 200 senders' using errcode = 'check_violation';
   end if;
@@ -222,10 +229,12 @@ begin
 end
 $$;
 
--- Sets what a run leaves out and keeps, as 0045 has it. A sender left out
--- takes the place of every route it covers, for that address or for anyone
--- at that domain, and what the run set
--- aside by its map or its left-out senders is looked at again where they
+-- Sets what a run leaves out and keeps, as 0045 has it. A sender to leave
+-- out is a plain address or a domain, as a route's is (route_names), so it
+-- names who it looks like it names; one that was on the list before stays as
+-- it is. The run's routes stay as they are: one for a sender now left out
+-- does nothing until the person takes that sender off the list. What the run
+-- set aside by its map or its left-out senders is looked at again where they
 -- changed, as when a map changes. A folder left out since the run's summary
 -- was made is in that summary, so the summary is made again without it.
 create or replace function set_learning_exclusions(run uuid, senders text[], folders text[], kept text[]) returns void
@@ -245,6 +254,9 @@ begin
   left_senders := array(select distinct lower(btrim(value)) from unnest(senders) as one (value) order by 1);
   left_folders := array(select distinct btrim(value) from unnest(folders) as one (value) order by 1);
   keeps := array(select distinct lower(btrim(value)) from unnest(kept) as one (value) order by 1);
+  if exists (select from unnest(left_senders) as one (value) where not route_names(one.value) and not one.value = any (r.excluded_senders)) then
+    raise exception 'a sender to leave out is an address or a domain in plain letters, such as news@shop.test or shop.test' using errcode = 'check_violation';
+  end if;
   if not direct_edit() and not (r.excluded_senders <@ left_senders and r.excluded_folders <@ left_folders and keeps = r.kept_senders) then
     raise exception 'only the person takes something off what''s left out, or keeps a sender, in Homing itself' using errcode = 'insufficient_privilege';
   end if;
@@ -266,11 +278,7 @@ begin
         and not exists (select from unnest(r.kept_senders) as k (entry) where sender_matches(k.entry, i.sender)))
   );
   get diagnostics again = row_count;
-  again := again + learning_mapped(
-    r,
-    (select coalesce(jsonb_agg(route order by place), '[]') from jsonb_array_elements(r.routes) with ordinality as had (route, place) where not route_left_out(route ->> 'who', left_senders)),
-    r.rest, left_senders
-  );
+  again := again + learning_mapped(r, r.routes, r.rest, left_senders);
   if again > 0 and r.state in ('learning history', 'following') then
     update learning_runs set next_at = now() where id = r.id;
   end if;
