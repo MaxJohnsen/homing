@@ -322,7 +322,7 @@ function WhereItGoes({ place, here, words, model, actions }: { place: PlaceData;
           </div>
           {suggests && !waiting && model && (
             <p className="text-sm text-muted-foreground">
-              Suggesting a map sends the senders’ names and addresses and a few subjects each to {model.provider} ({model.capable}), counts against Homing’s monthly limit, and
+              Suggesting a map sends your spaces’ names, and the senders’ names and addresses with a few subjects each, to {model.provider} ({model.capable}), counts against Homing’s monthly limit, and
               ends in a map you approve.
             </p>
           )}
