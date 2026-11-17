@@ -57,8 +57,7 @@ export class Unusable extends Error {
 
 /**
  * How much of each item a note is written from: its own words first, then what it quotes, which in
- * a forward is the substance, so that gets whatever its own words leave. A chain of replies that's
- * longer keeps its start and its end, where the request it began with is. And how long a note is.
+ * a forward is the substance, so that gets whatever its own words leave. And how long a note is.
  */
 const ownRead = 4_000;
 const itemRead = 6_000;
@@ -122,7 +121,7 @@ function request(batch: Batch): Omit<ModelCall, 'run'> {
             return {
               ...Object.fromEntries(item.fields.map(([label, value]) => [oneLine(label), plainValue(value)])),
               text,
-              ...(item.parts?.quoted && { quotes: cutMiddle(withoutHidden(item.parts.quoted), itemRead - text.length) }),
+              ...(item.parts?.quoted && { quotes: cut(withoutHidden(item.parts.quoted), itemRead - text.length) }),
               ...(older(batch, item) && { older: true }),
             };
           }),
@@ -148,16 +147,4 @@ function cut(text: string, most: number): string {
   if (text.length <= most) return text;
   const space = text.lastIndexOf(' ', most);
   return `${text.slice(0, space > most / 2 ? space : most).trimEnd()}…`;
-}
-
-/** Where the middle of a text was left out. */
-const leftOut = ' […] ';
-
-/** Text of at most so many characters, cut in the middle: its start and its end, each at a word, with a mark between them. */
-function cutMiddle(text: string, most: number): string {
-  if (text.length <= most) return text;
-  const half = Math.floor((most - leftOut.length) / 2);
-  const [start, end] = [text.slice(0, half), text.slice(-half)];
-  const [last, first] = [start.lastIndexOf(' '), end.indexOf(' ')];
-  return `${start.slice(0, last > half / 2 ? last : half).trimEnd()}${leftOut}${end.slice(first >= 0 && first < half / 2 ? first + 1 : 0).trimStart()}`;
 }

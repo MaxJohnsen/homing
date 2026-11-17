@@ -3,8 +3,6 @@
 // restarts and deploys. Then, as the run's owner, it fetches one page of the place's changes,
 // outside any transaction, skips what the run already processed, sets aside what needs no model,
 // and hands each thread to the interpretation step, whose model calls the run's own limit holds.
-// A thread it meets for the first time at an item that doesn't carry what came before it, it reads
-// with the last few items from before it.
 // What a thread taught is written on the owner's private side in the same transaction that marks
 // its items processed, so a crash repeats only what wasn't marked. Only then does the run's
 // checkpoint move on. It sends nothing more once its owner pauses the run, waits and tries again
@@ -16,11 +14,11 @@ import { randomUUID } from 'node:crypto';
 import postgres from 'postgres';
 import { routineAgent } from './assistants.ts';
 import { ConnectionUnusable, kindOf, messageOf, Unanswered } from './connections.ts';
-import type { Access, Change, Changes } from './connectors.ts';
+import type { Change, Changes } from './connectors.ts';
 import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } from './db.ts';
 import { Unusable, type Ask, type Learned } from './interpret.ts';
 import { addSource, createPage, insertItem, updateItem, visible } from './knowledge.ts';
-import { asOwner, batchesOf, folderLeftOut, leftOutIn, senderOf, setAside, type Learning, type Run } from './learning.ts';
+import { asOwner, batchesOf, leftOutIn, senderOf, setAside, type Learning, type Run } from './learning.ts';
 import { callModel, ModelFailed, ModelRefused } from './model.ts';
 import { ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
 
@@ -41,17 +39,12 @@ export interface LearnerOptions {
 }
 
 const defaults = { tickMs: 5_000, pollSeconds: 5 * 60, leaseSeconds: 5 * 60, backoffSeconds: 30, retrySeconds: [60 * 60, 2 * 60 * 60] as [number, number], atOnce: 2 };
-/** How long fetching one page of a place's changes may take, and what its threads are read with from before it. */
+/** How long fetching one page of a place's changes may take. */
 const pageTimeLimit = 90_000;
 /** How long a run waits when calls under way leave no room, or the person can't open its space for now. */
 const busyWait = 60;
 /** How many items a page holds unless a page failed, and what it falls back to then: fewer, then one at a time. */
 const pageSizes = [50, 10, 1];
-/**
- * How many items from before it a thread is read with, where it's met at an item that doesn't carry
- * them: the newest, and never more than one call takes, so they're read whole or not at all.
- */
-const earlierRead = 10;
 /** How many items set aside before are learned from again at once. */
 const againAtOnce = 20;
 /** How often the provider may fail on one thread, hours apart, while it answers otherwise, before the thread is set aside. */
@@ -242,9 +235,15 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     const scope = walk === 'extension' ? run.extending! : { since: run.since };
     const size = run.pageSize ?? pageSizes[0];
 
-    // What the place gives, outside any transaction, as its owner, within a time limit.
-    const fetched = <T>(read: (access: Access) => Promise<T>) => asOwner(l.broker, principal, place, AbortSignal.any([signal, AbortSignal.timeout(pageTimeLimit)]), read);
-    const unfetched = async (error: unknown) => {
+    // One page, outside any transaction.
+    let page: Changes;
+    try {
+      page = await asOwner(l.broker, principal, place, AbortSignal.any([signal, AbortSignal.timeout(pageTimeLimit)]), async (access) =>
+        walk === 'again'
+          ? { changes: await follow.items(access, again), next: '', caughtUp: false }
+          : follow.changes(access, walk === 'extension' ? run.extensionCheckpoint : run.checkpoint, scope, { size }),
+      );
+    } catch (error) {
       if (signal.aborted) return await later(0);
       if (error instanceof ConnectionUnusable) return await (error.reason === 'gone' ? later(0) : later(0, error.reason === 'needs attention' ? 'sign in again' : 'not set up'));
       // Asked to wait, it waits that long, and that's no failure.
@@ -257,16 +256,6 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       // A page the system couldn't serve, or not in time, is asked for again in smaller parts: fewer
       // at once, then one at a time, where an item it can't give is set aside.
       return await backoff('system', { pageSize: pageSizes.find((smaller) => smaller < size) ?? 1 });
-    };
-    let page: Changes;
-    try {
-      page = await fetched(async (access) =>
-        walk === 'again'
-          ? { changes: await follow.items(access, again), next: '', caughtUp: false }
-          : follow.changes(access, walk === 'extension' ? run.extensionCheckpoint : run.checkpoint, scope, { size }),
-      );
-    } catch (error) {
-      return await unfetched(error);
     }
 
     // What the run hasn't processed, or has in another version, or was asked to learn from after all.
@@ -296,49 +285,24 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     // sent it, and whole threads that hold mail from a sender its owner left out.
     const aside: Mark[] = [];
     let kept: Change[] = [];
-    const sort = (given: Change[]) => {
-      for (const change of given) {
-        const why = setAside(change, run.leftOut);
-        if (why) aside.push(markOf(change, 'set aside', why.reason, why.because));
-        else kept.push(change);
-      }
-    };
-    sort(fresh);
+    for (const change of fresh) {
+      const why = setAside(change, run.leftOut);
+      if (why) aside.push(markOf(change, 'set aside', why.reason, why.because));
+      else kept.push(change);
+    }
     for (const thread of batchesOf(kept, Number.MAX_SAFE_INTEGER)) {
       const entry = leftOutIn(thread.changes, run.leftOut);
       if (!entry) continue;
       aside.push(...thread.changes.map((change) => markOf(change, 'set aside', 'excluded sender', entry)));
       kept = kept.filter((change) => !thread.changes.includes(change));
     }
-
-    // A thread the run meets for the first time, at an item that doesn't carry what came before it:
-    // the last few from before it are fetched and read first, all in the thread's first call, and
-    // marked like the rest, so going further back later finds them read. What's set aside of such a
-    // thread is marked only once the page's calls are done: until its first call is, the thread has
-    // no mark, and a page that stopped before that does all of this again. Nothing is fetched for
-    // what's learned from again: it was set aside, so its thread has marks, and the odd one without loses nothing.
-    const met = follow.earlier && walk !== 'again' ? await firstMet(sql, principal, run, kept, new Set(changes.map((change) => change.item.envelope.id)), Math.min(earlierRead, l.interpretation.most)) : [];
-    if (met.length) {
-      const earlier: Change[] = [];
-      try {
-        await fetched(async (access) => {
-          for (const { change, ids } of met) earlier.push(...(await follow.earlier!(access, change, ids, { from: page.next, size })));
-        });
-      } catch (error) {
-        return await unfetched(error);
-      }
-      if (signal.aborted) return await later(0);
-      sort(earlier);
-    }
-    const withEarlier = new Set(met.map(({ change }) => change.thread));
-    const [held, now] = [aside.filter((mark) => withEarlier.has(mark.thread)), aside.filter((mark) => !withEarlier.has(mark.thread))];
     // What was asked for again and isn't there any more has nothing left to learn from.
     if (walk === 'again') {
       for (const item of again.filter((id) => !changes.some((change) => change.item.envelope.id === id))) {
-        now.push({ item, version: 'gone', thread: null, outcome: 'set aside', reason: 'gone', sender: null, at: null, because: null, interpretation: null, folder: null });
+        aside.push({ item, version: 'gone', thread: null, outcome: 'set aside', reason: 'gone', sender: null, at: null, because: null, interpretation: null, folder: null });
       }
     }
-    if (now.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, now, null));
+    if (aside.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, aside, null));
 
     const read = `${l.interpretation.name} ${l.interpretation.version}`;
     // How many of this page's calls a model answered, in this try, and how many threads in a row the
@@ -516,7 +480,6 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       return await later(run.caughtUpAt === null ? wait : Math.min(wait, pace.pollSeconds), 'limited', { counted: countedNow() });
     }
 
-    if (held.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, held, null));
     // Never silently: the person is told on the run, and whoever looks after Homing here, once.
     if (walk === 'main' && page.partly && !run.followedPartly) {
       console.warn(`learning: a ${words.place} holds more than Homing follows, so what arrives in the rest of it isn’t learned from`);
@@ -531,24 +494,6 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     console.error('learning: a page failed on the way:', error);
     await backoff('error');
   }
-}
-
-/**
- * The threads among these items that the run has no mark for, and whose oldest item here doesn't
- * carry what came before it, by what its change names as earlier: that item, with the ids of the
- * newest of those, so many at most, but for those the page gave itself and those in a folder left out.
- */
-async function firstMet(sql: Sql, principal: Principal, run: Claim, kept: Change[], given: Set<string>, most: number): Promise<{ change: Change; ids: string[] }[]> {
-  const found = batchesOf(kept, Number.MAX_SAFE_INTEGER).flatMap(({ thread, changes: [change] }) => {
-    if (thread === null) return [];
-    const ids = (change.earlier ?? []).filter((other) => !given.has(other.id) && !folderLeftOut(other.folder, run.leftOut)).slice(0, most).map((other) => other.id);
-    return ids.length ? [{ change, ids }] : [];
-  });
-  if (found.length === 0) return [];
-  const marked = await withPrincipal(sql, principal, (s) => s.tx<{ thread: string }[]>`
-    select distinct thread from learned_items where run_id = ${run.id}::uuid and thread in ${s.tx(found.map(({ change }) => change.thread!))}
-  `);
-  return found.filter(({ change }) => !marked.some((one) => one.thread === change.thread));
 }
 
 /** Whether the model's provider answers at all, by a call that carries nothing of anyone's. */

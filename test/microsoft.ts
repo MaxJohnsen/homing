@@ -331,9 +331,6 @@ export class MicrosoftStandIn {
   /** What Homing asked of a mailbox's history by date, as Graph got each filter. */
   readonly history: string[] = [];
 
-  /** The emails Homing read one at a time, by their ids, in order. */
-  readonly read: string[] = [];
-
   /** The folders Homing asked for their changes, in order, by name. */
   readonly deltasOf: string[] = [];
 
@@ -477,7 +474,6 @@ export class MicrosoftStandIn {
     if (one) {
       this.asked.reads++;
       const email = found(decodeURIComponent(one[1]));
-      if (email) this.read.push(email.id);
       if (email && failing([email])) return broken;
       return email ? { status: 200, body: this.fieldsOf(mailbox, email, select, prefer) } : notFound;
     }

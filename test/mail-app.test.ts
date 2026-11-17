@@ -13,7 +13,7 @@ import { accessToken, ConnectionUnusable } from '../src/connections.ts';
 import { authDatabaseUrl } from '../src/db.ts';
 import { keepTidy, workFolder } from '../src/import.ts';
 import { connectorsFor } from '../src/connectors.ts';
-import { carriesEarlier, noEmail, splitQuoted } from '../src/mail.ts';
+import { noEmail, splitQuoted } from '../src/mail.ts';
 import { placesFor, readFor, searchTimeLimit } from '../src/places.ts';
 import { developmentSecret, startServer, type Homing } from '../src/server.ts';
 import { vault } from '../src/vault.ts';
@@ -599,16 +599,9 @@ test('what an email quotes from earlier ones is told apart from what its sender 
     const split = splitQuoted(`${own}\n\n${earlier}`);
     assert.deepEqual(split.own, [own], earlier);
     assert.match(split.earlier.join(' '), /budget hold|budsjettet/);
-    assert.equal(carriesEarlier(`${own}\n\n${earlier}`), true, earlier);
   }
   // A quoted line among the sender's own is what they quote, not what they wrote. Lines wrapped in a paragraph join it.
-  const between = '> Does it hold?\nIt holds,\r\nas far as I know.\n\nGunnar';
-  assert.deepEqual(splitQuoted(between), { own: ['It holds, as far as I know.', 'Gunnar'], earlier: ['Does it hold?'] });
-  assert.equal(carriesEarlier(between), true);
-  // A line of underscores above a disclaimer ends the sender's words, and quotes no earlier email. Nor does a signature.
-  const disclaimer = `${own}\n\n________________________________\nThis email is confidential.`;
-  assert.deepEqual(splitQuoted(disclaimer), { own: [own], earlier: ['________________________________ This email is confidential.'] });
-  assert.deepEqual([disclaimer, `${own}\n\nGunnar Lie\nFrom: the Oslo office`, own, ''].map(carriesEarlier), [false, false, false, false]);
+  assert.deepEqual(splitQuoted('> Does it hold?\nIt holds,\r\nas far as I know.\n\nGunnar'), { own: ['It holds, as far as I know.', 'Gunnar'], earlier: ['Does it hold?'] });
 });
 
 test('what search, read, remember and act say keeps their descriptions short enough for assistants to read whole', async () => {

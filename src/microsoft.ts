@@ -13,7 +13,7 @@ import { createHash, createPrivateKey, randomUUID, X509Certificate, type KeyObje
 import { readFileSync } from 'node:fs';
 import { decodeJwt, SignJWT } from 'jose';
 import type { Change, Changes, Connector, Grant, Party, Scope, SetAside, Tokens } from './connectors.ts';
-import { automatedEmail, carriesEarlier, emailFound, emailItem, mailbox } from './mail.ts';
+import { automatedEmail, emailFound, emailItem, mailbox } from './mail.ts';
 import { contentVersion } from './places.ts';
 
 /** How this Homing signs people in with Microsoft: its app registration in Microsoft Entra ID. */
@@ -196,7 +196,6 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
           changes: async (access, from, scope, options) => followMail(set(), await access.token(), from, scope, options, access.signal),
           items: async (access, ids) => mailItems(set(), await access.token(), ids, access.signal),
           count: async (access, scope) => countMail(set(), await access.token(), scope, access.signal),
-          earlier: async (access, change, ids, options) => earlierMail(set(), await access.token(), change, ids, options, access.signal),
         },
       },
     },
@@ -411,7 +410,7 @@ const lightFields = 'id,conversationId,receivedDateTime,parentFolderId,isDraft';
 /** How many emails a page of history holds at most, and how many changes a page of delta, each of which is read by its id. */
 const pageSize = 50;
 const deltaSize = 20;
-/** How many emails of a thread following lists, by sender, date, subject and folder: one page, in whatever order Graph gives it. */
+/** How many emails of a thread following reads, by sender, date and subject. */
 const threadLength = 100;
 /** The folders following leaves out, with everything in them, by their well-known names, and why. */
 const asideFolders: Record<string, SetAside> = { junkemail: 'junk', deleteditems: 'deleted', drafts: 'draft', outbox: 'draft' };
@@ -615,19 +614,6 @@ export async function mailItems(settings: MicrosoftSettings, access: string, ids
   return changesOf(settings, access, await readEach(settings, access, ids.map((id) => ({ id })), true, signal), tree, { related: true, signal });
 }
 
-/**
- * Emails of a change's thread from before it, by their ids, oldest first, each as following gives
- * it: read by its id, with the folders of the checkpoint the change's page gave, and with the thread
- * the change was listed with, so nothing is listed again. Asked for one at a time, one Graph can't
- * give comes set aside.
- */
-export async function earlierMail(settings: MicrosoftSettings, access: string, change: Change, ids: string[], options: { from: string; size?: number }, signal?: AbortSignal): Promise<Change[]> {
-  const fetched = await readEach(settings, access, ids.map((id) => ({ id, conversationId: change.thread })), options.size === 1, signal);
-  const changes = await changesOf(settings, access, fetched, walkOf(options.from).tree, { related: false, signal });
-  const { related, moreRelated } = change.item;
-  return changes.map((earlier) => ({ ...earlier, item: { ...earlier.item, related, moreRelated } })).sort((a, b) => (a.item.envelope.at?.getTime() ?? 0) - (b.item.envelope.at?.getTime() ?? 0));
-}
-
 /** How many emails arrived in the mailbox within the scope, as Graph counts them. */
 export async function countMail(settings: MicrosoftSettings, access: string, scope: Scope, signal?: AbortSignal): Promise<number> {
   const filter = `receivedDateTime ge ${scope.since.toISOString()}${scope.until ? ` and receivedDateTime lt ${scope.until.toISOString()}` : ''}`;
@@ -677,8 +663,8 @@ async function readEach(settings: MicrosoftSettings, access: string, entries: Re
 }
 
 /**
- * The emails as changes, each with its thread, listed once for each conversation, and with what
- * that list shows from before it, unless it's set aside or quotes an earlier email itself. An email that came without its headers, in a list, is asked for them by its id before it's
+ * The emails as changes, each with its thread, read once for each conversation, unless it's set
+ * aside. An email that came without its headers, in a list, is asked for them by its id before it's
  * taken for a person's mail; what its owner sent has none.
  */
 async function changesOf(
@@ -710,22 +696,15 @@ async function changesOf(
   // Never silently: without its headers an email can't be told from a newsletter, so it's read as a person's.
   if (headerless) console.warn(`microsoft: ${headerless} ${headerless === 1 ? 'email' : 'emails'} came without headers, even by id, so Homing couldn’t check them for newsletters`);
   const conversations = related ? [...new Set(found.filter((one) => !one.setAside && one.mail.conversationId).map((one) => one.mail.conversationId!))] : [];
-  const threads = new Map<string, { thread: (MailSummary & { folder: string | null })[]; more: boolean }>();
+  const threads = new Map<string, { thread: MailSummary[]; more: boolean }>();
   for (const conversation of conversations) {
-    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields},parentFolderId`, { prefer: [immutableIds], signal });
-    const listed = listOf(body).map((message) => ({ ...summaryOf(message), folder: typeof message.parentFolderId === 'string' ? message.parentFolderId : null }));
-    threads.set(conversation, { thread: listed.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)), more: typeof body['@odata.nextLink'] === 'string' });
+    const body = await graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${threadLength}&$select=${summaryFields}`, { prefer: [immutableIds], signal });
+    threads.set(conversation, { thread: listOf(body).map(summaryOf).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)), more: typeof body['@odata.nextLink'] === 'string' });
   }
-  const named = (folder: string | null) => (folder ? (names.get(folder) ?? null) : null);
   return found.map(({ mail, folder, setAside }) => {
     const thread = (!setAside && mail.conversationId && threads.get(mail.conversationId)) || { thread: [], more: false };
     const item = emailItem(mail, thread.thread, thread.more);
-    // What the thread's list shows from before this email, newest first, outside the folders left out with everything in them, unless it quotes an earlier one and so carries its thread itself.
-    const earlier = (carriesEarlier(mail.body) ? [] : thread.thread)
-      .filter((other) => other.at !== null && mail.at !== null && other.at < mail.at && !(other.folder && tree.aside[other.folder]))
-      .reverse()
-      .map((other) => ({ id: other.id, folder: named(other.folder) }));
-    return { item, version: setAside === 'unreadable' ? 'unreadable' : contentVersion(item), thread: mail.conversationId, folder: named(folder), ...(earlier.length > 0 && { earlier }), ...(setAside && { setAside }) };
+    return { item, version: setAside === 'unreadable' ? 'unreadable' : contentVersion(item), thread: mail.conversationId, folder: folder ? (names.get(folder) ?? null) : null, ...(setAside && { setAside }) };
   });
 }
 
