@@ -456,7 +456,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     const map = mapOf(plan);
     if (state === 'approved' && map) {
       const spaces = plan.steps.filter((step) => step.space).length;
-      return { kind: 'approved', heading: 'Map set', detail: `${spaces ? `${count(spaces, 'space')} ${spaces === 1 ? 'was' : 'were'} created, and the routes set at the same time. ` : ''}Homing follows it for the ${map.words.items} it reads from here on.` };
+      return { kind: 'approved', heading: 'Map set', detail: `${spaces ? `${count(spaces, 'space')} ${spaces === 1 ? 'was' : 'were'} created at the same time. ` : ''}Homing follows the map for the ${map.words.items} it reads from here on.` };
     }
     if (state === 'approved') {
       return plan.create

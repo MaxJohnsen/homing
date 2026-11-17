@@ -127,7 +127,7 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
 /** One change of a plan once it's decided, greyed. */
 function SettledStep({ step }: { step: PlanStepData }) {
   if (step.space) return <ProposedChange kind="preference" label="New space" text={step.space.name} settled />;
-  if (step.map) return <ProposedChange kind="preference" label={`Where the mail in ${step.map.address} belongs`} text={routeLines(step.map)} settled />;
+  if (step.map) return <Routes map={step.map} settled />;
   if (step.member) return <Who member={step.member} settled />;
   if (step.item) return <ProposedChange kind="preference" label={`On ${step.item.page}`} text={step.item.text} settled />;
   if (step.task) return <ProposedChange kind="preference" label="Task" text={step.task.title} settled />;
@@ -180,12 +180,15 @@ function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; pla
   const gone = (what: string) => <p className="rounded-xl bg-muted px-4 py-3 text-base">{what}</p>;
   if (step.space) return <ProposedChange kind="preference" label={`New space in ${step.space.in ?? 'your personal space'}`} text={step.space.name} onlyYou />;
   if (step.map) {
-    const { map } = step;
+    const all = [...step.map.routes, step.map.rest];
+    const [waits, leftOut] = [all.some((row) => row.to === 'wait'), all.some((row) => row.to === 'leave out')];
     return (
       <>
-        <ProposedChange kind="preference" label={`Where the mail in ${map.address} belongs`} text={routeLines(map)} onlyYou />
+        <Routes map={step.map} />
         <p className="text-sm text-muted-foreground">
-          A thread follows the route of the first sender in it that a route names. What Homing learns from it is kept only for you, in the space its route names. What it learned before stays where it is.
+          A thread goes where the first sender in it who is listed here goes. What Homing learns from it is kept only for you, in that space.{' '}
+          {waits && leftOut ? 'Mail that waits isn’t read until you say where it goes, and mail left out is never read. ' : waits ? 'Mail that waits isn’t read until you say where it goes. ' : leftOut ? 'Mail left out is never read. ' : ''}
+          What Homing learned before stays where it is.
         </p>
       </>
     );
@@ -494,11 +497,33 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
   );
 }
 
-/** "northwind.test → Northwind, a new space · 124 emails", one route on each line, then where everything else goes. */
-function routeLines(map: MapData): string {
-  const leads = (to: LeadsData) => (to.to === 'leave out' ? 'left out' : to.to === 'wait' ? 'waits' : to.to === 'new space' ? `${to.name}, a new space` : (to.name ?? 'a space you can’t open'));
-  const holds = (to: LeadsData) => (to.emails === null ? '' : ` · ${thousands(to.emails)} ${to.emails === 1 ? map.words.items.replace(/s$/, '') : map.words.items}`);
-  return [...map.routes.map((route) => `${route.who} → ${leads(route)}${holds(route)}`), `Everything else → ${leads(map.rest)}${holds(map.rest)}`].join('\n');
+/**
+ * A map's change, set apart as the change being decided: each sender on a line of its own with
+ * where their mail goes, then everything else, and how much each is, when Homing has counted.
+ * Decided, it's greyed and names the mailbox, which the heading no longer does.
+ */
+function Routes({ map, settled = false }: { map: MapData; settled?: boolean }) {
+  const rows = [...map.routes.map((route) => ({ who: route.who, leads: route as LeadsData })), { who: 'Everything else', leads: map.rest }];
+  const where = (to: LeadsData) => (to.to === 'leave out' ? 'left out' : to.to === 'wait' ? 'waits' : to.to === 'new space' ? `${to.name}, a new space` : (to.name ?? 'a space you can’t open'));
+  return (
+    <figure className={cn('flex flex-col gap-1.5 rounded-lg px-4 py-3.5', settled ? 'bg-muted' : 'bg-change')}>
+      <figcaption className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
+        {settled ? `Where the mail in ${map.address} goes` : 'Where each sender’s mail goes'}
+        {!settled && <OnlyYou />}
+      </figcaption>
+      <ul className={cn('flex flex-col gap-2 text-base leading-snug', settled && 'text-muted-foreground')}>
+        {rows.map(({ who, leads }) => (
+          <li key={who} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:justify-between sm:gap-x-4">
+            <span className="[overflow-wrap:anywhere]">
+              {who} <span aria-hidden="true">→</span>
+              <span className="sr-only">{leads.to === 'leave out' ? 'is' : leads.to === 'wait' ? '' : 'to'}</span> {where(leads)}
+            </span>
+            {leads.emails !== null && <span className="text-sm text-muted-foreground">{thousands(leads.emails)} {leads.emails === 1 ? map.words.items.replace(/s$/, '') : map.words.items}</span>}
+          </li>
+        ))}
+      </ul>
+    </figure>
+  );
 }
 
 const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
