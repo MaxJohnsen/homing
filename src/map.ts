@@ -382,11 +382,16 @@ export async function suggestMap(l: Learning, person: string, placeId: string): 
     if (error instanceof ModelFailed) throw new LearningRefused('Homing’s model didn’t give a map this time. Try again in a moment.');
     throw error;
   }
+  const unusable = 'Homing’s model didn’t give a map this time. Try again in a moment.';
   const answer = mapAnswer.safeParse(said.json);
-  if (!answer.success) throw new LearningRefused('Homing’s model didn’t give a map this time. Try again in a moment.');
+  if (!answer.success) throw new LearningRefused(unusable);
   return withPrincipal(l.broker.sql, routineFor(person), async (s) => {
     const now = (await runsFor(s, [placeId])).get(placeId);
     if (!now) throw new LearningRefused(nothingThere);
-    return proposeMap(s, place, await checkMap(s, place, now, answer.data));
+    // An answer the checks refuse is no map either. Why is said for an assistant, in the model's own words, so the person isn't shown it.
+    const steps = await checkMap(s, place, now, answer.data).catch((error: unknown) => {
+      throw error instanceof LearningRefused ? new LearningRefused(unusable) : error;
+    });
+    return proposeMap(s, place, steps);
   });
 }

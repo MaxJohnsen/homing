@@ -5,7 +5,8 @@
 // earlier version, notes in their personal space, a shared and a private
 // rule for their client, a skill, a rule their assistant proposed and
 // they haven't decided yet, their work mailbox connected in their client's
-// space, only for them, and a call to Homing's model about their client. Each tries to read and
+// space, only for them, with the summary of who writes there, the map of where its mail belongs
+// and a sender the map doesn't place, and a call to Homing's model about their client. Each tries to read and
 // change the other's, in three ways: through Homing, through Homing with
 // row-level security off, and straight against the database with Homing's
 // filters bypassed. So each layer is shown to refuse on its own. Then two
@@ -18,7 +19,9 @@ import { after, before, describe, test } from 'node:test';
 import { strFromU8, unzipSync } from 'fflate';
 import { accessToken, ConnectionUnusable, connectionsOf, placesIn, removePlace, revokeConnection } from '../src/connections.ts';
 import { connectorsFor } from '../src/connectors.ts';
-import { placesFor, readFor } from '../src/places.ts';
+import { ownPlace, placesFor, readFor } from '../src/places.ts';
+import { LearningRefused, runsFor } from '../src/learning.ts';
+import { checkMap } from '../src/map.ts';
 import { AccessDenied, authDatabaseUrl, type Session } from '../src/db.ts';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { exportSpace, manifestOf } from '../src/export.ts';
@@ -45,7 +48,7 @@ import {
   type Item,
   type Source,
 } from '../src/knowledge.ts';
-import { decide, openProposals, proposalData, proposeInclude, proposePageArchive, proposeRule, readProposal, searchProposals, Undecidable, type PlanStep, type Proposal } from '../src/proposals.ts';
+import { decide, openProposals, proposalData, proposeInclude, proposePageArchive, proposeRule, readProposal, searchProposals, Undecidable, type MapStep, type PlanStep, type Proposal } from '../src/proposals.ts';
 import { saveSkill, skillsFor, skillsMatching } from '../src/skills.ts';
 import { addTask, readTask, searchTasks } from '../src/tasks.ts';
 import { startServer, type Homing } from '../src/server.ts';
@@ -69,7 +72,7 @@ interface Client {
   /** The space's task and one only the person has. */
   tasks: string[];
   /** Their work mailbox, connected in the client's space only for them. */
-  connection: { id: string; place: string; address: string; run: string };
+  connection: Mailbox;
   /** A call to Homing's model for them, carrying the client's space. */
   modelCall: string;
 }
@@ -230,6 +233,18 @@ for (const [layer, sql] of [
         }, sql);
         const broker = { sql, vault: vault('a-secret-that-is-long-enough-to-seal-with'), connectors: connectorsFor({}) };
         assert.equal(await readFor(broker, { person: me.id, agent: 'Claude', clientId: 'claude' }, { connector: 'microsoft', place: target.connection.place, id: 'AAkALg' }), undefined);
+        // Nor is the other's run theirs to ask about, with its summary and its map, and no map of their own leads to the other's space.
+        await as({ ...me, agent: 'Claude' }, async (s) => {
+          assert.equal(await ownPlace(s, target.connection.place), undefined);
+          assert.equal((await runsFor(s, [target.connection.place, intruder.connection.place])).size, 1);
+          const [own, run] = [(await ownPlace(s, intruder.connection.place))!, (await runsFor(s, [intruder.connection.place])).get(intruder.connection.place)!];
+          assert.deepEqual(run.map, { routes: [{ who: intruder.connection.map.route, to: intruder.space }], rest: 'wait' });
+          for (const to of [target.space, target.person.personalSpaceId]) {
+            await assert.rejects(checkMap(s, own, run, { routes: [{ who: 'northwind.test', to: `space:${to}` }] }), LearningRefused);
+            await assert.rejects(checkMap(s, own, run, { routes: [], else: `space:${to}` }), LearningRefused);
+            await assert.rejects(checkMap(s, own, run, { create: [{ name: 'Way in', under: `space:${to}` }], routes: [{ who: 'northwind.test', to: 'Way in' }] }), LearningRefused);
+          }
+        }, sql);
       }
       await assertUntouched();
     });
@@ -318,7 +333,7 @@ describe('straight against the database', () => {
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
         const modelCalls = await s.tx`select id, spaces from model_calls`;
-        const runs = await s.tx`select place_id from learning_runs`;
+        const runs = await s.tx`select place_id, routes, rest, summary -> 'senders' -> 0 ->> 'address' as writer from learning_runs`;
         const learned = await s.tx`select item from learned_items`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
@@ -340,8 +355,8 @@ describe('straight against the database', () => {
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
-        assert.deepEqual(runs.map((row) => row.placeId), [connection.place]);
-        assert.deepEqual(learned.map((row) => row.item).sort(), [`AAkALg-${connection.address}`, `AAkALh-${connection.address}`]);
+        assert.deepEqual(runs.map((row) => [row.placeId, row.routes, row.rest, row.writer]), [[connection.place, [{ who: connection.map.route, to: space }], 'wait', connection.map.sender]]);
+        assert.deepEqual(learned.map((row) => row.item).sort(), [`AAkALg-${connection.address}`, `AAkALh-${connection.address}`, ...[1, 2, 3].map((at) => `AAkALu${at}-${connection.address}`)]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -418,8 +433,16 @@ describe('straight against the database', () => {
 
       // Nor learn from the other's place, direct the other's run, spend against it, or mark anything processed for it or for a run of their own.
       await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select estimate_learning(${target.connection.place}::uuid, now() - interval '1 year', '{}')`), refused);
-      for (const call of ['start_learning($1, 1, now(), now())', 'pause_learning($1)', 'resume_learning($1)', "estimate_extension($1, '2020-01-01', '{}')", "extend_learning($1, '2020-01-01')", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}', '{}')", 'retry_learning($1)']) {
+      for (const call of ['start_learning($1, 1, now(), now())', 'pause_learning($1)', 'resume_learning($1)', "estimate_extension($1, '2020-01-01', '{}')", "extend_learning($1, '2020-01-01')", 'set_learning_limit($1, 1000)', "set_learning_exclusions($1, '{}', '{}', '{}')", 'retry_learning($1)', "set_learning_map($1, '[]', 'leave out')"]) {
         await assert.rejects(as({ ...me, direct: true }, (s) => s.tx.unsafe(`select ${call}`, [target.connection.run])), refused, call);
+      }
+      // Nor ask for a summary of the other's place, or have a map of their own lead to the other's space, by a route or for everything else.
+      for (const who of [{ ...me, direct: true as const }, { ...me, agent: 'Claude' }]) {
+        await assert.rejects(as(who, (s) => s.tx`select summarize_learning(${target.connection.place}::uuid, now() - interval '1 year')`), refused);
+      }
+      for (const to of [target.space, target.person.personalSpaceId]) {
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select set_learning_map(${intruder.connection.run}::uuid, ${s.tx.json([{ who: 'northwind.test', to }])}, null)`), refused);
+        await assert.rejects(as({ ...me, direct: true }, (s) => s.tx`select set_learning_map(${intruder.connection.run}::uuid, '[]', ${to})`), refused);
       }
       await assert.rejects(as(me, (s) => s.tx`select * from reserve_model_call('sort', 'test/cheaper', ${s.tx.array([intruder.space])}::uuid[], 0, ${target.connection.run}::uuid)`), refused);
       for (const run of [target.connection.run, intruder.connection.run]) {
@@ -429,12 +452,15 @@ describe('straight against the database', () => {
         await assert.rejects(as(me, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
         await assert.rejects(as(me, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', now(), 'x', true, null, 1)`), refused);
         await assert.rejects(as(me, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
+        await assert.rejects(as(me, (s) => s.tx`select learning_summarized(${run}::uuid, ${crypto.randomUUID()}::uuid, null, '{}')`), refused);
         // Nor as the routine that learns, which works only on a run of the person it acts for, with the claim that holds it.
         const routine = { person: me.id, agent: 'Homing', routine: 'learning' } as const;
         await assert.rejects(as(routine, (s) => s.tx`select learning_marked(${run}::uuid, ${crypto.randomUUID()}::uuid, '[]', null)`), refused);
         await assert.rejects(as(routine, (s) => s.tx`select learning_walked(${run}::uuid, ${crypto.randomUUID()}::uuid, 'main', now(), 'x', true, null, 1)`), refused);
         await assert.rejects(as(routine, (s) => s.tx`select learning_later(${run}::uuid, ${crypto.randomUUID()}::uuid, 0, null)`), refused);
+        await assert.rejects(as(routine, (s) => s.tx`select learning_summarized(${run}::uuid, ${crypto.randomUUID()}::uuid, null, '{}')`), refused);
         await assert.rejects(as(me, (s) => s.tx`update learning_runs set spending_limit = 1000, private_to = ${me.id} where id = ${run}`), refused);
+        await assert.rejects(as(me, (s) => s.tx`update learning_runs set routes = '[]', rest = 'leave out', summary = '{}' where id = ${run}`), refused);
         await assert.rejects(as(me, (s) => s.tx`delete from learned_items where run_id = ${run}`), refused);
       }
       await assert.rejects(as(me, (s) => s.tx`
@@ -659,6 +685,38 @@ describe('straight against the database', () => {
     await assertUntouched();
   });
 
+  test('a map naming another client’s mailbox or space shows none of it, and approving it sets nothing', async () => {
+    for (const { intruder, target } of attempts()) {
+      const theirs = new RegExp([target.name, target.connection.address, ...Object.values(target.connection.map)].join('|'), 'i');
+      const maps: MapStep[][] = [
+        // The other's mailbox, routed to their own space; and their own mailbox, routed to the other's space, or to a new space under it.
+        [{ action: 'learning map', place: target.connection.place, routes: [{ who: 'northwind.test', to: intruder.space }], rest: null }],
+        [{ action: 'learning map', place: intruder.connection.place, routes: [{ who: 'northwind.test', to: target.space }], rest: target.person.personalSpaceId }],
+        [{ action: 'add space', name: 'Way in', in: target.space }, { action: 'learning map', place: intruder.connection.place, routes: [{ who: 'northwind.test', to: 'step 0' }], rest: null }],
+      ];
+      for (const steps of maps) {
+        await assert.rejects(
+          as({ ...intruder.person, direct: true }, async (s) => {
+            // Made straight against the database, in their own space, so nothing checked what it names.
+            const [{ id }] = await s.tx<{ id: string }[]>`
+              insert into proposals (space_id, private_to, action, change) values (${intruder.space}, ${intruder.person.id}, 'plan', ${s.tx.json({ steps } as never)}) returning id
+            `;
+            const view = (await readProposal(s, id))!;
+            assert.ok(view.plan!.steps.some((step) => step.problem !== null));
+            const map = view.plan!.steps.at(-1)!.map!;
+            if (steps[0].action === 'learning map' && steps[0].place === target.connection.place) assert.deepEqual([map.address, map.routes[0].emails, map.rest.emails], ['', null, null]);
+            else assert.equal(map.routes[0].to === 'space' ? map.routes[0].name : view.plan!.steps[0].space?.in, null);
+            assert.doesNotMatch(JSON.stringify(proposalData(view)), theirs);
+            await decide(s, id, { approve: true, shown: view.plan!.shown });
+          }),
+          Undecidable,
+        );
+      }
+    }
+    assert.equal((await admin`select from spaces where name = 'Way in'`).length, 0);
+    await assertUntouched();
+  });
+
   test('nobody gives themselves access to another client', async () => {
     for (const { intruder, target } of attempts()) {
       const me = intruder.person;
@@ -793,14 +851,31 @@ async function mailbox(who: { id: string }, space: string, address: string) {
       values (${space}, ${who.id}, ${`microsoft:${placeId}:AAkALg`}, ${`From: Gunnar <gunnar@${address.split('@')[1]}>`}, ${connectionId}, ${s.tx.json({ people: [{ name, address }], more: 0 })})
     `;
     // Learning from it, estimated as Homing does before it starts. It waits to be started, so no worker picks it up.
-    const [{ run }] = await s.tx<{ run: string }[]>`select estimate_learning(${placeId}::uuid, now() - interval '1 year', ${s.tx.json({ limit: 5 })}) as run`;
+    const estimate = { since: new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString(), until: null, items: 20, threads: 5, setAside: 2, low: 0.01, high: 0.02, limit: 5, sampled: 20, at: new Date().toISOString() };
+    const [{ run }] = await s.tx<{ run: string }[]>`select estimate_learning(${placeId}::uuid, now() - interval '1 year', ${s.tx.json(estimate)}) as run`;
     return { id: connectionId, place: placeId, address, run };
   });
   // And one email the run has processed, as its worker marks it, and one it set aside, from the mailbox's own address.
   await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome) values (${connection.run}, ${space}, ${who.id}, ${`AAkALg-${address}`}, 'v1', 'learned')`;
   await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome, reason, sender) values (${connection.run}, ${space}, ${who.id}, ${`AAkALh-${address}`}, 'v1', 'set aside', 'provider refused', ${address})`;
-  return connection;
+  // What the run knows of who writes there: its summary, as the worker keeps it, a map with a route their owner set, and a sender no route names whose mail adds up.
+  const domain = address.split('@')[1];
+  const map = { route: `supplier-of-${domain}`, sender: `kari@supplier-of-${domain}`, subject: `Offer for ${domain.split('.')[0]}`, unplaced: `lawyer@counsel-of-${domain}` };
+  const summary = {
+    since: '2025-01-01T00:00:00.000Z', at: '2026-11-17T09:00:00.000Z', emails: 12, threads: 5, own: 3,
+    senders: [{ address: map.sender, name: 'Kari Supplier', emails: 12, threads: 5, first: '2025-02-01', last: '2026-11-01', subjects: [map.subject] }],
+    domains: [{ domain: map.route, emails: 12, threads: 5, senders: 1 }],
+    rest: { senders: 0, emails: 0, threads: 0 },
+  };
+  await admin`update learning_runs set summary = ${admin.json(summary)} where id = ${connection.run}`;
+  await as({ person: who.id, direct: true }, (s) => s.tx`select set_learning_map(${connection.run}::uuid, ${s.tx.json([{ who: map.route, to: space }])}, 'wait')`);
+  for (const at of [1, 2, 3]) {
+    await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome, sender, unplaced) values (${connection.run}, ${space}, ${who.id}, ${`AAkALu${at}-${address}`}, 'v1', 'learned', ${map.unplaced}, true)`;
+  }
+  return { ...connection, map };
 }
+
+type Mailbox = Awaited<ReturnType<typeof mailbox>>;
 
 describe('through the app’s endpoints', () => {
   let homing: Homing;
@@ -847,7 +922,7 @@ describe('through the app’s endpoints', () => {
   type SignedIn = Awaited<ReturnType<typeof signedIn>>;
 
   before(async () => {
-    homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl) });
+    homing = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants });
     ana = await signedIn('Ana', 'Write Acme reports in Norwegian');
     ben = await signedIn('Ben', 'Send Beta invoices in euros');
   });
@@ -892,6 +967,13 @@ describe('through the app’s endpoints', () => {
       // Nor who sent what the other client's run set aside, while their own shows.
       assert.equal((await get(`/api/places/${target.connection.place}/learning/set-aside?reason=provider%20refused`)).status, 404);
       assert.deepEqual((await get(`/api/places/${intruder.connection.place}/learning/set-aside?reason=provider%20refused`)).body, { senders: [{ sender: intruder.connection.address, items: 1 }], total: 1 });
+      // Their own map shows, with what each route holds by their summary and who isn't placed. The other's is nowhere.
+      const own = (await get(`/api/spaces/${intruder.space}/connections`)).body.places[0].learning;
+      assert.deepEqual([own.map, own.held.map((row: { who: string | null; emails: number }) => [row.who, row.emails]), own.notPlaced], [
+        { routes: [{ who: intruder.connection.map.route, to: intruder.space }], rest: 'wait' },
+        [[intruder.connection.map.route, 12], [null, 0]],
+        { senders: [{ sender: intruder.connection.map.unplaced, items: 3 }], more: 0 },
+      ]);
       const overwritten = await browser.json(`/api/spaces/${target.space}/overview`, { text: 'Hello', shared: true });
       assert.equal(overwritten.status, 404);
       seen.push(overwritten.body);
@@ -957,6 +1039,8 @@ describe('through the app’s endpoints', () => {
         [`/api/places/${target.connection.place}/learning/left-out`, { senders: ['x@x.test'], folders: [], kept: ['y@y.test'] }],
         [`/api/places/${target.connection.place}/learning/again`, {}],
         [`/api/places/${target.connection.place}/learning/again`, { reason: 'provider refused' }],
+        [`/api/places/${target.connection.place}/learning/summary`, { since: '2025-01-01' }],
+        [`/api/places/${target.connection.place}/learning/map`, {}],
         [`/api/connections/${target.connection.id}/revoke`, {}],
         [`/api/spaces/${target.space}/connections/microsoft`, {}],
         [`/api/spaces/${target.space}/model-processing`, { on: false }],
@@ -978,7 +1062,7 @@ describe('through the app’s endpoints', () => {
       assert.ok(used.every((use) => use.spaces.every((space) => space.id === intruder.space)));
 
       // Nothing they got back names the other client, what it asked for, its guidance or its mailbox.
-      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report|${target.connection.address}|${target.connection.id}`));
+      assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${target.name}|${target.proposal.change.text}|${target.name.toLowerCase()}-report|${target.connection.address}|${target.connection.id}|${Object.values(target.connection.map).join('|')}`));
     }
     const proposals = await admin`select state from proposals where id in ${admin([ana.proposal.id, ben.proposal.id])}`;
     assert.deepEqual(proposals.map((row) => row.state), ['open', 'open']);
@@ -1047,13 +1131,14 @@ describe('through the app’s endpoints', () => {
     // Ana's mailbox, connected in the space they share, isn't there for Cara: not listed, not counted, not hers to remove.
     assert.deepEqual((await get(`/api/spaces/${ana.space}/connections`)).places, []);
     assert.deepEqual((await get('/api/connections')).connections, []);
-    for (const path of [`/api/places/${ana.connection.place}/remove`, `/api/connections/${ana.connection.id}/revoke`]) {
-      const answer = await cara.browser.json(path, {});
+    // Nor its summary or its map, to ask for or to have Homing's model suggest.
+    for (const path of [`/api/places/${ana.connection.place}/remove`, `/api/connections/${ana.connection.id}/revoke`, `/api/places/${ana.connection.place}/learning/summary`, `/api/places/${ana.connection.place}/learning/map`]) {
+      const answer = await cara.browser.json(path, path.endsWith('summary') ? { since: '2025-01-01' } : {});
       assert.equal(answer.status, 404, path);
       seen.push(answer.body);
     }
-    for (const query of [ana.connection.address, 'mailbox', 'Microsoft']) await get(`/api/search?q=${encodeURIComponent(query)}`);
-    assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${ana.connection.address}|${ana.connection.id}|${ana.connection.place}`));
+    for (const query of [ana.connection.address, 'mailbox', 'Microsoft', ana.connection.map.sender, ana.connection.map.subject, ana.connection.map.unplaced]) await get(`/api/search?q=${encodeURIComponent(query)}`);
+    assert.doesNotMatch(JSON.stringify(seen), new RegExp(`${ana.connection.address}|${ana.connection.id}|${ana.connection.place}|${Object.values(ana.connection.map).join('|')}`));
     // The overview Cara sees is the shared one, and Ana's own stays hers.
     assert.deepEqual((await get(`/api/spaces/${ana.space}/overview`)).overview.map((item: { text: string }) => item.text), ['Ana’s client is planning 2027']);
     // Search finds Ana's shared launch for Cara, and nothing she keeps to herself.
@@ -1080,6 +1165,53 @@ describe('through the app’s endpoints', () => {
       assert.equal(answer.status, 404, path);
       assert.doesNotMatch(JSON.stringify(answer.body), /salary|raise|worries|fears|diary/);
     }
+  });
+
+  test('nor does anyone’s assistant read or direct someone else’s learning: its summary, its map, its routes or who isn’t placed', async () => {
+    // Dag works with Ana on her client, in the space her mailbox is connected in. Ben is another client's.
+    const dag = await member(homing.url, 'Dag');
+    await as(ana.who, (s) => addMember(s, ana.space, dag.id));
+    const chat = async (who: { browser: Member['browser'] }) => {
+      const claude = new Assistant(homing.url, assistants.claude);
+      await claude.connect(who.browser);
+      return claude.open();
+    };
+    const ref = `learning:${ana.connection.place}`;
+    const hers = new RegExp([ana.connection.address, ana.connection.place, ...Object.values(ana.connection.map)].join('|'));
+    // Ana's own assistant reads all of it, so there is something to find.
+    const own = (await (await chat(ana)).call('read', { ref })).text;
+    for (const part of [ana.connection.map.sender, ana.connection.map.subject, `"${ana.connection.map.route}" to "Ana’s client"`]) assert.ok(own.includes(part), part);
+
+    const bens = await chat(ben);
+    for (const [claude, space] of [[await chat(dag), ana.space], [bens, ben.space]] as const) {
+      const answers = [
+        await claude.call('context', { request: 'Where does the mail belong?', space: `space:${space}` }),
+        await claude.call('search', { query: `${ana.connection.map.sender} ${ana.connection.map.subject}` }),
+        await claude.call('search', { query: ana.connection.map.unplaced, space: `space:${space}` }),
+      ];
+      const refusals = [
+        await claude.call('read', { ref }),
+        await claude.call('act', { action: 'learning.summarize', input: { from: ref, since: '2025-01-01' } }),
+        await claude.call('act', { action: 'learning.map', input: { from: ref, routes: [{ who: ana.connection.map.route, to: 'leave out' }] } }),
+        await claude.call('act', { action: 'learning.leave_out', input: { from: ref, senders: [ana.connection.map.sender] } }),
+        await claude.call('act', { action: 'learning.start', input: { from: ref, since: '2025-01-01' } }),
+      ];
+      // The same answer as for a reference that names nothing, so it doesn't say hers is there.
+      const nothing = await claude.call('read', { ref: `learning:${crypto.randomUUID()}` });
+      for (const answer of refusals) assert.deepEqual([answer.failed, answer.text], [true, nothing.text]);
+      for (const answer of [...answers, ...refusals]) assert.doesNotMatch(answer.text, hers);
+    }
+    // Ben's own map can't lead to Ana's space, or to a new space under it.
+    for (const input of [{ routes: [{ who: 'northwind.test', to: `space:${ana.space}` }] }, { routes: [], else: `space:${ana.personalSpaceId}` }, { create: [{ name: 'Way in', under: `space:${ana.space}` }], routes: [{ who: 'northwind.test', to: 'Way in' }] }]) {
+      const answer = await bens.call('act', { action: 'learning.map', input: { from: `learning:${ben.connection.place}`, ...input } });
+      assert.equal(answer.failed, true);
+      assert.match(answer.text, /Nothing was proposed/);
+      assert.doesNotMatch(answer.text, /Ana/);
+    }
+    // Nothing of hers changed, nothing was proposed about it, and Ben's map is as it was.
+    const runs = await admin`select routes, rest, summarizing, summary -> 'senders' -> 0 ->> 'address' as writer from learning_runs where id in ${admin([ana.connection.run, ben.connection.run])} order by private_to = ${ana.who.id} desc`;
+    assert.deepEqual([...runs], [ana, ben].map((one) => ({ routes: [{ who: one.connection.map.route, to: one.space }], rest: 'wait', summarizing: null, writer: one.connection.map.sender })));
+    assert.equal((await admin`select from proposals where action in ('plan', 'start learning') and private_to in ${admin([dag.id, ben.who.id])}`).length, 0);
   });
 });
 
@@ -1411,6 +1543,11 @@ async function assertUntouched() {
     ['ana@acme.test', 'connected', null, null, 'sealed refresh token of ana@acme.test'],
     ['ben@beta.test', 'connected', null, null, 'sealed refresh token of ben@beta.test'],
   ]);
+  // Each run keeps its own summary and map, and no proposal of anyone's was made about it.
+  for (const { space, connection } of [acme, beta]) {
+    const [run] = await admin`select routes, rest, summary -> 'senders' -> 0 ->> 'address' as writer, summarizing from learning_runs where id = ${connection.run}`;
+    assert.deepEqual(run, { routes: [{ who: connection.map.route, to: space }], rest: 'wait', writer: connection.map.sender, summarizing: null });
+  }
   const tasks = await admin`select title, done_at, private_to is null as shared from tasks where id in ${admin([...acme.tasks, ...beta.tasks])} order by created_at`;
   assert.deepEqual(tasks.map((row) => [row.title, row.doneAt, row.shared]), [
     ['Acme: book the venue', null, true],
