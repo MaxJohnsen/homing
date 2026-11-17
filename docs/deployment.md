@@ -95,7 +95,7 @@ Revoking an account in Homing deletes Homing's sign-in for it. Someone who also 
 
 ## A model
 
-Homing works without a model: people's assistants keep its knowledge up to date. With one, it also learns in the background. You bring the key, and pay the provider for what Homing uses, within a monthly limit you set. Homing speaks the OpenAI-compatible API that OpenRouter, OpenAI and local servers such as Ollama offer.
+Homing works without a model: people's assistants keep its knowledge up to date. A model of its own is for learning in the background, which isn't built yet. You bring the key, and pay the provider for what Homing uses, within a monthly limit you set. Homing speaks the OpenAI-compatible API that OpenRouter, OpenAI and local servers such as Ollama offer.
 
 The simplest is OpenRouter, where Homing knows which models to use and what they cost:
 
@@ -133,6 +133,8 @@ docker compose up -d --build
 ```
 
 Migrations run before the server starts. Back up the database and `.env` together, since a restored database needs the same secret.
+
+If you ran Homing from main while it learned from mailboxes on its own, updating removes that. The migration drops the learning runs, what they processed and their maps, and the proposals to start or extend learning or to set a map, decided or not. The notes learning wrote stay, and so do the model calls it made, which all count toward this month's limit now. Nothing else changes.
 
 Claude.ai keeps the list of Homing's tools it got when someone connected it. After an update that changes the tools, such as one that adds the approval card, people disconnect Homing in Claude.ai's connector settings and connect it again.
 
