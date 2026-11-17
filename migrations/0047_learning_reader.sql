@@ -61,12 +61,13 @@ as $$
 $$;
 
 -- What was handed out counts under the claim it was handed out with, and no
--- other: whatever ends or replaces a run's claim lets go of it.
+-- other: whatever ends or replaces a run's claim lets go of it, unless it
+-- says what is handed out under the new one.
 create function forget_handed_out() returns trigger
 language plpgsql
 as $$
 begin
-  if new.claim is distinct from old.claim then
+  if new.claim is distinct from old.claim and new.handed_out is not distinct from old.handed_out then
     new.handed_out := null;
   end if;
   return new;
@@ -153,9 +154,9 @@ $$;
 -- look at a page works under it at a time: a second request with the same
 -- claim finds it taken. With the claim it held, the assistant gets what was
 -- handed out under it, which its answers are for, and the claim lasts as
--- long as it did: only an answer that is taken renews it. The claim before
--- is remembered while its work is handed out, so a request whose reply was
--- lost can be sent again. Work that is handed out isn't handed out again to
+-- long as it did: only an answer that is taken renews it. The claim the
+-- request came with is remembered while its work is handed out, so a
+-- request whose reply was lost can be sent again. Work that is handed out isn't handed out again to
 -- a request that brings no answers. One worker reads a run at a time, so a
 -- run Homing's own worker or another conversation holds is refused until
 -- that claim ends or lapses, and so is one that waits for the system it
@@ -196,7 +197,7 @@ begin
     return;
   end if;
   update learning_runs
-  set claimed_by = case when theirs then held else token end, claim = token, lease_seconds = take_learning_run.lease_seconds,
+  set claimed_by = coalesce(held, token), claim = token, lease_seconds = take_learning_run.lease_seconds,
       claimed_until = case when theirs then claimed_until else now() + make_interval(secs => take_learning_run.lease_seconds) end
   where id = r.id;
   -- Nothing carries over from a claim that lapsed.
@@ -247,9 +248,10 @@ $$;
 
 -- Hands a run's claim back to carry on after a wait, as 0045 has it. A look
 -- for the owner's assistant that ended before it took their answers, as
--- when the system it reads didn't answer, keeps what was handed out: the
--- claim stays theirs until the run is due and for as long as a claim lasts
--- after that, so the same answers count when they are sent again.
+-- when the system it reads didn't answer, keeps what was handed out, under
+-- the claim the assistant sent, as if the look hadn't been: it stays theirs
+-- until the run is due and for as long as a claim lasts after that, so the
+-- same answers count when they are sent again.
 drop function learning_later(uuid, uuid, integer, text, jsonb, integer);
 
 create function learning_later(run uuid, claim uuid, wait_seconds integer, trouble text, counted jsonb default null, page_size integer default null, handed jsonb default null) returns void
@@ -279,7 +281,7 @@ begin
       page_size = coalesce(learning_later.page_size, learning_runs.page_size),
       next_at = now() + make_interval(secs => greatest(wait_seconds, 0)),
       handed_out = handed,
-      claimed_by = case when keeps then claimed_by end, claim = case when keeps then learning_runs.claim end,
+      claim = case when keeps then claimed_by end, claimed_by = case when keeps then claimed_by end,
       claimed_until = case when keeps then now() + make_interval(secs => greatest(wait_seconds, 0) + coalesce(lease_seconds, 60)) end,
       changed_at = clock_timestamp()
   where id = r.id;

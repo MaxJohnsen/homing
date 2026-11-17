@@ -650,3 +650,90 @@ test('what Ana left out, what waits by her map and what needs no reading is neve
   assert.equal(provider.asked.length, calls, 'no model call in any of it');
   await claude.close();
 });
+
+test('Homing’s own model reads a run only once Ana set its limit in Homing: one started with no model, or with a limit her assistant sent along, stays her assistant’s to read whatever model is set up later', async () => {
+  // With no model, her assistant can't send a limit along, and what she approves starts with none.
+  const w = await world(plain, () => [mail(gunnar, 'Budget', 30), mail(per, 'Offer', 10)]);
+  const { ana, ref, run, account } = w;
+  const claude = await (await w.assistantOf(ana)).open();
+  const since = new Date(Date.now() - 300 * day).toISOString().slice(0, 10);
+  const limited = await claude.call('act', { action: 'learning.start', input: { from: ref, since, limit: 20 } });
+  assert.ok(limited.failed && /no model of its own, so the reading costs nothing and there is no limit to set/.test(limited.text), limited.text);
+  // Whatever limit is asked for when an estimate without a price is started, in the app too, none is kept.
+  const estimated = await estimateLearning(without, w.me, w.place, new Date(since));
+  await withPrincipal(sql, w.me, (s) => startLearning(without, s, estimated, 20));
+  assert.deepEqual([(await run()).state, (await run()).spendingLimit], ['learning history', null]);
+
+  // A model is set up later. Homing's worker reads nothing of its history with it, and nothing of what arrives once her assistant has read that.
+  const asked = provider.asked.length;
+  await through(withModel);
+  assert.deepEqual([(await run()).state, provider.asked.length - asked, (await w.marks()).length], ['learning history', 0, 0]);
+  await reads(claude, ref);
+  assert.equal((await run()).state, 'following');
+  microsoft.deliver(account, { to: [{ name: account.name, address: account.address }], ...mail(gunnar, 'Merger', 0) });
+  await w.lookAgain();
+  await owner`update learning_runs set polled_at = null where place_id = ${w.place}`;
+  await through(withModel);
+  assert.deepEqual([provider.asked.length - asked, (await run()).unread, (await owner`select from model_calls where person_id = ${ana.id}`).length], [0, 1, 0]);
+  // Her assistant can't let the model in. She does, in Homing, by setting the run's limit, and then it reads what waits.
+  const { id } = await run();
+  await assert.rejects(withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => s.tx`select set_learning_limit(${id}::uuid, 5)`), { code: '42501' });
+  assert.equal((await ana.browser.json(`/api/places/${w.place}/learning/limit`, { limit: 5 })).status, 200);
+  await through(withModel);
+  assert.deepEqual([provider.asked.length - asked, (await run()).unread, (await w.marks()).filter((mark) => mark.interpretation !== null).map((mark) => mark.reader)], [1, 0, ['Claude', 'Claude', null]]);
+  await claude.close();
+});
+
+test('a limit stops Homing’s model and Ana’s pause stops everyone; an answer isn’t lost when Microsoft fails or a reply is; a thread sent to hundreds can be handed out; and a long name for the reader is cut', async () => {
+  const many = Array.from({ length: 400 }, (_, at) => ({ name: `Recipient Number ${at}`, address: `recipient.number.${at}@a-rather-long-domain-name.example.test` }));
+  const w = await world(modeled, (account) => [
+    ...Array.from({ length: 10 }, (_, at) => mail(gunnar, `Big ${at}`, 30 - at, { conversation: 'conv-big', to: [{ name: account.name, address: account.address }, ...many], html: `<p>${'"\\ '.repeat(2500)}</p>` })),
+    mail(per, 'Offer', 5),
+    mail(mum, 'Dinner', 4),
+  ]);
+  const { ana, ref, run, account, place } = w;
+  await w.begin(withModel, longAgo);
+  await owner`update learning_runs set spending_limit = 0 where place_id = ${place}`;
+  await through(withModel);
+  assert.deepEqual([(await run()).state, (await run()).reason], ['paused', 'limit']);
+  const claude = await (await w.assistantOf(ana)).open();
+  assert.match((await claude.call('read', { ref })).text, /It is waiting for a reader: Homing’s own model waits at the run’s limit of \$0\.00, which only the user raises, in Homing, and you can still read\./);
+
+  // The thread sent to 400 is handed out all the same, bounded: the first few of each field's parties, and how many more.
+  const first = await asksFor(claude, ref);
+  const work = workIn(first.text);
+  assert.ok(first.text.length < 100_000 && work.threads.length >= 1, `${first.text.length} characters`);
+  assert.match(first.text, /, and 393 more/);
+
+  // Microsoft fails as her answers arrive: they aren't taken, what was handed out is kept, and the same answers count when sent again.
+  microsoft.outage(account, 503);
+  const failed = await asksFor(claude, ref, { claim: work.claim, answers: answersTo(work) });
+  microsoft.outage(account, 0);
+  assert.match(failed.text, /^Nothing was handed out: learning from .* Your (answer wasn’t taken, and it still counts: send it again as it was|\d+ answers weren’t taken, and they still count: send them again as they were), with the same claim, after [\d-]+ [\d:]+ UTC\.$/);
+  assert.deepEqual([(await w.marks()).filter((mark) => mark.interpretation !== null).length, (await run()).handedOut.questions.length], [0, work.threads.length]);
+  await w.lookAgain();
+  const again = await asksFor(claude, ref, { claim: work.claim, answers: answersTo(work) });
+  assert.match(again.text, new RegExp(`^Homing took ${work.threads.length} answers?\\.`));
+  // The reply to that is lost, and she sends the same once more: Homing says it had them, and hands out what is next.
+  const resent = await asksFor(claude, ref, { claim: work.claim, answers: answersTo(work) });
+  assert.match(resent.text, /^Homing took these answers when you first sent them: its reply to you was lost on the way\. /);
+
+  // Ana pauses the run, though only Homing's model waited: nothing is handed out to anyone until she resumes it.
+  assert.equal((await ana.browser.json(`/api/places/${place}/learning/pause`, {})).status, 200);
+  assert.deepEqual([(await run()).state, (await run()).reason], ['paused', 'person']);
+  assert.match((await asksFor(claude, ref)).text, /^Nothing was handed out: learning from .* is paused, so nobody reads it until it is resumed\.$/);
+  assert.equal((await ana.browser.json(`/api/places/${place}/learning/resume`, {})).status, 200);
+  await w.lapse();
+
+  // A reader whose name is long is kept by a name of a fixed length, on one line, and the look goes through.
+  const { id } = await run();
+  const [taken] = await withPrincipal(sql, { person: ana.id, agent: 'Claude' }, (s) => s.tx<{ claim: string }[]>`select claim from take_learning_run(${id}::uuid, null, 60, false)`);
+  const look = await learnPage(sql, withModel, { run: id, person: ana.id, claim: taken.claim }, {}, undefined, { name: `N\n${'n'.repeat(300)}`, answers: new Map(), handed: null });
+  assert.ok(look.work.length > 0 || look.moved);
+  await w.lapse();
+  const rest = await reads(claude, ref);
+  assert.ok(rest.read.length >= 0);
+  assert.ok((await w.marks()).every((mark) => mark.reader === null || mark.reader.length <= 100));
+  assert.deepEqual([(await run()).state, (await run()).reason], ['following', null]);
+  await claude.close();
+});

@@ -419,7 +419,8 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       }
       // A page the system couldn't serve, or not in time, is asked for again in smaller parts: fewer
       // at once, then one at a time, where an item it can't give is set aside.
-      return await backoff('system', { pageSize: pageSizes.find((smaller) => smaller < size) ?? 1 });
+      // Not while the owner's assistant has answers out: they are for the page as it was asked for.
+      return await backoff('system', reader?.handed ? {} : { pageSize: pageSizes.find((smaller) => smaller < size) ?? 1 });
     };
 
     let page: Changes;

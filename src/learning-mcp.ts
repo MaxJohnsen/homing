@@ -574,8 +574,9 @@ export async function actOnLearning(
         return not ? ` ${not === 1 ? 'Your answer wasn’t' : `Your ${not} answers weren’t`} taken, and ${not === 1 ? 'it still counts' : 'they still count'}: send ${not === 1 ? 'it' : 'them'} again as ${not === 1 ? 'it was' : 'they were'}, with the same claim${after ? `, after ${clock(after)}` : ', in a moment'}.` : '';
       };
       const until = Date.now() + readTime;
-      for (let claim = held; ; ) {
-        const taken = await withPrincipal(sql, principal, (s) => takeLearning(s, run, claim, lease(l), given.size > 0));
+      // Each look is taken with the claim the request came with: it is what the assistant holds, whatever claims the looks worked under.
+      for (;;) {
+        const taken = await withPrincipal(sql, principal, (s) => takeLearning(s, run, held, lease(l), given.size > 0));
         if (!taken.claim) {
           if (taken.refused === 'handed out') {
             return `Nothing new was handed out: the ${counted(taken.handed!.questions.length, thread, `${thread}s`)} handed out to you under this claim are still yours, until ${clock(taken.until!)}. Hand back their answers with learning.read. Without them, they are handed out again after that.`;
@@ -608,8 +609,6 @@ export async function actOnLearning(
         if (!look.moved) return `${became()}Nothing was handed out: learning from ${what} is ${await standsNow()}. Try again later.`;
         if (!(await withPrincipal(sql, principal, (s) => learningWaits(s, run)))) return `${before ?? became()}Nothing in ${what} waits to be read now. It is ${await standsNow()}.`;
         if (Date.now() > until) return `${before ?? became()}Homing is still going through ${words.items} that need no reading. Ask again with learning.read, and it carries on.`;
-        // A look that moved on with the claim kept carries on under it.
-        claim = look.kept ? taken.claim : undefined;
       }
     }
     case 'learning.leave_out': {
