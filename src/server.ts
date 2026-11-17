@@ -11,6 +11,9 @@ import { connectorsFor, type Connector } from './connectors.ts';
 import { authDatabaseUrl, connect, type Sql } from './db.ts';
 import { smtpMailer, type Mailer } from './email.ts';
 import { keepTidy } from './import.ts';
+import { notes, type Interpretation } from './interpret.ts';
+import { startLearner, type LearnerOptions } from './learner.ts';
+import type { Learning } from './learning.ts';
 import { setupLink } from './invites.ts';
 import { mcpServer } from './mcp.ts';
 import { microsoftFromEnvironment, type MicrosoftSettings } from './microsoft.ts';
@@ -49,6 +52,10 @@ export interface ServerOptions {
   connectors?: Connector[];
   /** Homing's own model, for learning. By default from the model settings in the environment; null for none. */
   model?: ModelSettings | null;
+  /** How the worker that learns from connected places paces itself, or false for none. It runs only with a model. */
+  learner?: LearnerOptions | false;
+  /** How learning reads a batch of a place's items. Tests replace it. */
+  interpretation?: Interpretation;
 }
 
 export interface Homing {
@@ -136,9 +143,12 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   const cards = new Set(options.cardClients ?? cardClients);
   // What reading a person's places for them, such as their mailbox, needs: their sealed sign-in, opened only in the server.
   const broker = { sql, vault: vault(secret), connectors };
+  const model = modelSettings && modelOf(modelSettings);
+  // Learning from connected places: what estimating, directing and doing it need.
+  const learning: Learning = { broker, model, interpretation: options.interpretation ?? notes };
   const handler = createMcpHandler(({ authInfo }) => {
     const principal = authInfo?.extra?.principal as AgentPrincipal;
-    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer }, broker });
+    return mcpServer(sql, principal, url, { card: cards.has(principal.clientId), notifier: { sql, authPool: pool, url, mailer }, broker, learning });
   });
   mcp = toNodeHandler({
     fetch: async (request, context) => {
@@ -149,10 +159,11 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   auth = authHandler(homingAuth);
   // Refuses requests addressed to other host names, which protects a local install from DNS rebinding.
   validateHost = hostHeaderValidation(isLocal(url) ? localhostAllowedHostnames() : [url.hostname]);
-  const model = modelSettings && modelOf(modelSettings);
-  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, connectors, model };
+  app = { sql, auth: homingAuth, authPool: pool, url, mailer, limit: rateLimit ? limiter(20, 10 * 60_000) : () => true, vault: broker.vault, connectors, model, learning };
   // What imports left on the way, when Homing stopped during one, goes, and keeps going.
   const stopTidying = keepTidy(sql);
+  // Without a model nothing is learned, so no worker runs.
+  const learner = model && options.learner !== false ? startLearner(sql, learning, options.learner) : undefined;
 
   return {
     url,
@@ -160,6 +171,7 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
     server,
     close: async () => {
       stopTidying();
+      await learner?.stop();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       await pool.end();

@@ -10,6 +10,13 @@ import { ProviderFailed, ProviderRefused, type Provider } from './provider.ts';
 /** The most of an answer Homing reads. A model writes far less within its limit. */
 const mostBytes = 8 * 1024 * 1024;
 
+/**
+ * How a request fails when no connection could be made at all: refused, no such host, or no answer
+ * to connecting. Nothing was sent. No route to the host isn't among them: that can also end a
+ * connection the request already went out on.
+ */
+const neverConnected = ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT'];
+
 /** An adapter for the provider at this address, with its key if it takes one. */
 export function chatCompletions({ url, key }: { url: URL; key?: string }): Provider {
   const endpoint = new URL(`${url.pathname.replace(/\/$/, '')}/chat/completions`, url);
@@ -36,8 +43,11 @@ export function chatCompletions({ url, key }: { url: URL; key?: string }): Provi
           redirect: 'error',
           signal,
         });
-      } catch {
-        throw new ProviderFailed(signal.aborted ? 'it took too long' : 'the provider couldn’t be reached');
+      } catch (error) {
+        if (signal.aborted) throw new ProviderFailed('it took too long');
+        // A connection that was never made carried nothing to the provider. One that broke on the way may have.
+        const code = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+        throw new ProviderFailed('the provider couldn’t be reached', undefined, undefined, undefined, typeof code === 'string' && neverConnected.includes(code));
       }
       let json: any;
       try {
@@ -52,13 +62,21 @@ export function chatCompletions({ url, key }: { url: URL; key?: string }): Provi
       if (!response.ok || json === undefined || json.error || typeof content !== 'string') {
         const code = [json?.error?.code, json?.error?.type].find((value) => typeof value === 'string' && /^[a-z_]{1,40}$/.test(value));
         const reason = `the provider answered ${response.status}${code ? ` (${code})` : ''}`;
+        const wait = waitOf(response.headers.get('retry-after'));
         // Only the provider's own answer to a request it won't take comes before any model ran.
-        if (response.status >= 400 && response.status < 500 && json !== undefined) throw new ProviderRefused(reason, cost);
-        throw new ProviderFailed(response.ok && json !== undefined && !json.error ? 'the provider’s answer had no text' : reason, cost);
+        if (response.status >= 400 && response.status < 500 && json !== undefined) throw new ProviderRefused(reason, cost, response.status, wait);
+        throw new ProviderFailed(response.ok && json !== undefined && !json.error ? 'the provider’s answer had no text' : reason, cost, response.status, wait);
       }
       return { text: content, inputTokens: json.usage?.prompt_tokens, outputTokens: json.usage?.completion_tokens, cost };
     },
   };
+}
+
+/** How long the provider asked Homing to wait, from its Retry-After, in seconds or as a time: at most an hour. */
+function waitOf(retryAfter: string | null): number | undefined {
+  if (!retryAfter?.trim()) return undefined;
+  const seconds = /^\d+$/.test(retryAfter.trim()) ? Number(retryAfter) : (Date.parse(retryAfter) - Date.now()) / 1000;
+  return Number.isFinite(seconds) ? Math.min(Math.max(Math.ceil(seconds), 1), 3600) : undefined;
 }
 
 /** The answer's text, up to the most Homing reads. */

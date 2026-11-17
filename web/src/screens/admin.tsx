@@ -25,7 +25,7 @@ export type InviteMade = { link: string; expiresAt: string; emailed: false } | {
 export type MakeInvite = (email?: string) => Promise<InviteMade | { problem: string }>;
 
 /** For whoever looks after Homing: inviting people first, then whether email works, Homing's model, and who uses it. */
-export function Admin({ data, invite, setModelLimit }: { data: AdminData; invite?: MakeInvite; setModelLimit?: (limit: string) => Promise<string | undefined> }) {
+export function Admin({ data, invite, setModelLimit }: { data: AdminData; invite?: MakeInvite; setModelLimit?: (limit: string, of?: 'month' | 'run') => Promise<string | undefined> }) {
   return (
     <div className="flex max-w-3xl flex-col gap-6">
       <ScreenHeader title="Looking after Homing" meta={`Homing at ${data.host}. Looking after it gives you no access to anyone’s spaces.`} />

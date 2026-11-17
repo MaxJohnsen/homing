@@ -17,6 +17,13 @@ export interface ConnectedAssistant {
   connectedAt: Date;
 }
 
+/**
+ * How Homing's own routines, such as learning from a mailbox, are named where they wrote something
+ * for a person. No assistant goes by it, so what a routine derived is never taken for an
+ * assistant's work, or the other way round.
+ */
+export const routineAgent = 'Homing';
+
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** What /mcp is called with: the Authorization header, any DPoP proof, and the method. */
@@ -90,7 +97,7 @@ export function tokenVerifier(auth: Auth, pool: Pool, url: URL) {
       [person, clientId, claims.iat],
     );
     if (!rows[0]) return undefined;
-    return { person, agent: rows[0].name || hostOf(clientId), clientId, token: authorization.token };
+    return { person, agent: nameOf(rows[0].name, clientId), clientId, token: authorization.token };
   };
 }
 
@@ -108,7 +115,7 @@ export async function connectedAssistants(pool: Pool, person: string): Promise<C
      order by "connectedAt" desc`,
     [person],
   );
-  return rows.map((row) => ({ ...row, name: row.name || hostOf(row.clientId) }));
+  return rows.map((row) => ({ ...row, name: nameOf(row.name, row.clientId) }));
 }
 
 /**
@@ -142,6 +149,11 @@ export async function disconnectAssistant(pool: Pool, person: string, clientId: 
   } finally {
     client.release();
   }
+}
+
+/** An assistant's name, as it gives it, or its site's when it gives none or calls itself what Homing's routines go by. */
+function nameOf(name: string | null, clientId: string): string {
+  return name && name.trim().toLowerCase() !== routineAgent.toLowerCase() ? name : hostOf(clientId);
 }
 
 function hostOf(clientId: string): string {

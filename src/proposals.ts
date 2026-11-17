@@ -2,13 +2,33 @@ import postgres from 'postgres';
 import { AccessDenied, personOf, type Session } from './db.ts';
 import { addInclude, addRule, checkInclude, editRule, includeOf, IncludeRefused, includesNotOpen, removeInclude, removeRule, rulesFor, rulesIncludedFrom, type Included, type Rule, type RuleKind } from './guidance.ts';
 import { archivePage, archivesSeen, current, itemColumns, publicationOf, publishItem, readPage, termsOf, visible, type Publication } from './knowledge.ts';
+import { noModel, runsFor, type Estimate } from './learning.ts';
+import { ownPlace } from './places.ts';
 import { readSkill } from './skills.ts';
 import type { FindAccount } from './people.ts';
 import { conversionOf, makeCollaborative, type RulesLeaving } from './share-space.ts';
 import { readTask, shareTask, TaskRefused, type Task } from './tasks.ts';
 import { accessibleSpaces, archiveSpace, changeMember, listSpaces, memberChangeFits, newSpace, peopleNames, placeSpace, SpaceRefused, spaceView, type MemberChange, type Space, type SpaceView, type Who } from './spaces.ts';
 
-export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page' | 'add include' | 'remove include' | 'plan';
+export type Action = 'add rule' | 'change rule' | 'remove rule' | 'add space' | 'change members' | 'publish' | 'share task' | 'archive space' | 'share space' | 'archive page' | 'reopen page' | 'add include' | 'remove include' | 'plan' | 'start learning' | 'extend learning';
+
+/**
+ * Learning from one of the person's places, started or taken further back (spec §8): the place,
+ * as the person knows it and as its items are worded, the day it would go back to, the estimate
+ * they're shown, with the provider and model that would read it, and, to start it, its limit. All
+ * as it was when it was proposed, so approving starts exactly that.
+ */
+export interface LearningChange {
+  place: string;
+  address: string;
+  service: string;
+  words: { place: string; item: string; items: string; thread: string };
+  since: string;
+  limit?: number;
+  estimate: Estimate;
+  provider: string;
+  model: string;
+}
 
 /**
  * A change of who is in a space: about someone the user shares a space with, by their id, or about
@@ -57,7 +77,7 @@ export interface Proposal {
    * The exact change: a new rule's kind, text and reach, or for an include whether it's for
    * everyone and whether it's a space's rules or a skill, but never what it points to.
    */
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange>;
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange> & Partial<LearningChange>;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -165,6 +185,20 @@ export interface ProposalView extends Proposal {
   } | null;
   /** For a plan: each change as it is now, and what they add up to. */
   plan: PlanView | null;
+  /** For starting learning from a place, or taking it further back: what was proposed, and whether it still stands. */
+  learning: LearningView | null;
+}
+
+/** Learning as proposed, for the person to decide: what it would learn from, what that may cost and who reads it, and why it can't be approved, if it can't. */
+export interface LearningView extends Omit<LearningChange, 'limit'> {
+  /** In USD: the limit it would start with, or, further back, the limit it has, which stays. */
+  limit: number;
+  /** Whether it takes a run that learns already further back. */
+  further: boolean;
+  /** Why it can't be approved as it is: the estimate or the period changed since, it started another way, or the place is gone. */
+  problem: string | null;
+  /** What approving sends back, so it starts exactly what was shown. */
+  shown: string;
 }
 
 /** A plan as the person it's for sees it: each change, as it is now, and what they add up to. */
@@ -617,6 +651,51 @@ function isInside(space: Space, ancestorId: string, spaces: Space[]): boolean {
   const byId = new Map(spaces.map((candidate) => [candidate.id, candidate]));
   for (let at = space.parentId; at; at = byId.get(at)?.parentId ?? null) if (at === ancestorId) return true;
   return false;
+}
+
+/**
+ * Proposes that Homing learn from one of the person's places, or take a run of theirs further back
+ * (spec §6, §8), for them to approve: an assistant never starts either. It holds what they're shown,
+ * the estimate above all, and approving starts exactly that. One waits for a place at a time: an
+ * earlier one was for an estimate that this one replaces, so it's withdrawn.
+ */
+export async function proposeLearning(s: Session, input: { action: 'start learning' | 'extend learning'; spaceId: string; change: LearningChange; why?: string }): Promise<Proposal> {
+  const earlier = await s.tx<{ id: string }[]>`
+    select id from proposals
+    where ${yours(s)} and state = 'open' and expires_at > now() and action in ('start learning', 'extend learning') and change->>'place' = ${input.change.place}
+    for update
+  `;
+  for (const { id } of earlier) await s.tx`update proposals set state = 'withdrawn' where id = ${id}::uuid`;
+  return insertProposal(s, { spaceId: input.spaceId, action: input.action, itemId: null, change: input.change, request: false, reason: input.why?.trim() || null });
+}
+
+/** Learning as a proposal holds it, with the run and its place as they are now, for the person it's for. */
+async function learningNow(s: Session, proposal: Proposal): Promise<LearningView | null> {
+  if (proposal.action !== 'start learning' && proposal.action !== 'extend learning') return null;
+  const { limit, ...change } = proposal.change as LearningChange;
+  const further = proposal.action === 'extend learning';
+  const place = await ownPlace(s, change.place);
+  const run = place ? (await runsFor(s, [change.place])).get(change.place) : undefined;
+  const sameDay = (a: string | Date | undefined, b: string) => a !== undefined && new Date(a).getTime() === new Date(b).getTime();
+  const changed = `The estimate, or how far back it goes, changed since ${proposal.agent ?? 'your assistant'} proposed this, so it can’t be approved as it is. Ask for it again.`;
+  let problem: string | null = null;
+  if (proposal.state === 'open') {
+    if (!place) problem = `That ${change.words.place} isn’t connected here any more, so there’s nothing to learn from.`;
+    else if (!further) {
+      if (run && run.state !== 'estimating') problem = `Homing already learns from that ${change.words.place}, so there’s nothing to decide.`;
+      else if (!run || !sameDay(run.since, change.since) || run.estimate?.at !== change.estimate.at) problem = changed;
+    } else if (!run || run.state === 'estimating') problem = `Homing doesn’t learn from that ${change.words.place} any more, so there’s nothing to take further back.`;
+    else if (run.since.getTime() <= new Date(change.since).getTime()) problem = 'It learns from that far back already, so there’s nothing to decide.';
+    else if (!run.proposed || !sameDay(run.proposed.since, change.since) || run.proposed.at !== change.estimate.at) problem = changed;
+  }
+  const holds = further ? (run?.limit ?? 0) : (limit ?? change.estimate.limit);
+  return {
+    ...change,
+    limit: holds,
+    further,
+    problem,
+    shown: [proposal.action, change.place, change.since, change.estimate.at, change.estimate.items, change.estimate.low, change.estimate.high, holds, change.provider, change.model].join('|'),
+  };
 }
 
 /**
@@ -1154,6 +1233,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
           }
         : null,
     plan: await planNow(s, proposal, spaces, deciding, findAccount),
+    learning: await learningNow(s, proposal),
   };
 }
 
@@ -1300,7 +1380,7 @@ export async function searchProposals(s: Session, query: string, options: { spac
   const within = options.spaceId ? s.tx`and space_id in (select space_subtree(${options.spaceId}::uuid))` : s.tx``;
   // Someone has only a few waiting, so their words are matched as they are, without an index.
   const words = s.tx`to_tsvector('simple', concat_ws(' ',
-    change->>'text', change->>'name', change->>'personName', change->>'email', reason,
+    change->>'text', change->>'name', change->>'personName', change->>'email', change->>'address', reason,
     (select c.body from content c where c.id = proposals.item_id and ${visible(s, 'c')}),
     (select t.title from tasks t where t.id = proposals.task_id and ${visible(s, 't')}),
     (select t.body from content t where t.page_id = proposals.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1),
@@ -1417,7 +1497,7 @@ export async function waitingFor(s: Session): Promise<Waiting[]> {
     select p.id, p.space_id, s.name as space, s.private_to is not null and s.parent_id is null as personal,
            case when above.private_to is not null and above.parent_id is null then 'your personal space' else above.name end as within,
            p.action, coalesce(p.change->>'kind', rule.kind, 'preference') as kind,
-           coalesce(p.change->>'text', p.change->>'name', p.change->'space'->>'name', who.name, p.change->>'email', rule.body, task.title,
+           coalesce(p.change->>'text', p.change->>'name', p.change->'space'->>'name', who.name, p.change->>'email', p.change->>'address', rule.body, task.title,
                     (select t.body from content t where t.page_id = p.page_id and t.kind = 'title' and ${visible(s, 't')} order by t.private_to is null limit 1),
                     case when p.action in ('archive space', 'share space') then s.name end, included.name) as text,
            included.kind as included, p.agent, case when p.action = 'plan' then jsonb_array_length(p.change->'steps') end as changes,
@@ -1549,6 +1629,8 @@ export async function decide(
     /** For sharing a space: where it goes, whether it's closed there, and what becomes of its rules, as the person set them. */
     share?: { in: string | null; closed: boolean; rules: RulesLeaving };
     findAccount?: FindAccount;
+    /** The provider and model Homing would read with now, or null when it has none: learning starts only with the ones that were shown. */
+    model?: { provider: string; cheaper: string } | null;
   },
 ): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
@@ -1656,6 +1738,27 @@ export async function decide(
           closed: set.closed ?? change.closed,
         })
       ).id;
+    } else if (proposal.action === 'start learning' || proposal.action === 'extend learning') {
+      // Exactly what was shown: the same place, period, estimate, limit, provider and model. Anything
+      // that changed since says so, and nothing starts.
+      const learning = await learningNow(s, proposal);
+      if (!learning || learning.problem) throw new Undecidable('changed', learning?.problem ?? 'There’s nothing to decide any more.');
+      if (decision.shown !== learning.shown) throw new Undecidable('changed', 'What this shows changed after you opened it. Check it again before you approve it.');
+      if (!decision.model) throw new Undecidable('changed', noModel);
+      if (decision.model.provider !== learning.provider || decision.model.cheaper !== learning.model) {
+        throw new Undecidable('changed', 'Homing’s model changed since this was proposed, so the estimate doesn’t hold any more. Ask for it again.');
+      }
+      const run = (await runsFor(s, [learning.place])).get(learning.place)!;
+      try {
+        // As the person, directly, which the database checks, as it does that the run still holds the
+        // period and the estimate shown: one estimated again meanwhile, after the check above, starts nothing.
+        if (learning.further) await s.tx`select extend_learning(${run.id}::uuid, ${new Date(learning.since)})`;
+        else await s.tx`select start_learning(${run.id}::uuid, ${learning.limit}::numeric, ${new Date(learning.since)}, ${learning.estimate.at}::timestamptz)`;
+      } catch (error) {
+        const why = refusalOf(error);
+        if (!why) throw error;
+        throw new Undecidable('changed', why);
+      }
     } else if (proposal.action === 'plan') {
       // Every change as it was shown, together: if one can't be made, none is.
       created = await approvePlan(s, proposal, decision);
@@ -1757,7 +1860,7 @@ export function publicationData(publication: Publication, audience: { people: nu
 export const shortAction = {
   'add rule': 'add', 'change rule': 'change', 'remove rule': 'remove', 'add space': 'space', 'change members': 'members', publish: 'publish', 'share task': 'task',
   'archive space': 'archive', 'share space': 'convert', 'archive page': 'archive page', 'reopen page': 'reopen page',
-  'add include': 'include', 'remove include': 'exclude', plan: 'plan',
+  'add include': 'include', 'remove include': 'exclude', plan: 'plan', 'start learning': 'learn', 'extend learning': 'learn further',
 } as const;
 
 /** What the decision page and the card show: the exact change, where, and what already applies there. */
@@ -1860,6 +1963,8 @@ export function proposalData(proposal: ProposalView) {
           shown: proposal.plan.shown,
         }
       : null,
+    // Learning from a place, or further back in it: what it would read, what that may cost, its limit, who reads it, and why, if it can't be approved.
+    learning: proposal.learning ? { ...proposal.learning, why: proposal.reason } : null,
     alreadyApplies: proposal.alreadyApplies.map((applying) => ({
       kind: applying.kind,
       text: applying.body,

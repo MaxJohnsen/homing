@@ -23,6 +23,25 @@ export const mailbox: Words = {
 /** The answer for a reference that names no email the person can read, whoever's it is. */
 export const noEmail = noItem(mailbox);
 
+/**
+ * Why an email needs no model, by its own headers, by lower-case name, and its sender: a newsletter
+ * or mailing list, which says how to unsubscribe or that it's bulk mail, or mail a system sent on
+ * its own, which says it was submitted automatically or comes from an address nobody answers.
+ * Undefined when it may need one.
+ */
+export function automatedEmail(headers: ReadonlyMap<string, string>, from: Party | null): 'newsletter' | 'automated' | undefined {
+  if (headers.has('list-unsubscribe') || headers.has('list-id')) return 'newsletter';
+  // What says a system sent it counts before what only says it went to many.
+  const submitted = headers.get('auto-submitted');
+  if (submitted !== undefined && !/^\s*no\s*$/i.test(submitted)) return 'automated';
+  if (/^\s*(bulk|list|junk)\s*$/i.test(headers.get('precedence') ?? '')) return 'newsletter';
+  if (from?.address && noReply.test(from.address.trim())) return 'automated';
+  return undefined;
+}
+
+/** Addresses nobody answers, such as noreply@ and mailer-daemon@. */
+const noReply = /^(no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer-daemon|postmaster)([+-][^@]*)?@/i;
+
 /** An email, as its mailbox gives it: who it's from and to, its text, and its attachments by name. */
 export interface Email {
   id: string;
@@ -69,10 +88,12 @@ export function emailItem(email: Email, thread: EmailSummary[], moreInThread: bo
   if (email.cc.length) fields.push(['Cc', { parties: email.cc }]);
   fields.push(['Date', { at: email.at }], ['Subject', { text: email.subject ?? '' }]);
   if (email.attachments.length) fields.push(['Attachments, by name only', { texts: email.attachments }]);
+  const own = splitQuoted(email.unique ?? email.body).own;
   return {
     envelope: envelopeOf(email, audience),
     fields,
     text: email.body,
+    parts: { own: own.join('\n\n'), quoted: quotedPart(email.body, own).join('\n\n') },
     related: thread.map((summary) => envelopeOf(summary)),
     moreRelated: moreInThread,
     excerpt: (words) => emailExcerpt(email, words),

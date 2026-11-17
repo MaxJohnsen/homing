@@ -49,6 +49,10 @@ export interface ModelSpendingData extends ModelStatement {
   /** What the monthly limit covers this month: what was spent, and the worst case of the calls under way. */
   spent: number;
   underWay: number;
+  /** What learning from history cost this month, which each run's own limit covers. */
+  history?: number;
+  /** The most a learning run may spend on history, in dollars. */
+  runCeiling?: number;
   people: { name: string | null; calls: number; cost: number; you: boolean }[];
 }
 

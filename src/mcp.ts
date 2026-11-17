@@ -42,16 +42,18 @@ import {
   type NewText,
   type Page,
 } from './knowledge.ts';
-import { modelProcessingOf, setModelProcessing } from './model.ts';
+import { modelProcessingOf, modelStatement, setModelProcessing, usd } from './model.ts';
 import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePlan, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, searchProposals, suggestArchive, requestsIn, suggestSpace, Undecidable, type PlanStep, type Proposal, type ProposalView } from './proposals.ts';
 import { skillsFor, skillsMatching } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, searchTasks, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { accessibleSpaces, archiveSpace, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, sameName, spaceNameLength, SpaceRefused, spaceView, type MemberChange, type Space, type SpaceView } from './spaces.ts';
-import type { AgentPrincipal } from './assistants.ts';
+import { routineAgent, type AgentPrincipal } from './assistants.ts';
 import { kindOf, type Broker } from './connections.ts';
 import type { Connectors, Item as OutsideItem, Party, Value } from './connectors.ts';
+import { LearningRefused, runsFor, type Learning } from './learning.ts';
+import { actOnLearning, learningActions, learningInputs, learningLines, learningPlace, readLearning, type LearningAction } from './learning-mcp.ts';
 import { quotesEarlier } from './mail.ts';
 import {
   connectorOf,
@@ -250,7 +252,7 @@ export function mcpServer(
   sql: Sql,
   principal: AgentPrincipal,
   url: URL,
-  { card = false, notifier, broker }: { card?: boolean; notifier?: Notifier; broker: Broker },
+  { card = false, notifier, broker, learning }: { card?: boolean; notifier?: Notifier; broker: Broker; learning: Learning },
 ): McpServer {
   const server = new McpServer({ name: 'homing', version: process.env.HOMING_VERSION ?? 'dev' }, { instructions });
   const answer = (fn: (s: Session) => Promise<string | Answer>) => respond(sql, principal, fn);
@@ -264,6 +266,7 @@ export function mcpServer(
     export: (id) => new URL(`/api/spaces/${id}/export`, url).toString(),
     connections: (id) => new URL(`/spaces/${id}/connections`, url).toString(),
     connectors: broker.connectors,
+    learning,
   };
 
   server.registerTool(
@@ -319,11 +322,15 @@ export function mcpServer(
       title: 'Read',
       description:
         'Reads a space, a page, an item with its history, a source, or a proposal and whether it was approved, by its reference. ' +
-        "An email's microsoft:… reference opens it live in the user's mailbox, with its thread.",
+        "An email's microsoft:… reference opens it live in the user's mailbox, with its thread. " +
+        'A learning:… reference says how far Homing has learned from a mailbox, and what it cost.',
       inputSchema: z.object({ ref: text().describe('A reference, such as page:…') }),
       annotations: { readOnlyHint: true },
     },
-    ({ ref }) => (connectorOf(broker.connectors, ref) ? readConnected(broker, principal, links, ref) : answer((s) => read(s, links, ref))),
+    ({ ref }) =>
+      connectorOf(broker.connectors, ref)
+        ? readConnected(broker, principal, links, ref)
+        : answer((s) => (learningPlace(ref) ? readLearning(s, learning, links, ref) : read(s, links, ref))),
   );
 
   server.registerTool(
@@ -445,20 +452,26 @@ export function mcpServer(
         'space.export gives the link where the user downloads a space as they see it, with the spaces in it they can open, when they ask for an export or a copy. ' +
         "space.model_off turns model processing off in a space the user is an admin of, when they ask: Homing then sends nothing in it, or in the spaces in it, to its own model. " +
         'It changes nothing about what you can read. Only the user turns it back on, in Homing. ' +
+        "learning.start and learning.extend propose that Homing learn from the user's connected mailbox, or further back in it, for them to approve with the estimate; learning.pause, learning.resume, learning.leave_out and learning.try_again direct it. `read` its learning:… reference first, which says how. " +
         'plan.propose proposes several of these changes as one decision, when one request needs them together, such as sharing what is known in a space, adding someone to it and a rule: ' +
         'they are all in one space, the user approves the whole plan as it is or declines it, and approving makes every change at once, or none. ' +
         'Only what the user decides alone goes in: a request to a space\'s admins goes on its own, and routine work, such as keeping knowledge or a space only the user will have, is done first, outside the plan. ' +
         'Nothing can be added to a plan: to revise one, withdraw it and propose it again.',
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'space.export', 'space.model_off', 'proposal.withdraw', 'plan.propose']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'space.export', 'space.model_off', 'proposal.withdraw', 'plan.propose', ...learningActions]),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, exportInput, modelOffInput, withdrawInput, planInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, exportInput, modelOffInput, withdrawInput, planInput, ...Object.values(learningInputs), z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
     },
-    ({ action, input }) =>
-      answer((s) => {
+    ({ action, input }) => {
+      // Learning reaches the user's place for an estimate, so it runs in transactions of its own.
+      if ((learningActions as readonly string[]).includes(action)) {
+        const directing = action as LearningAction;
+        return answering(() => actOnLearning(sql, learning, principal, links, directing, inputFor(directing, learningInputs[directing], input), card));
+      }
+      return answer((s) => {
         switch (action) {
           case 'guidance.propose':
             return proposeGuidance(s, links, inputFor(action, guidanceInput, input), card);
@@ -488,8 +501,11 @@ export function mcpServer(
             return withdrawFor(s, links, inputFor(action, withdrawInput, input), card);
           case 'plan.propose':
             return proposePlanFor(s, links, inputFor(action, planInput, input), card);
+          default:
+            throw new Refused(`There is no action ${action}.`);
         }
-      }),
+      });
+    },
   );
 
   if (card) {
@@ -535,7 +551,7 @@ export function mcpServer(
         try {
           // The person pressed the button, so it is their own decision, made in this assistant's card.
           const decided = await withPrincipal(sql, { person: principal.person, direct: true }, (s) =>
-            decide(s, proposal, { approve, shown, onlyHere, space, share, findAccount, decidedIn: principal.agent }),
+            decide(s, proposal, { approve, shown, onlyHere, space, share, findAccount, decidedIn: principal.agent, model: modelStatement(learning.model) }),
           );
           if (decided && notifier) await afterDecision(notifier, principal.person, decided);
           // Someone who just left the space can't read the proposal anymore: it shows as it was decided.
@@ -599,13 +615,20 @@ interface Links {
   export(id: string): string;
   connections(id: string): string;
   connectors: Connectors;
+  /** What learning from the user's places needs. */
+  learning: Learning;
 }
 
 const onlyPeople = 'Only people change guidance. To add, change or remove a rule, propose it with `act`, and the user approves it in Homing.';
 
-async function respond(sql: Sql, principal: AgentPrincipal, fn: (s: Session) => Promise<string | Answer>) {
+function respond(sql: Sql, principal: AgentPrincipal, fn: (s: Session) => Promise<string | Answer>) {
+  return answering(() => withPrincipal(sql, principal, fn));
+}
+
+/** A tool's answer to the assistant, or, when Homing refused on purpose, why. */
+async function answering(work: () => Promise<string | Answer>) {
   try {
-    const answer = await withPrincipal(sql, principal, fn);
+    const answer = await work();
     const { text, structuredContent } = typeof answer === 'string' ? { text: answer, structuredContent: undefined } : answer;
     return { content: [{ type: 'text' as const, text }], ...(structuredContent && { structuredContent }) };
   } catch (error) {
@@ -620,7 +643,7 @@ async function respond(sql: Sql, principal: AgentPrincipal, fn: (s: Session) => 
 
 /** What to tell the agent when Homing refuses a request on purpose. */
 function refusal(error: unknown): string | undefined {
-  if (error instanceof AccessDenied || error instanceof Refused || error instanceof IncludeRefused || error instanceof TooLong || error instanceof SourceRefused) return error.message;
+  if (error instanceof AccessDenied || error instanceof Refused || error instanceof IncludeRefused || error instanceof TooLong || error instanceof SourceRefused || error instanceof LearningRefused) return error.message;
   if (error instanceof postgres.PostgresError) {
     if (error.constraint_name === 'pages_type_check') return 'Guidance and skill pages are reserved for guidance.';
     if (error.message === 'only people change guidance') return onlyPeople;
@@ -784,13 +807,14 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
   const me = (await peopleNames(s, [personOf(s.principal) ?? null])).get(personOf(s.principal)!);
   const nothing = candidates.length === 0 && relevant.length === 0 && skills.length === 0;
   const places = await placesFor(s);
+  const learning = learningLines(links.learning, places, await runsFor(s, places.map((place) => place.place)));
   return [
     nothing
       ? `You are ${me}. Nothing in Homing matches this request. If it isn't about the user's work, answer it without Homing. ` +
         "If it is, ask the user which space it's about, or `search` with other words."
       : `You are ${me}. Choose the space this is about, or ask the user, and call \`context\` again with it for the rules that apply there. ` +
         'What matched is below, and may already answer the request. To find a task or a proposal the user means, `search` for it: it looks in all their spaces.',
-    ...(places.length ? [describePlaces(places, links, 'without a space')] : []),
+    ...(places.length ? [[describePlaces(places, links, 'without a space'), ...learning].join(' ')] : []),
     ...(candidates.length ? ['\n## Spaces that fit', ...candidates.map((space) => `- ${space.name} (${ref('space', space.id)})`)] : []),
     ...(relevant.length ? ['\n## Relevant to the request', ...relevant] : []),
     ...(skills.length
@@ -831,12 +855,13 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
   const { open: tasks } = await tasksIn(s, spaceId);
   const assignees = await peopleNames(s, tasks.map((task) => task.assignee));
   const places = await placesFor(s, spaceId);
+  const learning = learningLines(links.learning, places, await runsFor(s, places.map((place) => place.place)));
   const archivedWith = space.archived && !space.archivedAt ? spaces.find((above) => above.id === space.archivedIn) : undefined;
   const lines = [
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
       'What you save with `remember` stays on your private side.',
-    ...(places.length ? [describePlaces(places, links, 'here')] : []),
+    ...(places.length ? [[describePlaces(places, links, 'here'), ...learning].join(' ')] : []),
     ...(space.archived
       ? [
           `It's archived${space.archivedAt ? '' : ` with ${archivedWith?.name ?? 'the space above it'}`}: finished work, out of everyday context. ` +
@@ -1012,8 +1037,8 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ? page.items.flatMap((item) => [
             // Longer Markdown as written, so its structure shows and a passage can be copied exactly for an edit.
             ...(item.body === oneLine(item.body)
-              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)})`]
-              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}:`, ...fenced(item.body)]),
+              ? [`- ${learnedByHoming(item) ? quote(item.body) : item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, ${byline(links, names, item)})`]
+              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, ${byline(links, names, item)}:`, ...fenced(item.body)]),
             ...(item.privateTo && item.replaced?.shared
               ? [`  - A private update. Others in the space still see: ${quote(item.replaced.body)}`]
               : []),
@@ -1038,10 +1063,10 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     const rule = item.kind === 'requirement' || item.kind === 'preference';
     const what = rule ? `A ${item.kind}, ` : item.path ? `The skill file ${item.path}, ` : '';
     return [
-      item.body,
+      learnedByHoming(item) ? quote(item.body) : item.body,
       '',
       `${what}${ref('item', item.id)} on ${ref('page', item.pageId)}, ${side(item.privateTo)}. ` +
-        `Written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)} on ${day(item.updatedAt)}.`,
+        `${capitalize(byline(links, names, item))} on ${day(item.updatedAt)}.`,
       ...(item.replacedBy
         ? [
             item.replacedBy.shared || item.privateTo
@@ -1862,6 +1887,13 @@ function describeProposal(proposal: Proposal): string {
     return `A plan of ${total} changes, decided together: ${change.space ? `create a space called ${quote(change.space.name)} here, then in it: ` : ''}${steps.join('; ')}`;
   }
   if (proposal.action === 'add space') return `Create a space called ${quote(change.name!)}, ${change.who === 'just me' ? 'just for the user' : 'with others'}${change.closed ? ', closed' : ''}`;
+  if (proposal.action === 'start learning' || proposal.action === 'extend learning') {
+    const from = `the user's ${change.words?.place ?? 'place'} ${quote(change.address ?? '')}`;
+    const cost = change.estimate ? `, estimated at ${usd(change.estimate.low)}–${usd(change.estimate.high)}` : '';
+    return proposal.action === 'start learning'
+      ? `Have Homing learn from ${from} back to ${day(new Date(change.since!))}, with a limit of ${usd(change.limit ?? change.estimate?.limit ?? 0)}${cost} (learning:${change.place})`
+      : `Have Homing learn from ${from} further back, to ${day(new Date(change.since!))}${cost} (learning:${change.place})`;
+  }
   if (proposal.action === 'publish') return `Share ${ref('item', proposal.itemId!)} with everyone in the space`;
   if (proposal.action === 'share task') return `Share ${ref('task', proposal.taskId!)} with everyone in the space`;
   if (proposal.action === 'archive space') return 'Archive the space, and the spaces in it';
@@ -1932,6 +1964,10 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
     if (!page.stands) return 'It no longer stands: the page was archived or reopened since it was proposed, so there is nothing to decide.';
   }
   if (proposal.state === 'open' && proposal.action === 'share space' && 'conversion' in proposal && !proposal.conversion) return 'The space was shared or archived since, so there is nothing to decide.';
+  // Learning whose estimate or period changed since, or that started another way, can't be approved as it is.
+  if (proposal.state === 'open' && 'learning' in proposal && proposal.learning?.problem) {
+    return `It waits for the user until ${day(proposal.expiresAt)}, but it can't be approved as it is: ${proposal.learning.problem} Propose it again if the user still wants it.`;
+  }
   // A plan with a change that can no longer be made can't be approved as it is.
   const blocked = 'plan' in proposal && proposal.state === 'open' ? [proposal.plan?.create, ...(proposal.plan?.steps ?? [])].find((step) => step?.problem) : undefined;
   if (blocked) {
@@ -1947,6 +1983,9 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
       return `Sent to the space's admins on ${day(proposal.requestedAt!)}. Waiting for one of them to decide, until ${day(proposal.expiresAt)}. Nothing has changed yet.`;
     case 'approved':
       if (proposal.action === 'change members') return `The user approved it on ${day(proposal.decidedAt!)}, and it applies now.`;
+      if (proposal.action === 'start learning' || proposal.action === 'extend learning') {
+        return `The user approved it on ${day(proposal.decidedAt!)}, and Homing learns from it in the background now. \`read\` learning:${proposal.change.place} says how far it is.`;
+      }
       if (proposal.action === 'publish' || proposal.action === 'share task') return `The user shared it on ${day(proposal.decidedAt!)}. Everyone in the space sees it now.`;
       if (proposal.action === 'share space') return `The user shared it on ${day(proposal.decidedAt!)}. It's out of their personal space now; add people with members.change.`;
       if (proposal.action === 'archive space') {
@@ -1981,6 +2020,7 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
         return `The user kept it open, on ${day(proposal.decidedAt!)}. Nothing was archived. Don't suggest archiving it again unless they ask.`;
       }
       if (proposal.action === 'reopen page') return `The user kept it archived, on ${day(proposal.decidedAt!)}. Nothing changed.`;
+      if (proposal.action === 'start learning' || proposal.action === 'extend learning') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing started. Don't propose it again unless they ask.`;
       if (proposal.action === 'share space') return `The user kept it in their personal space, on ${day(proposal.decidedAt!)}. Nothing changed. Don't propose sharing it again unless they ask.`;
       if (proposal.action === 'add space') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing was created.${proposal.change.asked ? '' : " Don't suggest it again."}`;
       if (proposal.action === 'plan') return `The user declined it on ${day(proposal.decidedAt!)}, so nothing changed. If they want part of it, ask them what, and propose that.`;
@@ -2017,10 +2057,12 @@ async function describeHits(s: Session, links: Links, hits: Hit[], within?: stri
           ? `Source: ${describeSource(links, { reference: hit.title, excerpt: hit.text }, hit.readByHoming)}`
           : hit.pageType === 'guidance'
             ? `Rule: ${oneLine(hit.text)}`
-            : `${hit.title ? `${oneLine(hit.title)}: ` : ''}${oneLine(hit.text)}`;
+            : `${hit.title ? `${oneLine(hit.title)}: ` : ''}${hit.kind === 'item' && hit.itemKind === 'text' && learnedByHoming(hit) ? quote(hit.text) : oneLine(hit.text)}`;
     const space = spaces.get(hit.spaceId);
     const included = within && !inside(hit.spaceId) ? ', included here' : '';
-    const by = people(hit) ? `, written by ${author(names, hit.writtenBy, hit.agent, hit.imported, hit.editAgent)}` : '';
+    // What Homing learned itself from something it read is quoted, and says so: it's what that says, never the user's own words.
+    const learned = hit.kind === 'item' && hit.itemKind === 'text' && learnedByHoming(hit);
+    const by = people(hit) ? `, written by ${author(names, hit.writtenBy, hit.agent, hit.imported, hit.editAgent)}` : learned ? `, ${byline(links, names, hit)}` : '';
     const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}${by}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
@@ -2218,6 +2260,26 @@ async function describeWaiting(s: Session, proposals: Proposal[]): Promise<strin
  * before it was imported. A person's own text that their assistant changed for them stays theirs:
  * "Ana Berg, changed by Claude for them".
  */
+/** Whether Homing's own learning derived it from what it read, such as an email, rather than a person or their assistant writing it. */
+const learnedByHoming = (written: { agent: string | null; imported: Imported | null }) => written.agent === routineAgent && !importedAuthor(written.imported);
+
+/**
+ * Who something is by, in the middle of a sentence: "written by Ana Berg through Claude", or, for
+ * what Homing's own learning derived, "learned by Homing from an email it read, so it's what that
+ * email says, not what the user wrote". A claim someone planted in an email never reads as the
+ * user's own knowledge.
+ */
+function byline(
+  links: Links,
+  names: Map<string, string>,
+  item: { writtenBy: string | null; agent: string | null; imported: Imported | null; editAgent?: string | null; sources?: { reference: string | null; readThrough?: string | null }[] },
+): string {
+  if (!learnedByHoming(item)) return `written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent ?? null)}`;
+  const read = item.sources?.find((source) => source.readThrough && connectorOf(links.connectors, source.reference ?? undefined));
+  const words = read ? wordsOf(connectorOf(links.connectors, read.reference ?? undefined)) : undefined;
+  return `learned by Homing from ${words ? `${words.anItem} it read` : 'what it read'}, so it's what that says, not what the user wrote`;
+}
+
 function author(names: Map<string, string>, writtenBy: string | null, agent: string | null, imported: Imported | null, editAgent: string | null = null): string {
   // Who wrote it before it was imported is nobody here, so they're named as imported.
   const before = importedAuthor(imported);

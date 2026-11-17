@@ -3,9 +3,19 @@
 // once, for a few minutes, only with the PKCE verifier it was issued for and
 // only for the app and address it was issued to, and the app proves who it is
 // with an assertion signed by its certificate. It counts what it's asked.
-// Graph also keeps a mailbox for each account, which it searches and reads
-// as Outlook does, with ids that change when an email moves, and immutable
-// ones that don't, for whoever asks for those.
+// Graph also keeps a mailbox for each account, with folders, which it
+// searches and reads as Outlook does, with ids that change when an email
+// moves, and immutable ones that don't, for whoever asks for those. It lists
+// a mailbox's emails by the date they arrived, and follows each folder's
+// changes with delta links, as Graph documents them: a page may hold fewer
+// than asked for and still have a next link; delta gives changes in no
+// promised order, an email that changed with no more than its id and what
+// changed, or with what was asked for as well, and one that was only marked
+// read even when it doesn't fit the filter; a delta with a filter returns
+// only up to 5,000 emails; a link it forgot answers 410; a page of history
+// may come empty with a link to the next; a mailbox may hold hundreds of
+// folders, listed a page at a time; and when it's asked too often it says
+// how long to wait.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, X509Certificate } from 'node:crypto';
@@ -44,14 +54,59 @@ export interface Email {
    */
   unique?: string | null;
   attachments?: { name: string; inline?: boolean }[];
+  /** Its headers beside those Graph gives as fields, such as List-Unsubscribe, by name. */
+  headers?: Record<string, string>;
+  /** The folder it's in: a well-known one, such as sentitems or junkemail, or one of the owner's own by name. By default the inbox. */
+  folder?: string;
+  /** A draft, not sent. */
+  draft?: boolean;
 }
 
-/** An email in a mailbox: its immutable id, and the folder it's in, which its ordinary id depends on. */
+/**
+ * An email in a mailbox: its immutable id, the folder it's in, which its ordinary id depends on,
+ * and when it last changed there, as the mailbox counts changes, which delta goes by.
+ */
 interface Kept extends Email {
   id: string;
   folder: string;
   conversation: string;
+  changed: number;
+  /** When it came into the folder it's in, as the mailbox counts changes: since then, delta gives only what changed of it. */
+  arrived: number;
+  /** Whether it was last changed only in how it's flagged, such as marked read. */
+  flagged?: boolean;
 }
+
+/** A folder in a mailbox: its name, the folder it's in, and the well-known name of one Outlook makes. */
+interface Folder {
+  id: string;
+  name: string;
+  parent: string | null;
+  wellKnown?: string;
+}
+
+/** A mailbox's folders, its emails, the changes it counted, what left each folder when, and how often it forgot its delta links. */
+interface Mailbox {
+  folders: Folder[];
+  emails: Kept[];
+  changes: number;
+  left: { folder: string; id: string; at: number }[];
+  forgot: number;
+  /** How it refuses a delta link it forgot. */
+  forgotAs: string;
+  /** The most emails a page of a list holds, whatever was asked for. */
+  pageCap?: number;
+  /** Emails Graph fails on whenever their text is asked for. */
+  poisoned: Set<string>;
+  /** Whether a page of history comes empty with a link to the next: the first one asked for, or every one. */
+  empty?: 'first' | 'always';
+}
+
+/** The folders Outlook makes in every mailbox, by their well-known names. */
+const wellKnown: [string, string][] = [
+  ['inbox', 'Inbox'], ['sentitems', 'Sent Items'], ['drafts', 'Drafts'], ['deleteditems', 'Deleted Items'],
+  ['junkemail', 'Junk Email'], ['outbox', 'Outbox'], ['archive', 'Archive'],
+];
 
 /** What the ID token says, which a test can change to see Homing refuse it. */
 export interface IdTokenClaims {
@@ -76,6 +131,9 @@ export function makeCertificate(): string {
   }
 }
 
+/** An email's ordinary id, which changes when it moves to another folder. */
+const ordinaryId = (email: Kept) => `AAMk${email.folder}-${email.id.slice(6)}`;
+
 /** An email's HTML as text, the way Microsoft gives it when asked: without tags, scripts or styles. */
 function textOf(html: string): string {
   return html
@@ -94,8 +152,8 @@ export class MicrosoftStandIn {
   readonly clientId: string = randomUUID();
   readonly pem = makeCertificate();
   readonly certificate = new X509Certificate(/-----BEGIN CERTIFICATE-----[\s\S]+-----END CERTIFICATE-----/.exec(this.pem)![0]);
-  /** What it was asked: codes redeemed, refreshes, calls to Graph, and assertions it accepted, and of Graph, searches and emails read. */
-  readonly asked = { codes: 0, refreshes: 0, graph: 0, assertions: 0, searches: 0, reads: 0 };
+  /** What it was asked: codes redeemed, refreshes, calls to Graph, and assertions it accepted, and of Graph, searches, emails read, pages of history by date and of delta. */
+  readonly asked = { codes: 0, refreshes: 0, graph: 0, assertions: 0, searches: 0, reads: 0, history: 0, deltas: 0 };
   /** What Homing searched for last, as Graph got it. */
   lastSearch?: string;
   /** Every token it handed out, so tests can look for them where they mustn't be. */
@@ -110,7 +168,9 @@ export class MicrosoftStandIn {
    */
   private readonly refusals = new Map<string, { error: string; number: number }>();
   /** Each account's mailbox, by the account's object id. */
-  private readonly mailboxes = new Map<string, Kept[]>();
+  private readonly mailboxes = new Map<string, Mailbox>();
+  /** Accounts whose mailbox Graph can't serve for now, by the status it answers with, and how long it says to wait. */
+  private readonly outages = new Map<string, { status: number; retryAfter?: number }>();
   /** Accounts whose mailbox answers slowly, by how many milliseconds. */
   private readonly slowness = new Map<string, number>();
   /** How many milliseconds refreshing a sign-in takes. */
@@ -121,7 +181,7 @@ export class MicrosoftStandIn {
   async start(): Promise<this> {
     this.server = createServer((req, res) => {
       void this.handle(req.method ?? 'GET', new URL(req.url ?? '/', this.url), req).then(
-        ({ status, body }) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body)),
+        ({ status, body, headers }) => res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(JSON.stringify(body)),
         () => res.writeHead(500).end(),
       );
     });
@@ -182,19 +242,129 @@ export class MicrosoftStandIn {
     this.refusals.delete(account.oid);
   }
 
-  /** Someone sends the account an email. Returns its immutable id. */
+  /** Someone sends the account an email, or it's in the account's mailbox already, such as one it sent. Returns its immutable id. */
   deliver(account: Account, email: Email): string {
     const id = `AAkALg${randomBytes(24).toString('base64url')}=`;
-    const mailbox = this.mailboxes.get(account.oid) ?? [];
-    mailbox.push({ ...email, id, folder: 'inbox', conversation: email.conversation ?? `AAQk${randomBytes(12).toString('base64url')}=` });
-    this.mailboxes.set(account.oid, mailbox);
+    const mailbox = this.mailboxOf(account);
+    const folder = this.folderOf(mailbox, email.folder ?? 'inbox').id;
+    const at = ++mailbox.changes;
+    mailbox.emails.push({ ...email, id, folder, conversation: email.conversation ?? `AAQk${randomBytes(12).toString('base64url')}=`, changed: at, arrived: at });
     return id;
   }
 
   /** The account's owner moves an email to another folder, which changes its ordinary id but not its immutable one. */
   move(account: Account, id: string, folder: string) {
-    const email = this.mailboxes.get(account.oid)?.find((kept) => kept.id === id);
-    if (email) email.folder = folder;
+    const mailbox = this.mailboxOf(account);
+    const email = mailbox.emails.find((kept) => kept.id === id);
+    if (!email) return;
+    mailbox.left.push({ folder: email.folder, id, at: ++mailbox.changes });
+    email.folder = this.folderOf(mailbox, folder).id;
+    email.changed = email.arrived = mailbox.changes;
+    email.flagged = false;
+  }
+
+  /** The email changes in the mailbox, such as its text, or only how it's flagged, when nothing is given. */
+  change(account: Account, id: string, to: Partial<Email> = {}) {
+    const mailbox = this.mailboxOf(account);
+    const email = mailbox.emails.find((kept) => kept.id === id);
+    if (!email) return;
+    Object.assign(email, to);
+    email.changed = ++mailbox.changes;
+    email.flagged = Object.keys(to).length === 0;
+  }
+
+  /** The account's owner deletes an email for good. */
+  remove(account: Account, id: string) {
+    const mailbox = this.mailboxOf(account);
+    const email = mailbox.emails.find((kept) => kept.id === id);
+    if (!email) return;
+    mailbox.emails.splice(mailbox.emails.indexOf(email), 1);
+    mailbox.left.push({ folder: email.folder, id, at: ++mailbox.changes });
+  }
+
+  /** Microsoft forgets where the mailbox's delta links stood, as it does after a while, so they're refused from then on, with 410 and this code. */
+  forgetDeltas(account: Account, code = 'SyncStateNotFound') {
+    const mailbox = this.mailboxOf(account);
+    mailbox.forgot++;
+    mailbox.forgotAs = code;
+  }
+
+  /** A page of the mailbox's lists holds at most so many emails, with a link to the next when there are more, or as many as asked for again without a number. */
+  shortPages(account: Account, most?: number) {
+    this.mailboxOf(account).pageCap = most;
+  }
+
+  /**
+   * A page of the mailbox's history comes empty, with a link to the next: only the page asked for
+   * first, however often it's asked for, so that only its link leads on, or every page, links'
+   * too. Or as it was again, without a mode.
+   */
+  emptyPages(account: Account, mode?: 'first' | 'always') {
+    this.mailboxOf(account).empty = mode;
+  }
+
+  /** The account's owner makes a folder, by its path, such as Clients/Northwind. */
+  folder(account: Account, path: string) {
+    this.folderOf(this.mailboxOf(account), path);
+  }
+
+  /** Graph fails whenever it's asked for this email's text, in a list or by its id, as it does for one it can't convert. */
+  poison(account: Account, id: string, poisoned = true) {
+    const { poisoned: set } = this.mailboxOf(account);
+    if (poisoned) set.add(id);
+    else set.delete(id);
+  }
+
+  /** Whether lists and delta give an email's headers when asked, which Graph documents only for one email by its id. On by default. */
+  headersInLists = true;
+
+  /**
+   * Whether delta gives an email that only changed with what was asked for too, as in Graph's own
+   * example of one marked read, or with no more than its id and what changed, which is all Graph
+   * promises. Off by default.
+   */
+  updatesWithFields = false;
+
+  /** The most emails a delta with a filter returns in all, from its first request through every link after it, as Graph documents. */
+  filteredDeltaMost = 5_000;
+
+  /** What Homing asked of a mailbox's history by date, as Graph got each filter. */
+  readonly history: string[] = [];
+
+  /** The folders Homing asked for their changes, in order, by name. */
+  readonly deltasOf: string[] = [];
+
+  private mailboxOf(account: Account): Mailbox {
+    let mailbox = this.mailboxes.get(account.oid);
+    if (!mailbox) {
+      mailbox = { folders: wellKnown.map(([known, name]) => ({ id: `AAMkF${randomBytes(9).toString('base64url')}`, name, parent: null, wellKnown: known })), emails: [], changes: 0, left: [], forgot: 0, forgotAs: 'SyncStateNotFound', poisoned: new Set() };
+      this.mailboxes.set(account.oid, mailbox);
+    }
+    return mailbox;
+  }
+
+  /** A folder by its well-known name or its id, or else by its path, such as Clients/Northwind or deleteditems/2024, made when it's new. */
+  private folderOf(mailbox: Mailbox, named: string): Folder {
+    const found = mailbox.folders.find((folder) => folder.wellKnown === named || folder.id === named);
+    if (found) return found;
+    let parent: string | null = null;
+    let folder: Folder | undefined;
+    for (const name of named.split('/')) {
+      const within: string | null = parent;
+      folder = mailbox.folders.find((one) => one.parent === within && (one.name === name || (within === null && one.wellKnown === name)));
+      if (!folder) {
+        folder = { id: `AAMkF${randomBytes(9).toString('base64url')}`, name, parent: within };
+        mailbox.folders.push(folder);
+      }
+      parent = folder.id;
+    }
+    return folder!;
+  }
+
+  /** Graph can't serve the account's mailbox for now, as in an outage, or when it's asked too often, or serves it again with 0. */
+  outage(account: Account, status = 503, retryAfter?: number) {
+    if (status) this.outages.set(account.oid, { status, retryAfter });
+    else this.outages.delete(account.oid);
   }
 
   /** The account's mailbox answers after this many milliseconds, or at once again with 0. */
@@ -212,7 +382,7 @@ export class MicrosoftStandIn {
     for (const token of this.accessTokens.values()) token.expiresAt = Date.now() - 1000;
   }
 
-  private async handle(method: string, url: URL, req: import('node:http').IncomingMessage): Promise<{ status: number; body: unknown }> {
+  private async handle(method: string, url: URL, req: import('node:http').IncomingMessage): Promise<{ status: number; body: unknown; headers?: Record<string, string> }> {
     if (method === 'POST' && /^\/[\w.-]+\/oauth2\/v2\.0\/token$/.test(url.pathname)) {
       let text = '';
       for await (const chunk of req) text += chunk;
@@ -226,9 +396,17 @@ export class MicrosoftStandIn {
       if (url.pathname === '/v1.0/me') {
         return { status: 200, body: { id: held.account.oid, displayName: held.account.name, mail: held.account.address, userPrincipalName: held.account.address } };
       }
-      if (url.pathname === '/v1.0/me/mailFolders/inbox') {
+      const outage = this.outages.get(held.account.oid);
+      if (outage && url.pathname !== '/v1.0/me') {
+        return {
+          status: outage.status,
+          body: { error: { code: outage.status === 429 ? 'TooManyRequests' : 'ServiceUnavailable' } },
+          ...(outage.retryAfter !== undefined && { headers: { 'retry-after': String(outage.retryAfter) } }),
+        };
+      }
+      if (url.pathname.startsWith('/v1.0/me/mailFolders')) {
         if (held.account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
-        return { status: 200, body: { id: 'AAMkAGI2THVSAAA=' } };
+        return this.folders(held.account, url, String(req.headers.prefer ?? ''));
       }
       if (url.pathname.startsWith('/v1.0/me/messages')) {
         const delay = this.slowness.get(held.account.oid) ?? 0;
@@ -239,33 +417,49 @@ export class MicrosoftStandIn {
     return { status: 404, body: {} };
   }
 
-  /** Graph's messages, as far as Homing uses them: search, one email, its thread and its attachments' names. */
+  /** An email as Graph gives it, with the fields asked for, and its id as asked for. */
+  private fieldsOf(mailbox: Mailbox, email: Kept, select: string[], prefer: string, listed = false): Record<string, unknown> {
+    const immutable = /IdType="ImmutableId"/.test(prefer);
+    const content = (html: string) => (/outlook\.body-content-type="text"/.test(prefer) ? { contentType: 'text', content: textOf(html) } : { contentType: 'html', content: html });
+    const folder = mailbox.folders.find((one) => one.id === email.folder);
+    // What the owner sent, or hasn't sent yet, has no headers of the internet's.
+    const top = (one: Folder | undefined): Folder | undefined => (one?.parent ? top(mailbox.folders.find((parent) => parent.id === one.parent)) : one);
+    const received = !['sentitems', 'drafts', 'outbox'].includes(top(folder)?.wellKnown ?? '') && email.draft !== true;
+    const all: Record<string, unknown> = {
+      id: immutable ? email.id : ordinaryId(email),
+      conversationId: email.conversation,
+      subject: email.subject,
+      from: { emailAddress: email.from },
+      toRecipients: (email.to ?? []).map((emailAddress) => ({ emailAddress })),
+      ccRecipients: (email.cc ?? []).map((emailAddress) => ({ emailAddress })),
+      receivedDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
+      sentDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
+      bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
+      hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
+      parentFolderId: email.folder,
+      isDraft: email.draft === true || folder?.wellKnown === 'drafts',
+      ...(received && (!listed || this.headersInLists) && {
+        internetMessageHeaders: [{ name: 'Message-ID', value: `<${email.id.slice(6, 20)}@mail.test>` }, ...Object.entries(email.headers ?? {}).map(([name, value]) => ({ name, value }))],
+      }),
+      // Microsoft gives the text when asked to, and the HTML otherwise.
+      body: content(email.html),
+      ...(email.unique !== null && { uniqueBody: content(email.unique ?? email.html) }),
+    };
+    // Headers come only when asked for, as Graph has it.
+    return Object.fromEntries(Object.entries(all).filter(([name]) => (select.length === 0 ? name !== 'internetMessageHeaders' : select.includes(name))));
+  }
+
+  /** Graph's messages, as far as Homing uses them: search, one email, its thread, its attachments' names, and the mailbox by date. */
   private mail(account: Account, url: URL, prefer: string): { status: number; body: unknown } {
     if (account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
-    const mailbox = this.mailboxes.get(account.oid) ?? [];
-    const immutable = /IdType="ImmutableId"/.test(prefer);
-    const idOf = (email: Kept) => (immutable ? email.id : `AAMk${email.folder}-${email.id.slice(6)}`);
+    const mailbox = this.mailboxOf(account);
     const select = (url.searchParams.get('$select') ?? '').split(',').filter(Boolean);
-    const content = (html: string) => (/outlook\.body-content-type="text"/.test(prefer) ? { contentType: 'text', content: textOf(html) } : { contentType: 'html', content: html });
-    const fields = (email: Kept): Record<string, unknown> => {
-      const all: Record<string, unknown> = {
-        id: idOf(email),
-        conversationId: email.conversation,
-        subject: email.subject,
-        from: { emailAddress: email.from },
-        toRecipients: (email.to ?? []).map((emailAddress) => ({ emailAddress })),
-        ccRecipients: (email.cc ?? []).map((emailAddress) => ({ emailAddress })),
-        receivedDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
-        sentDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
-        bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
-        hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
-        // Microsoft gives the text when asked to, and the HTML otherwise.
-        body: content(email.html),
-        ...(email.unique !== null && { uniqueBody: content(email.unique ?? email.html) }),
-      };
-      return Object.fromEntries(Object.entries(all).filter(([name]) => select.length === 0 || select.includes(name)));
-    };
-    const found = (id: string) => mailbox.find((email) => email.id === id || idOf(email) === id || `AAMk${email.folder}-${email.id.slice(6)}` === id);
+    const fields = (email: Kept) => this.fieldsOf(mailbox, email, select, prefer, true);
+    const found = (id: string) => mailbox.emails.find((email) => email.id === id || ordinaryId(email) === id);
+    // An email Graph can't give the text of fails whatever asks for it.
+    const texts = select.length === 0 || select.some((name) => ['body', 'uniqueBody'].includes(name));
+    const failing = (emails: Kept[]) => texts && emails.some((email) => mailbox.poisoned.has(email.id));
+    const broken = { status: 500, body: { error: { code: 'ErrorInternalServerError' } } };
     const notFound = { status: 404, body: { error: { code: 'ErrorItemNotFound', message: 'The specified object was not found in the store.' } } };
 
     const attachments = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(url.pathname);
@@ -280,7 +474,8 @@ export class MicrosoftStandIn {
     if (one) {
       this.asked.reads++;
       const email = found(decodeURIComponent(one[1]));
-      return email ? { status: 200, body: fields(email) } : notFound;
+      if (email && failing([email])) return broken;
+      return email ? { status: 200, body: this.fieldsOf(mailbox, email, select, prefer) } : notFound;
     }
     if (url.pathname !== '/v1.0/me/messages') return { status: 404, body: {} };
 
@@ -294,7 +489,7 @@ export class MicrosoftStandIn {
       const words = search.slice(1, -1).replace(/\\(.)/g, '$1');
       this.lastSearch = words;
       const terms = words.toLowerCase().split(/\s+/).filter(Boolean);
-      const matches = mailbox
+      const matches = mailbox.emails
         .filter((email) => {
           const text = `${email.from.name} ${email.from.address} ${email.subject} ${textOf(email.html)}`.toLowerCase();
           return terms.every((term) => text.includes(term));
@@ -304,10 +499,130 @@ export class MicrosoftStandIn {
     }
     const conversation = filter && /^conversationId eq '(.*)'$/.exec(filter)?.[1]?.replace(/''/g, "'");
     if (conversation) {
-      const thread = mailbox.filter((email) => email.conversation === conversation);
+      const thread = mailbox.emails.filter((email) => email.conversation === conversation);
       return { status: 200, body: { value: thread.slice(0, top).map(fields), ...(thread.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
     }
+    // The whole mailbox by the date each email arrived, as Graph filters it, oldest first when asked.
+    const dated = filter && /^receivedDateTime ge (\S+?)(?: and receivedDateTime lt (\S+))?$/.exec(filter);
+    if (dated) {
+      const [from, until] = [Date.parse(dated[1]), dated[2] ? Date.parse(dated[2]) : Infinity];
+      if (Number.isNaN(from) || Number.isNaN(until)) return { status: 400, body: { error: { code: 'BadRequest' } } };
+      // To the second, as Graph keeps the time an email arrived.
+      const second = (email: Kept) => Math.floor(email.at.getTime() / 1000);
+      const within = mailbox.emails.filter((email) => second(email) * 1000 >= from && second(email) * 1000 < until);
+      if (url.searchParams.get('$count') === 'true') return { status: 200, body: { '@odata.count': within.length, value: within.slice(0, top).map(fields) } };
+      const order = url.searchParams.get('$orderby');
+      if (order !== null && order !== 'receivedDateTime asc') return { status: 400, body: { error: { code: 'BadRequest' } } };
+      this.asked.history++;
+      this.history.push(filter);
+      const sorted = order ? [...within].sort((a, b) => second(a) - second(b) || a.id.localeCompare(b.id)) : within;
+      const skip = Number(url.searchParams.get('$skip') ?? 0);
+      const linked = (change: (params: URLSearchParams) => void) => {
+        const next = new URL(url);
+        change(next.searchParams);
+        return next.toString();
+      };
+      // As Graph: a page may hold nothing and still not be the last. Asked for again, it's as empty: only its link leads on.
+      if (mailbox.empty === 'always' || (mailbox.empty === 'first' && !url.searchParams.has('$skiptoken'))) {
+        return { status: 200, body: { value: [], '@odata.nextLink': linked((params) => params.set('$skiptoken', String(Number(params.get('$skiptoken') ?? 0) + 1))) } };
+      }
+      // As Graph: a page may hold fewer than asked for, and the next link says whether there's more.
+      const size = Math.min(top, mailbox.pageCap ?? top);
+      const page = sorted.slice(skip, skip + size);
+      if (failing(page)) return broken;
+      return { status: 200, body: { value: page.map(fields), ...(sorted.length > skip + size && { '@odata.nextLink': linked((params) => params.set('$skip', String(skip + size))) }) } };
+    }
     return { status: 400, body: { error: { code: 'BadRequest' } } };
+  }
+
+  /** Graph's mail folders: the top ones, those in a folder, one by its id or well-known name, and the changes in one, by delta. */
+  private folders(account: Account, url: URL, prefer: string): { status: number; body: unknown } {
+    const mailbox = this.mailboxOf(account);
+    // A page at a time, as many as asked for, with a link to the next.
+    const listed = (folders: Folder[]) => {
+      const [top, skip] = [Number(url.searchParams.get('$top') ?? 10), Number(url.searchParams.get('$skip') ?? 0)];
+      const next = new URL(url);
+      next.searchParams.set('$skip', String(skip + top));
+      return {
+        status: 200,
+        body: {
+          value: folders.slice(skip, skip + top).map((folder) => ({ id: folder.id, displayName: folder.name, childFolderCount: mailbox.folders.filter((child) => child.parent === folder.id).length })),
+          ...(folders.length > skip + top && { '@odata.nextLink': next.toString() }),
+        },
+      };
+    };
+    if (url.pathname === '/v1.0/me/mailFolders') return listed(mailbox.folders.filter((folder) => folder.parent === null));
+    const path = /^\/v1\.0\/me\/mailFolders\/([^/]+)(\/childFolders|\/messages\/delta)?$/.exec(url.pathname);
+    const folder = path && mailbox.folders.find((one) => one.id === decodeURIComponent(path[1]) || one.wellKnown === decodeURIComponent(path[1]));
+    if (!folder) return { status: 404, body: { error: { code: 'ErrorItemNotFound' } } };
+    if (!path[2]) return { status: 200, body: { id: folder.id, displayName: folder.name } };
+    if (path[2] === '/childFolders') return listed(mailbox.folders.filter((child) => child.parent === folder.id));
+    return this.delta(mailbox, folder, url, prefer);
+  }
+
+  /**
+   * A folder's changes, as Graph's delta gives them: first what's in it, from a time on if asked,
+   * then, from each delta link, what arrived in it or changed since, and what left it, newest
+   * change first, since Graph promises no order. An email that came into the folder comes with what
+   * was asked for; one that only changed there comes with its id and what changed, or with what
+   * was asked for too, and one only marked read comes even when it arrived before the filter's
+   * time. With a filter, it returns only so many emails in all, and none after that. A page at a
+   * time, with a next link, and a delta link at the end. A link keeps what was asked for, and one
+   * Graph forgot is refused with 410.
+   */
+  private delta(mailbox: Mailbox, folder: Folder, url: URL, prefer: string): { status: number; body: unknown } {
+    this.asked.deltas++;
+    this.deltasOf.push(folder.name);
+    type Token = { since: number; from: number | null; select: string[]; offset: number; upTo: number; forgot: number; given: number };
+    const token = url.searchParams.get('$skiptoken') ?? url.searchParams.get('$deltatoken');
+    let state: Token;
+    if (token) {
+      try {
+        state = JSON.parse(Buffer.from(token, 'base64url').toString('utf8')) as Token;
+      } catch {
+        return { status: 400, body: { error: { code: 'BadRequest' } } };
+      }
+      if (state.forgot !== mailbox.forgot) return { status: 410, body: { error: { code: mailbox.forgotAs } } };
+      // Following a delta link starts a new round, up to what changed by now.
+      if (url.searchParams.has('$deltatoken')) state = { ...state, offset: 0, upTo: mailbox.changes };
+    } else {
+      const filter = url.searchParams.get('$filter');
+      const from = filter && /^receivedDateTime ge (\S+)$/.exec(filter)?.[1];
+      if (filter && !from) return { status: 400, body: { error: { code: 'BadRequest' } } };
+      state = { since: -1, from: from ? Date.parse(from) : null, select: (url.searchParams.get('$select') ?? '').split(',').filter(Boolean), offset: 0, upTo: mailbox.changes, forgot: mailbox.forgot, given: 0 };
+    }
+    const size = Number(/odata\.maxpagesize=(\d+)/.exec(prefer)?.[1] ?? 10);
+    const fits = (email: Kept) => state.from === null || email.at.getTime() >= state.from;
+    // Only marked read since the last round, it comes whether or not it fits the filter.
+    const onlyFlagged = (email: Kept) => state.since >= 0 && email.arrived <= state.since && email.flagged === true;
+    const here = mailbox.emails
+      .filter((email) => email.folder === folder.id && email.changed > state.since && email.changed <= state.upTo && (fits(email) || onlyFlagged(email)))
+      .sort((a, b) => b.changed - a.changed)
+      // With a filter, only so many in all: what's past that never comes.
+      .slice(0, state.from === null ? undefined : Math.max(0, this.filteredDeltaMost - state.given));
+    const gone = state.since < 0 ? [] : mailbox.left.filter((left) => left.folder === folder.id && left.at > state.since && left.at <= state.upTo && !here.some((email) => email.id === left.id));
+    const immutable = /IdType="ImmutableId"/.test(prefer);
+    const entry = (email: Kept): Record<string, unknown> => {
+      // New in the folder since the last round, it comes with what was asked for. Changed there, with its id and what changed.
+      if (state.since < 0 || email.arrived > state.since) return this.fieldsOf(mailbox, email, state.select, prefer, true);
+      return { ...(this.updatesWithFields && this.fieldsOf(mailbox, email, state.select, prefer, true)), '@odata.type': '#microsoft.graph.message', id: immutable ? email.id : ordinaryId(email), ...(email.flagged ? { isRead: true } : { subject: email.subject }) };
+    };
+    const page = [...here, ...gone].slice(state.offset, state.offset + size);
+    if ((state.select.length === 0 || state.select.some((name) => ['body', 'uniqueBody'].includes(name))) && page.some((one) => 'conversation' in one && mailbox.poisoned.has(one.id))) {
+      return { status: 500, body: { error: { code: 'ErrorInternalServerError' } } };
+    }
+    const link = (kind: '$skiptoken' | '$deltatoken', next: Token) =>
+      `${this.url}/v1.0/me/mailFolders/${encodeURIComponent(folder.id)}/messages/delta?${kind}=${Buffer.from(JSON.stringify(next)).toString('base64url')}`;
+    const more = state.offset + size < here.length + gone.length;
+    return {
+      status: 200,
+      body: {
+        value: page.map((one) => ('conversation' in one ? entry(one) : { id: one.id, '@removed': { reason: 'deleted' } })),
+        ...(more
+          ? { '@odata.nextLink': link('$skiptoken', { ...state, offset: state.offset + size }) }
+          : { '@odata.deltaLink': link('$deltatoken', { ...state, since: state.upTo, offset: 0, given: state.given + here.length }) }),
+      },
+    };
   }
 
   private async token(url: URL, form: URLSearchParams): Promise<{ status: number; body: unknown }> {

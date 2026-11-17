@@ -1,4 +1,4 @@
-import type { ConnectedAccountsData, ConnectionData, SpaceConnectionsData } from '@/lib/connections';
+import type { ConnectedAccountsData, ConnectionData, EstimateData, LearningData, SenderData, SpaceConnectionsData } from '@/lib/connections';
 import type { AccountData } from '@/screens/account';
 import type { ChangeData, OverviewData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
@@ -103,11 +103,77 @@ export const sampleConnection: ConnectionData = {
   refreshedAt: '2026-10-24T09:30:00+02:00',
 };
 
+const mailboxWords = { place: 'mailbox', item: 'email', items: 'emails', thread: 'thread' };
+
 export const sampleConnections: SpaceConnectionsData = {
   microsoft: true,
   looksAfter: false,
-  places: [{ id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection }],
+  model: { provider: 'OpenRouter', capable: 'Claude Sonnet 5.5', cheaper: 'Claude Haiku 5.5' },
+  runCeiling: 25,
+  places: [
+    { id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection, learns: true, words: mailboxWords, learning: null },
+  ],
 };
+
+// What learning from Ana's mailbox two years back may cost, and the run at each point on its way.
+export const sampleEstimate: EstimateData = { since: '2024-11-15T00:00:00Z', until: null, items: 18240, threads: 5120, setAside: 7410, low: 0.86, high: 2.94, limit: 5, sampled: 100, at: '2026-11-14T09:12:00Z' };
+
+/** Everyone whose mail was set aside as a newsletter, most first: far more than a first look lists. */
+export const sampleSenders: SenderData[] = [
+  { sender: 'news@weekly-digest.no', items: 610 }, { sender: 'prosjekt@grupper.acme.no', items: 204 }, { sender: 'hello@designmonthly.com', items: 196 },
+  { sender: 'updates@fjordsoftware.no', items: 188 }, { sender: 'nyhetsbrev@dnb.no', items: 171 }, { sender: 'digest@linkedin.com', items: 164 },
+  { sender: 'info@konferanse.no', items: 152 }, { sender: 'no-reply@medium.com', items: 149 },
+  ...Array.from({ length: 212 }, (_, at) => ({ sender: at === 40 ? 'kari.nilsen@grupper.acme.no' : `list-${at + 1}@${['northwind.no', 'acme.no', 'fjordsoftware.no', 'example.org'][at % 4]}`, items: Math.max(1, 140 - at) })),
+];
+
+const sampleRun: LearningData = {
+  state: 'learning history',
+  reason: null,
+  since: '2024-11-15T00:00:00Z',
+  learnedUpTo: '2025-03-14T10:20:00Z',
+  caughtUp: false,
+  extending: null,
+  limit: 5,
+  spent: 0.42,
+  followed: 0,
+  estimate: sampleEstimate,
+  leftOut: { senders: ['newsletter@fjordsoftware.no'], folders: ['Receipts'], kept: [] },
+  threads: 1204,
+  learned: 2610,
+  setAside: [
+    { reason: 'newsletter', items: 1140, words: '1,140 newsletters', senders: [{ sender: 'news@weekly-digest.no', items: 610 }, { sender: 'prosjekt@grupper.acme.no', items: 204 }, { sender: 'hello@designmonthly.com', items: 96 }] },
+    { reason: 'automated', items: 388, words: '388 sent automatically', senders: [{ sender: 'noreply@tickets.acme.no', items: 301 }, { sender: 'builds@ci.acme.no', items: 87 }] },
+    { reason: 'excluded folder', items: 96, words: '96 in folders you left out', senders: [{ sender: 'billing@fjordsoftware.no', items: 96 }] },
+    { reason: 'junk', items: 41, words: '41 in junk', senders: [] },
+  ],
+};
+
+export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'paused' | 'following' | 'partly' | 'extending' | 'proposed' | 'waiting' | 'off', LearningData> = {
+  estimated: { ...sampleRun, state: 'estimating', learnedUpTo: null, spent: 0, threads: 0, learned: 0, setAside: [], leftOut: { senders: [], folders: [], kept: [] } },
+  history: sampleRun,
+  atLimit: { ...sampleRun, state: 'paused', reason: 'limit', limit: 1, spent: 0.9984 },
+  paused: { ...sampleRun, state: 'paused', reason: 'person' },
+  following: {
+    ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712,
+    setAside: [
+      { ...sampleRun.setAside[0], items: 4812, words: '4,812 newsletters', senders: sampleSenders.slice(0, 8), more: sampleSenders.length - 8 },
+      ...sampleRun.setAside.slice(1),
+      { reason: 'provider failed', items: 7, words: '7 the model’s provider kept failing on', senders: [{ sender: 'gunnar@northwind.no', items: 4 }, { sender: 'kari.nilsen@acme.no', items: 3 }], retry: true },
+    ],
+  },
+  partly: { ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, followedPartly: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712 },
+  extending: { ...sampleRun, state: 'following', caughtUp: true, extending: { since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z' }, spent: 2.31 },
+  proposed: { ...sampleRun, state: 'following', caughtUp: true, spent: 2.31, proposed: { ...sampleEstimate, since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z', items: 26020, threads: 7300, setAside: 10400, low: 1.2, high: 4.1 } },
+  waiting: { ...sampleRun, waitingFor: 'provider' },
+  off: { ...sampleRun, state: 'paused', reason: 'model processing off' },
+};
+
+/** A space's connections with Ana's mailbox at a point in learning from it. */
+export const sampleLearningConnections = (learning: LearningData | null, model = sampleConnections.model): SpaceConnectionsData => ({
+  ...sampleConnections,
+  model,
+  places: sampleConnections.places.map((place) => ({ ...place, learning })),
+});
 
 export const sampleConnectedAccounts: ConnectedAccountsData = {
   microsoft: true,
@@ -299,6 +365,8 @@ export const sampleModelSpending: ModelSpendingData = {
   pausedAt: null,
   spent: 7.4111,
   underWay: 0.0408,
+  history: 2.31,
+  runCeiling: 25,
   people: [
     { name: 'Ana Berg', calls: 1190, cost: 4.061, you: true },
     { name: 'Cara Lund', calls: 702, cost: 2.9031, you: false },
@@ -685,6 +753,47 @@ export const taskProposal: ProposalData = {
     shown: 'Book the venue for the launch\n2026-11-03\nTwo options: Hotel Bristol or the Opera foyer.',
     why: 'Cara can pick it up if I don’t get to it.',
     audience: { people: 5, above: false },
+  },
+};
+
+/** Claude proposes that Homing learn from Ana's mailbox, in her personal space, a year back. */
+export const learningProposal: ProposalData = {
+  ...proposal,
+  id: 'learning',
+  space: 'Your personal space',
+  personal: true,
+  shared: false,
+  action: 'learn',
+  text: 'ana@acme.example',
+  why: null,
+  alreadyApplies: [],
+  learning: {
+    address: 'ana@acme.example',
+    service: 'Microsoft 365',
+    words: { place: 'mailbox', item: 'email', items: 'emails', thread: 'conversation' },
+    since: '2025-11-16T00:00:00.000Z',
+    estimate: { since: '2025-11-16T00:00:00.000Z', until: null, items: 18420, threads: 5200, setAside: 6100, low: 9.4, high: 18.8, limit: 25, sampled: 200 },
+    limit: 25,
+    provider: 'OpenRouter',
+    model: 'google/gemini-3-flash',
+    further: false,
+    problem: null,
+    shown: 'sample',
+    why: 'You asked me to catch up on what was agreed with Northwind last year.',
+  },
+};
+
+/** Claude proposes that Homing learn another year further back in it. */
+export const learningFurtherProposal: ProposalData = {
+  ...learningProposal,
+  id: 'learning-further',
+  action: 'learn further',
+  learning: {
+    ...learningProposal.learning!,
+    since: '2024-11-16T00:00:00.000Z',
+    estimate: { since: '2024-11-16T00:00:00.000Z', until: '2025-11-16T00:00:00.000Z', items: 15130, threads: 4300, setAside: 5200, low: 7.8, high: 15.6, limit: 20, sampled: 200 },
+    further: true,
+    why: null,
   },
 };
 
