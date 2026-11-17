@@ -1040,8 +1040,9 @@ test('a run’s limit is the database’s: it holds the run’s own calls, pause
   await assert.rejects(reserve(ana, 0, randomUUID()), /there is no such learning run/);
   const other = await withPrincipal(sql, { person: ana.id, direct: true }, (s) => createSpace(s, { name: 'Beta' }));
   await assert.rejects(reserve(ana, 0, id, [other]), /a learning run’s call carries its place’s space|a learning run's call carries its place's space/);
-  // A limit is always a number: none can't be kept, so none never means unlimited.
-  await assert.rejects(owner`update learning_runs set spending_limit = null where id = ${id}`, /null value/);
+  // None never means unlimited: a run without a limit is one Homing's model doesn't read, and no call is recorded for it.
+  await owner`update learning_runs set spending_limit = null, state = 'learning history', reason = null where id = ${id}`;
+  await assert.rejects(reserve(ana, 0.0001), /has no limit, so Homing’s model doesn’t read it|has no limit, so Homing's model doesn't read it/);
   await owner`update learning_runs set spending_limit = 0, state = 'learning history', reason = null where id = ${id}`;
   assert.equal((await reserve(ana, 0.0001))[0].refused, 'run limit');
   // Removed, the place's run takes no more calls.

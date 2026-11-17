@@ -59,6 +59,8 @@ export interface ItemData {
   agent: string | null;
   /** The assistant that made its latest change for the person who wrote it, which stays theirs. */
   editAgent?: string | null;
+  /** For what Homing learned: the assistant that read what it rests on, when Homing's own model didn't. */
+  reader?: string;
   writtenAt: string;
   /** Who shared it with the space from their own private side, and when, if someone did. */
   sharedBy?: Author;

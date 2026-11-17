@@ -143,34 +143,42 @@ export function Learning({ place, here, model, ceiling, actions }: {
     );
   } else {
     const active = run.state === 'learning history' || run.state === 'following';
-    const atLimit = (run.state === 'paused' && run.reason === 'limit') || (active && run.waitingAtLimit === true);
+    // Homing's model reads a run once you set its limit, where you see its provider. Until then your assistant does.
+    const reads = Boolean(model) && run.limit !== null;
+    const atLimit = run.limit !== null && ((run.state === 'paused' && run.reason === 'limit') || (active && run.waitingAtLimit === true));
     const canResume = run.state === 'paused' && run.reason === 'person';
+    // Your pause stops every reader, also where only Homing's model waits, at a limit.
+    const canPause = active || run.state === 'needs attention' || (run.state === 'paused' && run.reason !== 'person');
     body = (
       <>
-        <p className="text-base">{standing(run, words, place.connection.service)}</p>
+        <p className="text-base">{standing(run, words, place.connection.service, reads)}</p>
         <div className="flex flex-col gap-1 text-sm text-muted-foreground">
           <p>
             {run.learned
-              ? `Learned from ${count(run.threads, words.thread, `${words.thread}s`)}, ${count(run.learned, words.item, words.items)} in all.`
+              ? `Learned from ${count(run.threads, words.thread, `${words.thread}s`)}, ${count(run.learned, words.item, words.items)} in all${run.byAssistant ? `, ${run.byAssistant === run.threads ? 'all' : thousands(run.byAssistant)} read by your assistant` : ''}.`
               : `Nothing learned from yet.`}
             {run.setAside.length > 0 && ` Set aside: ${run.setAside.map((aside) => aside.words).join(', ')}.`}
             {(run.again ?? 0) > 0 && ` ${capitalize(count(run.again ?? 0, words.item, words.items))} set aside before will be learned from after all.`}
           </p>
-          {(model || run.spent > 0 || run.followed > 0) && (
+          {run.limit !== null && (
             <p>
               Its history has cost {usd(run.spent)} of its {usd(run.limit)} limit.
               {run.followed > 0 && ` What arrived since has cost ${usd(run.followed)}, which counts against Homing’s monthly limit.`}
             </p>
           )}
           {!model && <p>This Homing has no model of its own, so what is left to read waits for your assistant: ask it to read your {words.place} for Homing. That costs nothing in Homing.</p>}
+          {model && run.limit === null && (
+            <p>Homing’s model doesn’t read this {words.place}, since you haven’t said it may. What is left to read waits for your assistant: ask it to read your {words.place} for Homing. That costs nothing in Homing.</p>
+          )}
         </div>
         {actions && !open && !run.proposed && (
           <div className="flex flex-wrap gap-2">
-            {active && <Button variant="outline" size="sm" disabled={busy} onClick={() => act(() => actions.pause(place.id))}>Pause</Button>}
+            {canPause && <Button variant="outline" size="sm" disabled={busy} onClick={() => act(() => actions.pause(place.id))}>Pause</Button>}
             {canResume && <Button size="sm" disabled={busy} onClick={() => act(() => actions.resume(place.id))}>Resume</Button>}
             {atLimit && <Button size="sm" disabled={busy} onClick={() => setOpen('limit')}>Raise the limit</Button>}
             <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('extend')}>Learn further back</Button>
-            {!atLimit && <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('limit')}>Change the limit</Button>}
+            {!atLimit && run.limit !== null && <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('limit')}>Change the limit</Button>}
+            {model && run.limit === null && <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('limit')}>Have Homing’s model read too</Button>}
             <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('leave out')}>Leave something out</Button>
             {run.setAside.length > 0 && <Button variant="outline" size="sm" disabled={busy} onClick={() => setOpen('set aside')}>What was set aside</Button>}
           </div>
@@ -184,10 +192,12 @@ export function Learning({ place, here, model, ceiling, actions }: {
         {actions && run.proposed && (
           <Panel label="Learn further back">
             <EstimateText estimate={run.proposed} words={words} service={place.connection.service} model={model} />
-            <p className="text-sm text-muted-foreground">
-              Its limit stays {usd(run.limit)}, with {usd(Math.max(0, run.limit - run.spent))} left. There, what you added waits until you raise the limit
-              {run.caughtUp ? ', and Homing keeps learning from what arrives.' : '.'}
-            </p>
+            {run.limit !== null && (
+              <p className="text-sm text-muted-foreground">
+                Its limit stays {usd(run.limit)}, with {usd(Math.max(0, run.limit - run.spent))} left. There, what you added waits for Homing’s model until you raise the limit
+                {run.caughtUp ? ', and Homing keeps learning from what arrives.' : '.'}
+              </p>
+            )}
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => act(() => actions.extend(place.id, run.proposed!.since.slice(0, 10)))}>Learn further back</Button>
               <Button variant="outline" size="lg" className="h-11 text-base sm:px-5" disabled={busy} onClick={() => act(() => actions.forgetExtension(place.id))}>Not now</Button>
@@ -195,14 +205,21 @@ export function Learning({ place, here, model, ceiling, actions }: {
           </Panel>
         )}
         {actions && open === 'limit' && (
-          <Panel label="Change the limit">
+          <Panel label={run.limit === null ? 'Have Homing’s model read too' : 'Change the limit'}>
+            {run.limit === null && model && (
+              <p className="text-sm">
+                Homing’s model then reads this {words.place} in the background, as your assistant can still. It sends the {words.items} it learns from to {model.provider} ({model.cheaper}) to
+                understand them. {run.estimate ? `When you started, ${estimateSentence(run.estimate, words, place.connection.service).replace(/^./, (first) => first.toLowerCase())} Nobody put a cost on that, since Homing had no model then. ` : ''}
+                So the limit you set here is what holds: the most its history may cost. What arrives after that counts against Homing’s monthly limit.
+              </p>
+            )}
             <LimitForm
               label="Limit for its history, in dollars"
-              value={run.limit}
-              action={run.state === 'paused' && run.reason === 'limit' ? 'Raise and resume' : atLimit ? 'Raise the limit' : 'Change the limit'}
-              primary={atLimit}
+              value={run.limit ?? ''}
+              action={run.limit === null ? 'Have Homing’s model read' : run.state === 'paused' && run.reason === 'limit' ? 'Raise and resume' : atLimit ? 'Raise the limit' : 'Change the limit'}
+              primary={atLimit || run.limit === null}
               busy={busy}
-              hint={`${atLimit ? 'It carries on from where it stopped, and nothing is learned from twice.' : 'Homing pauses the run before a call could take it past the limit.'}${most}`}
+              hint={`${atLimit ? 'Homing’s model carries on from where it stopped, and nothing is learned from twice.' : 'Homing’s model stops before a call could take it past the limit, and your assistant can still read.'}${most}`}
               onSave={(limit) => act(() => actions.setLimit(place.id, limit))}
               onCancel={() => setOpen(undefined)}
             />
@@ -371,7 +388,7 @@ function leftOutWords(run: LearningData): string {
 }
 
 /** Where a run stands, as a sentence or two. */
-function standing(run: LearningData, words: { place: string }, service: string): string {
+function standing(run: LearningData, words: { place: string }, service: string, reads: boolean): string {
   const back = run.since.startsWith('1990') ? 'as far back as it goes' : `back to ${dateOf(run.since)}`;
   const upTo = run.learnedUpTo ? ` It’s up to ${dateOf(run.learnedUpTo)}.` : '';
   const waiting =
@@ -385,7 +402,7 @@ function standing(run: LearningData, words: { place: string }, service: string):
   const partly = run.followedPartly ? ` This ${words.place} has more folders than Homing follows, so what arrives in some of them isn’t learned from.` : '';
   const added = run.extending
     ? run.waitingAtLimit
-      ? ` What you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}, waits at its limit of ${usd(run.limit)}. Raise the limit to learn from it.`
+      ? ` What you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}, waits for Homing’s model at its limit of ${usd(run.limit ?? 0)}. Raise the limit, or ask your assistant to read it.`
       : ` It’s also learning from what you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}.`
     : '';
   switch (run.state) {
@@ -393,15 +410,15 @@ function standing(run: LearningData, words: { place: string }, service: string):
       return (
         (run.extending
           ? `Homing is learning from what you added, ${dateOf(run.extending.since)} to ${dateOf(run.extending.until)}.`
-          : `Homing is learning from its history, ${back}.${run.learnedUpTo ? ` So far it’s up to ${dateOf(run.learnedUpTo)}.` : ''}`) + waiting
+          : `Homing is learning from its history, ${back}${reads ? '' : ', as your assistant reads it'}.${run.learnedUpTo ? ` So far it’s up to ${dateOf(run.learnedUpTo)}.` : ''}`) + waiting
       );
     case 'following':
-      return `Homing has learned from its history${run.extending ? '' : `, ${back}`}, and keeps learning from what arrives.${partly}${added}${waiting}`;
+      return `Homing has learned from its history${run.extending ? '' : `, ${back}`}, and keeps learning from what arrives${reads ? '' : ', as your assistant reads it'}.${partly}${added}${waiting}`;
     case 'paused':
-      if (run.reason === 'limit') return `Paused at its limit of ${usd(run.limit)}.${upTo} Raise the limit to carry on from there.`;
-      if (run.reason === 'monthly limit') return 'Paused, because Homing’s monthly limit for learning is reached. It carries on when whoever looks after Homing raises it, or next month.';
+      if (run.reason === 'limit') return `Homing’s model waits at this run’s limit of ${usd(run.limit ?? 0)}.${upTo} Raise the limit to have it carry on from there. Your assistant can still read.`;
+      if (run.reason === 'monthly limit') return 'Homing’s model waits, because Homing’s monthly limit for learning is reached. It carries on when whoever looks after Homing raises it, or next month. Your assistant can still read.';
       if (run.reason === 'model processing off') return 'Waiting, because model processing is off in this space, so nothing is sent to a model. It carries on by itself once it’s turned on, in the space’s Settings.';
-      return `Paused.${upTo} It carries on from there when you resume it.`;
+      return `Paused, so nobody reads it.${upTo} It carries on from there when you resume it.`;
     case 'needs attention':
       if (run.reason === 'sign in again') return `Waiting for you to sign in again. It carries on by itself once you have.`;
       return `Stopped, because this Homing isn’t set up to reach ${service} any more.`;
@@ -498,7 +515,7 @@ function ScopeForm({ label, action, busy, from, further, onChoose, onCancel }: {
 /** A limit in dollars, and the button that saves it. */
 function LimitForm({ label, value, action, primary, busy, hint, onSave, onCancel, aside }: {
   label: string;
-  value: number;
+  value: number | string;
   action: string;
   primary?: boolean;
   busy: boolean;

@@ -207,10 +207,10 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   );
 }
 
-/** "You wrote this", "Claude saved this for Cara Lund", "Homing learned this from what it read for you", "You wrote this, and your assistant Claude changed it". */
-function wrote(by: Author, agent: string | null, editAgent?: string | null): string {
-  // What Homing learned itself is nobody's own writing: it says what its sources say.
-  if (agent === 'Homing') return `Homing learned this from what it read${nameIn(by) ? ` for ${nameIn(by)}` : ''}`;
+/** "You wrote this", "Claude saved this for Cara Lund", "Homing learned this from what it read for you", "Homing learned this from what your assistant Claude read for you", "You wrote this, and your assistant Claude changed it". */
+function wrote(by: Author, agent: string | null, editAgent?: string | null, reader?: string): string {
+  // What Homing learned itself is nobody's own writing: it says what its sources say, as whoever read them took it.
+  if (agent === 'Homing') return `Homing learned this from what ${reader ? `${theirAssistant(by, reader)} read` : 'it read'}${nameIn(by) ? ` for ${nameIn(by)}` : ''}`;
   if (agent) return nameIn(by) ? `${agent} saved this for ${nameIn(by)}` : `${agent} saved this`;
   if (editAgent) return `${nameOf(by)} wrote this, and ${theirAssistant(by, editAgent)} changed it`;
   return `${nameOf(by)} wrote this`;
@@ -234,7 +234,7 @@ function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
   return (
     <div className="flex cursor-auto flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
-        {wrote(item.by, item.agent, item.editAgent)} on {dateOf(item.writtenAt)}.
+        {wrote(item.by, item.agent, item.editAgent, item.reader)} on {dateOf(item.writtenAt)}.
         {byPerson && (yours ? (item.shared ? ' Assistants never rewrite it, though yours can make your own update of it when you ask.' : ' Your assistant may change it when you ask, and you can restore an earlier version.') : ' Assistants never rewrite it.')}
       </p>
       {item.sharedBy && item.sharedAt && <p className="text-muted-foreground">{nameOf(item.sharedBy)} shared it with everyone here on {dateOf(item.sharedAt)}.</p>}

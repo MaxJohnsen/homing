@@ -23,6 +23,8 @@ export interface Item {
    * (spec §3), or null when they made it themselves.
    */
   editAgent: string | null;
+  /** For what learning wrote: the person's assistant that read what it rests on, by name, or null when Homing's own model did. */
+  reader: string | null;
   /** The item this one replaced, if any. */
   supersedes: string | null;
   /** Guidance that also applies in the spaces below its own. Knowledge never does. */
@@ -176,6 +178,8 @@ export interface Hit {
   editAgent: string | null;
   imported: Imported | null;
   /** A source Homing read itself, such as an email in the person's mailbox, and the kind of place it read it in. */
+  /** For what learning wrote: the person's assistant that read what it rests on, or null. */
+  reader: string | null;
   readByHoming: boolean;
   readFrom: string | null;
 }
@@ -1154,7 +1158,7 @@ export async function search(
 
   // A match in a skill's current files finds the skill, once.
   return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing, read_from from (
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, reader, read_by_homing, read_from from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -1168,14 +1172,14 @@ export async function search(
                and exists (select from content r where r.supersedes = c.id and r.private_to is not null and ${visible(s, 'r')})
                and not exists (select from content r where r.supersedes = c.id and r.private_to is null and ${visible(s, 'r')}) as replaced_for_you,
              ts_rank(c.search, to_tsquery('simple', ${terms}), 1) as rank, c.kind as item_kind,
-             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported, false as read_by_homing, null as read_from
+             ${sharedAsCopy(s, 'c')} as shared_as_copy, c.written_by, c.agent, c.edit_agent, c.imported, learned_reader(c.id) as reader, false as read_by_homing, null as read_from
       -- Each match's page is looked up on its own: joining all pages would check access to every page first.
       from content c
       where c.search @@ to_tsquery('simple', ${terms}) and ${visibleContent(s, 'c')} ${contentWithin}
         and ${options.only !== 'sources'}
       union all
       select 'source', src.id, src.space_id, null, null, src.reference, src.excerpt, src.private_to is not null, false, false, false, false,
-             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null, src.read_through is not null, ${readFrom(s, 'src')}
+             ts_rank(src.search, to_tsquery('simple', ${terms}), 1), null, false, null, null, null, null, null, src.read_through is not null, ${readFrom(s, 'src')}
       from sources src
       where src.search @@ to_tsquery('simple', ${terms}) and ${visible(s, 'src')} ${within('src')} and ${options.only !== 'content'}
       -- Keeps the filters below out of this query, where they'd be run over every item first.
@@ -1194,9 +1198,9 @@ export async function search(
 }
 
 export function itemColumns(s: Session, table?: string) {
-  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, edit_agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at, imported`;
+  if (!table) return s.tx`id, page_id, space_id, kind, path, private_to, body, written_by, agent, edit_agent, supersedes, reaches_down, published_from, published_by, published_at, created_at, updated_at, imported, learned_reader(id) as reader`;
   const t = s.tx(table);
-  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.edit_agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at, ${t}.imported`;
+  return s.tx`${t}.id, ${t}.page_id, ${t}.space_id, ${t}.kind, ${t}.path, ${t}.private_to, ${t}.body, ${t}.written_by, ${t}.agent, ${t}.edit_agent, ${t}.supersedes, ${t}.reaches_down, ${t}.published_from, ${t}.published_by, ${t}.published_at, ${t}.created_at, ${t}.updated_at, ${t}.imported, learned_reader(${t}.id) as reader`;
 }
 
 function sourceColumns(s: Session) {

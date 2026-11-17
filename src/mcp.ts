@@ -2280,18 +2280,22 @@ const learnedByHoming = (written: { agent: string | null; imported: Imported | n
 /**
  * Who something is by, in the middle of a sentence: "written by Ana Berg through Claude", or, for
  * what Homing's own learning derived, "learned by Homing from an email it read, so it's what that
- * email says, not what the user wrote". A claim someone planted in an email never reads as the
- * user's own knowledge.
+ * says, not what the user wrote". Where the person's assistant did the reading, it names it, and
+ * claims no more than that: "from an email the user's assistant Claude read for it, so it's what
+ * Claude took from that". A claim someone planted in an email never reads as the user's own
+ * knowledge.
  */
 function byline(
   links: Links,
   names: Map<string, string>,
-  item: { writtenBy: string | null; agent: string | null; imported: Imported | null; editAgent?: string | null; sources?: { reference: string | null; readThrough?: string | null }[] },
+  item: { writtenBy: string | null; agent: string | null; imported: Imported | null; editAgent?: string | null; reader?: string | null; sources?: { reference: string | null; readThrough?: string | null }[] },
 ): string {
   if (!learnedByHoming(item)) return `written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent ?? null)}`;
   const read = item.sources?.find((source) => source.readThrough && connectorOf(links.connectors, source.reference ?? undefined));
   const words = read ? wordsOf(connectorOf(links.connectors, read.reference ?? undefined)) : undefined;
-  return `learned by Homing from ${words ? `${words.anItem} it read` : 'what it read'}, so it's what that says, not what the user wrote`;
+  const from = words ? words.anItem : 'what';
+  if (item.reader) return `learned by Homing from ${from} the user's assistant ${oneLine(item.reader)} read for it, so it's what ${oneLine(item.reader)} took from that, not what the user wrote`;
+  return `learned by Homing from ${from} it read, so it's what that says, not what the user wrote`;
 }
 
 function author(names: Map<string, string>, writtenBy: string | null, agent: string | null, imported: Imported | null, editAgent: string | null = null): string {

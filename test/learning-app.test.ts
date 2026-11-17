@@ -298,12 +298,12 @@ test('Ana’s assistant proposes that Homing learn from her mailbox, and once sh
   // Ana's assistant says where it stands, and can't resume it past the limit, which only Ana raises.
   const read = (await claude.call('read', { ref: learning })).text;
   assert.match(read, new RegExp(`^# Learning from the user's mailbox ${account.address}\n${learning}\\. Only the user sees it, at ${homing.url}spaces/${acme}/connections\\.`));
-  assert.match(read, /It is paused at its limit of \$0\.01, which only the user raises, in Homing\./);
+  assert.match(read, /It is waiting for a reader: Homing’s own model waits at the run’s limit of \$0\.01, which only the user raises, in Homing, and you can still read\./);
   assert.match(read, /Learned from \d+ threads, \d+ emails in all/);
   assert.match(read, /Set aside without learning from them:\n- \d+ newsletters, from "/);
   assert.match(read, /Spent \$0\.0\d+ of its limit of \$0\.01 on history\./);
   const resumed = await claude.call('act', { action: 'learning.resume', input: { from: learning } });
-  assert.ok(resumed.failed && /It is paused at its limit of \$0\.01\. Only the user raises it, in Homing, which resumes it/.test(resumed.text), resumed.text);
+  assert.ok(resumed.failed && /Homing’s own model waits at the run’s limit of \$0\.01\. Only the user raises it, in Homing, which has its model carry on/.test(resumed.text), resumed.text);
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(provider.asked.length, atPause, 'paused, nothing more is sent');
 
@@ -592,9 +592,9 @@ test('Ana leaves out a sender and a folder before it starts, pauses and resumes 
 
   // Her assistant pauses it, and she resumes it in the app. What her assistant paused, it may resume.
   const paused = await claude.call('act', { action: 'learning.pause', input: { from: learning } });
-  assert.match(paused.text, /^Paused\. Homing keeps where it is/);
+  assert.match(paused.text, /^Paused, for every reader\. Homing keeps where it is/);
   assert.deepEqual([(await shown()).places[0].learning.state, (await shown()).places[0].learning.reason], ['paused', 'person']);
-  assert.match((await claude.call('context', { request: 'mail', space: `space:${acme}` })).text, new RegExp(`Homing learns from ${account.address}: paused \\(${learning}\\)\\.`));
+  assert.match((await claude.call('context', { request: 'mail', space: `space:${acme}` })).text, new RegExp(`Homing learns from ${account.address}: paused, so nobody reads it until it is resumed \\(${learning}\\)\\.`));
   assert.equal((await post('resume')).status, 200);
   assert.equal((await shown()).places[0].learning.state, 'following');
   assert.match((await claude.call('act', { action: 'learning.resume', input: { from: learning } })).text, /isn't paused, so nothing changed/);
@@ -826,7 +826,7 @@ test('what the model’s provider wouldn’t take is listed as set aside, and An
   await caras.close();
 });
 
-test('without a model, Ana starts learning in the app all the same: Homing’s worker follows her mailbox and counts what waits, her assistant reads it, and nothing is sent to a model or recorded as spent', async () => {
+test('without a model, Ana has Homing look at who writes in her mailbox and starts learning in the app all the same: the server’s own worker makes the summary, follows her mailbox and counts what waits, her assistant reads it, and nothing is sent to a model or recorded as spent', async () => {
   // This Homing has no model, and it's the only one running on the database. Its worker runs as it does with one.
   await homing.close();
   const bare = await start({ port: 0, model: null });
@@ -853,6 +853,12 @@ test('without a model, Ana starts learning in the app all the same: Homing’s w
     // Context offers learning, and the app says who would read: her assistant, at no cost in Homing.
     assert.ok((await context()).includes(`Homing can learn from ${account.address} when the user asks (${learning}).`));
     assert.deepEqual([(await shown()).model, (await shown()).places[0].learns, (await shown()).places[0].learning], [null, true, null]);
+    // She has Homing look at who writes there, before any run: the server's own worker makes the summary, as it starts with no model set up.
+    assert.equal((await ana.browser.json(`/api/places/${place}/learning/summary`, { since: '2025-01-01T00:00:00.000Z' })).status, 200);
+    await until(async () => (await runOf(place)).summary !== null);
+    const looked = await runOf(place);
+    assert.deepEqual([looked.state, looked.estimate, looked.startedAt, looked.summarizing, looked.summary.emails], ['estimating', null, null, null, 2]);
+    assert.deepEqual([(await shown()).places[0].learning.state, (await marksOf(place)).length, provider.asked.length], ['estimating', 0, asked]);
     assert.equal((await ana.browser.json(`/api/places/${place}/learning/estimate`, { since: '2025-01-01' })).status, 200);
     const estimated = (await shown()).places[0].learning;
     assert.deepEqual([estimated.state, estimated.estimate.items, estimated.estimate.low, estimated.estimate.high, estimated.estimate.limit, estimated.estimate.unpriced], ['estimating', 2, 0, 0, 0, true]);
@@ -863,9 +869,10 @@ test('without a model, Ana starts learning in the app all the same: Homing’s w
     assert.deepEqual([(await runOf(place)).state, (await marksOf(place)).length], ['estimating', 0]);
     assert.equal((await ana.browser.json(`/api/places/${place}/learning/start`, { limit: 0, since: estimated.since, estimated: estimated.estimate.at })).status, 200);
 
-    // The worker sets the newsletter aside and counts the thread that waits. It stays in history until someone has read it.
-    await until(async () => (await runOf(place)).unread === 1);
-    assert.deepEqual([(await runOf(place)).state, (await marksOf(place)).map((mark) => mark.reason)], ['learning history', ['newsletter']]);
+    // It started with no limit, so no model of Homing's reads it. Nobody reads for the worker, which leaves history alone until her assistant asks.
+    assert.deepEqual([(await runOf(place)).spendingLimit, (await shown()).places[0].learning.limit], [null, null]);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.deepEqual([(await runOf(place)).state, (await marksOf(place)).length], ['learning history', 0]);
     assert.match(await context(), /learning history back to 2025-01-01 \(learning:[0-9a-f-]{36}\)\. Its history waits to be read, which you can do when the user asks: `read` it for how\./);
     assert.match(await reads(), /^Homing took 1 answer\. Nothing in the user's mailbox \S+ waits to be read now\. It is history learned back to 2025-01-01, now following what arrives\.$/);
     assert.deepEqual([(await shown()).places[0].learning.state, (await shown()).places[0].learning.learned, (await shown()).places[0].learning.spent], ['following', 1, 0]);
@@ -873,7 +880,7 @@ test('without a model, Ana starts learning in the app all the same: Homing’s w
     // Mail arrives. The worker lists it by itself, and context says a thread waits, until her assistant has read it.
     microsoft.deliver(account, { from: gunnar, subject: 'Workshop', html: '<p>The workshop is on Thursday.</p>', at: new Date() });
     await until(async () => (await runOf(place)).unread === 1);
-    assert.match(await context(), /now following what arrives \(learning:[0-9a-f-]{36}\)\. 1 thread waits to be read, which you can do when the user asks: `read` it for how\./);
+    assert.match(await context(), /now following what arrives \(learning:[0-9a-f-]{36}\)\. At least 1 thread waits to be read, which you can do when the user asks: `read` it for how\./);
     assert.match(await reads(), /^Homing took 1 answer\. Nothing in the user's mailbox \S+ waits to be read now\./);
     assert.equal((await runOf(place)).unread, 0);
     assert.doesNotMatch(await context(), /waits to be read/);

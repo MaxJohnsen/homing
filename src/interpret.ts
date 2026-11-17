@@ -9,7 +9,7 @@
 // interpretation, which extracts knowledge, routes it and keeps it up to date, takes its place.
 
 import * as z from 'zod';
-import type { Item, Words } from './connectors.ts';
+import type { Item, Value, Words } from './connectors.ts';
 import type { ModelAnswer, ModelCall } from './model.ts';
 import { oneLine, plainValue, when, withoutHidden } from './places.ts';
 
@@ -73,6 +73,15 @@ export class Unusable extends Error {
  */
 const ownRead = 4_000;
 const itemRead = 6_000;
+/**
+ * How much of a field is read: the first few of its parties, with how many more there are, and so
+ * many characters. And how long a whole question is, as it's sent: one that is longer has every
+ * text in it cut shorter, the same way, until it fits. So a thread can always be asked about,
+ * whoever answers, however many it was sent to.
+ */
+const partiesRead = 8;
+const fieldRead = 1_000;
+const questionRead = 80_000;
 const noteLength = 1_200;
 const noteTokens = 300;
 
@@ -105,6 +114,12 @@ export const notes: Interpretation = {
   },
 };
 
+/** A field's value as it's read: the first few of its parties and how many more, cut at so many characters. */
+const fieldOf = (value: Value, most: number) =>
+  'parties' in value && value.parties.length > partiesRead
+    ? `${cut(plainValue({ parties: value.parties.slice(0, partiesRead) }), most)}, and ${value.parties.length - partiesRead} more`
+    : cut(plainValue(value), most);
+
 /** Whether an item came before the latest the earlier note rests on. */
 const older = (batch: Batch, item: Item) => batch.earlierUpTo !== null && item.envelope.at !== null && item.envelope.at.getTime() < batch.earlierUpTo.getTime();
 
@@ -114,6 +129,26 @@ function request(batch: Batch): Omit<ModelCall, 'run'> {
   const { items } = batch;
   const related = (items.at(-1)?.related ?? []).slice(-25);
   const task = notes.task(words);
+  /** The batch as it's sent, with every text read at this share of its length. */
+  const material = (share: number) =>
+    JSON.stringify({
+      [words.items]: items.map((item) => {
+        const text = cut(withoutHidden(item.parts?.own ?? item.text ?? ''), ownRead * share);
+        return {
+          ...Object.fromEntries(item.fields.map(([label, value]) => [oneLine(label), fieldOf(value, fieldRead * share)])),
+          text,
+          ...(item.parts?.quoted && { quotes: cutMiddle(withoutHidden(item.parts.quoted), itemRead * share - text.length) }),
+          ...(older(batch, item) && { older: true }),
+        };
+      }),
+      ...(related.length > 1 && {
+        [thread]: related.map((other) => ({ at: other.at ? when(other.at) : null, from: other.author ? fieldOf({ party: other.author }, fieldRead * share) : null, [words.title]: other.title === null ? null : cut(oneLine(other.title), fieldRead * share) })),
+      }),
+      ...(batch.earlier && { earlierNote: batch.earlier }),
+    });
+  let share = 1;
+  let content = material(share);
+  while (content.length > questionRead && share > 0.01) content = material((share *= 0.7));
   return {
     purpose: 'sort',
     spaces: [...new Set([batch.from ?? batch.space, batch.space])],
@@ -132,24 +167,7 @@ function request(batch: Batch): Omit<ModelCall, 'run'> {
           `Answer with JSON only: {${task.form}}.`,
         ].join('\n\n'),
       },
-      {
-        role: 'user',
-        content: JSON.stringify({
-          [words.items]: items.map((item) => {
-            const text = cut(withoutHidden(item.parts?.own ?? item.text ?? ''), ownRead);
-            return {
-              ...Object.fromEntries(item.fields.map(([label, value]) => [oneLine(label), plainValue(value)])),
-              text,
-              ...(item.parts?.quoted && { quotes: cutMiddle(withoutHidden(item.parts.quoted), itemRead - text.length) }),
-              ...(older(batch, item) && { older: true }),
-            };
-          }),
-          ...(related.length > 1 && {
-            [thread]: related.map((other) => ({ at: other.at ? when(other.at) : null, from: other.author ? plainValue({ party: other.author }) : null, [words.title]: other.title === null ? null : oneLine(other.title) })),
-          }),
-          ...(batch.earlier && { earlierNote: batch.earlier }),
-        }),
-      },
+      { role: 'user', content },
     ],
   };
 }

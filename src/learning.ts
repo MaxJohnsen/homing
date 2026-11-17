@@ -100,8 +100,12 @@ export interface Run {
   followedPartly: boolean;
   /** A scope extended further back that it's walking now: from when, up to when. */
   extending: { since: Date; until: Date } | null;
-  /** In USD, for what it learns from history. */
-  limit: number;
+  /**
+   * In USD, for what Homing's model learns from history. It is also the owner's word that Homing's
+   * model may read the run: null until they set one, where they were shown the provider and what
+   * it may cost. Until then no model of Homing's reads it, and the reading is their assistant's.
+   */
+  limit: number | null;
   estimate: Estimate | null;
   /** The estimate for a range further back its owner asked about, which isn't learned from until they say so. */
   proposed: Estimate | null;
@@ -115,6 +119,8 @@ export interface Run {
   startedAt: Date | null;
   /** How many threads of the page it stands at wait for someone to read them, as whoever looked last counted. */
   unread: number;
+  /** Whether it has reading to hand out to its owner's assistant: while it learns, and while only Homing's model waits, at a limit. */
+  handsOut: boolean;
 }
 
 /**
@@ -135,6 +141,8 @@ export interface Progress {
   /** How many threads it learned from, and how many items they held. */
   threads: number;
   learned: number;
+  /** How many of those threads the person's assistant read, rather than Homing's own model. */
+  byAssistant: number;
   /**
    * What it set aside, by why, most first, each with who sent the most of it, how many senders
    * there are beside those, and whether it's something that may pass, which can be tried again.
@@ -162,6 +170,12 @@ export class LearningRefused extends Error {
   override name = 'LearningRefused';
 }
 
+/**
+ * Whether Homing's own model reads a run: where it has one, once the run's owner set its limit,
+ * which is their word that it may, given where they were shown the provider and what it may cost.
+ */
+export const modelReads = (l: Pick<Learning, 'model'>, run: Pick<Run, 'limit'>) => l.model !== undefined && run.limit !== null;
+
 /** What's said when an estimate that holds no cost is to be started or extended where Homing now has a model, which would cost. */
 const pricedSince = 'Homing has a model of its own since this was estimated, so the reading would cost something now. Estimate it again.';
 
@@ -181,7 +195,7 @@ interface RunRow {
   extensionSince: Date | null;
   extensionUntil: Date | null;
   extensionEstimate: Estimate | null;
-  spendingLimit: string;
+  spendingLimit: string | null;
   estimate: Estimate | null;
   routes: Route[];
   rest: string | null;
@@ -194,6 +208,7 @@ interface RunRow {
   suggesting: boolean;
   startedAt: Date | null;
   unread: number;
+  handsOut: boolean;
 }
 
 /**
@@ -251,7 +266,7 @@ function runOf(row: RunRow): OwnRun {
     ...run,
     routes,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
-    limit: Number(spendingLimit),
+    limit: spendingLimit === null ? null : Number(spendingLimit),
     proposed: extensionEstimate,
     leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
     map: mapOf(routes, excludedSenders, rest),
@@ -268,7 +283,7 @@ export async function runsFor(s: Session, places: string[]): Promise<Map<string,
   const rows = await s.tx<RunRow[]>`
     select r.id, r.place_id as place, r.space_id as space, r.connection_id as connection, r.state, r.reason, r.waiting_for, r.waiting_at_limit,
            r.since, r.learned_up_to, r.caught_up_at, r.followed_partly, r.extension_since, r.extension_until, r.extension_estimate, r.spending_limit, r.estimate,
-           r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at, r.unread,
+           r.routes, r.rest, r.excluded_senders, r.excluded_folders, r.kept_senders, r.started_at, r.unread, learning_hands_out(r) as hands_out,
            r.summarizing is not null and not r.summarizing ? 'failed' as summarizing, r.summary ->> 'at' as summarized, coalesce(r.summarizing ? 'failed', false) as summary_failed,
            coalesce(r.map_asked_until > now(), false) as suggesting
     from learning_runs r
@@ -283,8 +298,9 @@ const sendersAtOnce = 50;
 
 /** How far the person's run has come: what it learned from, what it set aside, why and from whom, and what it spent. */
 export async function progressOf(s: Session, run: Run): Promise<Progress> {
-  const [learned] = await s.tx<{ items: number; threads: number }[]>`
-    select count(*)::integer as items, count(distinct coalesce(thread, item))::integer as threads
+  const [learned] = await s.tx<{ items: number; threads: number; byAssistant: number }[]>`
+    select count(*)::integer as items, count(distinct coalesce(thread, item))::integer as threads,
+           count(distinct coalesce(thread, item)) filter (where reader is not null)::integer as by_assistant
     from learned_items where run_id = ${run.id}::uuid and outcome = 'learned'
   `;
   const aside = await s.tx<{ reason: string; sender: string | null; items: number; again: number }[]>`
@@ -317,6 +333,7 @@ export async function progressOf(s: Session, run: Run): Promise<Progress> {
     followed: Number(cost.followed),
     threads: learned.threads,
     learned: learned.items,
+    byAssistant: learned.byAssistant,
     setAside,
     again: aside.reduce((sum, row) => sum + row.again, 0),
   };
@@ -693,39 +710,59 @@ export async function estimateLearning(l: Learning, principal: Principal, placeI
 export async function startLearning(l: Learning, s: Session, shown: Pick<Run, 'id' | 'place' | 'since' | 'estimate'>, limit?: number): Promise<void> {
   if (!shown.estimate) throw new LearningRefused('Learning is estimated before it starts.');
   if (shown.estimate.unpriced && l.model) throw new LearningRefused(pricedSince);
-  const cap = limit ?? shown.estimate.limit;
+  // An estimate without a price starts without a limit, whatever was asked for: Homing's model reads only once its owner sets one, shown what it may cost.
+  const cap = shown.estimate.unpriced ? null : (limit ?? shown.estimate.limit);
   const place = await ownPlace(s, shown.place);
   const already = place && (await elsewhere(s, place, wordsOf(l.broker.connectors.get(place.connector), place.kind)));
   if (already) throw new LearningRefused(already);
   await refusing(() => s.tx`select start_learning(${shown.id}::uuid, ${cap}::numeric, ${shown.since}, ${shown.estimate!.at}::timestamptz)`);
 }
 
-/** A run taken for the person's assistant to read: its claim, and what was handed out under the claim the assistant held. Or why not, and until when. */
+/** What a run has handed out to its owner's assistant: the walk it is from, and its questions, each by its id. */
+export interface Handed {
+  walk: 'main' | 'extension' | 'again';
+  questions: string[];
+}
+
+/**
+ * A run taken for the person's assistant to read: its claim, what was handed out under the claim
+ * the assistant held, and whether that claim was the one before, of a request whose reply was
+ * lost. Or why not, until when if that is known, and what stays handed out meanwhile.
+ */
 export interface Taken {
   claim: string | null;
-  handed: string[] | null;
-  refused: 'not reading' | 'held' | 'waits' | null;
+  handed: Handed | null;
+  refused: 'not reading' | 'held' | 'waits' | 'handed out' | null;
   until: Date | null;
+  resent: boolean;
 }
 
 /**
  * Takes the person's run for their assistant to read, under a claim of its own each time: when
  * nobody holds the run, or the assistant names the claim it holds. One reads at a time, so it's
  * refused while Homing's own worker or another conversation holds it, while the run hands out
- * nothing, as when it's paused, or while it waits for the system it reads.
+ * nothing, as when it's paused, while it waits for the system it reads, or, for a request that
+ * brings no answers, while work is handed out under the claim it names.
  */
-export async function takeLearning(s: Session, run: Run, held: string | undefined, leaseSeconds: number): Promise<Taken> {
-  const [taken] = await refusing(() => s.tx<Taken[]>`select * from take_learning_run(${run.id}::uuid, ${held ?? null}::uuid, ${leaseSeconds}::integer)`);
+export async function takeLearning(s: Session, run: Run, held: string | undefined, leaseSeconds: number, answering: boolean): Promise<Taken> {
+  const [taken] = await refusing(() => s.tx<Taken[]>`select * from take_learning_run(${run.id}::uuid, ${held ?? null}::uuid, ${leaseSeconds}::integer, ${answering})`);
   return taken;
 }
 
-/** Whether the person's run has a page to look at now. */
-export async function learningDue(s: Session, run: Run): Promise<boolean> {
-  const [due] = await s.tx`select from learning_runs r where r.id = ${run.id}::uuid and r.next_at <= now()`;
-  return due !== undefined;
+/**
+ * Whether the person's run has more for their assistant to look at now: a page that is due, or
+ * older material, further back or to be learned from again, which waits for nobody's money when
+ * an assistant reads.
+ */
+export async function learningWaits(s: Session, run: Run): Promise<boolean> {
+  const [more] = await s.tx`
+    select from learning_runs r
+    where r.id = ${run.id}::uuid and (r.next_at <= now() or r.extension_since is not null or exists (select from learned_items i where i.run_id = r.id and i.again))
+  `;
+  return more !== undefined;
 }
 
-/** Pauses the person's run. It keeps where it is. Whether it changed anything. */
+/** Pauses the person's run, for every reader, wherever it stands once it has started. It keeps where it is. Whether it changed anything. */
 export async function pauseLearning(s: Session, run: Run): Promise<boolean> {
   const [{ paused }] = await refusing(() => s.tx<{ paused: boolean }[]>`select pause_learning(${run.id}::uuid) as paused`);
   return paused;

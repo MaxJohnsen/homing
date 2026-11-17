@@ -527,6 +527,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             text: item.body,
             shared: item.privateTo === null,
             ...authorOf(names, person, item.writtenBy, item.agent, item.imported, item.editAgent),
+            // For what learning wrote: the person's assistant that read what it rests on.
+            ...(item.reader && { reader: item.reader }),
             writtenAt: item.updatedAt,
             // Who shared it from their own private side, and when, imported or not.
             sharedBy: item.privateTo !== null ? null : item.publishedBy ? by(item.publishedBy) : item.publishedAt && item.imported?.publishedBy ? { name: item.imported.publishedBy.name, you: false, imported: true } : null,
@@ -713,6 +715,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             text: item.body,
             shared: item.privateTo === null,
             ...authorOf(names, person, item.writtenBy, item.agent, item.imported, item.editAgent),
+            // For what learning wrote: the person's assistant that read what it rests on.
+            ...(item.reader && { reader: item.reader }),
             writtenAt: item.updatedAt,
             // Your own overview that explicitly replaces the shared one, which the others still see.
             replacesShared: item.privateTo !== null && item.replaced?.shared === true ? item.replaced.body : null,
@@ -1302,6 +1306,7 @@ function learningData(run: Run, progress: Progress, words: { item: string; items
     spent: progress.spent,
     followed: progress.followed,
     threads: progress.threads,
+    ...(progress.byAssistant && { byAssistant: progress.byAssistant }),
     learned: progress.learned,
     again: progress.again,
     setAside: progress.setAside.map((aside) => ({ ...aside, words: setAsideWords(aside.reason, aside.items, words) })),

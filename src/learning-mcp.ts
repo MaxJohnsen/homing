@@ -24,8 +24,9 @@ import {
   estimateLearning,
   hasMap,
   LearningRefused,
-  leftOutBy,
-  learningDue,
+  learningWaits,
+  mapLines,
+  modelReads,
   notPlaced,
   pauseLearning,
   progressOf,
@@ -38,11 +39,11 @@ import {
   takeLearning,
   type Estimate,
   type Learning,
-  type Route,
+  type OwnRun,
   type Run,
 } from './learning.ts';
-import { checkMap, holdings, mapAnswer, mapForm, spaceTree, summaryFor, type Summary } from './map.ts';
-import { modelStatement, monthlyLimit, usd } from './model.ts';
+import { checkMap, holdings, leadsOf, mapAnswer, mapForm, spaceTree, summaryFor, type Summary } from './map.ts';
+import { modelOn, modelStatement, monthlyLimit, usd } from './model.ts';
 import { proposeLearning, proposeMap, type LearningChange } from './proposals.ts';
 import { listSpaces, SpaceRefused, type Space } from './spaces.ts';
 import { oneLine, ownPlace, placeName, when, wordsOf, type Place } from './places.ts';
@@ -86,6 +87,8 @@ const readTime = 20_000;
 /** How long an assistant's claim lasts after each answer: as long as a worker's. */
 const lease = (l: Learning) => l.pace?.leaseSeconds ?? defaults.leaseSeconds;
 const minutes = (seconds: number) => (seconds >= 90 ? `${Math.round(seconds / 60)} minutes` : seconds >= 60 ? 'a minute' : `${seconds} seconds`);
+/** A time to try again after, to the second, since it is often less than a minute away. */
+const clock = (at: Date) => `${at.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
 
 /** What an assistant needs around learning: Homing's own pages, to send the user to. */
 export interface LearningLinks {
@@ -110,14 +113,17 @@ const day = (date: Date | string) => new Date(date).toISOString().slice(0, 10);
 const counted = (count: number, one: string, several: string) => `${count.toLocaleString('en-US')} ${count === 1 ? one : several}`;
 
 /** The user's place a reference names, with its run, if it has one. The same refusal for anyone else's as for none. */
-async function named(s: Session, value: string): Promise<{ place: Place; run: Run | undefined }> {
+async function named(s: Session, value: string): Promise<{ place: Place; run: OwnRun | undefined }> {
   const id = learningPlace(value);
   const place = id && (await ownPlace(s, id));
   if (!place) throw new LearningRefused(id ? missing : `"${oneLine(value)}" isn't a reference to learning. They look like learning:…, as \`context\` gives them.`);
   return { place, run: (await runsFor(s, [place.place])).get(place.place) };
 }
 
-/** Where a run stands, in a few words that fit after "Homing learns from …:". */
+/**
+ * Where a run stands, in a few words that fit after "Homing learns from …:". A limit holds back
+ * Homing's own model, never the assistant, and says so; the user's pause stops every reader.
+ */
 function standing(run: Run, vendor: string, service: string): string {
   const back = `back to ${day(run.since)}`;
   const waiting =
@@ -141,17 +147,17 @@ function standing(run: Run, vendor: string, service: string): string {
       return (
         (run.extending
           ? `following what arrives, and learning history from ${day(run.extending.since)} to ${day(run.extending.until)}, which was added to it` +
-            (run.waitingAtLimit ? ` and waits at its limit of ${usd(run.limit)} until the user raises it in Homing` : '')
+            (run.waitingAtLimit ? `, where Homing’s own model waits at the run’s limit of ${usd(run.limit ?? 0)} until the user raises it in Homing, and you can still read` : '')
           : `history learned ${back}, now following what arrives`) + waiting
       );
     case 'paused':
       return run.reason === 'limit'
-        ? `paused at its limit of ${usd(run.limit)}, which only the user raises, in Homing`
+        ? `waiting for a reader: Homing’s own model waits at the run’s limit of ${usd(run.limit ?? 0)}, which only the user raises, in Homing, and you can still read`
         : run.reason === 'monthly limit'
-          ? 'paused at this Homing’s monthly limit, until whoever looks after Homing sets it again or the month ends'
+          ? 'waiting for a reader: Homing’s own model waits at this Homing’s monthly limit, until whoever looks after Homing sets it again or the month ends, and you can still read'
           : run.reason === 'model processing off'
             ? 'waiting, since model processing is off in its space, and carries on once an admin there turns it on'
-            : 'paused';
+            : 'paused, so nobody reads it until it is resumed';
     case 'needs attention':
       return run.reason === 'sign in again' ? `waiting for the user to sign in to ${vendor} again in Homing` : `stopped, since this Homing isn’t set up to reach ${service} any more`;
     case 'done':
@@ -176,15 +182,16 @@ export function learningLines(l: Learning, places: Place[], runs: Map<string, Ru
 
 /**
  * What waits for the user's assistant to read, in a sentence for context, or nothing. Through
- * history without a model that is the history itself, which nobody has counted. Otherwise it is
- * the threads counted on the page the run stands at, such as what arrived since it caught up.
+ * history that Homing's own model isn't reading, that is the history itself, which nobody has
+ * counted. Otherwise it is the threads counted on the page the run stands at, such as what
+ * arrived since it caught up: at least so many, since nobody has counted past that page.
  */
 function unread(l: Learning, run: Run, words: Words): string {
-  if (run.state !== 'learning history' && run.state !== 'following') return '';
+  if (!run.handsOut) return '';
   const how = 'which you can do when the user asks: `read` it for how.';
-  if (!l.model && run.state === 'learning history') return ` Its history waits to be read, ${how}`;
+  if (run.caughtUpAt === null && (!modelReads(l, run) || run.state === 'paused')) return ` Its history waits to be read, ${how}`;
   const thread = words.related ?? 'thread';
-  return run.unread > 0 ? ` ${counted(run.unread, `${thread} waits`, `${thread}s wait`)} to be read, ${how}` : '';
+  return run.unread > 0 ? ` At least ${counted(run.unread, `${thread} waits`, `${thread}s wait`)} to be read, ${how}` : '';
 }
 
 /** An estimate in sentences, with the provider and model that would read it, saying plainly that it's rough. */
@@ -226,37 +233,47 @@ function summaryLines(summary: Summary, words: Words): string[] {
   ];
 }
 
-/** The run's map as an assistant reads it: each route, where it leads and what it holds, and what the run met that no route names. */
-async function mapLines(s: Session, l: Learning, place: Place, run: Run, summary: Summary | null, spaces: Space[], words: Words): Promise<string[]> {
+/**
+ * The run's map as an assistant reads it: each route, where it leads and what it holds, as the
+ * app shows it (leadsOf), so a route to a space that can't take its mail now says that it waits
+ * and why, and what the run met that no route names.
+ */
+async function mapText(s: Session, l: Learning, place: Place, run: OwnRun, summary: Summary | null, spaces: Space[], words: Words): Promise<string[]> {
   const q = (value: string) => JSON.stringify(oneLine(value));
   const mapped = hasMap(run.map);
-  const leads = (to: string | null) => {
-    if (to === 'leave out') return 'left out, never read';
-    if (to === 'wait') return 'waits, not read until a map says where it goes';
-    const space = spaces.find((candidate) => candidate.id === (to ?? place.space));
-    return space ? `to ${q(space.privateTo !== null && space.parentId === null ? 'the user’s personal space' : space.name)} (space:${space.id})` : 'to a space the user can’t open now, so it waits';
-  };
-  // A route of its own for someone an entry of what's left out covers: the run keeps it, and it does nothing until that entry is taken off.
-  const under = (route: Route) => (route.to === 'leave out' && !run.leftOut.senders.includes(route.who) ? leftOutBy(run.leftOut.senders, route.who) : undefined);
   const estimate = run.state === 'estimating' ? run.estimate : null;
   const held = summary ? holdings(summary, run.map, estimate) : [];
-  const holds = (who: string | null) => {
-    const row = held.find((one) => one.who === who);
-    if (!row) return '';
-    const cost = row.high !== undefined ? `, about ${usd(row.low!)}–${usd(row.high)} to read` : '';
-    return `: ${counted(row.emails, words.item, words.items)} in about ${counted(row.threads, words.related ?? 'thread', `${words.related ?? 'thread'}s`)}${cost}`;
+  const on = await modelOn(s, spaces.map((space) => space.id));
+  const leads = (line: { who: string | null; to: string | null; leftOut?: string }) => {
+    const led = leadsOf(line, held, spaces, place.space, on);
+    const space = spaces.find((candidate) => candidate.id === (line.to ?? place.space));
+    const where =
+      led.to === 'leave out'
+        ? 'left out, never read'
+        : led.to === 'wait'
+          ? 'waits, not read until a map says where it goes'
+          : !space
+            ? 'to a space the user can’t open now, so it waits'
+            : `to ${q(space.privateTo !== null && space.parentId === null ? 'the user’s personal space' : space.name)} (space:${space.id})` +
+              (led.waits === 'archived' ? ', where it waits while that space is archived' : led.waits ? ', where it waits while model processing is off there' : '');
+    const cost = led.high !== undefined ? `, about ${usd(led.low!)}–${usd(led.high)} to read` : '';
+    return (
+      where +
+      (led.leftOut !== undefined ? `, left out with ${q(led.leftOut)}, so never read until the user takes that off what’s left out` : '') +
+      (led.emails !== null && led.threads !== null ? `: ${counted(led.emails, words.item, words.items)} in about ${counted(led.threads, words.related ?? 'thread', `${words.related ?? 'thread'}s`)}${cost}` : '')
+    );
   };
   const unplaced = run.state !== 'estimating' ? await notPlaced(s, run, place.address) : { senders: [], more: 0 };
   return [
     '## The map',
     ...(mapped || run.map.routes.length
       ? [
-          ...run.map.routes.map((route) => `- ${q(route.who)} ${under(route) ? `left out with ${q(under(route)!)}, never read, until the user takes that off what’s left out` : leads(route.to)}${holds(route.who)}`),
-          `- everything else ${leads(run.map.rest)}${holds(null)}`,
+          ...mapLines(run.routes, run.leftOut.senders).map((line) => `- ${q(line.who)} ${leads(line)}`),
+          `- everything else ${leads({ who: null, to: run.map.rest })}`,
           ...(held.length ? [`What each holds goes by the summary${estimate ? ', and what reading costs by the estimate, which is rough' : ''}.`] : []),
           ...(l.model ? [] : ['This Homing has no model of its own, so the reading costs nothing in Homing.']),
         ]
-      : [`There is no map yet: everything goes ${leads(null)}.`]),
+      : [`There is no map yet: everything goes ${leads({ who: null, to: null })}.`]),
     ...(unplaced.senders.length
       ? [
           `Not placed, since no route names them: ${unplaced.senders.map((one) => `${q(one.sender)} (${one.items.toLocaleString('en-US')})`).join(', ')}` +
@@ -282,13 +299,15 @@ function readingHow(l: Learning, run: Run, words: Words): string[] {
   const thread = words.related ?? 'thread';
   return [
     '## Reading it yourself',
-    (l.model
-      ? 'Homing’s own model reads in the background, and you can read too when the user asks, also while the run is paused at a limit: your reading costs nothing in Homing.'
-      : 'This Homing has no model of its own, so the reading is yours to do, when the user asks. It costs nothing in Homing.') +
-      (run.unread > 0 ? ` ${counted(run.unread, `${thread} waits`, `${thread}s wait`)} on the page it stands at.` : ''),
+    (modelReads(l, run)
+      ? 'Homing’s own model reads in the background, and you can read too when the user asks, also while its model waits at a limit: your reading costs nothing in Homing.'
+      : l.model
+        ? `This Homing has a model of its own, which doesn’t read this ${words.place}: the user hasn’t said it may. Only they can, in Homing, where they see its provider and set the run’s limit. Until then the reading is yours to do, when the user asks. It costs nothing in Homing.`
+        : 'This Homing has no model of its own, so the reading is yours to do, when the user asks. It costs nothing in Homing.') +
+      (run.unread > 0 ? ` At least ${counted(run.unread, `${thread} waits`, `${thread}s wait`)}.` : ''),
     `\`act\` with learning.read and this reference hands you a few ${thread}s, with Homing’s instructions for the answer and the ${words.items} as quoted data. ` +
       `Hand back an answer for each with the same action, as the work says: Homing checks it, writes the note itself, on the user’s private side with the ${words.items} as its sources, and hands you the next. ` +
-      `One reads at a time, so work is yours for ${minutes(lease(l))} after each answer. Stop whenever the user wants: the run carries on where it is with whoever reads next.`,
+      `One reads at a time, so work is yours for ${minutes(lease(l))} after it is handed out, and after each answer Homing takes. Stop whenever the user wants: the run carries on where it is with whoever reads next.`,
   ];
 }
 
@@ -314,7 +333,7 @@ function handedOut(l: Learning, place: Place, words: Words, claim: string, work:
     ...task.asks,
     '',
     `Then \`act\` with learning.read, this reference, the claim, and answers: a list with one {"thread": "its id", ${task.form}} for each. That hands you the next. ` +
-      `A ${thread} without an answer stays unread and comes again. Answers count for ${minutes(lease(l))} after this: later, these ${thread}s are handed out again.`,
+      `A ${thread} without an answer stays unread and comes again. Answers count for ${minutes(lease(l))} after this: later, these ${thread}s are handed out again. If Homing’s reply to your answers doesn’t reach you, send them again as they were.`,
     ...work.flatMap((question) => ['', `## ${capitalized(thread)} ${question.id}`, line(question.asked.messages.at(-1)!.content)]),
   ].join('\n');
 }
@@ -356,7 +375,7 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
     ...(run.state !== 'estimating'
       ? [
           progress.learned
-            ? `Learned from ${counted(progress.threads, thread, `${thread}s`)}, ${counted(progress.learned, words.item, words.items)} in all: what each taught is on the user's private side, with the ${words.items} as its sources.`
+            ? `Learned from ${counted(progress.threads, thread, `${thread}s`)}, ${counted(progress.learned, words.item, words.items)} in all${progress.byAssistant ? `, ${progress.byAssistant === progress.threads ? 'all' : progress.byAssistant.toLocaleString('en-US')} read by the user’s assistant` : ''}: what each taught is on the user's private side, with the ${words.items} as its sources.`
             : `Nothing learned from yet.`,
           ...(progress.setAside.length
             ? [
@@ -371,9 +390,9 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
               ]
             : []),
           ...(progress.again ? [`${counted(progress.again, words.item, words.items)} set aside before will be learned from after all, as the user asked.`] : []),
-          l.model || progress.spent || progress.followed
+          run.limit !== null
             ? `Spent ${usd(progress.spent)} of its limit of ${usd(run.limit)} on history${progress.followed ? `, and ${usd(progress.followed)} on what arrived since, which counts against this Homing's monthly limit` : ''}. Only the user raises its limit, in Homing.`
-            : 'Its reading has cost nothing in Homing, which has no model of its own.',
+            : `Its reading has cost nothing in Homing${l.model ? ', whose model doesn’t read it' : ', which has no model of its own'}.`,
         ]
       : []),
     ...(run.estimate ? [`${run.state === 'estimating' ? 'The estimate' : 'Its last estimate'}: ${estimateText(l, run.estimate, words, vendor)}`] : []),
@@ -386,7 +405,7 @@ export async function readLearning(s: Session, l: Learning, links: LearningLinks
     ...(canSummarize
       ? [
           '',
-          ...(await mapLines(s, l, place, run, summary, spaces, words)),
+          ...(await mapText(s, l, place, run, summary, spaces, words)),
           '',
           ...(summary ? summaryLines(summary, words) : run.summarizing ? [`Homing is looking at who writes there now. \`read\` this again in a moment for the summary.`] : run.summaryFailed ? [] : [`Homing hasn’t looked at who writes there yet: learning.summarize asks it to.`]),
           ...(run.summaryFailed ? [`Homing couldn’t look at who writes there: ${vendor} or Homing kept failing, so it gave up. learning.summarize asks it to try again.`] : []),
@@ -484,6 +503,8 @@ export async function actOnLearning(
       if (run && run.state !== 'estimating') {
         throw new LearningRefused(`Homing already learns from ${what}: it is ${standing(run, vendor, connector?.name ?? place.connector)}. To learn further back, propose it with learning.extend. Nothing changed.`);
       }
+      // A limit is what Homing's model may spend. Without a model there is none to set, and none to carry into a time when there is one.
+      if (limit !== undefined && !l.model) throw new LearningRefused('This Homing has no model of its own, so the reading costs nothing and there is no limit to set. Leave the limit out. Nothing was proposed.');
       const ceiling = await withPrincipal(sql, principal, async (s) => (await monthlyLimit(s)).runCeiling);
       if (limit !== undefined && limit > ceiling) throw new LearningRefused(`A learning run may spend at most ${usd(ceiling)} here, which whoever looks after Homing sets. Nothing was proposed.`);
       const estimated = await estimateLearning(l, principal, place.place, new Date(since));
@@ -492,19 +513,19 @@ export async function actOnLearning(
         'start learning',
         estimated.estimate!,
         estimated.since,
-        holds,
+        l.model ? holds : undefined,
         l.model
           ? `Nothing has started. Homing would learn from ${what} back to ${since}, with a limit of ${usd(holds)} for its history, where it pauses.`
           : `Nothing has started. Homing would learn from ${what} back to ${since}. It has no model of its own, so you do the reading once the user has approved, with learning.read.`,
       );
     }
     case 'learning.pause':
-      return again(async (s, now) => ((await pauseLearning(s, now)) ? `Paused. Homing keeps where it is in ${what}, and learning.resume carries on from there.` : `Learning from ${what} isn't running, so nothing changed.`));
+      return again(async (s, now) => ((await pauseLearning(s, now)) ? `Paused, for every reader. Homing keeps where it is in ${what}, and learning.resume carries on from there.` : `Learning from ${what} isn't running, so nothing changed.`));
     case 'learning.resume':
       return again(async (s, now) => {
         if (!['paused', 'needs attention'].includes(now.state)) return `Learning from ${what} isn't paused, so nothing changed.`;
         if (now.state === 'paused' && now.reason === 'limit') {
-          throw new LearningRefused(`It is paused at its limit of ${usd(now.limit)}. Only the user raises it, in Homing, which resumes it: ${inHoming}`);
+          throw new LearningRefused(`Homing’s own model waits at the run’s limit of ${usd(now.limit ?? 0)}. Only the user raises it, in Homing, which has its model carry on: ${inHoming}. You can still read it, with learning.read.`);
         }
         // What waits for something else carries on by itself once that holds: only what was paused is resumed.
         if (now.reason !== 'person') throw new LearningRefused(`It is ${standing(now, vendor, connector?.name ?? place.connector)}, and carries on by itself then. Nothing changed.`);
@@ -516,7 +537,7 @@ export async function actOnLearning(
         const tried = await retryLearning(s, now);
         return tried
           ? `Homing tries ${counted(tried, words.item, words.items)} again that it had set aside. ` +
-              (l.model ? `What that costs counts against the run's limit of ${usd(now.limit)}, as its history does.` : `${tried === 1 ? 'It waits' : 'They wait'} to be read, like the rest: learning.read hands ${tried === 1 ? 'it' : 'them'} out.`)
+              (modelReads(l, now) ? `What that costs counts against the run's limit of ${usd(now.limit ?? 0)}, as its history does.` : `${tried === 1 ? 'It waits' : 'They wait'} to be read, like the rest: learning.read hands ${tried === 1 ? 'it' : 'them'} out.`)
           : `Homing has set nothing aside in ${what} that it can try again, so nothing changed.`;
       });
     case 'learning.extend': {
@@ -524,14 +545,14 @@ export async function actOnLearning(
       if (!run || run.state === 'estimating') throw new LearningRefused(`Homing hasn't started learning from ${what}. Propose it with learning.start and the day it should go back to.`);
       const added = await estimateExtension(l, principal, place.place, new Date(since));
       if (!added) return `Homing already learns from ${what} back to ${day(run.since)}, so nothing changed.`;
-      const left = usd(await withPrincipal(sql, principal, async (s) => Math.max(0, run.limit - (await progressOf(s, run)).spent)));
+      const left = usd(await withPrincipal(sql, principal, async (s) => Math.max(0, (run.limit ?? 0) - (await progressOf(s, run)).spent)));
       return propose(
         'extend learning',
         added,
         new Date(since),
         undefined,
         `Nothing has changed. Homing would also learn from ${what} back to ${since}, and only from what that adds. ` +
-          (l.model ? `Its limit stays ${usd(run.limit)}, with ${left} left, where what's added waits.` : 'You read what that adds as you read the rest.'),
+          (modelReads(l, run) ? `Its limit stays ${usd(run.limit ?? 0)}, with ${left} left, where what's added waits.` : 'You read what that adds as you read the rest.'),
       );
     }
     case 'learning.read': {
@@ -539,34 +560,56 @@ export async function actOnLearning(
       if (!run || run.state === 'estimating') throw new LearningRefused(`Homing hasn't started learning from ${what}. Propose it with learning.start and the day it should go back to.`);
       const given = new Map(answers.map(({ thread, ...answer }): [string, unknown] => [thread, answer]));
       const standsNow = async () => standing((await withPrincipal(sql, principal, (s) => runsFor(s, [place.place]))).get(place.place) ?? run, vendor, connector?.name ?? place.connector);
+      const thread = words.related ?? 'thread';
       // What became of the answers: those taken, and those that were for nothing handed out under a claim that holds, which changed nothing.
       let [took, unusable] = [0, 0];
+      const tookSome = () => (took ? `Homing took ${counted(took, 'answer', 'answers')}${unusable ? `, and set aside ${unusable} of them whose answer didn’t fit the form, which learning.try_again has handed out again` : ''}. ` : '');
       const became = () => {
         const not = given.size - took;
-        return (
-          (took ? `Homing took ${counted(took, 'answer', 'answers')}${unusable ? `, and set aside ${unusable} of them whose answer didn’t fit the form, which learning.try_again has handed out again` : ''}. ` : '') +
-          (not ? `${counted(not, 'answer', 'answers')} changed nothing: an answer counts only for a ${words.related ?? 'thread'} handed out to you under a claim that still holds, as the ${words.related ?? 'thread'} is now. ` : '')
-        );
+        return tookSome() + (not ? `${counted(not, 'answer', 'answers')} changed nothing: an answer counts only for a ${thread} handed out to you under a claim that still holds, as the ${thread} is now. ` : '');
+      };
+      /** The answers Homing didn't take still count, for a reason that isn't the assistant's: what to send again, and when. */
+      const sendAgain = (after: Date | null) => {
+        const not = given.size - took;
+        return not ? ` ${not === 1 ? 'Your answer wasn’t' : `Your ${not} answers weren’t`} taken, and ${not === 1 ? 'it still counts' : 'they still count'}: send ${not === 1 ? 'it' : 'them'} again as ${not === 1 ? 'it was' : 'they were'}, with the same claim${after ? `, after ${clock(after)}` : ', in a moment'}.` : '';
       };
       const until = Date.now() + readTime;
-      for (let claim = held; ; claim = undefined) {
-        const taken = await withPrincipal(sql, principal, (s) => takeLearning(s, run, claim, lease(l)));
+      for (let claim = held; ; ) {
+        const taken = await withPrincipal(sql, principal, (s) => takeLearning(s, run, claim, lease(l), given.size > 0));
         if (!taken.claim) {
-          if (taken.refused === 'held') {
-            return `${became()}Nothing was handed out: ${what} is being read right now, by Homing itself or in another conversation of the user’s, and one reads at a time. Try again after ${when(taken.until!)}.`;
+          if (taken.refused === 'handed out') {
+            return `Nothing new was handed out: the ${counted(taken.handed!.questions.length, thread, `${thread}s`)} handed out to you under this claim are still yours, until ${clock(taken.until!)}. Hand back their answers with learning.read. Without them, they are handed out again after that.`;
           }
-          return `${became()}Nothing was handed out: learning from ${what} is ${await standsNow()}.${taken.until ? ` Try again after ${when(taken.until)}.` : ''}`;
+          if (taken.refused === 'held') {
+            return (
+              `${became()}Nothing was handed out: ` +
+              (taken.until
+                ? `${what} is handed out in another conversation of the user’s, and one reads at a time. Try again after ${clock(taken.until)}.`
+                : `Homing is looking at ${what} this moment, itself or for another request of the user’s assistant, and one reads at a time. Try again in a moment.`)
+            );
+          }
+          // What was handed out under the claim is kept while the run waits, so the same answers count then.
+          if (taken.refused === 'waits' && taken.handed) return `${tookSome()}Nothing was handed out: learning from ${what} is ${await standsNow()}.${sendAgain(taken.until) || ` Try again after ${clock(taken.until!)}.`}`;
+          return `${became()}Nothing was handed out: learning from ${what} is ${await standsNow()}.${taken.until ? ` Try again after ${clock(taken.until)}.` : ''}`;
         }
         // The same look at the page as Homing's worker takes, with the assistant answering for what it was handed under the claim it held.
-        const reader: Reader = { name: principal.agent, answers: given, handed: taken.handed ?? [] };
+        const reader: Reader = { name: principal.agent, answers: given, handed: taken.handed };
         const look = await learnPage(sql, l, { run: run.id, person: principal.person, claim: taken.claim }, l.pace, undefined, reader);
         took += look.took;
         unusable += look.unusable;
-        if (look.work.length) return became() + handedOut(l, place, words, taken.claim, look.work);
-        // The page ended some other way, as when the place doesn't answer: the run says what it waits for.
+        // The request before this one went through, and Homing's reply to it was lost: the same answers, sent again, were taken then.
+        const before = taken.resent && took === 0 && given.size > 0 ? 'Homing took these answers when you first sent them: its reply to you was lost on the way. ' : undefined;
+        if (look.work.length) return (before ?? became()) + handedOut(l, place, words, taken.claim, look.work);
+        // The look ended early, as when the place doesn't answer: what was handed out is kept, and the run says what it waits for.
+        if (look.kept && !look.moved) {
+          const due = (await withPrincipal(sql, principal, (s) => s.tx<{ at: Date }[]>`select next_at as at from learning_runs where id = ${run.id}::uuid and next_at > now()`))[0]?.at ?? null;
+          return `${tookSome()}Nothing was handed out: learning from ${what} is ${await standsNow()}.${sendAgain(due)}`;
+        }
         if (!look.moved) return `${became()}Nothing was handed out: learning from ${what} is ${await standsNow()}. Try again later.`;
-        if (!(await withPrincipal(sql, principal, (s) => learningDue(s, run)))) return `${became()}Nothing in ${what} waits to be read now. It is ${await standsNow()}.`;
-        if (Date.now() > until) return `${became()}Homing is still going through ${words.items} that need no reading. Ask again with learning.read, and it carries on.`;
+        if (!(await withPrincipal(sql, principal, (s) => learningWaits(s, run)))) return `${before ?? became()}Nothing in ${what} waits to be read now. It is ${await standsNow()}.`;
+        if (Date.now() > until) return `${before ?? became()}Homing is still going through ${words.items} that need no reading. Ask again with learning.read, and it carries on.`;
+        // A look that moved on with the claim kept carries on under it.
+        claim = look.kept ? taken.claim : undefined;
       }
     }
     case 'learning.leave_out': {

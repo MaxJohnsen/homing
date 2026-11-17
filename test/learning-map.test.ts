@@ -820,10 +820,11 @@ test('with no model set up, a run goes by the map all the same: what waits or is
   const none = await ana.browser.json(`/api/places/${place}/learning/map`, {});
   assert.deepEqual([none.status, none.body.message], [409, 'Homing has no model set up, so nothing was sent.']);
 
-  // The run starts without a model too, and its worker needs none for what the map sets aside.
+  // The run starts without a model too. Nobody reads for the worker then, so it leaves history alone: her assistant's request has Homing look, which sorts by the map without anyone reading.
+  const looks = () => does('learning.read', {});
   const me = { person: ana.id, direct: true } as const;
   await withPrincipal(sql, me, async (s) => startLearning(without, s, await estimateLearning(without, me, place, new Date('2025-01-01'))));
-  await through(without);
+  await looks();
   assert.equal((await run()).state, 'following');
   assert.deepEqual(await state(), [
     ...[1, 2, 3].map(() => 'gunnar@northwind.test | waiting |  | false'),
@@ -839,7 +840,7 @@ test('with no model set up, a run goes by the map all the same: what waits or is
   // A map change places Gunnar, and she takes the digest off herself: both are looked at again, without a model, and wait as the map now says.
   await approved(await does('learning.map', { routes: [{ who: 'mum@family.test', to: 'wait' }, { who: 'northwind.test', to: 'wait' }] }));
   assert.equal((await ana.browser.json(`/api/places/${place}/learning/left-out`, { senders: [], folders: [], kept: [] })).status, 200);
-  await through(without);
+  await looks();
   assert.deepEqual(await state(), [
     ...[1, 2, 3].map(() => 'gunnar@northwind.test | waiting | northwind.test | false'),
     ...[1, 2, 3].map(() => 'mum@family.test | waiting | mum@family.test | false'),
@@ -1033,7 +1034,7 @@ test('what Ana left out is never read, whatever route names it: an address at a 
   assert.deepEqual(callsSince(at), []);
   assert.deepEqual((await w.marks()).filter((mark) => mark.sender === 'lawyer@firm.test').map((mark) => [mark.reason, sentBy('firm.test', mark.because)]), [1, 2].map(() => ['excluded sender', true]));
   const read = (await t.claude.call('read', { ref: `learning:${w.place}` })).text;
-  assert.deepEqual([/- "firm\.test" left out, never read/.test(read), /- "lawyer@firm\.test" left out with "firm\.test", never read, until the user takes that off/.test(read), /"lawyer@firm\.test" to /.test(read)], [true, true, false], read);
+  assert.deepEqual([/- "firm\.test" left out, never read/.test(read), /- "lawyer@firm\.test" to "Acme" \(space:[0-9a-f-]{36}\), left out with "firm\.test", so never read until the user takes that off/.test(read)], [true, true], read);
   // She takes the domain off the list: the route she approved works again, with no new map, and only its mail is read.
   const proposals = (await owner`select from proposals where private_to = ${w.ana.id}`).length;
   await t.leaveOut([]);
@@ -1070,7 +1071,7 @@ test('a sender to leave out is a plain address or a domain: “%” or “n_rthw
   const left = await leave(['zeta.test', ' @Fabrikam.test', 'northwind.test']);
   assert.equal(left.failed, false, left.text);
   assert.deepEqual(await set(), [['northwind.test', 'boss@zeta.test'], ['fabrikam.test', 'northwind.test', 'zeta.test']]);
-  assert.match((await t.claude.call('read', { ref: `learning:${w.place}` })).text, /- "boss@zeta\.test" left out with "zeta\.test", never read, until the user takes that off/);
+  assert.match((await t.claude.call('read', { ref: `learning:${w.place}` })).text, /- "boss@zeta\.test" to "[^"]+" \(space:[0-9a-f-]{36}\), left out with "zeta\.test", so never read until the user takes that off/);
   microsoft.deliver(w.account, { to: [{ name: w.account.name, address: w.account.address }], ...mail(boss, 'Zeta budget', 0.002) });
   // Two looks: one at what her assistant's change woke, one at what arrived.
   await t.again();

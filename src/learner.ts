@@ -10,8 +10,10 @@
 // run's claim, and the same page is looked at for it, here. Only who answers differs: a question
 // nobody has answered is handed out, a few at a time, and an answer counts for a question that
 // was handed out under the claim and is asked again, unchanged, when the page is looked at next.
-// Where Homing has no model, the worker still follows the place, sets aside and sorts, and what
-// is left to read waits for the assistant.
+// Homing's own model reads a run only once its owner has set the run's limit, shown what it may
+// cost. Where it has no model, or isn't to read, the worker still follows what arrives, sets aside
+// and sorts, and what is left to read waits for the assistant. History, where nothing changes, it
+// then leaves alone: the assistant's next request looks at it.
 // What a thread taught is written on the owner's private side in the same transaction that marks
 // its items processed, so a crash repeats only what wasn't marked. Only then does the run's
 // checkpoint move on. It sends nothing more once its owner pauses the run, waits and tries again
@@ -27,10 +29,10 @@ import type { Access, Change, Changes } from './connectors.ts';
 import { AccessDenied, withPrincipal, type Principal, type Session, type Sql } from './db.ts';
 import { Unusable, type Ask, type Learned } from './interpret.ts';
 import { addSource, createPage, insertItem, updateItem, visible } from './knowledge.ts';
-import { asOwner, batchesOf, folderLeftOut, mapOf, routeOf, senderOf, setAside, type Learning, type Route, type Run } from './learning.ts';
+import { asOwner, batchesOf, folderLeftOut, mapOf, modelReads, routeOf, senderOf, setAside, type Handed, type Learning, type Route, type Run } from './learning.ts';
 import { count, summaryOf, type Summarizing, type Summary } from './map.ts';
 import { callModel, ModelFailed, ModelRefused, modelOn, type ModelCall } from './model.ts';
-import { ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
+import { oneLine, ownPlace, sourceOf, wordsOf, type Place } from './places.ts';
 import { listSpaces } from './spaces.ts';
 
 /** How the worker paces itself. Tests set it faster. */
@@ -54,7 +56,11 @@ export const defaults = { tickMs: 5_000, pollSeconds: 5 * 60, leaseSeconds: 5 * 
 const pageTimeLimit = 90_000;
 /** How long a run waits when calls under way leave no room, or the person can't open its space for now. */
 const busyWait = 60;
-/** How many items a page holds unless a page failed, and what it falls back to then: fewer, then one at a time. */
+/**
+ * How many items a page holds unless a page failed, and what it falls back to then: fewer, then
+ * one at a time. A page looked at for the owner's assistant is of the fewer, so what Homing
+ * fetches is about what it hands out.
+ */
 const pageSizes = [50, 10, 1];
 /**
  * How many items from before it a thread is read with, where it's met at an item that doesn't carry
@@ -79,12 +85,14 @@ const several = 3;
 
 /**
  * How much is handed out to an assistant at once: a few threads, and no more once what they hold
- * passes so many characters, so it fits a conversation. One thread is always handed out, however
- * long: its question is the one a model gets, ten items of at most 6,000 characters each.
+ * passes so many characters, so it fits a conversation. One thread is always handed out: its
+ * question is the one a model gets, which the interpretation holds to a length.
  */
 const handOut = { threads: 5, characters: 30_000 };
-/** How long a run whose history waits for someone to read it waits before its worker looks again: nothing there changes meanwhile. */
+/** How long a run waits before its worker looks again where what is there waits for someone to read it: looking again changes nothing. */
 const unreadWait = 60 * 60;
+/** How long the name of an assistant that read is, as the marks keep it. */
+const readerName = 100;
 
 /** How a routine of learning acts for the person: as an agent, named as Homing's own, never their assistant. */
 const routineFor = (person: string): Principal => ({ person, agent: routineAgent, routine: 'learning' });
@@ -153,13 +161,13 @@ export async function claim(sql: Sql, worker: string, leaseSeconds = defaults.le
 
 /**
  * The owner's assistant as the one who reads: its name, for the marks, what it answered, by the id
- * of the question each answer is for, and the questions handed out under the claim it held, as
- * the database gave them when it took the run again.
+ * of the question each answer is for, and what was handed out under the claim it held, as the
+ * database gave it when it took the run again.
  */
 export interface Reader {
   name: string;
   answers: Map<string, unknown>;
-  handed: string[];
+  handed: Handed | null;
 }
 
 /** A question handed out to the owner's assistant: the one the interpretation asks, by an id the answer names. */
@@ -170,14 +178,16 @@ export interface Question {
 
 /**
  * What a look at a page came to, for whoever asked for it: the questions handed out now, how many
- * answers were taken and how many of those couldn't be used, and whether the run moved on, so its
- * next page can be looked at.
+ * answers were taken and how many of those couldn't be used, whether the run moved on, so its
+ * next page can be looked at, and whether the look ended early with what was handed out before
+ * kept, under this claim, so answers it didn't take still count when they're sent again.
  */
 export interface Look {
   work: Question[];
   took: number;
   unusable: number;
   moved: boolean;
+  kept: boolean;
 }
 
 /** A question nobody has answered: no model is asked, and the owner's assistant gave no answer that counts for it. */
@@ -265,14 +275,12 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
   const pace = { ...defaults, ...options };
   const principal = routineFor(claimed.person);
   const { claim } = claimed;
-  const look: Look = { work: [], took: 0, unusable: 0, moved: false };
-  /** Whether Homing's own model answers. */
-  const byModel = !reader && l.model !== undefined;
+  const look: Look = { work: [], took: 0, unusable: 0, moved: false, kept: false };
   const found = await withPrincipal(sql, principal, async (s) => {
     const [row] = await s.tx<
       {
         id: string; place: string; space: string; connection: string; state: Run['state']; reason: Run['reason']; waitingFor: Run['waitingFor']; waitingAtLimit: boolean;
-        since: Date; learnedUpTo: Date | null; caughtUpAt: Date | null; extensionSince: Date | null; extensionUntil: Date | null; spendingLimit: string;
+        since: Date; learnedUpTo: Date | null; caughtUpAt: Date | null; extensionSince: Date | null; extensionUntil: Date | null; spendingLimit: string | null;
         routes: Route[]; rest: string | null; summarizing: Summarizing | null; excludedSenders: string[]; excludedFolders: string[]; keptSenders: string[]; startedAt: Date | null;
         checkpoint: string | null; extensionCheckpoint: string | null; attempts: number; failures: Failure[] | null; refused: number; pageSize: number | null; polledAt: Date | null;
         followedPartly: boolean; unread: number; walkDue: boolean; summaryDue: boolean; handsOut: boolean;
@@ -293,7 +301,8 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
   });
   if (!found) return look;
   const { row, place, again } = found;
-  const { extensionSince, extensionUntil, spendingLimit, routes, rest: elsewhere, summarizing, excludedSenders, excludedFolders, keptSenders, walkDue, summaryDue, handsOut, ...rest } = row;
+  const { extensionSince, extensionUntil, spendingLimit, routes, rest: elsewhere, summarizing, excludedSenders, excludedFolders, keptSenders, walkDue, summaryDue, ...rest } = row;
+  const { handsOut } = row;
   const run: Claim = {
     ...rest,
     map: mapOf(routes, excludedSenders, elsewhere),
@@ -302,19 +311,28 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     summaryFailed: false,
     owner: claimed.person,
     extending: extensionSince && extensionUntil ? { since: extensionSince, until: extensionUntil } : null,
-    limit: Number(spendingLimit),
+    limit: spendingLimit === null ? null : Number(spendingLimit),
     estimate: null,
     proposed: null,
     leftOut: { senders: excludedSenders, folders: excludedFolders, kept: keptSenders },
     // Kept as a list, since a thread's id is no name for the database's client to reword.
     failures: row.failures ?? [],
   };
-  /** Hands the claim back with the checkpoint as it was, to carry on after a wait, with what this try counted against threads for the run to keep. */
+  /** Whether Homing's own model answers. */
+  const byModel = !reader && modelReads(l, run);
+  /**
+   * Hands the claim back with the checkpoint as it was, to carry on after a wait, with what this try
+   * counted against threads for the run to keep. What was handed out to the owner's assistant
+   * before stays theirs, under this claim: the look ended for a reason that isn't theirs, so the
+   * answers it didn't take count when they're sent again.
+   */
   const later = async (waitSeconds: number, trouble: Trouble | null = null, keep: { counted?: Failure[]; pageSize?: number } = {}) => {
+    const handed = reader?.handed ?? null;
     try {
       await withPrincipal(sql, principal, (s) => s.tx`
-        select learning_later(${run.id}::uuid, ${claim}::uuid, ${Math.round(waitSeconds)}::integer, ${trouble}, ${keep.counted ? s.tx.json(keep.counted as never) : null}::jsonb, ${keep.pageSize ?? null}::integer)
+        select learning_later(${run.id}::uuid, ${claim}::uuid, ${Math.round(waitSeconds)}::integer, ${trouble}, ${keep.counted ? s.tx.json(keep.counted as never) : null}::jsonb, ${keep.pageSize ?? null}::integer, ${handed ? s.tx.json(handed as never) : null}::jsonb)
       `);
+      look.kept = handed !== null;
     } catch (error) {
       if (!lost(error)) throw error;
     }
@@ -377,10 +395,17 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     // and they wait while the run's limit leaves them no room, which is about money, so not for an assistant.
     const waits = run.caughtUpAt !== null && run.waitingAtLimit && !reader;
     const backlog: Walk | null = waits ? null : again.length ? 'again' : run.extending ? 'extension' : null;
-    const due = run.polledAt === null || run.polledAt.getTime() + pace.pollSeconds * 1000 <= Date.now();
-    const walk: Walk = run.caughtUpAt === null ? (backlog ?? 'main') : backlog && !due ? backlog : 'main';
+    const dueIn = run.polledAt === null ? 0 : run.polledAt.getTime() + pace.pollSeconds * 1000 - Date.now();
+    const due = dueIn <= 0;
+    // Nobody reads for the worker: history and older material change by nobody's doing, so it leaves
+    // them to the assistant's next request, and looks only at what arrives, when it's time.
+    if (!reader && !byModel && (run.caughtUpAt === null || (backlog && !due))) return await later(run.caughtUpAt === null ? unreadWait : dueIn / 1000);
+    // The owner's assistant answers for the walk its questions were handed out on, while that walk is still there.
+    const handedOn = reader?.handed?.walk;
+    const walk: Walk =
+      handedOn === 'main' || (handedOn && handedOn === backlog) ? handedOn : run.caughtUpAt === null ? (backlog ?? 'main') : backlog && !due ? backlog : 'main';
     const scope = walk === 'extension' ? run.extending! : { since: run.since };
-    const size = run.pageSize ?? pageSizes[0];
+    const size = run.pageSize ?? pageSizes[reader ? 1 : 0];
 
     const unfetched = async (error: unknown) => {
       if (signal.aborted) return await later(0);
@@ -510,6 +535,8 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     if (aside.length) await withPrincipal(sql, principal, (s) => mark(s, run, claim, aside, null));
 
     const read = `${l.interpretation.name} ${l.interpretation.version}`;
+    // The assistant by the name it connected with, on one line and of a length the marks take.
+    const readBy = reader ? oneLine(reader.name).slice(0, readerName).trim() || 'an assistant' : null;
     // How many of this page's calls a model answered, in this try, and how many threads in a row the
     // provider refused or failed on since it last answered one. However many it set aside in a row
     // before, a page still asks about a few.
@@ -524,7 +551,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     };
     // Where the owner's assistant reads, or nobody does: an answer of theirs counts for a question
     // handed out under the claim it held that is asked again as it was, and any other question is unread.
-    const handed = new Set(reader?.handed);
+    const handed = new Set(reader?.handed?.questions);
     const hands = (changes: Change[]): Ask => async (asked) => {
       const question = { id: questionId(asked, changes), asked };
       await mayRead(sql, principal, run.id, claim, asked.spaces);
@@ -567,7 +594,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     const asideFor = async (batch: Batch, reason: string, by: string | null = read) => {
       const { entry, parties } = to(batch);
       // What waits says who its thread is with, as when the map set it aside, so a map that changes for one of them has it looked at again.
-      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => ({ ...markOf(change, 'set aside', reason, entry, by, by === null ? null : reader?.name), ...(reason === 'waiting' && { parties }) })), null));
+      await withPrincipal(sql, principal, (s) => mark(s, run, claim, batch.changes.map((change) => ({ ...markOf(change, 'set aside', reason, entry, by, by === null ? null : readBy), ...(reason === 'waiting' && { parties }) })), null));
       settle(batch);
     };
     // Those it failed on in this try: followed by a call it answered, which shows the fault was with
@@ -681,7 +708,7 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
       // Answered: what failed before it on this page failed while the provider answers otherwise.
       counted.push(...streak);
       streak = [];
-      await withPrincipal(sql, principal, (s) => write(s, l, run, claim, place, where, batch.changes, learned, read, reader?.name));
+      await withPrincipal(sql, principal, (s) => write(s, l, run, claim, place, where, batch.changes, learned, read, readBy));
       settle(batch);
     }
 
@@ -711,12 +738,12 @@ export async function learnPage(sql: Sql, l: Learning, claimed: Claimed, options
     }
     if (trouble) return await backoff('provider', { counted: countedNow() });
     // What nobody has answered waits, counted by thread. Handed out, it is the assistant's to answer
-    // under this claim, which stays theirs. Where nobody reads, the claim ends: what arrives is
-    // looked at when it's time, so the count holds, and history, where nothing changes, seldom.
+    // under this claim, which stays theirs. Where nobody reads, the claim ends, and the worker looks
+    // again seldom: until someone has read what waits, the page stays as it is.
     if (!byModel && settled.size < batches.length) {
       const unread = new Set(batches.filter((batch) => !settled.has(batch)).map(keyOf)).size;
       await withPrincipal(sql, principal, (s) => s.tx`
-        select learning_unread(${run.id}::uuid, ${claim}::uuid, ${unread}::integer, ${reader ? s.tx.json(work.map((question) => question.id)) : null}::jsonb, ${Math.round(run.caughtUpAt === null ? unreadWait : pace.pollSeconds)}::integer)
+        select learning_unread(${run.id}::uuid, ${claim}::uuid, ${unread}::integer, ${reader ? s.tx.json({ walk, questions: work.map((question) => question.id) }) : null}::jsonb, ${unreadWait}::integer)
       `);
       look.work = work;
       return look;

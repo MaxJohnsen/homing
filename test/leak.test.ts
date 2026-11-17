@@ -357,7 +357,7 @@ describe('straight against the database', () => {
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
         assert.deepEqual(runs.map((row) => [row.placeId, row.routes, row.rest, row.writer]), [[connection.place, [{ who: connection.map.route, to: space }], 'wait', connection.map.sender]]);
         // The reading that waits in their run, and what was handed out of it to their assistant, is theirs alone too.
-        assert.deepEqual(runs.map((row) => [row.handedOut, row.unread]), [[[`work-of-${connection.address}`], 2]]);
+        assert.deepEqual(runs.map((row) => [row.handedOut, row.unread]), [[{ walk: 'main', questions: [`work-of-${connection.address}`] }, 2]]);
         assert.deepEqual(learned.map((row) => row.item).sort(), [`AAkALg-${connection.address}`, `AAkALh-${connection.address}`, ...[1, 2, 3].map((at) => `AAkALu${at}-${connection.address}`)]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
@@ -472,7 +472,7 @@ describe('straight against the database', () => {
       // Nor take the other's reading, as their assistant would for a run of their own: the other's run isn't there for them, started or not.
       await admin`update learning_runs set state = 'learning history' where id = ${target.connection.run}`;
       try {
-        await assert.rejects(as({ ...me, agent: 'Claude' }, (s) => s.tx`select * from take_learning_run(${target.connection.run}::uuid, null, 60)`), refused);
+        await assert.rejects(as({ ...me, agent: 'Claude' }, (s) => s.tx`select * from take_learning_run(${target.connection.run}::uuid, null, 60, false)`), refused);
         await assert.rejects(as({ ...me, agent: 'Claude' }, (s) => s.tx`select learning_unread(${target.connection.run}::uuid, ${crypto.randomUUID()}::uuid, 0, '[]'::jsonb, 0)`), refused);
         await assert.rejects(as({ person: me.id, agent: 'Homing', routine: 'learning' }, (s) => s.tx`select learning_unread(${target.connection.run}::uuid, ${crypto.randomUUID()}::uuid, 0, null, 0)`), refused);
       } finally {
@@ -878,7 +878,7 @@ async function mailbox(who: { id: string }, space: string, address: string) {
     domains: [{ domain: map.route, emails: 12, threads: 5, senders: 1 }],
     rest: { senders: 0, emails: 0, threads: 0 },
   };
-  await admin`update learning_runs set summary = ${admin.json(summary)}, handed_out = ${admin.json([`work-of-${address}`])}, unread = 2 where id = ${connection.run}`;
+  await admin`update learning_runs set summary = ${admin.json(summary)}, handed_out = ${admin.json({ walk: 'main', questions: [`work-of-${address}`] })}, unread = 2 where id = ${connection.run}`;
   await as({ person: who.id, direct: true }, (s) => s.tx`select set_learning_map(${connection.run}::uuid, ${s.tx.json([{ who: map.route, to: space }])}, 'wait')`);
   for (const at of [1, 2, 3]) {
     await admin`insert into learned_items (run_id, space_id, private_to, item, version, outcome, sender, interpretation) values (${connection.run}, ${space}, ${who.id}, ${`AAkALu${at}-${address}`}, 'v1', 'learned', ${map.unplaced}, 'notes 1')`;
@@ -1237,7 +1237,7 @@ describe('through the app’s endpoints', () => {
     const runs = await admin`select routes, rest, summarizing, summary -> 'senders' -> 0 ->> 'address' as writer from learning_runs where id in ${admin([ana.connection.run, ben.connection.run])} order by private_to = ${ana.who.id} desc`;
     assert.deepEqual([...runs], [ana, ben].map((one) => ({ routes: [{ who: one.connection.map.route, to: one.space }], rest: 'wait', summarizing: null, writer: one.connection.map.sender })));
     assert.equal((await admin`select from proposals where action in ('plan', 'start learning') and private_to in ${admin([dag.id, ben.who.id])}`).length, 0);
-    assert.deepEqual([...(await admin`select handed_out, unread, claim, (select count(*)::integer from learned_items i where i.run_id = r.id) as marks from learning_runs r where id = ${ana.connection.run}`)], [{ handedOut: [`work-of-${ana.connection.address}`], unread: 2, claim: null, marks: 5 }]);
+    assert.deepEqual([...(await admin`select handed_out, unread, claim, (select count(*)::integer from learned_items i where i.run_id = r.id) as marks from learning_runs r where id = ${ana.connection.run}`)], [{ handedOut: { walk: 'main', questions: [`work-of-${ana.connection.address}`] }, unread: 2, claim: null, marks: 5 }]);
   });
 });
 

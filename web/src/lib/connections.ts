@@ -60,8 +60,11 @@ export interface LearningData {
   followedPartly?: boolean;
   /** A range further back that it's learning from now. */
   extending: { since: string; until: string } | null;
-  /** In dollars: its limit for history, what that cost so far, and what it cost since, which the monthly limit holds. */
-  limit: number;
+  /**
+   * In dollars: its limit for history, what that cost so far, and what it cost since, which the monthly limit holds.
+   * Without a limit, Homing's model doesn't read it: you haven't said it may, and your assistant does the reading.
+   */
+  limit: number | null;
   spent: number;
   followed: number;
   estimate: EstimateData | null;
@@ -69,8 +72,9 @@ export interface LearningData {
   proposed?: EstimateData | null;
   /** What you left out, senders by address or domain and folders by name, and the senders you keep whatever their mail says about itself. */
   leftOut: { senders: string[]; folders: string[]; kept: string[] };
-  /** How many threads it learned from, and the items in them. */
+  /** How many threads it learned from, and the items in them, and how many of those threads your assistant read. */
   threads: number;
+  byAssistant?: number;
   learned: number;
   /**
    * What it set aside, by why, most first, each in words, such as "240 newsletters", with who sent
