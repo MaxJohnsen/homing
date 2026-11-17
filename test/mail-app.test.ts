@@ -13,7 +13,7 @@ import { accessToken, ConnectionUnusable } from '../src/connections.ts';
 import { authDatabaseUrl } from '../src/db.ts';
 import { keepTidy, workFolder } from '../src/import.ts';
 import { connectorsFor } from '../src/connectors.ts';
-import { carriesEarlier, noEmail, splitQuoted } from '../src/mail.ts';
+import { noEmail, splitQuoted } from '../src/mail.ts';
 import { placesFor, readFor, searchTimeLimit } from '../src/places.ts';
 import { developmentSecret, startServer, type Homing } from '../src/server.ts';
 import { vault } from '../src/vault.ts';
@@ -599,29 +599,17 @@ test('what an email quotes from earlier ones is told apart from what its sender 
     const split = splitQuoted(`${own}\n\n${earlier}`);
     assert.deepEqual(split.own, [own], earlier);
     assert.match(split.earlier.join(' '), /budget hold|budsjettet/);
-    assert.equal(carriesEarlier(`${own}\n\n${earlier}`), true, earlier);
   }
   // A quoted line among the sender's own is what they quote, not what they wrote. Lines wrapped in a paragraph join it.
-  const between = '> Does it hold?\nIt holds,\r\nas far as I know.\n\nGunnar';
-  assert.deepEqual(splitQuoted(between), { own: ['It holds, as far as I know.', 'Gunnar'], earlier: ['Does it hold?'] });
-  assert.equal(carriesEarlier(between), true);
-  // A line of underscores above a disclaimer ends the sender's words, and quotes no earlier email. Nor does a signature.
-  const disclaimer = `${own}\n\n________________________________\nThis email is confidential.`;
-  assert.deepEqual(splitQuoted(disclaimer), { own: [own], earlier: ['________________________________ This email is confidential.'] });
-  assert.deepEqual([disclaimer, `${own}\n\nGunnar Lie\nFrom: the Oslo office`, own, ''].map(carriesEarlier), [false, false, false, false]);
+  assert.deepEqual(splitQuoted('> Does it hold?\nIt holds,\r\nas far as I know.\n\nGunnar'), { own: ['It holds, as far as I know.', 'Gunnar'], earlier: ['Does it hold?'] });
 });
 
-test('what search, read, remember and act say keeps their descriptions short enough for assistants to read whole', async () => {
+test('what search, read and remember say about mail keeps their descriptions short enough for assistants to read whole', async () => {
   const { claude } = await world();
   const { tools } = await claude.client.listTools();
   for (const tool of tools.filter((tool) => ['search', 'read', 'remember'].includes(tool.name))) {
     assert.ok((tool.description ?? '').length < 2_048, `${tool.name}: ${tool.description?.length}`);
   }
-  // `act` does the most, so it says the most. Learning adds one sentence to it, and the rest is in what `read` gives for a learning:… reference: the map's two actions too, which it only points to.
-  const act = tools.find((tool) => tool.name === 'act')!;
-  assert.ok((act.description ?? '').length < 4_200, `act: ${act.description?.length}`);
-  assert.deepEqual((act.description ?? '').match(/learning\.\w+/g), ['learning.start', 'learning.extend', 'learning.pause', 'learning.resume', 'learning.leave_out', 'learning.try_again'], 'each named once');
-  assert.match(act.description ?? '', /`read` its learning:… reference first: it says how, and how to map its mail\./);
   await claude.close();
 });
 

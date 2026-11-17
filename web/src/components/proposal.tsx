@@ -1,6 +1,5 @@
 import { ShareSpaceFields, type ShareChoice } from '@/components/share-space-fields';
 import { FieldError } from '@/components/ui/field';
-import type { ReactNode } from 'react';
 import { CircleCheck, CircleSlash, Clock, Send } from 'lucide-react';
 import { cn } from 'cn';
 import { AlreadyApplies } from '@/components/already-applies';
@@ -9,8 +8,7 @@ import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar, dateOf } from '@/components/screen';
-import { usd } from '@/lib/model';
-import { placeOf, precedenceOf, type IncludeData, type LeadsData, type MapData, type LearningProposalData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
+import { placeOf, precedenceOf, type IncludeData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
  * The exact change an assistant proposed, as the decision page and the card show it: a new rule
@@ -44,7 +42,6 @@ export function ProposalDetails({ proposal, onlyHere, onOnlyHereChange, draft, o
       </>
     );
   }
-  if (action === 'learn' || action === 'learn further') return proposal.learning ? <LearningDetails place={placeOf(proposal)} learning={proposal.learning} /> : null;
   if (action === 'plan') return proposal.plan ? <PlanDetails proposal={proposal} plan={proposal.plan} idPrefix={idPrefix} /> : null;
   if (action === 'members') return proposal.member ? <MemberChangeDetails proposal={proposal} member={proposal.member} /> : null;
   if (action === 'publish') return proposal.publication ? <PublishDetails proposal={proposal} publication={proposal.publication} /> : null;
@@ -104,9 +101,6 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
       </ol>
     );
   }
-  if (action === 'learn' || action === 'learn further') {
-    return proposal.learning && <ProposedChange kind="preference" label={capitalized(proposal.learning.words.place)} text={proposal.learning.address} settled />;
-  }
   if (action === 'members') return member && <Who member={member} settled />;
   if (action === 'publish') return proposal.publication && <ProposedChange kind="preference" label={`On ${proposal.publication.page}`} text={proposal.publication.text} settled />;
   if (action === 'task') return proposal.task && <ProposedChange kind="preference" label="Task" text={proposal.task.title} settled />;
@@ -127,8 +121,6 @@ export function SettledChange({ proposal }: { proposal: ProposalData }) {
 
 /** One change of a plan once it's decided, greyed. */
 function SettledStep({ step }: { step: PlanStepData }) {
-  if (step.space) return <ProposedChange kind="preference" label="New space" text={step.space.name} settled />;
-  if (step.map) return <Routes map={step.map} settled />;
   if (step.member) return <Who member={step.member} settled />;
   if (step.item) return <ProposedChange kind="preference" label={`On ${step.item.page}`} text={step.item.text} settled />;
   if (step.task) return <ProposedChange kind="preference" label="Task" text={step.task.title} settled />;
@@ -179,21 +171,6 @@ function PlanDetails({ proposal, plan, idPrefix }: { proposal: ProposalData; pla
 /** One change in a plan, as its own decision would show it, more briefly. */
 function PlanStep({ step, place, sees, personal, id }: { step: PlanStepData; place: string; sees: PlanData['sees']; personal: boolean; id: string }) {
   const gone = (what: string) => <p className="rounded-xl bg-muted px-4 py-3 text-base">{what}</p>;
-  if (step.space) return <ProposedChange kind="preference" label={`New space in ${step.space.in ?? 'your personal space'}`} text={step.space.name} onlyYou />;
-  if (step.map) {
-    const all = [...step.map.routes, step.map.rest];
-    const [waits, leftOut] = [all.some((row) => row.to === 'wait'), all.some((row) => row.to === 'leave out' || row.leftOut !== undefined)];
-    return (
-      <>
-        <Routes map={step.map} />
-        <p className="text-sm text-muted-foreground">
-          A thread goes by who it’s with: an address goes before its domain, and when several are listed, the earliest in the thread decides.
-          {leftOut && ' A thread with anyone left out is never read, whatever else is listed here.'}
-          {waits && ' Mail that waits isn’t read until you say where it goes.'}
-        </p>
-      </>
-    );
-  }
   if (step.action === 'publish') {
     const { publication } = step;
     if (!publication) return step.item ? <ProposedChange kind="preference" label={`Share on ${step.item.page}`} text={step.item.text} /> : gone('Something to share that you can’t see anymore.');
@@ -494,117 +471,6 @@ function IncludeDetails({ proposal, include }: { proposal: ProposalData; include
           )}
         </div>
       )}
-    </>
-  );
-}
-
-/**
- * A map's change, set apart as the change being decided: each sender on a line of its own with
- * where their mail goes, then everything else, and how much each is, when Homing has counted.
- * Decided, it's greyed and names the mailbox, which the heading no longer does.
- */
-function Routes({ map, settled = false }: { map: MapData; settled?: boolean }) {
-  return (
-    <figure className={cn('flex flex-col gap-1.5 rounded-lg px-4 py-3.5', settled ? 'bg-muted' : 'bg-change')}>
-      <figcaption className="flex items-center justify-between gap-3 text-sm text-muted-foreground">
-        {settled ? `Where the mail in ${map.address} goes` : 'Where each sender’s mail goes'}
-        {!settled && <OnlyYou />}
-      </figcaption>
-      <RouteList map={map} settled={settled} />
-    </figure>
-  );
-}
-
-/**
- * Where a line of a map leads, in words: "Northwind", "Fabrikam, a new space", "left out" or
- * "waits". A route whose sender you left out says where it leads and what leaves them out, such as
- * "Zeta, left out with zeta.test", since it does nothing until you take that off what's left out.
- * One whose space can't take its mail now says that it waits and why, in the same form, such as
- * "Zeta, waits while it’s archived".
- */
-function leadsTo(who: string, leads: LeadsData): string {
-  const where = leads.to === 'leave out' ? 'left out' : leads.to === 'wait' ? 'waits' : leads.to === 'new space' ? `${leads.name}, a new space` : (leads.name ?? 'a space you can’t open');
-  if (leads.leftOut !== undefined) return `${where}, left out${leads.leftOut === who ? '' : ` with ${leads.leftOut}`}`;
-  if (leads.waits) return `${where}, waits while ${leads.waits === 'archived' ? 'it’s archived' : 'model processing is off'}`;
-  return where;
-}
-
-/**
- * The lines of a map, wherever one is shown: each sender with where their mail goes, then
- * everything else, and how much each holds as secondary text, at the end of the line, and under it
- * on a phone. While there's an estimate, also about what reading it costs.
- */
-export function RouteList({ map, settled = false }: { map: Pick<MapData, 'routes' | 'rest' | 'words'>; settled?: boolean }) {
-  const rows = [...map.routes.map((route) => ({ who: route.who, leads: route as LeadsData })), { who: 'Everything else', leads: map.rest }];
-  const item = map.words.items.replace(/s$/, '');
-  return (
-    <MapLines
-      settled={settled}
-      rows={rows.map(({ who, leads }) => ({
-        key: who,
-        line: (
-          <>
-            {who} <span aria-hidden="true">→</span>
-            <span className="sr-only">{leads.to === 'leave out' ? 'is' : leads.to === 'wait' ? '' : 'to'}</span> {leadsTo(who, leads)}
-          </>
-        ),
-        holds: leads.emails === null ? undefined : `${thousands(leads.emails)} ${leads.emails === 1 ? item : map.words.items}${leads.high !== undefined ? `, about ${usd(leads.low ?? 0)} to ${usd(leads.high)} to read` : ''}`,
-      }))}
-    />
-  );
-}
-
-/** Lines about a map, one on each, with how much each holds as secondary text. */
-export function MapLines({ rows, settled = false }: { rows: { key: string; line: ReactNode; holds?: string }[]; settled?: boolean }) {
-  return (
-    <ul className={cn('flex flex-col gap-2 text-base leading-snug', settled && 'text-muted-foreground')}>
-      {rows.map(({ key, line, holds }) => (
-        <li key={key} className="flex flex-col sm:flex-row sm:flex-wrap sm:items-baseline sm:justify-between sm:gap-x-4">
-          <span className="[overflow-wrap:anywhere]">{line}</span>
-          {holds !== undefined && <span className="text-sm text-muted-foreground">{holds}</span>}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-const capitalized = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
-const thousands = (value: number) => value.toLocaleString('en-US');
-
-/**
- * Having Homing learn from something of yours, or further back in it: what it would read, set
- * apart, then the estimate, saying plainly that it's rough, the limit, and who reads it. When the
- * estimate or the period changed since it was proposed, it says so, and can only be declined.
- */
-function LearningDetails({ place, learning }: { place: string; learning: LearningProposalData }) {
-  const { estimate, words } = learning;
-  const day = (at: string) => dateOf(at);
-  const range = estimate.until ? `${day(estimate.since)} to ${day(estimate.until)}` : estimate.since.startsWith('1990') ? 'Everything in it' : `Back to ${day(estimate.since)}`;
-  const counted = (n: number, one: string, many: string) => `${thousands(n)} ${n === 1 ? one : many}`;
-  return (
-    <>
-      <ProposedChange kind="preference" label={`${capitalized(words.place)} in ${place}`} text={`${learning.address}\n${range}`} onlyYou />
-      {estimate.items === 0 ? (
-        <p className="text-base">{learning.service} counts no {words.items} there yet, so there’s nothing to pay for until some arrive.</p>
-      ) : (
-        <div className="flex flex-col gap-1">
-          <p className="text-base">
-            {learning.service} counts {counted(estimate.items, words.item, words.items)} there. About {thousands(estimate.setAside)} of them need no model and are set aside, and the rest
-            make about {counted(estimate.threads, words.thread, `${words.thread}s`)} for the model to read.
-          </p>
-          <p className="text-base font-semibold">Estimated model cost: {usd(estimate.low)} to {usd(estimate.high)}.</p>
-          <p className="text-sm text-muted-foreground">
-            This is a rough estimate. It goes by that count and a sample of {counted(estimate.sampled, words.item, words.items)}, and the rest may be longer or shorter.
-          </p>
-        </div>
-      )}
-      <p className="text-base">
-        {learning.further
-          ? `Its limit stays ${usd(learning.limit)}. There, what this adds waits until you raise it.`
-          : `Its limit is ${usd(learning.limit)}. Homing pauses there, until you raise it.`}{' '}
-        Homing sends the {words.items} it learns from to {learning.provider} ({learning.model}) to understand them. What it learns is only yours.
-      </p>
-      {learning.problem && <FieldError className="text-base">{learning.problem}</FieldError>}
     </>
   );
 }

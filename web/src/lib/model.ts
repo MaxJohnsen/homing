@@ -20,9 +20,9 @@ export interface ModelProcessingData {
 }
 
 /** What a call to the model was for. */
-export type Purpose = 'understand' | 'upkeep' | 'sort' | 'map';
+export type Purpose = 'understand' | 'upkeep' | 'sort';
 
-export const purposes: Record<Purpose, string> = { understand: 'Understanding', upkeep: 'Upkeep', sort: 'Sorting', map: 'Mapping' };
+export const purposes: Record<Purpose, string> = { understand: 'Understanding', upkeep: 'Upkeep', sort: 'Sorting' };
 
 /** What Homing's model did for you this month, and the limit everyone here shares. */
 export interface ModelUseData {
@@ -49,10 +49,6 @@ export interface ModelSpendingData extends ModelStatement {
   /** What the monthly limit covers this month: what was spent, and the worst case of the calls under way. */
   spent: number;
   underWay: number;
-  /** What learning from history cost this month, which each run's own limit covers. */
-  history?: number;
-  /** The most a learning run may spend on history, in dollars. */
-  runCeiling?: number;
   people: { name: string | null; calls: number; cost: number; you: boolean }[];
 }
 

@@ -179,9 +179,9 @@ export interface Broker {
 export interface Use {
   place: string;
   space: string;
-  /** What Homing did there: searched it, read something in it, or followed it, a page at a time, to learn from it. */
-  operation: 'search' | 'read' | 'follow';
-  /** The assistant it's for, such as Claude, or Homing's own routine, by its name. */
+  /** What Homing did there: searched it, or read something in it. */
+  operation: 'search' | 'read';
+  /** The assistant it's for, such as Claude. */
   agent?: string;
 }
 

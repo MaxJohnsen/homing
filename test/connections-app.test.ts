@@ -546,8 +546,8 @@ test('without Microsoft set up, whoever looks after Homing is told, and nobody i
     await admin`update people set instance_admin = true where id = ${dan.id}`;
     const forDan = await dan.browser.json(`/api/spaces/${dan.personalSpaceId}/connections`);
     const forEve = await eve.browser.json(`/api/spaces/${eve.personalSpaceId}/connections`);
-    assert.deepEqual(forDan.body, { microsoft: false, looksAfter: true, model: null, runCeiling: 25, places: [] });
-    assert.deepEqual(forEve.body, { microsoft: false, looksAfter: false, model: null, runCeiling: 25, places: [] });
+    assert.deepEqual(forDan.body, { microsoft: false, looksAfter: true, places: [] });
+    assert.deepEqual(forEve.body, { microsoft: false, looksAfter: false, places: [] });
     const started = await eve.browser.json(`/api/spaces/${eve.personalSpaceId}/connections/microsoft`, {});
     assert.equal(started.status, 409);
     assert.equal((await eve.browser.fetch('/connections/microsoft/callback?code=x&state=y')).status, 404);

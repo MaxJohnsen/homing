@@ -7,7 +7,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Wordmark } from '@/components/wordmark';
 import { draftOf, spaceOf } from '@/components/space-fields';
-import { buttonsOf, changesIn, mapOf, declineOnly, isSending, outcomeOf, placeOf, planNote, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, declineOnly, isSending, outcomeOf, placeOf, planBlocked, type ProposalData } from '@/lib/proposals';
 import type { Decide } from '@/screens/confirm';
 
 const status = { approved: 'Approved', rejected: 'Rejected', expired: 'Expired', gone: 'Nothing to decide', sent: 'Sent' };
@@ -109,19 +109,13 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
         <>
           <p className="text-base font-semibold">
             {proposal.action === 'plan' && proposal.plan
-              ? mapOf(proposal.plan)
-                ? `Set where the mail in ${mapOf(proposal.plan)!.address} belongs?`
-                : proposal.plan.create
+              ? proposal.plan.create
                 ? `Create ${proposal.plan.create.name} in ${placeOf(proposal)} and make ${proposal.plan.steps.length === 1 ? 'this change' : `these ${proposal.plan.steps.length} changes`} in it?`
                 : `Make these ${proposal.plan.steps.length} changes in ${placeOf(proposal)}?`
               : proposal.action === 'space'
               ? proposal.suggestion?.asked
                 ? `Create this space in ${placeOf(proposal)}?`
                 : `Create the space ${proposal.assistant} suggests?`
-              : proposal.action === 'learn'
-              ? `Have Homing learn from ${proposal.learning?.address ?? 'it'}?`
-              : proposal.action === 'learn further'
-              ? `Have Homing learn further back in ${proposal.learning?.address ?? 'it'}?`
               : proposal.action === 'members' && proposal.member
               ? memberQuestion(proposal, proposal.member)
               : proposal.action === 'publish'
@@ -146,8 +140,8 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
                   ? `Change this ${proposal.kind} in ${placeOf(proposal)}?`
                   : `Remove this ${proposal.kind} from ${placeOf(proposal)}?`}
           </p>
-          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.learning?.why ?? proposal.plan?.why ?? proposal.why) && (
-            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.learning?.why ?? proposal.plan?.why ?? proposal.why}”</p>
+          {(proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why) && (
+            <p className="text-sm text-muted-foreground">“{proposal.suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why}”</p>
           )}
           <ProposalDetails
             proposal={proposal}
@@ -172,7 +166,13 @@ export function ApprovalCard({ proposal, done, decide, onOpen, message: initialM
             <Button variant="outline" className="h-10 px-4" disabled={busy} onClick={() => choose(false)}>{buttons!.reject}</Button>
           </div>
           {problem && problem.field !== 'name' && <FieldError>{problem.message}</FieldError>}
-          {proposal.plan && <p className="text-sm text-muted-foreground">{planNote(proposal, proposal.plan, 'card')}</p>}
+          {proposal.plan && (
+            <p className="text-sm text-muted-foreground">
+              {planBlocked(proposal.plan)
+                ? `A change can’t be made now, so this can’t be approved as it is. Ask ${proposal.assistant} to revise it, or decline it.`
+                : `Approving makes them all at once, and none if one can’t be made then. To change something, ask ${proposal.assistant} to revise it.`}
+            </p>
+          )}
           {proposal.action === 'space' && !proposal.suggestion?.asked && (
             <p className="text-sm text-muted-foreground">If you don’t create it, {proposal.assistant} won’t suggest a space called {proposal.suggestion?.name} again.</p>
           )}

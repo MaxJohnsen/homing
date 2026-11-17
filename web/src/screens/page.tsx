@@ -207,10 +207,8 @@ function Item({ item, page, marked, actions }: { item: ItemData; page: PageData;
   );
 }
 
-/** "You wrote this", "Claude saved this for Cara Lund", "Homing learned this from what it read for you", "You wrote this, and your assistant Claude changed it". */
+/** "You wrote this", "Claude saved this for Cara Lund", "You wrote this, and your assistant Claude changed it". */
 function wrote(by: Author, agent: string | null, editAgent?: string | null): string {
-  // What Homing learned itself is nobody's own writing: it says what its sources say.
-  if (agent === 'Homing') return `Homing learned this from what it read${nameIn(by) ? ` for ${nameIn(by)}` : ''}`;
   if (agent) return nameIn(by) ? `${agent} saved this for ${nameIn(by)}` : `${agent} saved this`;
   if (editAgent) return `${nameOf(by)} wrote this, and ${theirAssistant(by, editAgent)} changed it`;
   return `${nameOf(by)} wrote this`;

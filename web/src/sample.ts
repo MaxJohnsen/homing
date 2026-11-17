@@ -1,4 +1,4 @@
-import type { ConnectedAccountsData, ConnectionData, EstimateData, LearningData, SenderData, SpaceConnectionsData } from '@/lib/connections';
+import type { ConnectedAccountsData, ConnectionData, SpaceConnectionsData } from '@/lib/connections';
 import type { AccountData } from '@/screens/account';
 import type { ChangeData, OverviewData, PageData, PagesData, SourceData, SourcesData } from '@/lib/knowledge';
 import type { SearchData } from '@/lib/search';
@@ -103,146 +103,11 @@ export const sampleConnection: ConnectionData = {
   refreshedAt: '2026-10-24T09:30:00+02:00',
 };
 
-const mailboxWords = { place: 'mailbox', item: 'email', items: 'emails', thread: 'thread' };
-
 export const sampleConnections: SpaceConnectionsData = {
   microsoft: true,
   looksAfter: false,
-  model: { provider: 'OpenRouter', capable: 'Claude Sonnet 5.5', cheaper: 'Claude Haiku 5.5' },
-  runCeiling: 25,
-  places: [
-    { id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection, learns: true, summarizes: true, words: mailboxWords, learning: null },
-  ],
+  places: [{ id: 'mailbox-acme', kind: 'mailbox', addedAt: '2026-10-24T09:30:00+02:00', elsewhere: [{ id: 'personal', name: 'Personal', personal: true }], connection: sampleConnection }],
 };
-
-// What learning from Ana's mailbox two years back may cost, and the run at each point on its way.
-export const sampleEstimate: EstimateData = { since: '2024-11-15T00:00:00Z', until: null, items: 18240, threads: 5120, setAside: 7410, low: 0.86, high: 2.94, limit: 5, sampled: 100, at: '2026-11-14T09:12:00Z' };
-
-/** Everyone whose mail was set aside as a newsletter, most first: far more than a first look lists. */
-export const sampleSenders: SenderData[] = [
-  { sender: 'news@weekly-digest.no', items: 610 }, { sender: 'prosjekt@grupper.acme.no', items: 204 }, { sender: 'hello@designmonthly.com', items: 196 },
-  { sender: 'updates@fjordsoftware.no', items: 188 }, { sender: 'nyhetsbrev@dnb.no', items: 171 }, { sender: 'digest@linkedin.com', items: 164 },
-  { sender: 'info@konferanse.no', items: 152 }, { sender: 'no-reply@medium.com', items: 149 },
-  ...Array.from({ length: 212 }, (_, at) => ({ sender: at === 40 ? 'kari.nilsen@grupper.acme.no' : `list-${at + 1}@${['northwind.no', 'acme.no', 'fjordsoftware.no', 'example.org'][at % 4]}`, items: Math.max(1, 140 - at) })),
-];
-
-const sampleRun: LearningData = {
-  state: 'learning history',
-  reason: null,
-  since: '2024-11-15T00:00:00Z',
-  learnedUpTo: '2025-03-14T10:20:00Z',
-  caughtUp: false,
-  extending: null,
-  limit: 5,
-  spent: 0.42,
-  followed: 0,
-  estimate: sampleEstimate,
-  leftOut: { senders: ['newsletter@fjordsoftware.no'], folders: ['Receipts'], kept: [] },
-  threads: 1204,
-  learned: 2610,
-  setAside: [
-    { reason: 'newsletter', items: 1140, words: '1,140 newsletters', senders: [{ sender: 'news@weekly-digest.no', items: 610 }, { sender: 'prosjekt@grupper.acme.no', items: 204 }, { sender: 'hello@designmonthly.com', items: 96 }] },
-    { reason: 'automated', items: 388, words: '388 sent automatically', senders: [{ sender: 'noreply@tickets.acme.no', items: 301 }, { sender: 'builds@ci.acme.no', items: 87 }] },
-    { reason: 'excluded folder', items: 96, words: '96 in folders you left out', senders: [{ sender: 'billing@fjordsoftware.no', items: 96 }] },
-    { reason: 'junk', items: 41, words: '41 in junk', senders: [] },
-  ],
-};
-
-export const sampleLearning: Record<'estimated' | 'history' | 'atLimit' | 'paused' | 'following' | 'partly' | 'extending' | 'proposed' | 'waiting' | 'off', LearningData> = {
-  estimated: { ...sampleRun, state: 'estimating', learnedUpTo: null, spent: 0, threads: 0, learned: 0, setAside: [], leftOut: { senders: [], folders: [], kept: [] } },
-  history: sampleRun,
-  atLimit: { ...sampleRun, state: 'paused', reason: 'limit', limit: 1, spent: 0.9984 },
-  paused: { ...sampleRun, state: 'paused', reason: 'person' },
-  following: {
-    ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712,
-    setAside: [
-      { ...sampleRun.setAside[0], items: 4812, words: '4,812 newsletters', senders: sampleSenders.slice(0, 8), more: sampleSenders.length - 8 },
-      ...sampleRun.setAside.slice(1),
-      { reason: 'provider failed', items: 7, words: '7 the model’s provider kept failing on', senders: [{ sender: 'gunnar@northwind.no', items: 4 }, { sender: 'kari.nilsen@acme.no', items: 3 }], retry: true },
-    ],
-  },
-  partly: { ...sampleRun, state: 'following', learnedUpTo: '2026-11-14T16:02:00Z', caughtUp: true, followedPartly: true, spent: 2.31, followed: 0.04, threads: 5031, learned: 10712 },
-  extending: { ...sampleRun, state: 'following', caughtUp: true, extending: { since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z' }, spent: 2.31 },
-  proposed: { ...sampleRun, state: 'following', caughtUp: true, spent: 2.31, proposed: { ...sampleEstimate, since: '2021-11-15T00:00:00Z', until: '2024-11-15T00:00:00Z', items: 26020, threads: 7300, setAside: 10400, low: 1.2, high: 4.1 } },
-  waiting: { ...sampleRun, waitingFor: 'provider' },
-  off: { ...sampleRun, state: 'paused', reason: 'model processing off' },
-};
-
-// Who writes in Ana's mailbox, as Homing counted it, and the map she approved: a route whose sender she left out since, one that waits, and senders no route names.
-const sampleLooked = { summarizing: false, summarized: '2026-11-14T09:05:00Z', summary: { since: '2024-11-15T00:00:00Z', emails: 9620, senders: 412 } };
-const sampleMapped: NonNullable<LearningData['mapped']> = {
-  routes: [
-    { who: 'northwind.example', to: 'space', name: 'Northwind', emails: 1240, threads: 312 },
-    { who: 'fabrikam.example', to: 'space', name: 'Fabrikam', emails: 386, threads: 97 },
-    { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Acme', emails: 48, threads: 48 },
-    { who: 'mum@berg.example', to: 'space', name: 'Your personal space', emails: 61, threads: 22 },
-    { who: 'jon@zeta.example', to: 'space', name: 'Northwind', emails: 17, threads: 6, leftOut: 'zeta.example' },
-    { who: 'globex.example', to: 'wait', name: null, emails: 9, threads: 4 },
-    { who: 'weekly-digest.example', to: 'leave out', name: null, emails: 204, threads: 204 },
-    { who: 'zeta.example', to: 'leave out', name: null, emails: 31, threads: 12 },
-  ],
-  rest: { to: 'space', name: 'Acme', emails: 2913, threads: 1104 },
-};
-const sampleNotPlaced = { senders: [{ sender: 'kari.nilsen@contoso.example', items: 46 }, { sender: 'post@regnskapshuset.example', items: 21 }, { sender: 'per@tailspin.example', items: 9 }], more: 14 };
-const sampleUnstarted: LearningData = { ...sampleRun, state: 'estimating', estimate: null, learnedUpTo: null, spent: 0, threads: 0, learned: 0, setAside: [], leftOut: { senders: [], folders: [], kept: [] } };
-/** What each route's share of the estimate is, by its threads, for the routes that are read. */
-const withCosts = (leads: NonNullable<LearningData['mapped']>['rest']) => (leads.to === 'space' && !leads.leftOut ? { ...leads, low: Math.ceil((0.86 * (leads.threads ?? 0)) / 15.83) / 100, high: Math.ceil((2.94 * (leads.threads ?? 0)) / 15.83) / 100 } : leads);
-
-/** Ana's mailbox at each point on the way to a map, and with one. */
-export const sampleMaps: Record<'looking' | 'looked' | 'suggesting' | 'waiting' | 'mapped' | 'estimated' | 'failed' | 'failedAgain' | 'nowhere' | 'long', LearningData> = {
-  looking: { ...sampleUnstarted, summarizing: true },
-  looked: { ...sampleUnstarted, ...sampleLooked },
-  suggesting: { ...sampleUnstarted, ...sampleLooked, suggesting: true },
-  waiting: { ...sampleUnstarted, ...sampleLooked, waiting: 'map' },
-  mapped: { ...sampleLearning.following, leftOut: { senders: ['weekly-digest.example', 'zeta.example'], folders: ['Receipts'], kept: [] }, ...sampleLooked, mapped: sampleMapped, notPlaced: sampleNotPlaced },
-  estimated: {
-    ...sampleLearning.estimated,
-    leftOut: { senders: ['weekly-digest.example', 'zeta.example'], folders: [], kept: [] },
-    ...sampleLooked,
-    mapped: { routes: sampleMapped.routes.map((route) => ({ ...route, ...withCosts(route) })), rest: withCosts(sampleMapped.rest) },
-  },
-  failed: { ...sampleUnstarted, summaryFailed: true },
-  // Homing gave up looking again, so the lines keep what it counted before.
-  failedAgain: { ...sampleLearning.following, ...sampleLooked, summaryFailed: true, mapped: sampleMapped, notPlaced: sampleNotPlaced },
-  // A space archived since, and one where model processing was turned off: their mail waits, and each line says why.
-  nowhere: {
-    ...sampleLearning.following,
-    ...sampleLooked,
-    mapped: {
-      routes: [
-        ...sampleMapped.routes.slice(0, 1),
-        { who: 'fabrikam.example', to: 'space', name: 'Fabrikam', emails: 386, threads: 97, waits: 'archived' },
-        { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Accounting', emails: 48, threads: 48, waits: 'model processing off' },
-        ...sampleMapped.routes.slice(3),
-      ],
-      rest: sampleMapped.rest,
-    },
-  },
-  // Years in: a map of eighty routes, with a new one that waits.
-  long: {
-    ...sampleLearning.following,
-    ...sampleLooked,
-    waiting: 'map',
-    mapped: {
-      routes: Array.from({ length: 80 }, (_, at) => ({
-        who: at % 3 ? `client-${at + 1}.example` : `person.${at + 1}@client-${at + 1}.example`,
-        to: at % 11 === 10 ? ('wait' as const) : at % 7 === 6 ? ('leave out' as const) : ('space' as const),
-        name: at % 11 === 10 || at % 7 === 6 ? null : `Client ${at + 1}`,
-        emails: 1200 - at * 14,
-        threads: 300 - at * 3,
-      })),
-      rest: sampleMapped.rest,
-    },
-    notPlaced: sampleNotPlaced,
-  },
-};
-
-/** A space's connections with Ana's mailbox at a point in learning from it. */
-export const sampleLearningConnections = (learning: LearningData | null, model = sampleConnections.model): SpaceConnectionsData => ({
-  ...sampleConnections,
-  model,
-  places: sampleConnections.places.map((place) => ({ ...place, learning })),
-});
 
 export const sampleConnectedAccounts: ConnectedAccountsData = {
   microsoft: true,
@@ -434,8 +299,6 @@ export const sampleModelSpending: ModelSpendingData = {
   pausedAt: null,
   spent: 7.4111,
   underWay: 0.0408,
-  history: 2.31,
-  runCeiling: 25,
   people: [
     { name: 'Ana Berg', calls: 1190, cost: 4.061, you: true },
     { name: 'Cara Lund', calls: 702, cost: 2.9031, you: false },
@@ -825,47 +688,6 @@ export const taskProposal: ProposalData = {
   },
 };
 
-/** Claude proposes that Homing learn from Ana's mailbox, in her personal space, a year back. */
-export const learningProposal: ProposalData = {
-  ...proposal,
-  id: 'learning',
-  space: 'Your personal space',
-  personal: true,
-  shared: false,
-  action: 'learn',
-  text: 'ana@acme.example',
-  why: null,
-  alreadyApplies: [],
-  learning: {
-    address: 'ana@acme.example',
-    service: 'Microsoft 365',
-    words: { place: 'mailbox', item: 'email', items: 'emails', thread: 'conversation' },
-    since: '2025-11-16T00:00:00.000Z',
-    estimate: { since: '2025-11-16T00:00:00.000Z', until: null, items: 18420, threads: 5200, setAside: 6100, low: 9.4, high: 18.8, limit: 25, sampled: 200 },
-    limit: 25,
-    provider: 'OpenRouter',
-    model: 'google/gemini-3-flash',
-    further: false,
-    problem: null,
-    shown: 'sample',
-    why: 'You asked me to catch up on what was agreed with Northwind last year.',
-  },
-};
-
-/** Claude proposes that Homing learn another year further back in it. */
-export const learningFurtherProposal: ProposalData = {
-  ...learningProposal,
-  id: 'learning-further',
-  action: 'learn further',
-  learning: {
-    ...learningProposal.learning!,
-    since: '2024-11-16T00:00:00.000Z',
-    estimate: { since: '2024-11-16T00:00:00.000Z', until: '2025-11-16T00:00:00.000Z', items: 15130, threads: 4300, setAside: 5200, low: 7.8, high: 15.6, limit: 20, sampled: 200 },
-    further: true,
-    why: null,
-  },
-};
-
 /**
  * The kitchen story: Ana asked Claude to set up the kitchen renovation, put what they know in it
  * and add Jonas. The space is hers alone so far, so Claude created it at once and kept what it knew
@@ -964,97 +786,6 @@ export const blockedPlanProposal: ProposalData = {
     steps: [{ ...planProposal.plan!.steps[0], publication: null, problem: 'It’s shared already.' }, ...planProposal.plan!.steps.slice(1)],
   },
 };
-
-/**
- * The map story: Ana asked Claude where the mail in her work mailbox belongs. Homing counted who
- * writes there, and Claude proposes two spaces of her own and the routes, as one plan.
- */
-export const mapProposal: ProposalData = {
-  ...proposal,
-  why: null,
-  id: 'map',
-  action: 'plan',
-  space: 'Acme',
-  shared: false,
-  text: null,
-  alreadyApplies: [],
-  plan: {
-    create: null,
-    space: 'Acme',
-    spaceId: 'acme',
-    steps: [
-      { action: 'space', space: { name: 'Clients', in: 'your personal space' }, publication: null, item: null, task: null, member: null, rule: null, problem: null },
-      { action: 'space', space: { name: 'Fabrikam', in: 'Clients' }, publication: null, item: null, task: null, member: null, rule: null, problem: null },
-      {
-        action: 'map',
-        map: {
-          place: 'mailbox-acme',
-          address: 'ana.berg@acme.no',
-          words: { place: 'mailbox', items: 'emails' },
-          routes: [
-            { who: 'northwind.example', to: 'space', name: 'Northwind', emails: 1240, threads: 312 },
-            { who: 'fabrikam.example', to: 'new space', name: 'Fabrikam', emails: 386, threads: 97 },
-            { who: 'faktura@papirfabrikken.example', to: 'space', name: 'Acme', emails: 48, threads: 48 },
-            { who: 'mum@berg.example', to: 'space', name: 'Your personal space', emails: 61, threads: 22 },
-            { who: 'globex.example', to: 'wait', name: null, emails: 1, threads: 1 },
-            { who: 'weekly-digest.example', to: 'leave out', name: null, emails: 204, threads: 204 },
-          ],
-          rest: { to: 'space', name: 'Acme', emails: 2913, threads: 1104 },
-        },
-        publication: null,
-        item: null,
-        task: null,
-        member: null,
-        rule: null,
-        problem: null,
-      },
-    ],
-    audience: { people: 5, above: false, adding: [] },
-    sees: null,
-    why: 'You said Fabrikam is a new client, and that Globex can wait until the contract is signed.',
-    shown: '[]',
-  },
-};
-
-/** The same map after Ana left a domain out: the route for someone there keeps where it leads, and says what leaves them out. */
-export const mapLeftOutProposal: ProposalData = {
-  ...mapProposal,
-  id: 'map-left-out',
-  plan: {
-    ...mapProposal.plan!,
-    steps: mapProposal.plan!.steps.map((step) =>
-      step.map
-        ? {
-            ...step,
-            map: {
-              ...step.map,
-              routes: [
-                ...step.map.routes.slice(0, 4),
-                { who: 'jon@zeta.example', to: 'space' as const, name: 'Northwind', emails: 17, threads: 6, leftOut: 'zeta.example' },
-                ...step.map.routes.slice(4),
-                { who: 'zeta.example', to: 'leave out' as const, name: null, emails: 31, threads: 12 },
-              ],
-            },
-          }
-        : step,
-    ),
-  },
-};
-
-/** The same map with a route to a space where model processing is off: its mail waits, and the line says why. */
-export const mapWaitsProposal: ProposalData = {
-  ...mapProposal,
-  id: 'map-waits',
-  plan: {
-    ...mapProposal.plan!,
-    steps: mapProposal.plan!.steps.map((step) =>
-      step.map ? { ...step, map: { ...step.map, routes: step.map.routes.map((route) => (route.who.startsWith('faktura@') ? { ...route, name: 'Accounting', waits: 'model processing off' as const } : route)) } } : step,
-    ),
-  },
-};
-
-/** A map Homing's own model suggested, which Ana asked for where the mailbox is connected. */
-export const mapByHomingProposal: ProposalData = { ...mapProposal, id: 'map-by-homing', assistant: 'Homing', plan: { ...mapProposal.plan!, why: null } };
 
 /** A space's tasks: Ana's own and the space's, open and done lately. */
 export const sampleTasks = {

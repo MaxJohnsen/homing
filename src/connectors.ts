@@ -5,8 +5,7 @@
 // the code to redeem, and using a place, an Access with the place's resource,
 // a token and Homing's time limit. Everything it gives back is outside
 // content, which Homing frames itself, so nothing in it passes for Homing's
-// own words. Beside finding and reading, a kind can be followed, so Homing
-// learns from it; acting comes later.
+// own words. Following changes and acting come later, beside find and read.
 
 import { microsoftConnector, type MicrosoftSettings } from './microsoft.ts';
 
@@ -32,8 +31,6 @@ export interface Connector {
   kinds: Record<string, PlaceKind>;
   /** What an error from any of the above means, when it's the system's refusal or silence; undefined when it isn't. */
   refused(error: unknown): Refusal | undefined;
-  /** How many seconds the system asked Homing to wait before trying again, when its answer said so. */
-  retryAfter?(error: unknown): number | undefined;
 }
 
 /**
@@ -88,87 +85,7 @@ export interface PlaceKind {
   search?(access: Access, words: string, limit: number): Promise<Found[]>;
   /** One item by its id, with what it's read with unless left out, or undefined when it isn't there any more. */
   read(access: Access, id: string, options: { related: boolean }): Promise<Item | undefined>;
-  /** Following what's there, so Homing learns from it. A kind without it is only found and read. */
-  follow?: Follow;
 }
-
-/**
- * Following a place, for learning: its history, oldest first, then what arrives. One method
- * serves both. How the connector walks the place, such as by date and then by the system's own
- * record of changes, stays in its checkpoint, which Homing keeps and hands back as it was.
- */
-export interface Follow {
-  /**
-   * One page of changes, oldest first as far as the system gives them so, from a checkpoint it gave
-   * before, or from the start of the scope without one. A scope with an end, such as one extended
-   * further back, is walked only up to it; one without carries on with what arrives. Nothing from
-   * before the scope is given. Asked for fewer at once, after a page the system couldn't serve, it
-   * gives fewer, and asked for one, it gives an item it can't read as set aside, so the walk moves on.
-   */
-  changes(access: Access, from: string | null, scope: Scope, options?: { size?: number; related?: boolean }): Promise<Changes>;
-  /** These items as they are now, by their ids, for ones learned from again. One that's gone is left out. */
-  items(access: Access, ids: string[]): Promise<Change[]>;
-  /** How many items the scope holds, as the system counts them, for an estimate. */
-  count(access: Access, scope: Scope): Promise<number>;
-  /**
-   * Items of a change's thread by their ids, from among those the change names as earlier, oldest
-   * first, each as changes gives it and read with what the change is read with. `from` is the
-   * checkpoint the change's page gave. Asked for one at a time, it gives an item it can't read as
-   * set aside. A kind whose items belong to nothing has none.
-   */
-  earlier?(access: Access, change: Change, ids: string[], options: { from: string; size?: number }): Promise<Change[]>;
-  /**
-   * One page of what the scope holds, each item by who wrote it, when, what it's called and what it
-   * belongs with, and nothing of its text: what Homing makes a summary of the place from. Oldest
-   * first, from a checkpoint it gave before, or from the start of the scope, until `next` is null.
-   * Without what the connector leaves out everywhere, such as junk and drafts. A kind that can't
-   * list itself this way has none, and then has no summary.
-   */
-  summary?(access: Access, from: string | null, scope: Scope): Promise<{ listed: Listed[]; next: string | null }>;
-}
-
-/** An item as a summary counts it: who wrote it, when, what it's called, what it belongs with, and where it is there, such as its folder, by name. */
-export type Listed = Pick<Envelope, 'title' | 'at' | 'author'> & { thread: string | null; folder: string | null };
-
-/** What learning covers: from a time, and up to one, or on with what arrives. */
-export interface Scope {
-  since: Date;
-  until?: Date;
-}
-
-/** A page of changes. */
-export interface Changes {
-  changes: Change[];
-  /** Where the next page starts, opaque to Homing. */
-  next: string;
-  /** Nothing newer for now, or, for a scope with an end, the end reached. */
-  caughtUp: boolean;
-  /** The place holds more than the connector follows, such as a mailbox with more folders than it reads: what arrives in the rest isn't given. */
-  partly?: true;
-}
-
-/** An item as it is now in a followed place. */
-export interface Change {
-  /** As Homing reads it, with what it's read with, such as its thread, unless it's set aside. */
-  item: Item;
-  /** Changes when what Homing reads of it changes, and only then. */
-  version: string;
-  /** What it belongs with, such as its conversation, so a thread is learned from together. */
-  thread: string | null;
-  /** Where it is there, such as its folder, by name. */
-  folder: string | null;
-  /** What its thread holds from before it that it doesn't carry itself, as a reply does by quoting: newest first, by id and where each is, but for what lies where the connector leaves everything out, such as junk. */
-  earlier?: { id: string; folder: string | null }[];
-  /** Why it needs no model, by the system's own signs, such as a newsletter's headers. */
-  setAside?: SetAside;
-}
-
-/**
- * What a connector sets aside on its own: newsletters and automated mail, by what they say about
- * themselves, which their owner can overrule for a sender; and junk, drafts, what was deleted, and
- * what the system couldn't give, which nobody can.
- */
-export type SetAside = 'newsletter' | 'automated' | 'junk' | 'draft' | 'deleted' | 'unreadable';
 
 /** What Homing hands a connector for one use of a place. */
 export interface Access {
@@ -235,11 +152,6 @@ export interface Item {
   fields: [label: string, value: Value][];
   /** Its text, for a kind with prose, such as an email's; null for one of fields only. */
   text: string | null;
-  /**
-   * Where its text repeats what it's read with, such as an email quoting its thread: the part
-   * that's its own, and the part it quotes, so learning reads each once.
-   */
-  parts?: { own: string; quoted: string };
   /** What it's read with, itself among them, oldest first, such as its thread. */
   related: Envelope[];
   /** Whether there's more of that than Homing read. */
@@ -255,7 +167,7 @@ export type Value = { text: string | null } | { texts: string[] } | { party: Par
 export type Connectors = ReadonlyMap<string, Connector>;
 
 /** Homing's own reference words, and email's before connectors had their own, which no connector's id may be. */
-const reserved = new Set(['space', 'page', 'item', 'source', 'proposal', 'task', 'connection', 'place', 'mail', 'learning']);
+const reserved = new Set(['space', 'page', 'item', 'source', 'proposal', 'task', 'connection', 'place', 'mail']);
 
 /**
  * The connectors this Homing has: each system's module, set up from its settings, such as

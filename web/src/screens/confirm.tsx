@@ -6,7 +6,7 @@ import { FieldError } from '@/components/ui/field';
 import { cn } from 'cn';
 import { focusRing, wrapsLabel } from '@/components/screen';
 import { draftOf, spaceOf, type SpaceSet } from '@/components/space-fields';
-import { buttonsOf, changesIn, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, planNote, wantsTo, type ProposalData } from '@/lib/proposals';
+import { buttonsOf, changesIn, declineOnly as onlyDecline, isSending, outcomeOf, placeOf, planBlocked, wantsTo, type ProposalData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 
 /**
@@ -63,8 +63,8 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
           <>
             <div className="flex flex-col gap-2">
               <h1 className="text-2xl font-semibold tracking-tight text-balance">{wantsTo(proposal)}</h1>
-              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.learning?.why ?? proposal.plan?.why ?? proposal.why) && (
-                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.learning?.why ?? proposal.plan?.why ?? proposal.why}”</p>
+              {(request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why) && (
+                <p className="text-base text-muted-foreground">“{request?.why ?? suggestion?.why ?? proposal.member?.why ?? proposal.publication?.why ?? proposal.task?.why ?? proposal.archive?.why ?? proposal.conversion?.why ?? proposal.page?.why ?? proposal.plan?.why ?? proposal.why}”</p>
               )}
             </div>
             <ProposalDetails
@@ -97,13 +97,9 @@ export function Confirm({ proposal, decide, withdraw, message: initialMessage }:
             {/* Someone who can't be added is only declined, so there's no approving to explain. */}
             {!(declineOnly && action === 'members') && <p className="text-sm text-muted-foreground">
               {proposal.plan
-                ? planNote(proposal, proposal.plan, 'page')
-                : action === 'learn' || action === 'learn further'
-                ? proposal.learning?.problem
-                  ? `This can’t be approved as it is. Ask ${assistant} to propose it again, or decline it.`
-                  : action === 'learn'
-                  ? `Only you can start it. ${assistant} can’t do it for you, and nothing is sent to a model until you do.`
-                  : `Only you can approve this. ${assistant} can’t do it for you, and nothing of what this adds is sent to a model until you do.`
+                ? planBlocked(proposal.plan)
+                  ? `A change can’t be made now, so this can’t be approved as it is. Ask ${assistant} to revise it, or decline it.`
+                  : `Only you can approve this, and ${assistant} can’t do it for you. Approving makes every change at once, and none if one can’t be made then. To change something, ask ${assistant} to revise it.`
                 : action === 'members' || action === 'archive'
                 ? `Only you can approve this. ${assistant} can’t do it for you.`
                 : action === 'convert'

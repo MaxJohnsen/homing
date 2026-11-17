@@ -23,25 +23,6 @@ export const mailbox: Words = {
 /** The answer for a reference that names no email the person can read, whoever's it is. */
 export const noEmail = noItem(mailbox);
 
-/**
- * Why an email needs no model, by its own headers, by lower-case name, and its sender: a newsletter
- * or mailing list, which says how to unsubscribe or that it's bulk mail, or mail a system sent on
- * its own, which says it was submitted automatically or comes from an address nobody answers.
- * Undefined when it may need one.
- */
-export function automatedEmail(headers: ReadonlyMap<string, string>, from: Party | null): 'newsletter' | 'automated' | undefined {
-  if (headers.has('list-unsubscribe') || headers.has('list-id')) return 'newsletter';
-  // What says a system sent it counts before what only says it went to many.
-  const submitted = headers.get('auto-submitted');
-  if (submitted !== undefined && !/^\s*no\s*$/i.test(submitted)) return 'automated';
-  if (/^\s*(bulk|list|junk)\s*$/i.test(headers.get('precedence') ?? '')) return 'newsletter';
-  if (from?.address && noReply.test(from.address.trim())) return 'automated';
-  return undefined;
-}
-
-/** Addresses nobody answers, such as noreply@ and mailer-daemon@. */
-const noReply = /^(no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer-daemon|postmaster)([+-][^@]*)?@/i;
-
 /** An email, as its mailbox gives it: who it's from and to, its text, and its attachments by name. */
 export interface Email {
   id: string;
@@ -60,8 +41,8 @@ export interface Email {
   attachments: string[];
 }
 
-/** An email as a list of them shows it, such as a search or its thread, with whom it was sent to where the list says. */
-export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'> & { to?: Party[] };
+/** An email as a list of them shows it, such as a search or its thread. */
+export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'>;
 
 /** How many of an email's recipients its audience keeps. */
 const audienceKept = 100;
@@ -88,13 +69,11 @@ export function emailItem(email: Email, thread: EmailSummary[], moreInThread: bo
   if (email.cc.length) fields.push(['Cc', { parties: email.cc }]);
   fields.push(['Date', { at: email.at }], ['Subject', { text: email.subject ?? '' }]);
   if (email.attachments.length) fields.push(['Attachments, by name only', { texts: email.attachments }]);
-  const own = splitQuoted(email.unique ?? email.body).own;
   return {
     envelope: envelopeOf(email, audience),
     fields,
     text: email.body,
-    parts: { own: own.join('\n\n'), quoted: quotedPart(email.body, own).join('\n\n') },
-    related: thread.map((summary) => envelopeOf(summary, summary.to?.length ? { people: summary.to.slice(0, audienceKept), more: Math.max(0, summary.to.length - audienceKept) } : 'unknown')),
+    related: thread.map((summary) => envelopeOf(summary)),
     moreRelated: moreInThread,
     excerpt: (words) => emailExcerpt(email, words),
   };
@@ -194,34 +173,26 @@ function quotedPart(body: string, own: string[]): string[] {
  * write it in English and Norwegian. Both as paragraphs.
  */
 export function splitQuoted(body: string): { own: string[]; earlier: string[] } {
-  const lines = linesOf(body);
+  const lines = body.replace(/\r\n?/g, '\n').split('\n');
   const plainLines = lines.map(flat);
-  const first = plainLines.findIndex((line, at) => /^_{8,}$/.test(line) || startsQuoted(plainLines, at));
+  const header = (at: number) =>
+    /^(From|Fra|Von|Från):\s/i.test(plainLines[at]) && plainLines.slice(at + 1, at + 5).some((line) => /^(Sent|Sendt|Date|Dato|Gesendet|Skickat):\s/i.test(line));
+  const starts = (at: number) =>
+    /^-{2,}\s*(Original Message|Opprinnelig melding)\s*-{2,}$/i.test(plainLines[at]) ||
+    /^_{8,}$/.test(plainLines[at]) ||
+    /^On\s.*\bwrote:$/i.test(plainLines[at]) ||
+    (/^On\s/i.test(plainLines[at]) && /\bwrote:$/i.test(plainLines[at + 1] ?? '')) ||
+    /\d.*\bskrev\b.*:$/i.test(plainLines[at]) ||
+    header(at);
+  const first = plainLines.findIndex((_, at) => starts(at));
   const before = first < 0 ? lines : lines.slice(0, first);
+  const quotes = (line: string) => /^\s*>/.test(line);
   return {
     // A quoted line among the sender's own ends a paragraph, as a blank line would.
     own: paragraphs(before.map((line) => (quotes(line) ? '' : line)).join('\n')),
     earlier: paragraphs([...before.map((line) => (quotes(line) ? line : '')), '', ...(first < 0 ? [] : lines.slice(first))].join('\n')),
   };
 }
-
-/**
- * Whether an email's text carries what came before it, by quoting an earlier email: a line starts
- * with ">", or starts a quoted email. A line of underscores alone doesn't count, since a signature
- * has one too. A quote written some other way isn't seen, which errs on the safe side: the thread's
- * earlier emails are then read besides.
- */
-export const carriesEarlier = (body: string) => linesOf(body).map(flat).some((line, at, plainLines) => quotes(line) || startsQuoted(plainLines, at));
-
-const linesOf = (body: string) => body.replace(/\r\n?/g, '\n').split('\n');
-const quotes = (line: string) => /^\s*>/.test(line);
-/** Whether the line there starts a quoted email: the header of a reply or a forward, or the line written above one. */
-const startsQuoted = (plainLines: string[], at: number) =>
-  /^-{2,}\s*(Original Message|Opprinnelig melding)\s*-{2,}$/i.test(plainLines[at]) ||
-  /^On\s.*\bwrote:$/i.test(plainLines[at]) ||
-  (/^On\s/i.test(plainLines[at]) && /\bwrote:$/i.test(plainLines[at + 1] ?? '')) ||
-  /\d.*\bskrev\b.*:$/i.test(plainLines[at]) ||
-  (/^(From|Fra|Von|Från):\s/i.test(plainLines[at]) && plainLines.slice(at + 1, at + 5).some((line) => /^(Sent|Sendt|Date|Dato|Gesendet|Skickat):\s/i.test(line)));
 
 /**
  * The words, found in one paragraph, or across them, with up to a little of what's around them

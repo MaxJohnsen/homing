@@ -6,8 +6,8 @@ import type { ProposalData } from '@/lib/proposals';
 import type { RuleActions } from '@/lib/guidance';
 import type { Route } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
-import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleLearning, sampleLearningConnections, sampleMaps, sampleSenders, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
-import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, learningProposal, learningFurtherProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal, mapProposal, mapLeftOutProposal, mapWaitsProposal, mapByHomingProposal } from '@/sample';
+import { sampleConnectedAccounts, sampleConnections, sampleConnection, sampleModelKeptOff, sampleModelOff, sampleModelOffAbove, sampleModelSpending, sampleModelUse } from '@/sample';
+import { sampleChanges, sampleChangesWithArchived, sampleOverview, sampleGathered, sampleSearch, samplePage, samplePages, sampleSource, sampleSources, changeProposal, longProposal, requestProposal, includeProposal, includeSkillProposal, excludeProposal, closedIncludeProposal, closedExcludeProposal, sampleHiddenSkills, sampleWaitingSkills, sampleIncludes, sampleIncludable, sampleRequests, manySpaces, sampleAdmin, manyWaiting, personalProposal, proposal, removeProposal, sampleAccount, sampleRules, sampleSkill, sampleSkills, sampleSpace, sampleSpaces, sampleWaiting, suggestedSpace, memberProposal, publishProposal, sampleTasks, taskProposal, archiveProposal, convertProposal, pageArchiveProposal, planProposal, newSpacePlanProposal, blockedPlanProposal } from '@/sample';
 import { Account } from '@/screens/account';
 import { Admin, type MakeInvite } from '@/screens/admin';
 import { CardPreview } from '@/screens/card-preview';
@@ -98,29 +98,6 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/tasks': { label: 'A space’s tasks', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="tasks"><Tasks space={sampleSpace.closed} data={sampleTasks} actions={{ add: notSaved, done: notSaved, share: notSaved }} now={new Date('2026-10-20T10:00:00+02:00')} /></Space></InApp> },
   '/spaces/tasks/empty': { label: 'A space with no tasks', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="tasks"><Tasks space={sampleSpace.root} data={{ open: [], done: [] }} actions={{ add: notSaved, done: notSaved, share: notSaved }} /></Space></InApp> },
   '/spaces/connections': { label: 'A space’s connections: your mailbox, only for you', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleConnections} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/estimated': { label: 'Learning from your mailbox, estimated, before it starts', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.estimated)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/history': { label: 'Learning from your mailbox, through its history', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.history)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/at-limit': { label: 'Learning from your mailbox, paused at its limit', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.atLimit)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/paused': { label: 'Learning from your mailbox, paused', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.paused)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/following': { label: 'Learning from your mailbox, following what arrives', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.following)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/more-folders': { label: 'Learning from a mailbox with more folders than Homing follows', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.partly)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/extending': { label: 'Learning from your mailbox, further back', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.extending)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/proposed': { label: 'Learning from your mailbox, asked what further back would cost', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.proposed)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/waiting': { label: 'Learning from your mailbox, waiting for the model’s provider', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.waiting)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/model-off': { label: 'Learning from your mailbox, waiting where model processing is off', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleLearning.off)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/learning/no-model': { label: 'A mailbox Homing can’t learn from yet, without a model', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(null, null)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/looking': { label: 'A mailbox Homing is looking at, for who writes there', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.looking)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/looked': { label: 'A mailbox Homing has looked at, with no map yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.looked)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/looked/no-model': { label: 'A mailbox Homing has looked at, with no map yet and no model', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.looked, null)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/suggesting': { label: 'A mailbox whose map Homing’s model is working out', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.suggesting)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/waiting': { label: 'A mailbox with a map that waits for you', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.waiting)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map': { label: 'A mailbox’s map: where each sender’s mail goes, and who isn’t placed', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.mapped)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/no-model': { label: 'A mailbox’s map, without a model', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections({ ...sampleMaps.looked, mapped: sampleMaps.mapped.mapped, leftOut: sampleMaps.mapped.leftOut }, null)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/estimated': { label: 'A mailbox’s map before learning starts, with what each route costs', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.estimated)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/nowhere': { label: 'A mailbox’s map with a space archived since, and one with model processing off', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.nowhere)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/long': { label: 'A mailbox’s map of eighty routes, with a new map that waits', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.long)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/failed-again': { label: 'A mailbox’s map Homing couldn’t look at again', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.failedAgain)} actions={sampleConnectionActions} /></Space></InApp> },
-  '/spaces/connections/map/failed': { label: 'A mailbox Homing couldn’t look at', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleLearningConnections(sampleMaps.failed)} actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/connected': { label: 'A space’s connections, just after connecting', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: sampleConnections.places.map((place) => ({ ...place, elsewhere: [] })) }} notice="connected" actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/empty': { label: 'A space with nothing connected yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/personal': { label: 'Your personal space’s connections', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="connections"><Connections space={sampleSpace.personal} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
@@ -206,11 +183,6 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/page-archive/gone': { label: 'A page archived before deciding', render: () => <SampleConfirm proposal={{ ...pageArchiveProposal, page: { ...pageArchiveProposal.page!, archived: true } }} /> },
   '/confirm/task': { label: 'Confirm sharing a task with a space', render: () => <SampleConfirm proposal={taskProposal} /> },
   '/confirm/task/shared': { label: 'A task shared with a space', render: () => <SampleConfirm proposal={{ ...taskProposal, spaceId: 'acme', state: 'approved' }} /> },
-  '/confirm/learning': { label: 'Confirm that Homing learns from your mailbox', render: () => <SampleConfirm proposal={learningProposal} /> },
-  '/confirm/learning/further': { label: 'Confirm that Homing learns further back', render: () => <SampleConfirm proposal={learningFurtherProposal} /> },
-  '/confirm/learning/changed': { label: 'Confirm learning: the estimate changed meanwhile', render: () => <SampleConfirm proposal={{ ...learningProposal, learning: { ...learningProposal.learning!, problem: 'The estimate changed after Claude proposed this. Ask it to propose it again.' } }} /> },
-  '/confirm/learning/started': { label: 'Learning started from a proposal', render: () => <SampleConfirm proposal={{ ...learningProposal, state: 'approved' }} /> },
-  '/confirm/learning/declined': { label: 'Learning not started', render: () => <SampleConfirm proposal={{ ...learningProposal, state: 'rejected' }} /> },
   '/confirm/members': { label: 'Confirm adding someone to a space', render: () => <SampleConfirm proposal={memberProposal} /> },
   '/confirm/members/unknown': { label: 'Confirm adding an email nobody uses Homing with', render: () => <SampleConfirm proposal={{ ...memberProposal, member: { change: 'add', name: null, email: 'jon@northwind.example', found: false } }} /> },
   '/confirm/members/admin': { label: 'Confirm making someone an admin', render: () => <SampleConfirm proposal={{ ...memberProposal, member: { ...memberProposal.member!, change: 'make admin' } }} /> },
@@ -220,11 +192,6 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/confirm/plan/new-space': { label: 'Confirm a plan that creates a space others would see', render: () => <SampleConfirm proposal={newSpacePlanProposal} /> },
   '/confirm/plan/blocked': { label: 'A plan with a change that can’t be made now', render: () => <SampleConfirm proposal={blockedPlanProposal} /> },
   '/confirm/plan/approved': { label: 'A plan approved', render: () => <SampleConfirm proposal={{ ...planProposal, state: 'approved' }} /> },
-  '/confirm/map': { label: 'Confirm a map: where a mailbox’s mail belongs, with the spaces it creates', render: () => <SampleConfirm proposal={mapProposal} /> },
-  '/confirm/map/left-out': { label: 'Confirm a map with a route for someone you left out since', render: () => <SampleConfirm proposal={mapLeftOutProposal} /> },
-  '/confirm/map/waits': { label: 'Confirm a map with a route to a space where model processing is off', render: () => <SampleConfirm proposal={mapWaitsProposal} /> },
-  '/confirm/map/by-homing': { label: 'Confirm a map Homing’s own model suggested', render: () => <SampleConfirm proposal={mapByHomingProposal} /> },
-  '/confirm/map/set': { label: 'A map set', render: () => <SampleConfirm proposal={{ ...mapProposal, state: 'approved' }} /> },
   '/confirm/removed': { label: 'Rule removed', render: () => <SampleConfirm proposal={{ ...removeProposal, state: 'approved', rule: { ...removeProposal.rule!, current: false } }} /> },
   '/confirm/expired': { label: 'Request expired', render: () => <SampleConfirm proposal={{ ...proposal, state: 'expired' }} /> },
   '/confirm/gone': { label: 'Rule removed before deciding', render: () => <SampleConfirm proposal={{ ...changeProposal, rule: { ...changeProposal.rule!, current: false } }} /> },
@@ -244,12 +211,8 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/card-preview/archive': { label: 'The card for archiving a space', render: () => <CardPreview sample="archive" /> },
   '/card-preview/page-archive': { label: 'The card for archiving a page others see', render: () => <CardPreview sample="page-archive" /> },
   '/card-preview/task': { label: 'The card for sharing a task', render: () => <CardPreview sample="task" /> },
-  '/card-preview/learning': { label: 'The card for learning from your mailbox', render: () => <CardPreview sample="learning" /> },
   '/card-preview/members': { label: 'The card for adding someone to a space', render: () => <CardPreview sample="members" /> },
   '/card-preview/plan': { label: 'The card for a plan of several changes', render: () => <CardPreview sample="plan" /> },
-  '/card-preview/map': { label: 'The card for a map of where a mailbox’s mail belongs', render: () => <CardPreview sample="map" /> },
-  '/card-preview/map-left-out': { label: 'The card for a map with a route for someone you left out since', render: () => <CardPreview sample="map-left-out" /> },
-  '/card-preview/map-waits': { label: 'The card for a map with a route to a space where model processing is off', render: () => <CardPreview sample="map-waits" /> },
   '/card-preview/plan-blocked': { label: 'The card for a plan with a change that can’t be made now', render: () => <CardPreview sample="plan-blocked" /> },
   '/card-preview/space': { label: 'The card for a space Claude suggests', render: () => <CardPreview sample="space" /> },
   '/card-preview/done': { label: 'The card after a change that needed no approval', render: () => <CardPreview sample="done" /> },
@@ -308,24 +271,6 @@ const notCreated: CreateSpace = async () => ({ problem: 'Samples don’t create 
 const sampleConnectionActions: ConnectionActions = {
   connect: async () => 'Samples don’t connect anything.',
   remove: async () => 'Samples don’t save anything.',
-  learning: {
-    estimate: async () => 'Samples don’t reach a mailbox.',
-    start: async () => 'Samples don’t learn from anything.',
-    pause: async () => 'Samples don’t save anything.',
-    resume: async () => 'Samples don’t save anything.',
-    estimateExtension: async () => 'Samples don’t reach a mailbox.',
-    forgetExtension: async () => 'Samples don’t save anything.',
-    extend: async () => 'Samples don’t reach a mailbox.',
-    setLimit: async () => 'Samples don’t save anything.',
-    leaveOut: async () => 'Samples don’t save anything.',
-    tryAgain: async () => 'Samples don’t learn from anything.',
-    summarize: async () => 'Samples don’t reach a mailbox.',
-    suggestMap: async () => ({ problem: 'Samples don’t ask a model.' }),
-    senders: async (_place, _reason, search, from) => {
-      const found = sampleSenders.filter((one) => one.sender.includes(search.trim().toLowerCase()));
-      return { senders: found.slice(from, from + 50), total: found.length };
-    },
-  },
 };
 
 const sampleAccountConnections: AccountConnectionActions = {
