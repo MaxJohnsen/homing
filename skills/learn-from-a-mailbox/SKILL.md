@@ -24,9 +24,9 @@ A handful of well-kept pages for each subject is the aim. A long list of small n
 
 ## Before you begin
 
-Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read. Then skim that period in the mailbox's list, which shows each email as one line, and say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
+Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read. Then take two short looks at the mailbox's list, which shows each email as one line: a stretch from where reading will begin, and a stretch from a few weeks ago. Asking for the list from a date begins there. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
 
-It is a sketch. Reading corrects it.
+It is a sketch. Reading corrects it. Then ask for the list from the date reading should begin, which sets the place reading has reached back to there, and start.
 
 ## A sitting
 
@@ -39,7 +39,7 @@ It is a sketch. Reading corrects it.
    - Write there. Cite the emails you rest on, with the words that matter.
 3. Tell Homing the stretch is done only when everything from it is written. Then take the next.
 4. Stop while your head is clear: after three or four busy stretches, start a new session. Homing holds the place.
-5. End the sitting in the mailbox's reading log, a page beside the mailbox: the period you covered; what you understood changed, a few sentences for each subject; your questions for the user.
+5. End the sitting in the mailbox's reading log: a page named "Reading log" in the space where the mailbox is connected, which you make at the first sitting and read at the start of each later one. Add to it: the period you covered; what you understood changed, a few sentences for each subject; your questions for the user.
 
 ## How to write what you learn
 
@@ -50,7 +50,7 @@ It is a sketch. Reading corrects it.
 - **Keep the mail's own terms.** Where the mail uses a Norwegian word and an English one for the same thing, give both once.
 - **No tasks while you read history.** Put open matters on the Open page; later mail will close most of them. Tasks come when you reach today.
 - **Give more attention to what is current and unfinished**, without assuming that newer always matters more. A decision from two years ago can still govern today.
-- **When you don't know where something belongs**, give the subject a page of its own beside the mailbox, named for it, and put a question in the log. Don't guess a client. A page of its own can be moved whole when its place becomes clear.
+- **When you don't know where something belongs**, give the subject a page of its own in the space where the mailbox is connected, named for it, and put a question in the log. Don't guess a client. A page of its own can be moved whole when its place becomes clear.
 - **A new client or project** shows itself over several conversations: the same people, real substance. Bring it to the user. Suggest few spaces, and only useful ones.
 - **When the user says some mail must never be read** ("no newsletters from X"), add it to the mailbox's never-read list. Don't add to it on your own.
 
