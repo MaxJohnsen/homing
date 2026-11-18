@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { cn } from 'cn';
 import { OnlyYou } from '@/components/only-you';
 import { ago, dateOf, focusRing, ScreenHeader } from '@/components/screen';
-import { nameIn, plain, type ChangeData } from '@/lib/knowledge';
+import { nameIn, plain, restsOn, type ChangeData } from '@/lib/knowledge';
 import { Link } from '@/lib/router';
 import { placeName } from '@/lib/search';
 
@@ -65,7 +65,7 @@ function ChangeRow({ change, now }: { change: ChangeData; now?: Date }) {
         <span className="text-base leading-snug font-semibold break-words">{change.newPage ? change.title : <span className="line-clamp-2">{plain(change.text)}</span>}</span>
         {change.newPage && <span className="line-clamp-2 text-base">{plain(change.text)}</span>}
         <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted-foreground">
-          {what}, {byWhom(change)}, {ago(change.at, now)}.{change.space.archived ? ` ${change.space.name} is archived.` : change.pageArchived ? ' The page is archived.' : ''}
+          {what}, {byWhom(change)}, {ago(change.at, now)}.{restsOn(change.readFrom) && ` ${restsOn(change.readFrom)}`}{change.space.archived ? ` ${change.space.name} is archived.` : change.pageArchived ? ' The page is archived.' : ''}
           {change.onlyYou && !change.space.private && <OnlyYou />}
         </span>
       </Link>

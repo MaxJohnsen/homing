@@ -35,8 +35,6 @@ import {
   ownText,
   personWrote,
   importedAuthor,
-  sourcesOf,
-  type Citation,
   type Hit,
   type Item,
   type Imported,
@@ -298,7 +296,8 @@ export function mcpServer(
       title: 'Search',
       description:
         "Searches pages, knowledge, sources and tasks you can see, and the user's proposals still waiting, optionally within a space and the spaces below it. " +
-        "Where the user connected their mailbox to Homing, it also searches their email, live: `read` opens an email by its microsoft:… reference.",
+        "Where the user connected their mailbox to Homing, it also searches their email, live: `read` opens an email by its microsoft:… reference. " +
+        'With known, only what Homing knows: to find where something belongs.',
       inputSchema: z.object({
         query: text(),
         space: text().optional().describe('A space reference, such as space:…'),
@@ -869,7 +868,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
                 !overview.some((item) => item.privateTo !== null) && overview.some((item) => ownText(s, item, 'shared'))
                 ? 'The shared one is the user\'s own writing: when they ask you to change it, use `remember` with replaces on it, which makes their own update of it, until they share it.'
                 : 'Keep the user\'s own up to date with `remember` and `overview: true`.'),
-          ...overview.map((item) => `- ${oneLine(item.body)} (${ref('item', item.id)}, ${item.privateTo ? (item.replaced?.shared ? 'private, replacing the shared overview for the user' : 'private') : 'shared'}${also(learned(links, item, item.sources))})`),
+          ...overview.map((item) => `- ${oneLine(item.body)} (${ref('item', item.id)}, ${item.privateTo ? (item.replaced?.shared ? 'private, replacing the shared overview for the user' : 'private') : 'shared'})`),
         ]
       : []),
     ...(rules.length
@@ -1044,8 +1043,8 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ? page.items.flatMap((item) => [
             // Longer Markdown as written, so its structure shows and a passage can be copied exactly for an edit.
             ...(item.body === oneLine(item.body)
-              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}${also(learned(links, item, item.sources))})`]
-              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}${also(learned(links, item, item.sources))}:`, ...fenced(item.body)]),
+              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}${also(learned(links, item.readFrom))})`]
+              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}${also(learned(links, item.readFrom))}:`, ...fenced(item.body)]),
             ...(item.privateTo && item.replaced?.shared
               ? [`  - A private update. Others in the space still see: ${quote(item.replaced.body)}`]
               : []),
@@ -1069,7 +1068,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     const names = await peopleNames(s, [item.writtenBy, ...item.history.map((revision) => revision.writtenBy)]);
     const rule = item.kind === 'requirement' || item.kind === 'preference';
     const what = rule ? `A ${item.kind}, ` : item.path ? `The skill file ${item.path}, ` : '';
-    const fromMail = learned(links, item, item.sources);
+    const fromMail = learned(links, item.readFrom);
     return [
       item.body,
       '',
@@ -1258,7 +1257,7 @@ async function collect(s: Session, spaceId: string, input: { page?: string; gath
   if (!input.page) throw new Refused('Say which page, with page: and a page reference or its title.');
   const page = /^page:/i.test(input.page)
     ? { id: parseRef(input.page, 'page') }
-    : (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === oneLineTitle(input.page!).toLowerCase());
+    : await pageTitled(s, spaceId, input.page);
   if (!page) throw new Refused('There is no page with that title in this space that you can see.');
   const said: string[] = [];
   if (input.gatherInto) {
@@ -1294,10 +1293,14 @@ async function pageFor(s: Session, spaceId: string, page?: Page | string, type?:
   if (typeof page === 'object') return { id: page.id, title: page.title, created: false, archived: page.archived !== null };
   // Titles are one line however they were written, so "Gunnar  Holm" is Gunnar Holm's page.
   const title = oneLineTitle(page ?? 'Notes') || 'Notes';
-  // A subject keeps one page, archived or not: an active one with the title first.
-  const existing = (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === title.toLowerCase());
+  const existing = await pageTitled(s, spaceId, title);
   if (existing) return { id: existing.id, title: existing.title!, created: false, archived: existing.archived };
   return { id: await createPage(s, { spaceId, title, type: page ? type : 'notes' }), title, created: true, archived: false };
+}
+
+/** The page in a space with a title, whatever its case and spacing: a subject keeps one page, archived or not, an active one first. */
+async function pageTitled(s: Session, spaceId: string, title: string) {
+  return (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === oneLineTitle(title).toLowerCase());
 }
 
 async function proposeGuidance(
@@ -1799,23 +1802,18 @@ async function movePageFor(s: Session, links: Links, input: z.infer<typeof pageM
     return space ? `${spaceLabel(space)} (${ref('space', space.id)})` : 'a space above';
   };
   if (spaces.find((space) => space.id === to)?.archived) throw new Refused(`${capitalize(named(to))} is archived. Nothing moved: ask the user whether to reopen it first.`);
+  const same = await pageTitled(s, to, page.title);
+  if (same && same.id !== pageId) {
+    throw new Refused(
+      `${capitalize(named(to))} already has a${same.archived ? 'n archived' : ''} page called ${quote(same.title ?? '')} (${ref('page', same.id)}). ` +
+        'Nothing moved: write what this page says on that one instead, or ask the user.',
+    );
+  }
   const { collections } = await linksOf(s, pageId);
   const { total: gathered } = await pagesIn(s, page.spaceId, { in: pageId, limit: 1 });
   let from: string;
   try {
-    from = await s.tx.savepoint(async (sp) => {
-      const moved = await movePage({ ...s, tx: sp }, pageId, to);
-      // A subject keeps one page in a space, so one with its title there is where this belongs.
-      const title = oneLineTitle(page.title).toLowerCase();
-      const same = (await listPages({ ...s, tx: sp }, to, { withArchived: true })).find((other) => other.id !== pageId && oneLineTitle(other.title ?? '').toLowerCase() === title);
-      if (same) {
-        throw new Refused(
-          `${capitalize(named(to))} already has a${same.archived ? 'n archived' : ''} page called ${quote(same.title ?? '')} (${ref('page', same.id)}). ` +
-            "Nothing moved: write what this page says on that one instead, or ask the user.",
-        );
-      }
-      return moved;
-    });
+    from = await movePage(s, pageId, to);
   } catch (error) {
     if (error instanceof postgres.PostgresError && (error.code === '42501' || error.code === '23514')) throw new Refused(`${capitalize(error.message)}. Nothing moved.`);
     throw error;
@@ -2091,7 +2089,6 @@ async function describeHits(s: Session, links: Links, hits: Hit[], within?: stri
   // Knowledge a person wrote themselves says who, since it stays theirs.
   const people = (hit: Hit) => hit.kind === 'item' && hit.itemKind === 'text' && byPerson(hit);
   const names = await peopleNames(s, hits.map((hit) => (people(hit) ? hit.writtenBy : null)));
-  const cited = await sourcesOf(s, hits.filter((hit) => hit.kind === 'item').map((hit) => hit.id));
   return hits.map((hit) => {
     const label =
       hit.kind === 'page'
@@ -2104,7 +2101,7 @@ async function describeHits(s: Session, links: Links, hits: Hit[], within?: stri
     const space = spaces.get(hit.spaceId);
     const included = within && !inside(hit.spaceId) ? ', included here' : '';
     const by = people(hit) ? `, written by ${author(names, hit.writtenBy, hit.agent, hit.imported, hit.editAgent)}` : '';
-    const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}${by}${also(learned(links, hit, cited.get(hit.id) ?? []))}`;
+    const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}${by}${also(hit.kind === 'item' ? learned(links, hit.readFrom) : '')}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
       hit.replacedForYou && "What others still see. The user's private update replaces it for them.",
@@ -2313,22 +2310,17 @@ function author(names: Map<string, string>, writtenBy: string | null, agent: str
 }
 
 /**
- * What an item says of its sources when one is something Homing read for the user, such as an email,
- * whoever wrote it: "learned from an email Homing read, so it's what the assistant took from it, not
- * what the user wrote", or, when it rests on more than that, that it's partly so. Nothing for an item
- * that cites nothing Homing read. Its sources say which.
+ * What an item says, to everyone who sees it, when it rests on something Homing read itself in a
+ * kind of place, whoever wrote or corrected it: "rests on an email Homing read: what was taken from
+ * it, not the email's own words". Nothing when it rests on nothing Homing read.
  */
-function learned(links: Links, item: { writtenBy: string | null; agent: string | null; imported: Imported | null }, sources: Citation[]): string {
-  const read = sources.filter((source) => source.readThrough);
-  if (read.length === 0) return '';
-  const words = wordsOf(connectorOf(links.connectors, read[0].reference ?? undefined));
-  const [what, it] = read.length === 1 ? [`${words.anItem} Homing read`, 'it'] : [`${read.length} ${words.items} Homing read`, 'them'];
-  return read.length === sources.length && !byPerson(item)
-    ? `learned from ${what}, so it's what the assistant took from ${it}, not what the user wrote`
-    : `learned partly from ${what}: that part is what the assistant took from ${it}, not what the user wrote`;
+function learned(links: Links, readFrom: string | null): string {
+  if (readFrom === null) return '';
+  const words = wordsOf([...links.connectors.values()].find((connector) => kindOf(connector, readFrom)), readFrom);
+  return `rests on ${words.anItem} Homing read: what was taken from it, not the ${words.item}'s own words`;
 }
 
-/** A clause added to a list of facts, when there is one: ", learned from…". */
+/** A clause added to a list of facts, when there is one: ", rests on…". */
 const also = (clause: string) => (clause ? `, ${clause}` : '');
 
 /** "Preference, from Acme, private: Write reports in Norwegian.", or one an include brings: "…, from Standards (space:…), included in Acme: …" */

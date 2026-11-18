@@ -572,8 +572,8 @@ function pageActions(page: PageData, gatheredPath: string): PageActions {
         throw error;
       }
     },
-    // Shared directly, as the person: what they were shown, and the page as it is now.
-    publish: (itemId, shown) => run(() => api(`/api/items/${itemId}/publish`, { shown })),
+    // Shared directly, as the person: what they were shown, in the space it was shown for, and the page as it is now.
+    publish: (itemId, shown) => run(() => api(`/api/items/${itemId}/publish`, { shown, space: page.space.id })),
   };
 }
 

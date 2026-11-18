@@ -1,19 +1,21 @@
 // Issue #151: what an assistant that learns from a mailbox needs of Homing (spec §2, §3, §10).
 // Ana connected her work mailbox in Minus 1, only for her. Cara is her colleague in Minus 1 and
 // Acme, and Ben works for Beta. Homing gives the assistant of someone with a mailbox its own skill
-// for learning from one, unless they have a skill of that name; what an assistant took from an
-// email says so wherever it's shown, however often it's rewritten and by whichever assistant; a
-// search keeps to what is known when asked; and a page wholly Ana's own moves to the space it
-// belongs in, seen by nobody else before or after. Microsoft is a stand-in.
+// for learning from one, unless they have a skill of that name; what rests on an email Homing read
+// says so to everyone who sees it, however often it's rewritten, corrected or shared, and by whom;
+// a search keeps to what is known when asked; and a page wholly Ana's own moves to the space it
+// belongs in, seen by nobody else before or after, while what she was shown for sharing in the
+// space it left is shared nowhere. Microsoft is a stand-in.
 
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { after, before, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
 import { addRule } from '../src/guidance.ts';
+import { setModelProcessing } from '../src/model.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { saveSkill } from '../src/skills.ts';
-import { addMember, archiveSpace, createSpace } from '../src/spaces.ts';
+import { addMember, archiveSpace, changeMember, createSpace } from '../src/spaces.ts';
 import { Assistant, assistants, testAssistants } from './assistant.ts';
 import { admin, as, db, member, share, type Member } from './helpers.ts';
 import { MicrosoftStandIn, type Account } from './microsoft.ts';
@@ -77,9 +79,13 @@ async function world() {
 }
 
 const skillMd = (description: string) => ({ path: 'SKILL.md', body: `---\nname: learn-from-a-mailbox\ndescription: ${description}\n---\n\nRead it your way.\n` });
-const homingsOwn = /- learn-from-a-mailbox: Read a connected mailbox from its oldest mail to its newest[^\n]*\((page:[0-9a-f-]{36}), built into Homing\)/;
+const homingsOwn = /- learn-from-a-mailbox: How to learn from the user's mailbox in Homing, reading it from its oldest mail to its newest\.[^\n]*\((page:[0-9a-f-]{36}), built into Homing\)/;
+const itemOf = (answer: { text: string; failed: boolean }) => {
+  assert.ok(!answer.failed, answer.text);
+  return /item:([0-9a-f-]{36})/.exec(answer.text)![1];
+};
 
-test('a new person’s assistant finds Homing’s skill for learning from a mailbox in context, and reads it whole', async () => {
+test('a new person’s assistant finds Homing’s skill for learning from a mailbox in context, only for a request about mail, and reads it whole', async () => {
   const { cara, minus1, claude } = await world();
   const here = (await claude.call('context', { request: 'Learn from my mailbox', space: `space:${minus1}` })).text;
   const [, reference] = homingsOwn.exec(here.slice(here.indexOf('\n## Skills\n'))) ?? [];
@@ -88,6 +94,11 @@ test('a new person’s assistant finds Homing’s skill for learning from a mail
   const anywhere = (await claude.call('context', { request: 'Learn from my mailbox' })).text;
   assert.match(anywhere.slice(anywhere.indexOf('\n## Skills that fit\n')), homingsOwn);
   assert.equal(homingsOwn.exec(anywhere)?.[1], reference);
+  for (const request of ['Read my email', 'Carry on reading my mail']) assert.match((await claude.call('context', { request })).text, homingsOwn, request);
+  // A request about something else doesn't get it, and still hears that nothing in Homing matches.
+  const elsewhere = (await claude.call('context', { request: 'Who are my clients, and which projects and people are current?' })).text;
+  assert.doesNotMatch(elsewhere, /learn-from-a-mailbox/);
+  assert.match(elsewhere, /^You are Ana\. Nothing in Homing matches this request\./);
 
   // Read whole, exactly as Homing has it.
   const read = await claude.call('read', { ref: reference });
@@ -135,11 +146,10 @@ async function seen(claude: Session, item: string, page: string, space: string, 
   };
 }
 
-test('what an assistant took from an email says so in context, read, search and the app, however it is rewritten and by whom', async () => {
-  const { ana, minus1, email, claude } = await world();
+test('what rests on an email Homing read says so to everyone who sees it, however it is rewritten, corrected or shared, and by whom', async () => {
+  const { ana, cara, minus1, email, claude } = await world();
   const chatgpt = await assistantOf(ana, assistants.chatgpt);
-  const pure = "learned from an email Homing read, so it's what the assistant took from it, not what the user wrote";
-  const partly = 'learned partly from an email Homing read: that part is what the assistant took from it, not what the user wrote';
+  const label = "rests on an email Homing read: what was taken from it, not the email's own words";
   const saved = async (answer: { text: string; failed: boolean }) => {
     assert.ok(!answer.failed, answer.text);
     return /as item:([0-9a-f-]{36})/.exec(answer.text)![1];
@@ -153,36 +163,41 @@ test('what an assistant took from an email says so in context, read, search and 
     sources: [{ reference: email, excerpt: 'The Northwind budget for 2027 is NOK 2 million, approved by the board on Monday.' }],
   }));
   const [{ page }] = await admin<{ page: string }[]>`select page_id as page from content where id = ${item}`;
-  const check = async (writer: string, label: string) => {
+  const check = async (writer: string) => {
     const lines = await seen(claude, item, page, minus1, 'Northwind budget');
-    assert.ok(lines.page.endsWith(`written by Ana through ${writer}, ${label})`), lines.page);
-    assert.ok(lines.item.includes(`Written by Ana through ${writer} on `) && lines.item.includes(`. ${label[0].toUpperCase()}${label.slice(1)}.`), lines.item);
-    assert.ok(lines.search.endsWith(`private, ${label})`), lines.search);
-    assert.ok(lines.context.endsWith(`private, ${label})`), lines.context);
+    assert.ok(lines.page.endsWith(`written by ${writer}, ${label})`), lines.page);
+    assert.ok(lines.item.includes(`Written by ${writer} on `) && lines.item.includes(`. ${label[0].toUpperCase()}${label.slice(1)}.`), lines.item);
+    assert.ok(lines.search.endsWith(`, ${label})`), lines.search);
+    assert.ok(lines.context.endsWith(`, ${label})`), lines.context);
   };
-  await check('Claude', pure);
+  await check('Ana through Claude');
 
   // ChatGPT replaces it, and Claude replaces that, each without a source of its own.
   item = await saved(await chatgpt.call('remember', { replaces: `item:${item}`, text: 'The Northwind budget for 2027 is NOK 2 million.' }));
-  await check('ChatGPT', pure);
+  await check('Ana through ChatGPT');
   item = await saved(await claude.call('remember', { replaces: `item:${item}`, text: 'The Northwind budget for 2027 is NOK 2 million, as the board approved.' }));
-  await check('Claude', pure);
+  await check('Ana through Claude');
   // ChatGPT corrects it where it is.
   const updated = await chatgpt.call('remember', { updates: `item:${item}`, text: 'The Northwind budget for 2027 is NOK 2 million, as the board approved on Monday.' });
   assert.ok(!updated.failed, updated.text);
-  await check('ChatGPT', pure);
+  await check('Ana through ChatGPT');
 
-  // With what Ana said besides, it's partly from the email, and says both.
+  // With what Ana said besides, it still rests on the email, and says it the same way.
   item = await saved(await claude.call('remember', {
     replaces: `item:${item}`,
     text: 'The Northwind budget for 2027 is NOK 2 million, approved on Monday, and Ana expects no cuts.',
     sources: [{ reference: 'Ana, in this conversation', excerpt: 'I don’t expect any cuts this year.' }],
   }));
-  await check('Claude', partly);
+  await check('Ana through Claude');
   const sources = (await claude.call('read', { ref: `item:${item}` })).text.split('\n').filter((line) => line.startsWith('- Source: '));
   assert.equal(sources.length, 2);
   assert.ok(sources.some((line) => line.startsWith(`- Source: ${email}, an email Homing read in the user's mailbox: `)));
   assert.ok(sources.some((line) => line.startsWith('- Source: Ana, in this conversation: ')));
+
+  // Ana corrects it herself in the app: it's hers now, and still rests on the email.
+  const text = 'The Northwind budget for 2027 is NOK 3 million: I checked with Gunnar.';
+  assert.equal((await ana.browser.json(`/api/items/${item}`, { text })).status, 200);
+  await check('Ana');
 
   // Every version still rests on the email, so its history stays true.
   const versions = await admin<{ cites: boolean }[]>`
@@ -191,13 +206,28 @@ test('what an assistant took from an email says so in context, read, search and 
   `;
   assert.deepEqual(versions.map((row) => row.cites), [true, true, true, true]);
 
-  // In the app, the item's sources say Homing read the email, which the page says in words.
+  // In the app, the item and what changed on Home say what Homing read it in.
   const shown = await ana.browser.json(`/api/pages/${page}`);
-  const [onPage] = shown.body.items;
-  assert.equal(onPage.id, item);
-  assert.equal(onPage.agent, 'Claude');
-  assert.deepEqual(onPage.sources.map((source: { readThrough: string | null; readFrom: string | null }) => [Boolean(source.readThrough), source.readFrom]).sort(), [[false, null], [true, 'mailbox']]);
-  await Promise.all([claude.close(), chatgpt.close()]);
+  assert.deepEqual(shown.body.items.map((one: { id: string; readFrom: string | null }) => [one.id, one.readFrom]), [[item, 'mailbox']]);
+  const changed = (await ana.browser.json('/api/changes')).body.changes.filter((change: { pageId: string }) => change.pageId === page);
+  assert.deepEqual(changed.map((change: { readFrom: string | null }) => change.readFrom), ['mailbox']);
+
+  // Shared with Minus 1, Cara sees it rests on an email Homing read, and nothing of the email.
+  const sheet = await ana.browser.json(`/api/items/${item}/publication`);
+  assert.equal((await ana.browser.json(`/api/items/${item}/publish`, { shown: sheet.body.text, space: minus1 })).status, 200);
+  const carasClaude = await assistantOf(cara);
+  const theirs = (await carasClaude.call('read', { ref: `page:${page}` })).text;
+  assert.ok(theirs.split('\n').some((line) => line.startsWith(`- ${text} (item:`) && line.endsWith(`, shared, written by Ana, ${label})`)), theirs);
+  assert.doesNotMatch(theirs, /Source:|microsoft:|Gunnar Lie <|board on Monday/);
+  assert.ok((await carasClaude.call('search', { query: 'Northwind budget', known: true })).text.includes(`, written by Ana, ${label})`));
+  const hers = await cara.browser.json(`/api/pages/${page}`);
+  assert.deepEqual(hers.body.items.map((one: { readFrom: string | null; sources: unknown[] }) => [one.readFrom, one.sources.length]), [['mailbox', 0]]);
+  const herChanges = (await cara.browser.json('/api/changes')).body.changes.filter((change: { pageId: string }) => change.pageId === page);
+  assert.deepEqual(herChanges.map((change: { readFrom: string | null }) => change.readFrom), ['mailbox']);
+  // What doesn't rest on anything Homing read says nothing of the kind.
+  const plain = itemOf(await claude.call('remember', { space: `space:${minus1}`, page: 'Northwind budget', text: 'Ana meets Gunnar in March.' }));
+  assert.doesNotMatch((await claude.call('read', { ref: `item:${plain}` })).text, /Homing read/);
+  await Promise.all([claude.close(), chatgpt.close(), carasClaude.close()]);
 });
 
 test('a knowledge-only search for a sender finds what is known about them and no email, and the ordinary search is as it was', async () => {
@@ -252,7 +282,8 @@ test('Ana’s page moves to the space it belongs in, with its items, sources, ci
   // In Acme now, with its knowledge, its sources where they were, and its history.
   const read = (await claude.call('read', { ref: `page:${page}` })).text;
   assert.match(read, new RegExp(`^# Gunnar Lie\nA page in Acme \\(page:${page}\\)\nMoved here from Minus 1 \\(space:${minus1}\\) by Claude on \\d{4}-\\d{2}-\\d{2}\\.\n`));
-  assert.match(read, /Gunnar Lie is Northwind’s CFO, and approves its budget each year\. \(item:[^)]*, learned partly from an email Homing read/);
+  const label = "written by Ana through Claude, rests on an email Homing read: what was taken from it, not the email's own words)";
+  assert.ok(read.includes(`- Gunnar Lie is Northwind’s CFO, and approves its budget each year. (item:${current}, private, ${label}`), read);
   assert.ok(read.includes(`- Source: ${email}, an email Homing read in the user's mailbox: "From: Gunnar Lie <gunnar@northwind.test>`), read);
   assert.doesNotMatch(read, /^In "People"/m);
   const history = (await claude.call('read', { ref: `item:${current}` })).text;
@@ -289,6 +320,16 @@ test('Ana’s page moves to the space it belongs in, with its items, sources, ci
   }
   // Ana, and her assistant for her, see the record of it.
   assert.equal((await as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select moved_from from page_moves where page_id = ${page}`)).length, 1);
+
+  // Once Ana leaves Minus 1, where the email is kept, the page still says what it rests on.
+  await as({ person: ana.id, direct: true }, async (s) => {
+    await addMember(s, minus1, cara.id, 'admin');
+    await changeMember(s, minus1, ana.id, 'remove');
+  });
+  const after = (await claude.call('read', { ref: `page:${page}` })).text;
+  assert.ok(after.includes(`(item:${current}, private, ${label}`), after);
+  assert.match(after, /^Moved here from a space the user can no longer open by Claude on /m);
+  assert.doesNotMatch(after, /Source: microsoft:/);
   await claude.close();
 });
 
@@ -304,11 +345,13 @@ test('moving a page is refused, each time saying why, and nothing moves', async 
   const published = await pageOf(await claude.call('remember', { space: `space:${minus1}`, page: 'Offices', text: 'The office moves in May.' }));
   const [{ id: toShare }] = await admin<{ id: string }[]>`select id from content where page_id = ${published} and kind = 'text'`;
   await share(ana, toShare);
-  // One waiting for her decision.
-  const waiting = await pageOf(await claude.call('remember', { space: `space:${minus1}`, page: 'Budget', text: 'The budget is NOK 2 million.' }));
-  const [{ id: proposed }] = await admin<{ id: string }[]>`select id from content where page_id = ${waiting} and kind = 'text'`;
-  const proposal = await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${proposed}` } });
-  assert.match(proposal.text, /proposal:([0-9a-f-]{36})/);
+  // One in a space with model processing off.
+  const payroll = await as({ person: ana.id, direct: true }, async (s) => {
+    const payroll = await createSpace(s, { name: 'Payroll' });
+    await setModelProcessing(s, payroll, false);
+    return payroll;
+  });
+  const salaries = await pageOf(await claude.call('remember', { space: `space:${payroll}`, page: 'Salaries', text: 'Cara earns NOK 900,000.' }));
   // Guidance, a skill and the overview.
   const { guidance, skill } = await as({ person: ana.id, direct: true }, async (s) => {
     const rule = await addRule(s, { spaceId: minus1, kind: 'preference', body: 'Write in Norwegian' });
@@ -336,19 +379,64 @@ test('moving a page is refused, each time saying why, and nothing moves', async 
     // Ben's space, and one being imported into, are spaces she can't open.
     [own, beta, /^There's no space there that you can open\. Nothing moved\.$/],
     [own, minus1, /^It's in that space already\. Nothing moved\.$/],
-    [waiting, acme, new RegExp(`^Something on it waits for the user's decision \\(${/proposal:[0-9a-f-]{36}/.exec(proposal.text)![0]}\\)\\. It can move once that's decided or withdrawn\\. Nothing moved\\.$`)],
+    [salaries, acme, /^Model processing is off where it is and on in that space, so it stays where it is\. Nothing moved\.$/],
   ];
   for (const [page, to, why] of refusals) {
     const answer = await move(page, to);
     assert.ok(answer.failed, answer.text);
     assert.match(answer.text, why);
   }
-  assert.deepEqual((await admin`select distinct space_id from content where page_id in ${admin([own, published, waiting, guidance, skill, overview])}`).map((row) => row.spaceId), [minus1]);
-  assert.deepEqual([...(await admin`select from page_moves where page_id in ${admin([own, published, waiting])}`)], []);
+  assert.deepEqual((await admin`select distinct space_id from content where page_id in ${admin([own, published, guidance, skill, overview])}`).map((row) => row.spaceId), [minus1]);
+  assert.deepEqual((await admin`select distinct space_id from content where page_id = ${salaries}`).map((row) => row.spaceId), [payroll]);
+  assert.deepEqual([...(await admin`select from page_moves where page_id in ${admin([own, published, salaries])}`)], []);
 
-  // Nor does anyone move someone else's page, which they can't see.
+  // Nor does anyone move someone else's page, which they can't see, and only her assistant moves hers.
   const bens = await assistantOf(ben);
   assert.match((await bens.call('act', { action: 'page.move', input: { page: `page:${own}`, to: `space:${beta}` } })).text, /^There is no page with that reference that you can see\.$/);
   await assert.rejects(as({ person: ben.id, agent: 'Claude' }, (s) => s.tx`select move_page(${own}::uuid, ${beta}::uuid)`), { code: '42501' });
+  await assert.rejects(as({ person: ana.id, direct: true }, (s) => s.tx`select move_page(${own}::uuid, ${acme}::uuid)`), { code: '42501' });
   await Promise.all([claude.close(), bens.close()]);
+});
+
+test('what Ana was shown for sharing with Minus 1 is shared nowhere once its page moved, in the app, a proposal or a plan, and she’s told where it went', async () => {
+  const { ana, cara, minus1, acme, claude } = await world();
+  const kept = async (page: string, text: string) => itemOf(await claude.call('remember', { space: `space:${minus1}`, page, text }));
+  const pageOfItem = async (item: string) => (await admin<{ page: string }[]>`select page_id as page from content where id = ${item}`)[0].page;
+  const moved = async (item: string) => assert.ok(!(await claude.call('act', { action: 'page.move', input: { page: `page:${await pageOfItem(item)}`, to: `space:${acme}` } })).failed);
+  const proposalOf = (text: string) => /proposal:([0-9a-f-]{36})/.exec(text)![1];
+  const proposal = async (id: string) => (await ana.browser.json(`/api/proposals/${id}`)).body.proposal;
+
+  // In the app, she opens sharing it with Minus 1, and Claude moves the page to Acme before she confirms.
+  const salaries = await kept('Salaries', 'Minus 1 pays Cara NOK 900,000.');
+  const sheet = await ana.browser.json(`/api/items/${salaries}/publication`);
+  await moved(salaries);
+  const confirmed = await ana.browser.json(`/api/items/${salaries}/publish`, { shown: sheet.body.text, space: minus1 });
+  assert.deepEqual([confirmed.status, confirmed.body.message], [409, "It's in Acme now."]);
+
+  // Claude proposed sharing it, and she approves once it has moved: the decision page says it's gone.
+  const rates = await kept('Rates', 'Minus 1 bills NOK 1,800 an hour.');
+  const asked = proposalOf((await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${rates}` } })).text);
+  const shown = (await proposal(asked)).publication.text;
+  await moved(rates);
+  assert.equal((await proposal(asked)).publication.current, false);
+  const decided = await ana.browser.json(`/api/proposals/${asked}/decide`, { approve: true, shown });
+  assert.deepEqual([decided.status, decided.body.message], [409, "It's in Acme now."]);
+
+  // A plan with something to share on each of two pages: it can only be declined, and says why.
+  const launch = await kept('Launch', 'Launch is in May.');
+  const price = await kept('Price', 'The price is NOK 10.');
+  const share = (item: string) => ({ action: 'knowledge.publish', input: { item: `item:${item}` } });
+  const plan = proposalOf((await claude.call('act', { action: 'plan.propose', input: { space: `space:${minus1}`, changes: [share(launch), share(price)] } })).text);
+  const planShown = (await proposal(plan)).plan.shown;
+  await moved(launch);
+  assert.deepEqual((await proposal(plan)).plan.steps.map((step: { problem: string | null }) => step.problem), ['It’s in Acme now.', null]);
+  const approved = await ana.browser.json(`/api/proposals/${plan}/decide`, { approve: true, shown: planShown });
+  assert.deepEqual([approved.status, approved.body.message], [409, 'Nothing changed, because what’s on “Launch” can’t be shared. It’s in Acme now.']);
+
+  // Nothing on any of those pages is shared, in either space, and Cara, who has both, finds none of it.
+  const pages = await Promise.all([salaries, rates, launch, price].map(pageOfItem));
+  assert.deepEqual((await admin`select distinct private_to from content where page_id in ${admin(pages)}`).map((row) => row.privateTo), [ana.id]);
+  const carasClaude = await assistantOf(cara);
+  for (const query of ['Cara NOK', 'bills hour', 'Launch May', 'price NOK']) assert.doesNotMatch((await carasClaude.call('search', { query })).text, /item:|page:/, query);
+  await Promise.all([claude.close(), carasClaude.close()]);
 });

@@ -526,6 +526,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             sharedBy: item.privateTo !== null ? null : item.publishedBy ? by(item.publishedBy) : item.publishedAt && item.imported?.publishedBy ? { name: item.imported.publishedBy.name, you: false, imported: true } : null,
             sharedAt: item.privateTo === null ? item.publishedAt : null,
             sources: item.sources,
+            readFrom: item.readFrom,
             // What it replaced, and so what others still see when it's your private update to something shared.
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
             earlier: history
@@ -675,6 +676,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               : null,
             at: change.at,
             onlyYou: change.onlyYou,
+            readFrom: change.readFrom,
             pageArchived: change.pageArchived,
             space: { ...where(change.spaceId), archived: archived.has(change.spaceId) },
           })),
@@ -803,8 +805,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
 
       case 'publish item': {
         const body = await readJson(req);
-        if (typeof body.shown !== 'string') return answer(res, 400, { message: 'Share what you were shown.' });
-        const shared = await write((s) => publishItem(s, route.id, body.shown as string));
+        // What was shown, and the space it was shown for.
+        if (typeof body.shown !== 'string' || typeof body.space !== 'string' || !new RegExp(`^${uuid}$`, 'i').test(body.space)) return answer(res, 400, { message: 'Share what you were shown.' });
+        const shared = await write((s) => publishItem(s, route.id, body.space as string, body.shown as string));
         if (!shared) return answer(res, 409, { message: 'This changed while you were reading. The page now shows it as it is.' });
         json(res, 200, { id: shared });
         break;
@@ -1059,6 +1062,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
       return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });
     }
+    // Moved to another space since it was shown, so it's shared nowhere, and the page shows where it is now.
+    if (error instanceof postgres.PostgresError && /^it's in .+ now$/s.test(error.message)) return answer(res, 409, { message: `${error.message[0].toUpperCase()}${error.message.slice(1)}.` });
     // The store refuses what the person may not do, such as a member changing a shared rule.
     if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
       return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t make that change here.' });

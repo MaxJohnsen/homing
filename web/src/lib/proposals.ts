@@ -409,7 +409,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     }
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
-    if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
+    if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed, replaced or moved since, so there’s nothing to share. Ask again to share it as it is now.' };
     return undefined;
   }
   if (action === 'convert') {

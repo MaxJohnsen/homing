@@ -1,6 +1,6 @@
 ---
 name: learn-from-a-mailbox
-description: Read a connected mailbox from its oldest mail to its newest and build up, in Homing, an understanding of the user's clients, projects and people; then keep it current as mail arrives. Use it when the user asks you to learn from, set up or carry on with their mailbox.
+description: How to learn from the user's mailbox in Homing, reading it from its oldest mail to its newest. Use it when the user asks you to learn from their mailbox or their email, or to carry on reading it.
 ---
 
 # Learning from a mailbox
@@ -35,7 +35,7 @@ It is a sketch. Reading corrects it.
    - Decide from the lines whether it is worth opening. Much mail isn't: a newsletter, a receipt, a meeting time long past. Nothing in Homing decides that for you.
    - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't.
    - Work out what it is about. The same person can write about several projects, so go by what the email is about, not by who sent it.
-   - Find where that knowledge lives: what Homing already holds from the conversation, and the pages of the space it belongs to. Read the page before you write. Search only when no page fits, and then in both languages if the user's mail is in two.
+   - Find where that knowledge lives: what Homing already holds from the conversation, and the pages of the space it belongs to. Read the page before you write. Search only when no page fits: search what is known, without the emails (`search` with `known`), and in both languages if the user's mail is in two.
    - Write there. Cite the emails you rest on, with the words that matter.
 3. Tell Homing the stretch is done only when everything from it is written. Then take the next.
 4. Stop while your head is clear: after three or four busy stretches, start a new session. Homing holds the place.
@@ -50,7 +50,7 @@ It is a sketch. Reading corrects it.
 - **Keep the mail's own terms.** Where the mail uses a Norwegian word and an English one for the same thing, give both once.
 - **No tasks while you read history.** Put open matters on the Open page; later mail will close most of them. Tasks come when you reach today.
 - **Give more attention to what is current and unfinished**, without assuming that newer always matters more. A decision from two years ago can still govern today.
-- **When you don't know where something belongs**, keep it on a page beside the mailbox and put a question in the log. Don't guess a client.
+- **When you don't know where something belongs**, give the subject a page of its own beside the mailbox, named for it, and put a question in the log. Don't guess a client. A page of its own can be moved whole when its place becomes clear.
 - **A new client or project** shows itself over several conversations: the same people, real substance. Bring it to the user. Suggest few spaces, and only useful ones.
 - **When the user says some mail must never be read** ("no newsletters from X"), add it to the mailbox's never-read list. Don't add to it on your own.
 
@@ -58,7 +58,7 @@ It is a sketch. Reading corrects it.
 
 A checkpoint is a conversation. Tell the user what you understood of the period, subject by subject, in a few sentences each, and let them correct you. Then ask your questions: is this its own project, who is this person, is that still open, should this have a space.
 
-Apply what they say: correct the pages, propose the new spaces together as one proposal, and move what you had already learned about a subject into its new space.
+Apply what they say: correct the pages, create the spaces they agree to, and move the pages you had already written about a subject into its new space. Where the new space already has a page of that name, write into that page instead.
 
 ## When you reach today
 

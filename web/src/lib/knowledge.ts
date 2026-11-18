@@ -63,11 +63,10 @@ export interface ItemData {
   /** Who shared it with the space from their own private side, and when, if someone did. */
   sharedBy?: Author;
   sharedAt?: string | null;
-  /**
-   * Its sources as you see them. Your own aren't shared, such as those behind something you shared.
-   * One Homing read itself, such as an email, has the connection it read it through.
-   */
-  sources: { id: string; reference: string | null; excerpt: string; shared?: boolean; readThrough?: string | null; readFrom?: string | null }[];
+  /** Its sources as you see them. Your own aren't shared, such as those behind something you shared. */
+  sources: { id: string; reference: string | null; excerpt: string; shared?: boolean; readFrom?: string | null }[];
+  /** The kind of place Homing read what it rests on in, such as a mailbox, if it read any itself, told to everyone who sees it. */
+  readFrom?: string | null;
   /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
   /** What it said before it was last changed, oldest first, each with who wrote that version. */
@@ -148,6 +147,16 @@ export function theirAssistant(author: Author, agent: string): string {
 }
 
 /**
+ * What something says, to everyone who sees it, when it rests on what Homing read itself in a kind
+ * of place, such as an email in a mailbox, whoever wrote or corrected it. Null when it rests on none.
+ */
+export function restsOn(readFrom: string | null | undefined): string | null {
+  if (readFrom == null) return null;
+  const [what, whose] = readFrom === 'mailbox' ? ['an email', 'the email’s'] : ['something', 'its'];
+  return `Rests on ${what} Homing read: what was taken from it, not ${whose} own words.`;
+}
+
+/**
  * What a source is called: its reference, or, for an email Homing read in your mailbox, whose email
  * it is, since its reference is for assistants to open it again.
  */
@@ -223,6 +232,8 @@ export interface ChangeData {
   sharedBy?: Author;
   at: string;
   onlyYou: boolean;
+  /** The kind of place Homing read what it rests on in, if it read any itself. */
+  readFrom?: string | null;
   /** On a page that's archived. */
   pageArchived?: boolean;
   /** Where it changed, and whether that space is archived, as you see it. */

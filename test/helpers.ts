@@ -87,8 +87,8 @@ export async function importAgain(who: Member, zip: Uint8Array<ArrayBuffer>, nam
  */
 export async function share(who: { id: string }, itemId: string): Promise<string> {
   return as({ person: who.id, direct: true }, async (s) => {
-    const [{ body }] = await s.tx<{ body: string }[]>`select body from content where id = ${itemId}::uuid`;
-    const shared = await publishItem(s, itemId, body);
+    const [{ body, spaceId }] = await s.tx<{ body: string; spaceId: string }[]>`select body, space_id from content where id = ${itemId}::uuid`;
+    const shared = await publishItem(s, itemId, spaceId, body);
     assert.ok(shared, 'it was shared');
     return shared;
   });

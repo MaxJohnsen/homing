@@ -127,7 +127,7 @@ test('Ana’s update of what she shared stands in its place for her, and the oth
 test('in the app, Ana corrects what she shared for herself only, and shares the update from the page', async () => {
   const page = await as({ person: ana.id, direct: true }, (s) => createPage(s, { spaceId: acme, title: 'Office', shared: true }));
   const { id: item } = (await ana.browser.json(`/api/pages/${page}/items`, { text: 'The office closes at 17.' })).body;
-  assert.equal((await ana.browser.json(`/api/items/${item}/publish`, { shown: 'The office closes at 17.' })).status, 200);
+  assert.equal((await ana.browser.json(`/api/items/${item}/publish`, { shown: 'The office closes at 17.', space: acme })).status, 200);
 
   // Only for her: her version takes its place for her, and Cara's page doesn't change.
   const { id: update } = (await ana.browser.json(`/api/items/${item}`, { text: 'The office closes at 16 on Fridays.', shared: false })).body;
@@ -137,7 +137,7 @@ test('in the app, Ana corrects what she shared for herself only, and shares the 
   // Share this update: what sharing would do, then sharing exactly that.
   const publication = (await ana.browser.json(`/api/items/${update}/publication`)).body;
   assert.deepEqual([publication.sharedText, publication.text, publication.copy], ['The office closes at 17.', 'The office closes at 16 on Fridays.', false]);
-  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: publication.text })).status, 200);
+  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: publication.text, space: acme })).status, 200);
   for (const who of [ana, cara]) {
     assert.deepEqual((await pageAs(who, page)).items.map((entry) => [entry.id, entry.text, entry.shared]), [[update, 'The office closes at 16 on Fridays.', true]]);
   }
@@ -170,7 +170,7 @@ test('changing what she shared as she shares it never rewrites the original out 
   const isShared = new Promise<void>((resolve) => (published = resolve));
   const released = new Promise<void>((resolve) => (release = resolve));
   const sharing = as({ person: ana.id, direct: true }, async (s) => {
-    await s.tx`select publish_item(${item}::uuid, 'Lunch is for 40 people.')`;
+    await s.tx`select publish_item(${item}::uuid, ${acme}::uuid, 'Lunch is for 40 people.')`;
     published();
     await released;
   });

@@ -833,11 +833,14 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
       `;
       const publication = open ? ((await publicationOf(s, step.item)) ?? null) : null;
       const page = publication?.pageTitle ?? item?.page ?? 'Untitled';
+      // Where it is, if not where the plan shares it, such as a space its page moved to.
+      const there = spaces.find((space) => space.id === item?.spaceId);
       let problem: string | null = null;
       if (open) {
         if (!item) problem = 'It’s gone, or you can no longer see it.';
         else if (item.shared) problem = 'It’s shared already.';
-        else if (!publication || item.spaceId !== where) problem = 'It isn’t yours to share there.';
+        else if (!publication) problem = 'It isn’t yours to share there.';
+        else if (item.spaceId !== where) problem = `It’s in ${there?.privateTo && !there.parentId ? 'your personal space' : there?.name} now.`;
         else if (publication.sharedAs) problem = 'You shared it already.';
         else if (!publication.current) problem = 'It was changed or replaced since.';
       }
@@ -1039,8 +1042,8 @@ async function makeStep(s: Session, spaceId: string, step: PlanStep, shown: Plan
   switch (step.action) {
     case 'publish': {
       const publication = await publicationOf(s, step.item);
-      if (!publication?.current || publication.item.spaceId !== spaceId || !shown.item) throw new Undecidable('changed', 'It was changed, replaced or shared since.');
-      if (!(await publishItem(s, step.item, shown.item.text))) throw new Undecidable('changed', 'It changed after you opened this.');
+      if (!publication?.current || !shown.item) throw new Undecidable('changed', 'It was changed, replaced or shared since.');
+      if (!(await publishItem(s, step.item, spaceId, shown.item.text))) throw new Undecidable('changed', 'It changed after you opened this.');
       return;
     }
     case 'share task': {
@@ -1086,6 +1089,12 @@ function refusalOf(error: unknown): string | undefined {
   if (error instanceof postgres.PostgresError && ['42501', '23514', '40001'].includes(error.code)) return `${error.message[0].toUpperCase()}${error.message.slice(1)}.`;
 }
 
+/** A change the store refused as it was shown, such as an item that moved since, for the person to see why. */
+function changedSince(error: unknown): never {
+  const why = refusalOf(error);
+  throw why === undefined ? error : new Undecidable('changed', why);
+}
+
 /** A proposal the person can see, with what they need to decide it. */
 export async function readProposal(s: Session, proposalId: string, findAccount?: FindAccount): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
@@ -1098,6 +1107,8 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
   const above = spaces.find((candidate) => candidate.id === space.parentId);
   const rule = proposal.itemId && proposal.action !== 'publish' ? await ruleFor(s, proposal.itemId) : undefined;
   let publication = proposal.action === 'publish' && proposal.itemId ? ((await publicationOf(s, proposal.itemId)) ?? null) : null;
+  // It's shared only in the space it was proposed for, so once it has moved there's nothing to share.
+  if (publication && publication.item.spaceId !== proposal.spaceId) publication = { ...publication, current: false };
   if (proposal.action === 'publish' && !publication && proposal.itemId) {
     // Once shared, the item may have moved to the shared side: it still shows what was shared.
     const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
@@ -1579,11 +1590,12 @@ export async function decide(
   if (decision.approve && !sending) {
     const { change } = proposal;
     if (proposal.action === 'publish') {
-      // Approving shares exactly what was shown: if the item changed since, it's shown again.
-      // Approving shares exactly the text that was shown, checked again as it's shared.
+      // Approving shares exactly the text that was shown, in the space it was shown for, checked
+      // again as it's shared: if the item changed since, it's shown again, and one that moved says where it is.
       const publication = await publicationOf(s, proposal.itemId!);
       if (!publication?.current) throw new Undecidable('changed', 'This was changed or replaced after you opened this page, so there’s nothing to share.');
-      if (decision.shown === undefined || !(await publishItem(s, proposal.itemId!, decision.shown))) {
+      const shared = decision.shown !== undefined && (await publishItem(s, proposal.itemId!, proposal.spaceId, decision.shown).catch(changedSince));
+      if (!shared) {
         throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
       }
     } else if (proposal.action === 'share space') {
