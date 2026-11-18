@@ -108,6 +108,7 @@ test('a person with a mailbox finds Homing’s skill for learning from it on the
   const file = await readFile(new URL('../skills/learn-from-a-mailbox/SKILL.md', import.meta.url), 'utf8');
   assert.equal(read.text, `# learn-from-a-mailbox\nA skill built into Homing (${reference}). A skill of the user's own with its name replaces it. Its SKILL.md:\n\n${file}`);
   assert.match(file, /^---\nname: learn-from-a-mailbox\n/);
+  assert.match(read.text, /^## When the mailbox goes back years$/m);
   assert.doesNotMatch(file, /^> Draft/m);
 
   // Someone without a mailbox isn't given it.
