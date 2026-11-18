@@ -249,12 +249,13 @@ test('mail that arrives after the list reached today comes in the next stretch, 
 
 describe('one token is the whole of confirming a stretch', () => {
   test('a stretch that isn’t confirmed comes again, to another session too, which is told so', async () => {
-    const { ana, account, place, session } = await world();
+    const { ana, acme, account, place, session } = await world();
     for (let one = 0; one < 4; one++) microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Note ${one}`, html: '<p>Hi</p>', at: new Date(Date.now() - (10 - one) * day) });
     const first = await list(session, { from: dayOf(new Date(Date.now() - 11 * day)), lines: 2 });
     const handed = stretchOf(first.text);
     assert.equal(handed.ids.length, 2);
-    assert.match(first.text, /^# The user's mailbox .*, in order\nReading began from \d{4}-\d{2}-\d{2} and has reached \d{4}-\d{2}-\d{2} 00:00:00 UTC\. This stretch is from then to /);
+    assert.ok(first.text.startsWith(`# The user's mailbox ${account.address} in Acme (space:${acme}), in order\nReading began from `), first.text.slice(0, 300));
+    assert.match(first.text, /\nReading began from \d{4}-\d{2}-\d{2} and has reached \d{4}-\d{2}-\d{2} 00:00:00 UTC\. This stretch is from then to /);
     // Another conversation, or another assistant, gets the same stretch, and the same token.
     const other = await (await assistantOf(ana, assistants.chatgpt)).open();
     const again = await list(other);
@@ -285,10 +286,12 @@ describe('one token is the whole of confirming a stretch', () => {
   test('after an hour the hand-out lapses, and whoever asks gets the stretch afresh, with a new token', async () => {
     const { account, place, session } = await world();
     for (let one = 0; one < 3; one++) microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Note ${one}`, html: '<p>Hi</p>', at: new Date(Date.now() - (10 - one) * day) });
-    const first = stretchOf((await list(session, { from: dayOf(new Date(Date.now() - 11 * day)), lines: 2 })).text);
+    const handedOut = (await list(session, { from: dayOf(new Date(Date.now() - 11 * day)), lines: 2 })).text;
+    const first = stretchOf(handedOut);
     const lapses = (await readingOf(place)).lapsesAt!;
     assert.ok(Math.abs(lapses.getTime() - Date.now() - hour) < 60_000);
     await admin`update readings r set lapses_at = now() - interval '1 second' where ${ofPlace(place)}`;
+    assert.match(handedOut, /, and after that it's handed out afresh to whoever asks next without it\. Until someone does, the token still confirms it\./);
     const afresh = await list(session, { lines: 3 });
     assert.doesNotMatch(afresh.text, /isn't done yet/);
     const got = stretchOf(afresh.text);
@@ -335,6 +338,7 @@ test('a conversation whose earlier emails were saved from shows those items, and
     sources: [{ reference: `microsoft:${place}:${answered}`, excerpt: 'The Northwind budget for 2027 is NOK 2 million' }],
   });
   const replaced = /item:[0-9a-f-]{36}/.exec(saved.text)![0];
+  const [{ page }] = await admin<{ page: string }[]>`select page_id as page from content where id = ${replaced.slice('item:'.length)}`;
   // Homing kept which conversation the source is from.
   assert.deepEqual((await admin`select conversation from sources where reference = ${`microsoft:${place}:${answered}`}`).map((row) => row.conversation), [conversation]);
   // A newer version, which carries the source on, is what shows.
@@ -345,7 +349,7 @@ test('a conversation whose earlier emails were saved from shows those items, and
   const next = await list(session, { token: stretchOf(first.text).token });
   const blocks = next.text.split('\n## Conversation ').slice(1);
   assert.equal(blocks.length, 2);
-  assert.ok(blocks[0].includes(`Already in Homing from it: ${item} in Acme, on the page "Northwind budget": "The Northwind budget for 2027 is NOK 2 million, as the board approved (Gunnar Lie)."`), blocks[0]);
+  assert.ok(blocks[0].includes(`Already in Homing from it: ${item} in Acme, on the page "Northwind budget" (page:${page}): "The Northwind budget for 2027 is NOK 2 million, as the board approved (Gunnar Lie)."`), blocks[0]);
   assert.ok(!blocks[0].includes(replaced) && !blocks[0].includes('; and'), blocks[0]);
   assert.ok(blocks[0].includes(later));
   assert.doesNotMatch(blocks[1], /Already in Homing/);
@@ -583,11 +587,15 @@ describe('a fault at Microsoft says so plainly and loses no place', () => {
 });
 
 test('a mailbox connected in two spaces is read once, with one never-read list', async () => {
-  const { ana, account, session } = await world();
+  const { ana, acme, account, session } = await world();
   const personal = await connect(ana, ana.personalSpaceId, account);
   microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'Budget', html: '<p>Budget</p>', at: new Date(Date.now() - 2 * day) });
   microsoft.deliver(account, { from: { name: 'Weekly Digest', address: 'news@weekly-digest.test' }, to: [owner(account)], subject: 'Budget tips', html: '<p>Budget</p>', at: new Date(Date.now() - 2 * day) });
-  const { token } = stretchOf((await list(session, { from: dayOf(new Date(Date.now() - 3 * day)) })).text);
+  const begun = (await list(session, { from: dayOf(new Date(Date.now() - 3 * day)) })).text;
+  // It's named in the space it was connected in first, in the stretch and in context.
+  assert.ok(begun.startsWith(`# The user's mailbox ${account.address} in Acme (space:${acme}), in order\n`), begun.slice(0, 300));
+  assert.ok((await session.call('context', { request: 'Budget' })).text.includes(`The user's mailbox ${account.address} in Acme (space:${acme}) is connected to Homing: `));
+  const { token } = stretchOf(begun);
   await list(session, { token });
   await session.call('act', { action: 'mailbox.never_read', input: { sender: 'weekly-digest.test' } });
   const there = `space:${ana.personalSpaceId}`;
@@ -737,7 +745,7 @@ test('connecting the account again keeps the place reached, the never-read list 
   // The token from before confirms its stretch, and the next shows what was kept from the conversation through the connection before.
   const next = await list(session, { token: handed.token });
   assert.deepEqual(stretchOf(next.text).ids, [later]);
-  assert.match(next.text, /\nAlready in Homing from it: item:[0-9a-f-]{36} in Acme, on the page "Notes": "The Northwind budget is NOK 2 million\."/);
+  assert.match(next.text, /\nAlready in Homing from it: item:[0-9a-f-]{36} in Acme, on the page "Notes" \(page:[0-9a-f-]{36}\): "The Northwind budget is NOK 2 million\."/);
   await session.close();
 });
 
@@ -850,8 +858,8 @@ test('a second that holds more than a stretch may: its first, as many as fit, ho
   const second = `${base.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
   assert.ok(
     first.text.includes(
-      `: ${got.ids.length} emails in ${got.ids.length} conversations, oldest first. ${600 - got.ids.length} more emails arrived within the same second as these, ${second}, and aren't listed, ` +
-        'since a stretch holds only what can be read in one answer: `search` the mailbox for them. Confirming this stretch moves past them.',
+      `: ${got.ids.length} emails in ${got.ids.length} conversations, oldest first. ${600 - got.ids.length} more emails arrived in the same second as these, ${second}, and can't be listed, ` +
+        'since a stretch holds only what can be read in one answer: tell the user. Confirming this stretch moves past them.',
     ),
     first.text.slice(0, 1500),
   );
@@ -871,7 +879,7 @@ test('a second that holds more than a stretch may: its first, as many as fit, ho
   assert.ok(
     crowded.text.includes(
       `: ${linesAtMost} emails in ${linesAtMost} conversations, oldest first. More emails arrived within one second, ${dayOf(midnight)} 00:00:00 UTC, than Homing gets through at once, ` +
-        "and the rest of them aren't listed: `search` the mailbox for them. Confirming this stretch moves past them.",
+        "and the rest of them can't be listed: tell the user. Confirming this stretch moves past them.",
     ),
     crowded.text.slice(0, 1500),
   );

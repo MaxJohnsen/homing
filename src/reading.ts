@@ -36,11 +36,12 @@ export interface Conversation {
   held: { items: HeldItem[]; more: number };
 }
 
-/** An item the person can see that cites an email of a conversation: where it is, and its first words. */
+/** An item the person can see that cites an email of a conversation: where it is, its page by title and id, and its first words. */
 export interface HeldItem {
   id: string;
   space: string;
   page: string | null;
+  pageId: string;
   text: string;
 }
 
@@ -233,12 +234,12 @@ async function heldFrom(s: Session, connection: string, conversations: string[])
   const held = new Map<string, Conversation['held']>();
   if (conversations.length === 0) return held;
   const rows = await s.tx<(HeldItem & { conversation: string; total: number; personal: boolean })[]>`
-    select conversation, id, space, personal, page, left(body, 300) as text, total from (
+    select conversation, id, space, personal, page, page_id, left(body, 300) as text, total from (
       select found.*, count(*) over (partition by found.conversation) as total,
              row_number() over (partition by found.conversation order by found.created_at desc, found.id) as n
       from (
         select distinct on (src.conversation, i.id)
-          src.conversation, i.id, sp.name as space, sp.private_to is not null and sp.parent_id is null as personal, i.body, i.created_at,
+          src.conversation, i.id, sp.name as space, sp.private_to is not null and sp.parent_id is null as personal, i.page_id, i.body, i.created_at,
           (select t.body from content t where t.page_id = i.page_id and t.kind = 'title' and ${visibleContent(s, 't')} order by t.private_to is null limit 1) as page
         from sources src
         join citations ci on ci.source_id = src.id
@@ -257,7 +258,7 @@ async function heldFrom(s: Session, connection: string, conversations: string[])
   `;
   for (const row of rows) {
     const entry = held.get(row.conversation) ?? { items: [], more: Number(row.total) - Math.min(Number(row.total), heldShown) };
-    entry.items.push({ id: row.id, space: row.personal ? "the user's personal space" : row.space, page: row.page, text: row.text });
+    entry.items.push({ id: row.id, space: row.personal ? "the user's personal space" : row.space, page: row.page, pageId: row.pageId, text: row.text });
     held.set(row.conversation, entry);
   }
   return held;

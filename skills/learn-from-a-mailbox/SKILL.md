@@ -24,20 +24,20 @@ A handful of well-kept pages for each subject is the aim. A long list of small n
 
 ## Before you begin
 
-Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read. Then take two short looks at the mailbox's list, which shows each email as one line: a stretch from where reading will begin, and a stretch from a few weeks ago. Asking for the list from a date begins there. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
+Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read. Then take two short looks at the mailbox's list, which shows each email as one line: first a stretch from a few weeks ago, then one from the date reading will begin. Asking for the list from a date sets the place reached to that date, so look at the beginning last: reading then stands where it should, and that stretch is your first. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
 
-It is a sketch. Reading corrects it. Then ask for the list from the date reading should begin, which sets the place reading has reached back to there, and start.
+It is a sketch. Reading corrects it.
 
 ## A sitting
 
-1. Ask Homing for the next stretch of the mailbox's list. It is oldest first, one line for each email, grouped by conversation, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does.
+1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets its length). It is oldest first, one line for each email, grouped by conversation, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does.
 2. Go through the conversations in order.
    - Decide from the lines whether it is worth opening. Much mail isn't: a newsletter, a receipt, a meeting time long past. Nothing in Homing decides that for you.
    - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't.
    - Work out what it is about. The same person can write about several projects, so go by what the email is about, not by who sent it.
    - Find where that knowledge lives: what Homing already holds from the conversation, and the pages of the space it belongs to. Read the page before you write. Search only when no page fits: search what is known, without the emails (`search` with `known`), and in both languages if the user's mail is in two.
-   - Write there. Cite the emails you rest on, with the words that matter.
-3. Tell Homing the stretch is done only when everything from it is written. Then take the next.
+   - Write there. Cite the email the words were written in, with the words exactly as `read` shows them.
+3. Tell Homing the stretch is done only when everything from it is written. Then take the next. When you stop for the day, confirm with `lines` set to 1: the next sitting gets its stretch afresh.
 4. Stop while your head is clear: after three or four busy stretches, start a new session. Homing holds the place.
 5. End the sitting in the mailbox's reading log: a page named "Reading log" in the space where the mailbox is connected, which you make at the first sitting and read at the start of each later one. Add to it: the period you covered; what you understood changed, a few sentences for each subject; your questions for the user.
 
@@ -52,7 +52,7 @@ It is a sketch. Reading corrects it. Then ask for the list from the date reading
 - **Give more attention to what is current and unfinished**, without assuming that newer always matters more. A decision from two years ago can still govern today.
 - **When you don't know where something belongs**, give the subject a page of its own in the space where the mailbox is connected, named for it, and put a question in the log. Don't guess a client. A page of its own can be moved whole when its place becomes clear.
 - **A new client or project** shows itself over several conversations: the same people, real substance. Bring it to the user. Suggest few spaces, and only useful ones.
-- **When the user says some mail must never be read** ("no newsletters from X"), add it to the mailbox's never-read list. Don't add to it on your own.
+- **When the user says some mail must never be read** ("no newsletters from X"), add it to the mailbox's never-read list (`act` with `mailbox.never_read`). Don't add to it on your own.
 
 ## Checkpoints with the user
 

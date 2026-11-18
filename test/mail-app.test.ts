@@ -112,8 +112,8 @@ test('Ana’s assistant answers what Gunnar wrote last week from her mailbox, an
 
   // Context says what Homing can reach, so the assistant knows to search the mailbox.
   const context = (await claude.call('context', { request: 'What did Gunnar write to me last week?' })).text;
-  assert.match(context, new RegExp(`The user's mailbox ${account.address} is connected to Homing: \`search\` without a space also searches it live`));
-  assert.match((await claude.call('context', { request: 'Budget', space: `space:${acme}` })).text, new RegExp(`mailbox ${account.address} is connected`));
+  assert.match(context, new RegExp(`The user's mailbox ${account.address} in Acme \\(space:${acme}\\) is connected to Homing: \`search\` without a space also searches it live`));
+  assert.match((await claude.call('context', { request: 'Budget', space: `space:${acme}` })).text, new RegExp(`mailbox ${account.address} in Acme \\(space:${acme}\\) is connected`));
 
   const searches = microsoft.asked.searches;
   const found = await claude.call('search', { query: 'Gunnar' });
