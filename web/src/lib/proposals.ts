@@ -39,6 +39,8 @@ export interface ProposalData {
   decidedBy?: string | null;
   /** The assistant that withdrew it, when you didn't yourself. */
   withdrawnBy?: string | null;
+  /** For sharing an item, the space its page moved to, which withdrew it. */
+  movedTo?: string | null;
   /** The rules that already apply where a new one would go. */
   alreadyApplies: { kind: RuleKind; text: string; from: string }[];
   /**
@@ -182,6 +184,8 @@ export interface PublicationData {
   sharedText: string | null;
   /** Still your current item, so it can be shared. */
   current: boolean;
+  /** The kind of place Homing read what it rests on in, if it read any itself, which everyone there will see. */
+  readFrom?: string | null;
   why: string | null;
   /** Who would see it: how many people, and whether people above it you can't open too. */
   audience: { people: number; above: boolean } | null;
@@ -390,7 +394,8 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
   const { action, assistant, state, request, decidedBy, suggestion, member } = proposal;
   const place = placeOf(proposal);
   const yours = Boolean(request?.yours);
-  // Withdrawn by you or your assistant: it ended without being decided.
+  // Withdrawn by you or your assistant: it ended without being decided. Sharing ends when the page moves.
+  if (state === 'withdrawn' && proposal.movedTo) return { kind: 'gone', heading: 'Withdrawn', detail: `${proposal.withdrawnBy} moved its page to ${proposal.movedTo} before you decided it, so nothing was shared.` };
   if (state === 'withdrawn') return { kind: 'gone', heading: 'Withdrawn', detail: `${proposal.withdrawnBy ? `${proposal.withdrawnBy} withdrew it` : 'You withdrew it'} before anyone decided it, so nothing changed.` };
   if (action === 'plan' && proposal.plan) {
     const { plan } = proposal;
@@ -409,7 +414,7 @@ export function outcomeOf(proposal: ProposalData): { kind: 'approved' | 'rejecte
     }
     if (state === 'rejected') return { kind: 'rejected', heading: 'Not shared', detail: 'It stays only yours.' };
     if (state === 'expired') return { kind: 'expired', heading: 'This expired', detail: `Nothing was shared. Ask ${assistant} again if you still want it shared.` };
-    if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed, replaced or moved since, so there’s nothing to share. Ask again to share it as it is now.' };
+    if (isGone(proposal)) return { kind: 'gone', heading: `This changed after ${assistant} asked`, detail: 'It was changed or replaced since, so there’s nothing to share. Ask again to share it as it is now.' };
     return undefined;
   }
   if (action === 'convert') {

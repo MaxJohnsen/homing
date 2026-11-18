@@ -2,10 +2,10 @@
 -- spec §3).
 --
 -- A newer version of an item cites what the one it replaces cited, besides
--- sources of its own, so knowledge learned from an email says so however
--- often it's rewritten, and what it rested on stays true in its history.
+-- sources of its own, so what it rested on stays true in its history.
 -- Whoever can see an item learns whether it rests on something Homing read,
--- and nothing else about that source.
+-- itself or through what it replaced or was shared from, however often it's
+-- rewritten or shared, and nothing else about that source.
 --
 -- A person's assistant may move a page that's wholly the person's own to
 -- another space they can open. Its items go with it, with their citations
@@ -13,7 +13,8 @@
 -- through a connection stays in its place's space. Its own collections end,
 -- since a collection gathers pages of its space. The move is recorded, for
 -- the person alone, as everything on the page is theirs alone. Since an item
--- can now change spaces, sharing names the space it was shown for.
+-- can now change spaces, sharing names the space it was shown for, and a
+-- share proposed where the page was ends with the move.
 
 -- Carries the sources of one item to a newer version of it on the same page,
 -- written by the person acting: all of them, ones they can no longer open
@@ -46,20 +47,30 @@ begin
 end
 $$;
 
--- The kind of place Homing read what an item rests on in, such as a mailbox,
--- when it read any of it itself, for anyone who can see the item, whoever
--- wrote it: its own sources, or for a copy someone shared, those of what they
--- shared it from. Nothing else about those sources. Null when there's none.
-create function read_from(item uuid) returns text
+-- For each of these items the person asking can see, whoever wrote it, the
+-- kind of place Homing read what it rests on in, such as a mailbox, when it
+-- read any of it itself. An item rests on what it cites, and on what anything
+-- in its line does: what it replaced, back to the first version, and what it
+-- was shared from, with that item's own line. A copy replaces what the item
+-- it was shared from updates, so its line goes on through that item. Nothing
+-- else about those sources or those items. A line is followed 100 items back
+-- at most, so a long history stays quick, and a page's items are asked for
+-- at once.
+create function read_from(items uuid[]) returns table (item uuid, kind text)
 language sql stable security definer set search_path = public, pg_temp
 as $$
-  select coalesce(p.kind, '') from content c
-  join citations ci on ci.content_id in (c.id, c.published_from)
+  with recursive line (item, id, depth) as (
+    select c.id, c.id, 0 from content c
+    where c.id = any(read_from.items) and c.space_id in (select accessible_spaces()) and (c.private_to is null or c.private_to = current_person_id())
+    union all
+    select line.item, coalesce(c.published_from, c.supersedes), line.depth + 1 from line join content c on c.id = line.id
+    where coalesce(c.published_from, c.supersedes) is not null and line.depth < 100
+  )
+  select distinct on (line.item) line.item, coalesce(p.kind, '') from line
+  join citations ci on ci.content_id = line.id
   join sources src on src.id = ci.source_id and src.read_through is not null
   left join places p on p.connection_id = src.read_through and p.id::text = lower(substring(src.reference from '^[a-z][a-z0-9]*:([0-9a-fA-F-]{36}):'))
-  where c.id = read_from.item and c.space_id in (select accessible_spaces()) and (c.private_to is null or c.private_to = current_person_id())
-  order by p.kind nulls last
-  limit 1
+  order by line.item, p.kind nulls last
 $$;
 
 revoke execute on function read_from from public;
@@ -162,7 +173,8 @@ create policy own on page_moves for select using (person_id = current_person_id(
 grant select on page_moves to homing_app;
 
 -- Moves one of the person's own pages to another space they can open, by
--- their assistant, and says where it was.
+-- their assistant, ends what waited to share from it where it was, and says
+-- where it was.
 create function move_page(page uuid, destination uuid) returns uuid
 language plpgsql security definer set search_path = public, pg_temp
 as $$
@@ -206,6 +218,11 @@ begin
   )
   update pages set space_id = destination where id = target.id;
   insert into page_moves (page_id, moved_from) values (target.id, target.space_id);
+  -- Sharing is for the space it was shown for, so a share of what's on it that waits ends, as
+  -- withdrawn by the assistant that moved it, saying where the page went.
+  update proposals set state = 'withdrawn', change = change || jsonb_build_object('movedTo', destination)
+  where private_to = me and action = 'publish' and state = 'open' and expires_at > clock_timestamp()
+    and item_id in (select c.id from content c where c.page_id = target.id);
   return target.space_id;
 end
 $$;

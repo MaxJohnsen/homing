@@ -114,6 +114,15 @@ function readFrom(s: Session, table: string) {
   )`;
 }
 
+/**
+ * For each of these items, the kind of place Homing read what it rests on in, if it read any itself,
+ * such as a mailbox: what it cites, or anything in its line does. Asked once for all of them.
+ */
+async function readFromAll(s: Session, ids: string[]): Promise<Map<string, string>> {
+  const rows = await s.tx<{ item: string; kind: string }[]>`select item, kind from read_from(${s.tx.array(ids)}::uuid[])`;
+  return new Map(rows.map((row) => [row.item, row.kind]));
+}
+
 export interface Page {
   id: string;
   spaceId: string;
@@ -401,7 +410,7 @@ async function textFor(s: Session, item: Item, text: NewText): Promise<string> {
  * update of a shared item, which says what the others still see (spec §3).
  */
 export async function readPage(s: Session, pageId: string): Promise<Page | undefined> {
-  const items = await s.tx<Page['items']>`
+  const items = await s.tx<Omit<Page['items'][number], 'readFrom'>[]>`
     with recursive chain (id, first, shared, nearest_shared) as (
       select c.id, c.id, c.private_to is null, null::uuid from content c
       where c.page_id = ${pageId}::uuid and c.supersedes is null and ${visibleContent(s, 'c')}
@@ -411,7 +420,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
       from content c join chain on c.supersedes = chain.id
       where c.page_id = ${pageId}::uuid and ${visibleContent(s, 'c')}
     )
-    select ${itemColumns(s, 'content')}, ${citationsOf(s, true)} as sources, read_from(content.id), (
+    select ${itemColumns(s, 'content')}, ${citationsOf(s, true)} as sources, (
       -- Whoever can see a replacement can see what it replaced. For your own update to something
       -- shared, however many times you updated it since, that's the shared item nearest it, which
       -- the others still see unless something shared replaced it too.
@@ -437,6 +446,8 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
   `;
   // Your own title for a page comes before the shared one.
   const titles = items.filter((item) => item.kind === 'title').sort((a, b) => Number(!a.privateTo) - Number(!b.privateTo));
+  const shown = items.filter((item) => item.kind !== 'title');
+  const read = await readFromAll(s, shown.map((item) => item.id));
   return {
     id: pageId,
     spaceId: items[0].spaceId,
@@ -445,7 +456,7 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     shared: titles.some((title) => title.privateTo === null),
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
     archived: archivedAt ? { at: archivedAt, by: archivedBy, since: archivedSince ?? false } : null,
-    items: items.filter((item) => item.kind !== 'title'),
+    items: shown.map((item) => ({ ...item, readFrom: read.get(item.id) ?? null })),
   };
 }
 
@@ -499,6 +510,8 @@ export interface Publication {
   current: boolean;
   /** If it was shared as a copy, what everyone sees of it now: the copy, or what replaced that since. */
   sharedAs: string | null;
+  /** The kind of place Homing read what it rests on in, if it read any itself, which everyone there will see. */
+  readFrom: string | null;
 }
 
 /** What sharing the item would do, if it's one of your own private items. */
@@ -522,8 +535,8 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
   `;
   const copy = await copyOf(s, itemId);
   const sharedAs = copy ? await everyoneSees(s, copy) : null;
-  const [facts] = await s.tx<{ hiddenCount: number; base: string | null; sharedText: string | null; current: boolean; sharedTitle: string | null; ownTitle: string | null }[]>`
-    select hidden_sources(${itemId}::uuid) as hidden_count,
+  const [facts] = await s.tx<{ hiddenCount: number; base: string | null; sharedText: string | null; current: boolean; sharedTitle: string | null; ownTitle: string | null; readFrom: string | null }[]>`
+    select hidden_sources(${itemId}::uuid) as hidden_count, (select kind from read_from(array[${itemId}::uuid])) as read_from,
            shared_base(${itemId}::uuid) as base,
            -- What everyone sees now that sharing this replaces: the shared item it updates.
            (select body from content where id = shared_base(${itemId}::uuid)) as shared_text,
@@ -545,6 +558,7 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
     // Shared already as a copy, it's the copy from then on, and an update of that is shared instead.
     current: facts.current && sharedAs === null,
     sharedAs,
+    readFrom: facts.readFrom,
   };
 }
 
@@ -573,7 +587,7 @@ export async function publishItem(s: Session, itemId: string, spaceId: string, s
  */
 export async function readItem(s: Session, itemId: string) {
   const [item] = await s.tx<(Item & { sources: Citation[]; readFrom: string | null; updates: string | null })[]>`
-    select ${itemColumns(s)}, ${citationsOf(s, true)} as sources, read_from(id),
+    select ${itemColumns(s)}, ${citationsOf(s, true)} as sources, (select kind from read_from(array[id])) as read_from,
            case when private_to is not null and supersedes is not null then shared_base(id) end as updates
     from content
     where id = ${itemId}::uuid and ${visibleContent(s, 'content')}
@@ -929,9 +943,9 @@ export async function recentChanges(
     : s.tx`and c.page_id not in ${archivedPages} ${shelved.length ? s.tx`and c.space_id not in ${s.tx(shelved)}` : s.tx``}`;
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
-  const rows = await s.tx<(Change & { total: number })[]>`
+  const rows = await s.tx<Omit<Change, 'readFrom'>[]>`
     select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, edit_agent, imported, published_by, published_at, at, only_you, overview,
-           exists (select from pages p where p.id = recent.page_id and p.archived) as page_archived, read_from(item_id)
+           exists (select from pages p where p.id = recent.page_id and p.archived) as page_archived
     from (
       select c.id as item_id, c.page_id, c.space_id, ${titleOf(s, s.tx`c.page_id`)} as title, c.body as text,
              -- Corrected means it has an earlier version; its timestamps alone can differ by a moment when it's written.
@@ -967,7 +981,9 @@ export async function recentChanges(
           ? s.tx`or exists (select from content c where c.space_id in ${s.tx(shelved)} and c.kind = 'text' and ${visible(s, 'c')} and ${current(s, 'c')})`
           : s.tx``} as archived
       `;
-  return { changes: rows.slice(0, limit), more: rows.length > limit, archived };
+  const changes = rows.slice(0, limit);
+  const read = await readFromAll(s, changes.map((change) => change.itemId));
+  return { changes: changes.map((change) => ({ ...change, readFrom: read.get(change.itemId) ?? null })), more: rows.length > limit, archived };
 }
 
 /** A source in a list, as the viewer sees it. */
@@ -1182,9 +1198,8 @@ export async function search(
     : within('c');
 
   // A match in a skill's current files finds the skill, once.
-  return s.tx<Hit[]>`
-    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing,
-           case kind when 'item' then read_from(id) else read_from end as read_from from (
+  const hits = await s.tx<Hit[]>`
+    select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing, read_from from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
              case when c.kind in ('title', 'file') then c.page_id else c.id end as id,
@@ -1221,6 +1236,8 @@ export async function search(
     order by superseded, rank desc
     limit ${options.limit ?? 20}
   `;
+  const read = await readFromAll(s, hits.filter((hit) => hit.kind === 'item').map((hit) => hit.id));
+  return hits.map((hit) => (hit.kind === 'item' ? { ...hit, readFrom: read.get(hit.id) ?? null } : hit));
 }
 
 export function itemColumns(s: Session, table?: string) {

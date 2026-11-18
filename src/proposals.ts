@@ -55,9 +55,12 @@ export interface Proposal {
   target: Included | null;
   /**
    * The exact change: a new rule's kind, text and reach, or for an include whether it's for
-   * everyone and whether it's a space's rules or a skill, but never what it points to.
+   * everyone and whether it's a space's rules or a skill, but never what it points to. A share
+   * that ended when its page moved keeps the space the page moved to.
    */
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange>;
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill'; movedTo?: string } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange>;
+  /** That space, by name, for someone who can open it. */
+  movedTo: { name: string; personal: boolean } | null;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -1107,13 +1110,11 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
   const above = spaces.find((candidate) => candidate.id === space.parentId);
   const rule = proposal.itemId && proposal.action !== 'publish' ? await ruleFor(s, proposal.itemId) : undefined;
   let publication = proposal.action === 'publish' && proposal.itemId ? ((await publicationOf(s, proposal.itemId)) ?? null) : null;
-  // It's shared only in the space it was proposed for, so once it has moved there's nothing to share.
-  if (publication && publication.item.spaceId !== proposal.spaceId) publication = { ...publication, current: false };
   if (proposal.action === 'publish' && !publication && proposal.itemId) {
     // Once shared, the item may have moved to the shared side: it still shows what was shared.
     const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
     const [title] = item ? await s.tx<{ body: string }[]>`select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and ${visible(s, 'content')} order by private_to is null limit 1` : [];
-    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, hiddenElsewhere: 0, copy: false, sharedText: null, current: false, sharedAs: null };
+    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, hiddenElsewhere: 0, copy: false, sharedText: null, current: false, sharedAs: null, readFrom: null };
   }
   const task: Task | undefined = proposal.taskId ? await readTask(s, proposal.taskId) : undefined;
   const audienceOf = proposal.action === 'publish' || proposal.action === 'share task' ? await spaceView(s, proposal.spaceId) : undefined;
@@ -1760,6 +1761,7 @@ export function publicationData(publication: Publication, audience: { people: nu
     sharesTitle: publication.sharesTitle,
     sharedText: publication.sharedText,
     current: publication.current,
+    readFrom: publication.readFrom,
     why,
     audience,
   };
@@ -1809,8 +1811,9 @@ export function proposalData(proposal: ProposalView) {
     why: !proposal.request && ['add rule', 'change rule', 'remove rule', 'add include', 'remove include'].includes(proposal.action) ? proposal.reason : null,
     // Who decided it, when that was someone other than the reader.
     decidedBy: proposal.names.decidedBy,
-    // The assistant that withdrew it, if the person didn't themselves.
+    // The assistant that withdrew it, if the person didn't themselves, and where it moved the page, if that withdrew it.
     withdrawnBy: proposal.state === 'withdrawn' ? proposal.decidedIn : null,
+    movedTo: proposal.change.movedTo ? (proposal.movedTo ? (proposal.movedTo.personal ? 'your personal space' : proposal.movedTo.name) : 'a space you can no longer open') : null,
     // A suggested space: as suggested, why, where it may go instead, and what it became.
     suggestion:
       proposal.action === 'add space'
@@ -1929,6 +1932,11 @@ function columns(s: Session) {
       where include_open(x.space_included, x.skill_included)
       limit 1
     ) as target,
+    -- Where a share's page moved, which ended it, only for someone who can open that space.
+    (
+      select jsonb_build_object('name', x.name, 'personal', x.private_to is not null and x.parent_id is null) from spaces x
+      where x.id = (proposals.change->>'movedTo')::uuid and x.id in (${accessibleSpaces(s)})
+    ) as moved_to,
     case when state in ('open', 'requested') and expires_at <= now() then 'expired' else state end as state,
     created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at, decided_in, space_created
   `;

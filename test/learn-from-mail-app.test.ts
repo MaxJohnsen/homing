@@ -229,6 +229,112 @@ test('what rests on an email Homing read says so to everyone who sees it, howeve
   await Promise.all([claude.close(), chatgpt.close(), carasClaude.close()]);
 });
 
+test('what Ana shared from an email still rests on it once her assistant rewrites the copy and she shares that, for her, her assistant and Cara', async () => {
+  const { ana, cara, minus1, email, claude } = await world();
+  const carasClaude = await assistantOf(cara);
+  const label = "rests on an email Homing read: what was taken from it, not the email's own words";
+  const first = itemOf(await claude.call('remember', {
+    space: `space:${minus1}`,
+    page: 'Northwind budget',
+    text: 'The Northwind budget for 2027 is NOK 2 million.',
+    sources: [{ reference: email, excerpt: 'The Northwind budget for 2027 is NOK 2 million, approved by the board on Monday.' }],
+  }));
+  const [{ page }] = await admin<{ page: string }[]>`select page_id as page from content where id = ${first}`;
+  const shared = async (item: string) => {
+    const sheet = (await ana.browser.json(`/api/items/${item}/publication`)).body;
+    const done = await ana.browser.json(`/api/items/${item}/publish`, { shown: sheet.text, space: minus1 });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    return { sheet, id: done.body.id as string };
+  };
+  // What a person and their assistant are told about an item, through MCP and the app.
+  const told = async (who: Member, assistant: Session, item: string) => {
+    const lines = await seen(assistant, item, page, minus1, 'Northwind budget');
+    for (const line of [lines.page, lines.search, lines.context]) assert.ok(line.includes(`, ${label})`), `${who.name}: ${line}`);
+    assert.ok(lines.item.includes(`. ${label[0].toUpperCase()}${label.slice(1)}.`), `${who.name}: ${lines.item}`);
+    const shown = (await who.browser.json(`/api/pages/${page}`)).body.items.filter((one: { id: string }) => one.id === item);
+    assert.deepEqual(shown.map((one: { readFrom: string | null }) => one.readFrom), ['mailbox'], who.name);
+  };
+
+  // Shared, it's a copy citing nothing, since the email is only Ana's.
+  const copy = (await shared(first)).id;
+  assert.notEqual(copy, first);
+  // Her assistant replaces the copy: the new version cites nothing either, and rests on the email all the same.
+  const mine = itemOf(await claude.call('remember', { replaces: `item:${copy}`, text: 'The Northwind budget for 2027 is NOK 2 million, as approved.' }));
+  assert.deepEqual([...(await admin`select source_id from citations where content_id = ${mine}`)], []);
+  await told(ana, claude, mine);
+  // She shares it: nothing on it is hidden, so it goes over as it is, and as she's told, everyone sees what it rests on.
+  const again = await shared(mine);
+  assert.deepEqual([again.id, again.sheet.copy, again.sheet.hidden.length, again.sheet.readFrom], [mine, false, 0, 'mailbox']);
+  for (const [who, assistant] of [[ana, claude], [cara, carasClaude]] as const) await told(who, assistant, mine);
+
+  // Replaced again and corrected where it stands, then shared, it still does.
+  const latest = itemOf(await claude.call('remember', { replaces: `item:${mine}`, text: 'The Northwind budget for 2027 is NOK 2 million, as the board approved.' }));
+  assert.ok(!(await claude.call('remember', { updates: `item:${latest}`, text: 'The Northwind budget for 2027 is NOK 2 million, as the board approved on Monday.' })).failed);
+  await told(ana, claude, latest);
+  assert.equal((await shared(latest)).id, latest);
+  for (const [who, assistant] of [[ana, claude], [cara, carasClaude]] as const) await told(who, assistant, latest);
+  // Cara gets nothing of the email.
+  assert.doesNotMatch((await carasClaude.call('read', { ref: `page:${page}` })).text, /Source:|microsoft:|Gunnar Lie <|board on Monday\./);
+  await Promise.all([claude.close(), carasClaude.close()]);
+});
+
+test('what an item rests on is followed 100 versions back, only for someone who sees it, and for a page’s items at once', async () => {
+  const { ana, cara, minus1, email, claude } = await world();
+  const first = itemOf(await claude.call('remember', {
+    space: `space:${minus1}`,
+    page: 'Long history',
+    text: 'Version 0.',
+    sources: [{ reference: email, excerpt: 'The Northwind budget for 2027 is NOK 2 million, approved by the board on Monday.' }],
+  }));
+  const [{ page, source }] = await admin<{ page: string; source: string }[]>`
+    select c.page_id as page, ci.source_id as source from content c join citations ci on ci.content_id = c.id where c.id = ${first}
+  `;
+  const readFrom = (who: Member, items: string[]) =>
+    as({ person: who.id }, async (s) => [...(await s.tx<{ item: string; kind: string }[]>`select item, kind from read_from(${s.tx.array(items)}::uuid[])`)]);
+  // Written straight to the database, no later version cites the email itself: only its line does.
+  const versions = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    const ids = [first];
+    for (let v = 1; v <= 101; v++) {
+      const [{ id }] = await s.tx<{ id: string }[]>`
+        insert into content (page_id, space_id, private_to, kind, body, supersedes) values (${page}, ${minus1}, ${ana.id}, 'text', ${`Version ${v}.`}, ${ids.at(-1)!}) returning id
+      `;
+      ids.push(id);
+    }
+    return ids;
+  });
+  assert.deepEqual(await readFrom(ana, [versions[100], versions[101]]), [{ item: versions[100], kind: 'mailbox' }]);
+  // Someone who can't see an item learns nothing of it, or of its line.
+  assert.deepEqual(await readFrom(cara, versions), []);
+
+  // A page of 300 items, each the fifth version of one citing the email, is asked about at once, and quickly.
+  const start = itemOf(await claude.call('remember', { space: `space:${minus1}`, page: 'Many facts', text: 'Facts follow.' }));
+  const [{ page: crowded }] = await admin<{ page: string }[]>`select page_id as page from content where id = ${start}`;
+  const current = await as({ person: ana.id, agent: 'Claude' }, async (s) => {
+    await s.tx`insert into content (page_id, space_id, private_to, kind, body) select ${crowded}, ${minus1}, ${ana.id}, 'text', 'Fact ' || i from generate_series(1, 300) i`;
+    await s.tx`insert into citations (content_id, source_id) select id, ${source} from content where page_id = ${crowded} and body like 'Fact %'`;
+    for (let v = 1; v < 5; v++) {
+      await s.tx`
+        insert into content (page_id, space_id, private_to, kind, body, supersedes)
+        select page_id, space_id, private_to, 'text', body || '.', id from content c
+        where c.page_id = ${crowded} and c.body like 'Fact %' and not exists (select from content r where r.supersedes = c.id)
+      `;
+    }
+    return (await s.tx<{ id: string }[]>`
+      select id from content c where c.page_id = ${crowded} and c.body like 'Fact %' and not exists (select from content r where r.supersedes = c.id)
+    `).map((row) => row.id);
+  });
+  assert.equal(current.length, 300);
+  let fastest = Infinity;
+  for (let run = 0; run < 3; run++) {
+    const start = performance.now();
+    assert.equal((await readFrom(ana, current)).length, 300);
+    fastest = Math.min(fastest, performance.now() - start);
+  }
+  // Asked once for each item, as it was before, this took about 75 ms.
+  assert.ok(fastest < 50, `${Math.round(fastest)} ms`);
+  await claude.close();
+});
+
 test('a knowledge-only search for a sender finds what is known about them and no email, and the ordinary search is as it was', async () => {
   const { minus1, email, claude } = await world();
   const kept = await claude.call('remember', {
@@ -397,7 +503,7 @@ test('moving a page is refused, each time saying why, and nothing moves', async 
   await Promise.all([claude.close(), bens.close()]);
 });
 
-test('what Ana was shown for sharing with Minus 1 is shared nowhere once its page moved, in the app, a proposal or a plan, and she’s told where it went', async () => {
+test('what Ana was shown for sharing with Minus 1 is shared nowhere once its page moved, in the app, a proposal or a plan, and she and Claude are told where it went', async () => {
   const { ana, cara, minus1, acme, claude } = await world();
   const kept = async (page: string, text: string) => itemOf(await claude.call('remember', { space: `space:${minus1}`, page, text }));
   const pageOfItem = async (item: string) => (await admin<{ page: string }[]>`select page_id as page from content where id = ${item}`)[0].page;
@@ -412,14 +518,27 @@ test('what Ana was shown for sharing with Minus 1 is shared nowhere once its pag
   const confirmed = await ana.browser.json(`/api/items/${salaries}/publish`, { shown: sheet.body.text, space: minus1 });
   assert.deepEqual([confirmed.status, confirmed.body.message], [409, "It's in Acme now."]);
 
-  // Claude proposed sharing it, and she approves once it has moved: the decision page says it's gone.
+  // Claude proposed sharing it: moving the page ends that, saying where it went, to Ana and to Claude.
   const rates = await kept('Rates', 'Minus 1 bills NOK 1,800 an hour.');
-  const asked = proposalOf((await claude.call('act', { action: 'knowledge.publish', input: { item: `item:${rates}` } })).text);
+  const publish = { action: 'knowledge.publish', input: { item: `item:${rates}` } };
+  const asked = proposalOf((await claude.call('act', publish)).text);
   const shown = (await proposal(asked)).publication.text;
+  const minus1Context = async () => (await claude.call('context', { request: 'Rates', space: `space:${minus1}` })).text;
+  assert.match(await minus1Context(), new RegExp(`## Waiting for approval\n[^#]*\\(proposal:${asked}, `));
   await moved(rates);
-  assert.equal((await proposal(asked)).publication.current, false);
+  const ended = await proposal(asked);
+  assert.deepEqual([ended.state, ended.withdrawnBy, ended.movedTo], ['withdrawn', 'Claude', 'Acme']);
   const decided = await ana.browser.json(`/api/proposals/${asked}/decide`, { approve: true, shown });
-  assert.deepEqual([decided.status, decided.body.message], [409, "It's in Acme now."]);
+  assert.deepEqual([decided.status, decided.body.message], [409, 'It was withdrawn, so there’s nothing to decide.']);
+  const how = `Withdrawn on \\d{4}-\\d{2}-\\d{2}, when Claude moved its page to Acme \\(space:${acme}\\), so nothing was shared\\. If the user still wants it shared, propose it where it is now\\.`;
+  assert.match((await claude.call('read', { ref: `proposal:${asked}` })).text, new RegExp(`^proposal:${asked} in Minus 1\\. ${how}$`, 'm'));
+  const context = await minus1Context();
+  assert.doesNotMatch(context, /## Waiting for approval/);
+  assert.match(context, new RegExp(`^- Share item:${rates} with everyone in the space \\(proposal:${asked}\\): ${how}$`, 'm'));
+  // So Claude can propose sharing it where it is now, at once.
+  const again = await claude.call('act', publish);
+  assert.ok(!again.failed, again.text);
+  assert.equal((await proposal(proposalOf(again.text))).space, 'Acme');
 
   // A plan with something to share on each of two pages: it can only be declined, and says why.
   const launch = await kept('Launch', 'Launch is in May.');

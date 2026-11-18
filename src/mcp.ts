@@ -2065,6 +2065,9 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
     case 'withdrawn': {
+      // A share ends when its page moves, since it's shared only in the space it was shown for.
+      const moved = proposal.change.movedTo && (proposal.movedTo ? `${proposal.movedTo.personal ? "the user's personal space" : proposal.movedTo.name} (${ref('space', proposal.change.movedTo)})` : 'a space the user can no longer open');
+      if (moved) return `Withdrawn on ${day(proposal.decidedAt!)}, when ${proposal.decidedIn} moved its page to ${moved}, so nothing was shared. If the user still wants it shared, propose it where it is now.`;
       // A suggestion of the assistant's own that was withdrawn counts as turned down.
       const own = (proposal.action === 'add space' || proposal.action === 'archive space' || proposal.action === 'archive page') && !proposal.change.asked;
       return `Withdrawn by ${proposal.decidedIn ?? 'the user'} on ${day(proposal.decidedAt!)}, so it ended and nothing changed.${own ? " Don't suggest it again unless the user asks." : ''}`;
