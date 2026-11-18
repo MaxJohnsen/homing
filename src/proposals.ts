@@ -447,6 +447,8 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
 
 /** Whether one of the person's items can be proposed for sharing with its space, and that space. */
 async function publishFits(s: Session, itemId: string): Promise<{ publication: Publication; space: SpaceView }> {
+  // Held until this is proposed, so a move of its page at the same moment waits and then ends the proposal, or comes first and is seen here.
+  await s.tx`select id from content where id = ${itemId}::uuid and ${visible(s, 'content')} for update`;
   const publication = await publicationOf(s, itemId);
   if (!publication) throw new SpaceRefused('missing', 'There’s no item of yours with that reference to share.');
   const space = await spaceView(s, publication.item.spaceId);
