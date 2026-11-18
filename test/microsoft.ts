@@ -57,7 +57,7 @@ export interface Email {
   unique?: string | null;
   attachments?: { name: string; inline?: boolean }[];
   bcc?: { name: string; address: string }[];
-  /** The folder it's in: a well-known one, such as sentitems or junkemail, or one of the owner's own by its path, such as Clients/Northwind. By default the inbox. */
+  /** The folder it's in: a well-known one, such as sentitems or junkemail, or one of the owner's own by its path, such as Clients/Northwind, where an empty name is a folder without one. By default the inbox. */
   folder?: string;
   /** A draft, not sent. */
   draft?: boolean;
@@ -381,7 +381,8 @@ export class MicrosoftStandIn {
     const named = path && decodeURIComponent(path[1]);
     const folder = named && mailbox.folders.find((one) => one.id === named || one.wellKnown === named || `AAkF${one.id}` === named);
     if (!folder) return { status: 404, body: { error: { code: 'ErrorItemNotFound' } } };
-    const all: Record<string, unknown> = { id: named.startsWith('AAkF') ? named : folder.id, displayName: folder.name, parentFolderId: folder.parent };
+    // A folder without a name has none in Graph's answer.
+    const all: Record<string, unknown> = { id: named.startsWith('AAkF') ? named : folder.id, displayName: folder.name || null, parentFolderId: folder.parent };
     const select = (url.searchParams.get('$select') ?? '').split(',').filter(Boolean);
     return { status: 200, body: Object.fromEntries(Object.entries(all).filter(([name]) => select.length === 0 || name === 'id' || select.includes(name))) };
   }

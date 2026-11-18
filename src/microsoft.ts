@@ -320,11 +320,15 @@ const standard: Record<string, string> = { junkemail: 'Junk Email', deleteditems
 /**
  * How many requests one use of a mailbox makes to Graph at most, such as one stretch of it in
  * order, a search or reading an email, so each stays well under a minute; how many at once, as
- * Graph takes them for one mailbox; and how many emails a page of the mailbox in order holds.
+ * Graph takes them for one mailbox; how many emails a page of the mailbox in order holds; and how
+ * many pages one stretch asks for at most, and for how long it asks for more, so it ends well
+ * within its time limit however much of the mail is never read.
  */
 export const mostRequests = 40;
 const atOnce = 4;
 const pageSize = 250;
+export const pagesAtMost = 10;
+const askingFor = 25_000;
 
 /** One use of a mailbox has asked Graph as much as it may. */
 class AskedEnough extends Error {}
@@ -544,21 +548,29 @@ const graphTime = (at: Date) => at.toISOString().replace(/\.\d+Z$/, 'Z');
  * line each, with who it's from and to, its subject, when it arrived, its conversation and its
  * folder by name, and never its text. Graph's own next link leads on, as its documentation asks,
  * since a page may hold fewer than asked for. It stops once it has more than most, past the first
- * second, or at the most requests one use makes, and then says it got through to the second of the
- * last email it looked at, since more may have arrived in that same second.
+ * second, or, so each use gets further however much of the mail is never read, after so many pages
+ * or so long, or at the most requests one use makes. Then it got through to the second of the last
+ * email it looked at, since more may have arrived in that same second, or, when that's the second
+ * it began at, through that second, partly.
  */
-export async function listMail(box: Mailbox, { from, until, most }: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date }> {
+export async function listMail(box: Mailbox, { from, until, most }: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }> {
   const filter = `receivedDateTime ge ${graphTime(from)} and receivedDateTime lt ${graphTime(until)}`;
   let link: string | undefined = `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent('receivedDateTime asc')}&$top=${pageSize}&$select=${lineFields}`;
   const listed: Listed[] = [];
+  const started = Date.now();
   let last: Date | undefined;
-  const upTo = (at: Date) => ({ listed: listed.filter((line) => line.at! < at), through: at });
-  while (link) {
+  const stop = (at: Date | undefined) => {
+    // Pages without a single email, which Graph doesn't give, are no answer.
+    if (!at) throw new MicrosoftUnreachable('Graph');
+    const through = second(at);
+    return through > from ? { listed: listed.filter((line) => line.at! < through), through } : { listed, through: new Date(through.getTime() + 1000), partly: true };
+  };
+  for (let pages = 1; link; pages++) {
     let page: ReturnType<typeof pageOf>;
     try {
       page = pageOf(await box.get(link));
     } catch (error) {
-      if (error instanceof AskedEnough) return upTo(second(last ?? from));
+      if (error instanceof AskedEnough) return stop(last);
       throw error;
     }
     // Every one an email, with its id and when it arrived, or it's no answer.
@@ -568,11 +580,12 @@ export async function listMail(box: Mailbox, { from, until, most }: { from: Date
     for (const { message, folder } of kept) {
       listed.push({ ...emailFound(summaryOf(message)), audience: { people: [...addressesOf(message.toRecipients), ...addressesOf(message.ccRecipients)], more: 0 }, where: folder });
     }
-    if (stoppedAt) return upTo(second(summaryOf(stoppedAt).at!));
+    if (stoppedAt) return stop(summaryOf(stoppedAt).at!);
     // What's left out still counts for where the list got to.
     last = summaries.at(-1)?.at ?? last;
-    if (listed.length > most && last && second(last) > second(listed[0].at!)) return upTo(second(last));
+    if (listed.length > most && last && second(last) > second(listed[0].at!)) return stop(last);
     link = page.next;
+    if (link && (pages >= pagesAtMost || Date.now() - started > askingFor)) return stop(last);
   }
   return { listed, through: until };
 }
@@ -592,10 +605,10 @@ function emailIn(body: Record<string, unknown>): Record<string, unknown> {
   return body;
 }
 
-/** One folder as Graph gives it, with its id and name, or it's no answer. */
+/** One folder as Graph gives it, with its id, or it's no answer. A folder without a name has an empty one. */
 function folderIn(body: Record<string, unknown>): Folder {
-  if (typeof body.id !== 'string' || typeof body.displayName !== 'string') throw new MicrosoftUnreachable('Graph');
-  return { name: body.displayName, parent: typeof body.parentFolderId === 'string' ? body.parentFolderId : null };
+  if (typeof body.id !== 'string') throw new MicrosoftUnreachable('Graph');
+  return { name: typeof body.displayName === 'string' ? body.displayName : '', parent: typeof body.parentFolderId === 'string' ? body.parentFolderId : null };
 }
 
 function summaryOf(message: Record<string, unknown>): MailSummary {

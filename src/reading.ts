@@ -51,13 +51,20 @@ export type Framing = (place: Place, conversations: Conversation[]) => string;
 type How = 'began' | 'began again' | 'confirmed' | 'next' | 'again';
 
 /**
+ * Emails of one second that a stretch doesn't list, since more arrived in it than a stretch holds:
+ * which second, and how many, or null when Homing didn't get through that second at once.
+ */
+export type Unlisted = { at: Date; count: number | null };
+
+/**
  * What asking for the list gave: a stretch, with its conversations as framed, whether it reaches
- * the newest mail Homing hands out, and whether it ends sooner so it can be read in one answer;
- * nothing to read up to now; a refusal; or why the system couldn't be read.
+ * the newest mail Homing hands out, whether it ends sooner so it can be read in one answer, and
+ * what it doesn't list of a second that holds more; nothing to read up to now; a refusal; or why
+ * the system couldn't be read.
  */
 export type Listing =
-  | { outcome: 'stretch'; place: Place; began: Date; from: Date; until: Date; token: string; lapses: Date; how: How; today: boolean; short: boolean; emails: number; conversations: number; text: string }
-  | { outcome: 'nothing'; place: Place; began: Date; reached: Date; how: Exclude<How, 'again'>; today: boolean }
+  | { outcome: 'stretch'; place: Place; began: Date; from: Date; until: Date; token: string; lapses: Date; how: How; today: boolean; short: boolean; unlisted?: Unlisted; emails: number; conversations: number; text: string }
+  | { outcome: 'nothing'; place: Place; began: Date; reached: Date; how: Exclude<How, 'again'>; today: boolean; unlisted?: Unlisted }
   | { outcome: 'refused'; text: string }
   | { outcome: 'problem'; place: Place; problem: Problem; retryAfter?: number; reached: Date | null };
 
@@ -83,11 +90,9 @@ async function placeNamed(s: Session, broker: Broker, named: string | undefined)
  * The cut between two stretches: before the first second that takes the lines past most, so no
  * second is split, and when the first email's second alone holds more, after that second.
  */
-function cutOf(listed: Listed[], through: Date, from: Date, most: number): Date | undefined {
-  let cut = listed.length > most ? second(listed[most].at!) : through;
-  const first = listed.length ? second(listed[0].at!) : from;
-  if (cut <= first) cut = new Date(Math.min(through.getTime(), first.getTime() + 1000));
-  return cut > from ? cut : undefined;
+function cutOf(listed: Listed[], through: Date, most: number): Date {
+  const cut = listed.length > most ? second(listed[most].at!) : through;
+  return listed.length && cut <= listed[0].at! ? new Date(second(listed[0].at!).getTime() + 1000) : cut;
 }
 
 /** A day the assistant gives to begin from, as YYYY-MM-DD, as the start of that day in UTC. */
@@ -103,7 +108,8 @@ function dayOf(value: string): Date | undefined {
  * the place reached moves to its end. Without either, the stretch handed out now comes again, or,
  * once it lapsed or when there's none, the stretch from the place reached. Homing lists the mailbox
  * before it changes anything, so a fault at the system loses no place. A stretch ends at an earlier
- * second when it would be too long to read in one answer, though never before its first.
+ * second when it would be too long to read in one answer, though never before its first, and of a
+ * second that alone holds more than a stretch, it lists the first, saying how many more there are.
  */
 export async function listStretch(
   broker: Broker,
@@ -151,40 +157,41 @@ export async function listStretch(
   const most = how === 'again' ? Number.MAX_SAFE_INTEGER : Math.max(1, Math.min(Math.floor(input.lines ?? linesUsually), linesAtMost));
   const listedIn = from < end ? await listPlace(broker, principal, place, { from, until: end, most }) : { listed: [], through: end };
   if ('problem' in listedIn) return { outcome: 'problem', place, problem: listedIn.problem, retryAfter: listedIn.retryAfter, reached };
-  const { listed, through } = listedIn;
+  const { listed, through, partly = false } = listedIn;
 
-  let cut: Date;
-  if (how === 'again') {
-    // What the token confirms is what was shown under it, so it comes again whole, or not at all.
-    if (through < end) {
-      return {
-        outcome: 'refused',
-        text: `The stretch handed out now, from ${at(from)} to ${at(end)}, couldn't be listed again in full at once. Ask again without a token after it lapses at ${at(lapsesAt!)}, when it's handed out afresh.`,
-      };
-    }
-    cut = end;
-  } else if (from >= end) {
-    cut = from;
-  } else {
-    const cutAt = cutOf(listed, through, from, most);
-    if (!cutAt) return { outcome: 'refused', text: `More emails arrived within one second, at ${at(from)}, than Homing lists at once. Tell the user. Nothing changed.` };
-    cut = cutAt;
+  // What the token confirms is what was shown under it, so it comes again whole, or not at all.
+  if (how === 'again' && through < end) {
+    return {
+      outcome: 'refused',
+      text: `The stretch handed out now, from ${at(from)} to ${at(end)}, couldn't be listed again in full at once. Ask again without a token after it lapses at ${at(lapsesAt!)}, when it's handed out afresh.`,
+    };
   }
+  let cut = how === 'again' ? end : from >= end ? from : cutOf(listed, through, most);
   let lines = listed.filter((line) => line.at! < cut);
   const held = await withPrincipal(broker.sql, principal, (s) => heldFrom(s, place.connection, lines.flatMap((line) => line.conversation ?? [])));
-  let text = frame(place, grouped(lines, held));
+  const framed = (some: Listed[]) => frame(place, grouped(some, held));
+  let text = framed(lines);
   let short = false;
-  // Too long to read in one answer: it ends a second sooner, until it fits or holds only its first.
+  // Too long to read in one answer: it ends a second sooner, until it fits or holds only one second.
   while (how !== 'again' && text.length > charactersAtMost) {
     const sooner = second(lines.at(-1)!.at!);
     const fewer = lines.filter((line) => line.at! < sooner);
     if (fewer.length === 0) break;
-    [cut, lines, text, short] = [sooner, fewer, frame(place, grouped(fewer, held)), true];
+    [cut, lines, text, short] = [sooner, fewer, framed(fewer), true];
   }
+  // A second that alone holds more than a stretch may: as many of its first emails as fit.
+  let shown = lines;
+  if (lines.length > 1 && second(lines[0].at!).getTime() === second(lines.at(-1)!.at!).getTime()) {
+    shown = lines.slice(0, linesAtMost);
+    text = framed(shown);
+    while (text.length > charactersAtMost && shown.length > 1) text = framed((shown = shown.slice(0, -1)));
+  }
+  const more = lines.length - shown.length;
+  const unlisted = partly ? { at: new Date(cut.getTime() - 1000), count: null } : more ? { at: second(shown[0].at!), count: more } : undefined;
   const beginning = how === 'began' || how === 'began again';
 
   // Nothing to read in it, as when all of it is never read: the place reached moves past it at once.
-  const empty = lines.length === 0 && how !== 'again';
+  const empty = shown.length === 0 && how !== 'again';
   const token = empty || how === 'again' ? handed : crypto.randomUUID();
   let lapses = lapsesAt;
   if (how !== 'again') {
@@ -201,9 +208,9 @@ export async function listStretch(
   }
   const today = how !== 'again' && cut.getTime() === until.getTime();
   const startedAt = beginning ? from : began!;
-  if (empty) return { outcome: 'nothing', place, began: startedAt, reached: cut, how: how as Exclude<How, 'again'>, today };
-  const conversations = new Set(lines.map((line) => line.conversation ?? line.id)).size;
-  return { outcome: 'stretch', place, began: startedAt, from, until: cut, token: token!, lapses: lapses!, how, today, short, emails: lines.length, conversations, text };
+  if (empty) return { outcome: 'nothing', place, began: startedAt, reached: cut, how: how as Exclude<How, 'again'>, today, unlisted };
+  const conversations = new Set(shown.map((line) => line.conversation ?? line.id)).size;
+  return { outcome: 'stretch', place, began: startedAt, from, until: cut, token: token!, lapses: lapses!, how, today, short, unlisted, emails: shown.length, conversations, text };
 }
 
 /** The lines grouped by conversation, in the order each first appears, with what Homing holds from each. */

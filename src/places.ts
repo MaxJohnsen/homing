@@ -289,7 +289,7 @@ function asOwner<T>(broker: Broker, connector: Connector, principal: AgentPrinci
 const listTimeLimit = 40_000;
 
 /** What listing a place in order gave: its items and how far it got, or why it couldn't, with how long the system asked Homing to wait. */
-export type ListedIn = { listed: Listed[]; through: Date } | { problem: Problem; retryAfter?: number };
+export type ListedIn = { listed: Listed[]; through: Date; partly?: boolean } | { problem: Problem; retryAfter?: number };
 
 /** Lists one of the person's places in order, from one moment until another, for their assistant, as searching and reading do. */
 export async function listPlace(broker: Broker, principal: AgentPrincipal, place: Place, window: { from: Date; until: Date; most: number }): Promise<ListedIn> {

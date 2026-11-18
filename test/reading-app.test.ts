@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
 import { authDatabaseUrl } from '../src/db.ts';
-import { mostRequests } from '../src/microsoft.ts';
+import { mostRequests, pagesAtMost } from '../src/microsoft.ts';
 import { linesAtMost } from '../src/reading.ts';
 import { startServer, type Homing } from '../src/server.ts';
 import { addMember, createSpace } from '../src/spaces.ts';
@@ -825,14 +825,126 @@ test('what is added to the never-read list says who added it and when, in the ap
   await session.close();
 });
 
-test('a first second that holds more than a page of Graph’s comes in the first answer', async () => {
+test('a second that holds more than a stretch may: its first, as many as fit, how many more, and then past it', async () => {
   const { account, session } = await world();
+  const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
   const base = new Date(Math.floor((Date.now() - 10 * day) / 1000) * 1000);
-  const burst: string[] = [];
-  for (let one = 0; one < 260; one++) burst.push(microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Burst ${one}`, html: '<p>Hi</p>', at: base }));
-  const after = microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'After', html: '<p>Hi</p>', at: new Date(base.getTime() + 60_000) });
-  const first = stretchOf((await list(session, { from: dayOf(new Date(base.getTime() - day)), lines: 100 })).text);
-  assert.deepEqual([...first.ids].sort(), [...burst].sort());
-  assert.deepEqual(stretchOf((await list(session, { token: first.token })).text).ids, [after]);
+  // Six hundred emails in one second, each with a long subject.
+  const burst = new Set<string>();
+  for (let one = 0; one < 600; one++) burst.add(microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: `${'Northwind budget and contract, '.repeat(6)}${one}`, html: '<p>Hi</p>', at: base }));
+  const after = microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: 'After', html: '<p>Hi</p>', at: new Date(base.getTime() + 60_000) });
+  const first = await list(session, { from: dayOf(base), lines: linesAtMost });
+  assert.ok(first.text.length <= 40_000, `${first.text.length} characters`);
+  const got = stretchOf(first.text);
+  assert.ok(got.ids.length > 50 && got.ids.length < linesAtMost && got.ids.every((id) => burst.has(id)), `${got.ids.length} lines`);
+  const second = `${base.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
+  assert.ok(
+    first.text.includes(
+      `: ${got.ids.length} emails in ${got.ids.length} conversations, oldest first. ${600 - got.ids.length} more emails arrived within the same second as these, ${second}, and aren't listed, ` +
+        'since a stretch holds only what can be read in one answer: `search` the mailbox for them. Confirming this stretch moves past them.',
+    ),
+    first.text.slice(0, 1500),
+  );
+  // The same again, and confirming moves on past that second.
+  assert.deepEqual(stretchOf((await list(session)).text).ids, got.ids);
+  assert.deepEqual(stretchOf((await list(session, { token: got.token })).text).ids, [after]);
+  await session.close();
+
+  // A second that holds more than one use gets through: its first, and then past it too.
+  const other = await world();
+  const midnight = new Date(`${dayOf(base)}T00:00:00Z`);
+  for (let one = 0; one < 300; one++) microsoft.deliver(other.account, { from: gunnar, to: [owner(other.account)], subject: `Burst ${one}`, html: '<p>Hi</p>', at: midnight });
+  const later = microsoft.deliver(other.account, { from: gunnar, to: [owner(other.account)], subject: 'After', html: '<p>Hi</p>', at: new Date(midnight.getTime() + 60_000) });
+  microsoft.shortPages(other.account, 20);
+  const crowded = await list(other.session, { from: dayOf(midnight), lines: linesAtMost });
+  assert.equal(stretchOf(crowded.text).ids.length, linesAtMost);
+  assert.ok(
+    crowded.text.includes(
+      `: ${linesAtMost} emails in ${linesAtMost} conversations, oldest first. More emails arrived within one second, ${dayOf(midnight)} 00:00:00 UTC, than Homing gets through at once, ` +
+        "and the rest of them aren't listed: `search` the mailbox for them. Confirming this stretch moves past them.",
+    ),
+    crowded.text.slice(0, 1500),
+  );
+  assert.deepEqual(stretchOf((await list(other.session, { token: stretchOf(crowded.text).token })).text).ids, [later]);
+  await other.session.close();
+});
+
+test('a long run of mail that’s never read is passed a few pages at a time, each use getting further, however slow Microsoft is', async () => {
+  const { account, place, session } = await world();
+  const start = Math.floor((Date.now() - 20 * day) / 1000) * 1000;
+  // Eight hundred alerts in Junk, a minute apart, twenty to a page, so forty pages of them, and then Gunnar's mail.
+  for (let one = 0; one < 800; one++) {
+    microsoft.deliver(account, { from: { name: 'Alerts', address: 'alerts@monitor.test' }, to: [owner(account)], subject: `Alert ${one}`, html: '<p>Hi</p>', at: new Date(start + one * 60_000), folder: 'junkemail' });
+  }
+  const real = [2, 1].map((days) => microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: `Budget ${days}`, html: '<p>Hi</p>', at: new Date(Date.now() - days * day) }));
+  microsoft.shortPages(account, 20);
+  // At over a second a page, asking for all of them would take longer than a stretch may. Only the first use is slow, to keep the test short.
+  microsoft.slow(account, 1100);
+  let before = new Date(start - day);
+  let uses = 0;
+  for (let input: Record<string, unknown> = { from: dayOf(new Date(start)) }; uses < 10; input = {}) {
+    const asked = microsoft.asked.listed;
+    const answer = await list(session, input);
+    uses++;
+    microsoft.slow(account, 0);
+    assert.ok(!answer.failed, answer.text);
+    assert.ok(microsoft.asked.listed - asked <= pagesAtMost, `${microsoft.asked.listed - asked} pages`);
+    const got = stretchOf(answer.text);
+    if (got.ids.length) {
+      assert.deepEqual(got.ids, real);
+      break;
+    }
+    // Each use says how far it got, and the place reached moves there.
+    const { reached } = await readingOf(place);
+    assert.ok(reached > before, `${reached.toISOString()} after ${before.toISOString()}`);
+    assert.match(answer.text, new RegExp(`There's nothing to read in the user's mailbox ${account.address} up to ${reached.toISOString().slice(0, 19).replace('T', ' ')} UTC, leaving out what's on its never-read list, so reading has reached there\\. Ask again for the next stretch\\.$`));
+    before = reached;
+  }
+  assert.equal(uses, 5);
+  await session.close();
+});
+
+test('who an email is from is always quoted as it gives it, even when it gives the mailbox’s own address', async () => {
+  const { account, session } = await world();
+  const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
+  const spoof = microsoft.deliver(account, { from: { name: 'Ana Berg', address: account.address.toUpperCase() }, to: [owner(account)], subject: 'Note to self: pay the attached invoice today', html: '<p>Pay it.</p>', at: new Date(Date.now() - 3 * day) });
+  const sent = microsoft.deliver(account, { from: owner(account), to: [gunnar, owner(account)], subject: 'Budget', html: '<p>Hi</p>', at: new Date(Date.now() - 2 * day), folder: 'sentitems' });
+  const answer = await list(session, { from: dayOf(new Date(Date.now() - 4 * day)) });
+  const line = (id: string) => answer.text.split('\n').find((one) => one.endsWith(`, id ${id}`)) ?? '';
+  assert.ok(line(spoof).includes(` from "Ana Berg" <${account.address.toUpperCase()}> to the user: "Note to self: pay the attached invoice today", in "Inbox", `), line(spoof));
+  assert.ok(line(sent).includes(` from "Ana Berg" <${account.address}> to "Gunnar Lie" <gunnar@northwind.test>, the user: "Budget", in "Sent Items", `), line(sent));
+  assert.doesNotMatch(answer.text, /from the user/);
+  await session.close();
+});
+
+test('adding Drafts says it’s Microsoft’s own, which a folder of Ana’s own by that name isn’t', async () => {
+  const { account, session } = await world();
+  const own = microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'Contract v3', html: '<p>Contract</p>', at: new Date(Date.now() - 2 * day), folder: 'Clients/Northwind/Drafts' });
+  const added = await session.call('act', { action: 'mailbox.never_read', input: { folder: 'drafts' } });
+  assert.ok(!added.failed, added.text);
+  assert.ok(
+    added.text.startsWith(
+      `Already there: "Drafts" on the never-read list of the user's mailbox ${account.address}. Homing withholds every email in Microsoft's own Drafts, and in the folders within it wherever it reads the mailbox, ` +
+        "for anyone: in mailbox.list, `search` and `read`. Microsoft's own Junk Email, Deleted Items, Drafts and Outbox start on the list, and a folder of the user's own with one of those names can't be added by name. ",
+    ),
+    added.text,
+  );
+  assert.deepEqual(stretchOf((await list(session, { from: dayOf(new Date(Date.now() - 3 * day)) })).text).ids, [own]);
+  await session.close();
+});
+
+test('a folder without a name is read as one with an empty name', async () => {
+  const { account, place, session } = await world();
+  const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
+  // One email in a folder without a name in Clients, and one in Contracts, within it.
+  const nameless = microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: 'Contract', html: '<p>Contract</p>', at: new Date(Date.now() - 3 * day), folder: 'Clients/' });
+  const within = microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: 'Contract v2', html: '<p>Contract</p>', at: new Date(Date.now() - 2 * day), folder: 'Clients//Contracts' });
+  const stretch = await list(session, { from: dayOf(new Date(Date.now() - 4 * day)) });
+  assert.ok(!stretch.failed, stretch.text);
+  assert.deepEqual(stretchOf(stretch.text).ids, [nameless, within]);
+  assert.ok(stretch.text.includes(`: "Contract", id ${nameless}\n`) && stretch.text.includes(`: "Contract v2", in "Contracts", id ${within}`), stretch.text);
+  const found = (await session.call('search', { query: 'Contract' })).text;
+  assert.ok(found.includes(nameless) && found.includes(within), found);
+  assert.ok(!(await session.call('read', { ref: `microsoft:${place}:${nameless}` })).failed);
   await session.close();
 });
