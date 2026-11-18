@@ -124,8 +124,9 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
 }
 
 /**
- * What Homing never reads in a mailbox, for anyone: senders and folders, each of which you can take
- * off, which asks first, and a field to add one. Your assistant adds to it only when you tell it to.
+ * What Homing never reads in a mailbox, for anyone: senders and folders, each with who added it and
+ * when, beside those it starts with, and each of which you can take off, which asks first, and a
+ * field to add one. Your assistant can add to it; only you take something off.
  */
 function NeverRead({ place, list, change }: { place: PlaceData; list: NeverReadData; change?: ConnectionActions['neverRead'] }) {
   const [entry, setEntry] = useState('');
@@ -144,34 +145,39 @@ function NeverRead({ place, list, change }: { place: PlaceData; list: NeverReadD
     }
   };
   const named = (what: NeverReadEntry) => ('sender' in what ? what.sender : what.folder);
-  const chips = (kind: 'sender' | 'folder', values: string[]) =>
-    values.map((value) => (
-      <li key={`${kind} ${value}`} className="flex items-center gap-0.5 rounded-full bg-card py-0.5 pr-0.5 pl-2.5 text-sm">
-        <span className="min-w-0 [overflow-wrap:anywhere]">{value}</span>
+  const chips = (entries: NeverReadData) =>
+    entries.map((one) => (
+      <li key={'sender' in one ? `sender ${one.sender}` : `folder ${one.folder}`} className="flex items-center gap-0.5 rounded-2xl bg-card py-0.5 pr-0.5 pl-2.5 text-sm">
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {named(one)}
+          {one.at && <span className="text-muted-foreground"> added by {one.by ?? 'you'}, {dateOf(one.at)}</span>}
+        </span>
         {change && (
-          <Button variant="ghost" size="icon-xs" aria-label={`Take ${value} off the list`} className="text-muted-foreground" disabled={busy} onClick={() => setTaking(kind === 'sender' ? { sender: value } : { folder: value })}>
+          <Button variant="ghost" size="icon-xs" aria-label={`Take ${named(one)} off the list`} className="text-muted-foreground" disabled={busy} onClick={() => setTaking('sender' in one ? { sender: one.sender } : { folder: one.folder })}>
             <X />
           </Button>
         )}
       </li>
     ));
+  const folders = list.filter((one) => 'folder' in one);
+  const senders = list.filter((one) => 'sender' in one);
   const id = `never-read-${place.id}`;
   return (
     <div role="group" aria-labelledby={`${id}-title`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
       <div className="flex flex-col gap-0.5">
         <span id={`${id}-title`} className="text-sm font-semibold">Never read</span>
         <span className="text-sm text-pretty text-muted-foreground">
-          Homing doesn’t read mail from or to these senders, or in these folders and the folders in them, for anyone. Your assistant adds to the list only when you tell it to.
+          Homing doesn’t read mail from or to these senders, or in these folders and the folders in them, for anyone. Your assistant can add to the list; only you can take something off.
         </span>
       </div>
       <div className="flex flex-col gap-2 text-sm">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-muted-foreground">Folders:</span>
-          {list.folders.length ? <ul className="flex flex-wrap gap-1.5">{chips('folder', list.folders)}</ul> : <span>none</span>}
+          {folders.length ? <ul className="flex flex-wrap gap-1.5">{chips(folders)}</ul> : <span>none</span>}
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-muted-foreground">Senders:</span>
-          {list.senders.length ? <ul className="flex flex-wrap gap-1.5">{chips('sender', list.senders)}</ul> : <span>none</span>}
+          {senders.length ? <ul className="flex flex-wrap gap-1.5">{chips(senders)}</ul> : <span>none</span>}
         </div>
       </div>
       {taking && change && (

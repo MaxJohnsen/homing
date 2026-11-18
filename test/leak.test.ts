@@ -69,7 +69,7 @@ interface Client {
   /** The space's task and one only the person has. */
   tasks: string[];
   /** Their work mailbox, connected in the client's space only for them. */
-  connection: { id: string; place: string; address: string };
+  connection: { id: string; place: string; address: string; account: string };
   /** A call to Homing's model for them, carrying the client's space. */
   modelCall: string;
 }
@@ -318,7 +318,7 @@ describe('straight against the database', () => {
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
         const conversations = await s.tx`select conversation from sources where conversation is not null`;
-        const readings = await s.tx`select connection_id, never_senders from readings`;
+        const readings = await s.tx`select account, never_read from readings`;
         const modelCalls = await s.tx`select id, spaces from model_calls`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
@@ -340,7 +340,7 @@ describe('straight against the database', () => {
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(conversations.map((row) => row.conversation), [`AAQk${connection.address}`]);
-        assert.deepEqual(readings.map((row) => [row.connectionId, row.neverSenders]), [[connection.id, [`news@${connection.address.split('@')[1]}`]]]);
+        assert.deepEqual(readings.map((row) => [row.account, row.neverRead.map((entry: { sender?: string }) => entry.sender)]), [[connection.account, [undefined, `news@${connection.address.split('@')[1]}`]]]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
@@ -405,10 +405,11 @@ describe('straight against the database', () => {
       `), refused);
       // Nor begin, move on or change what's never read in reading the other's mailbox, as them or their assistant, nor write the row itself.
       for (const principal of [{ ...me, direct: true as const }, { person: me.id, agent: 'Claude' }]) {
-        await assert.rejects(as(principal, (s) => s.tx`select * from begin_reading(${target.connection.place}::uuid, now(), now(), null, null)`), refused);
-        await assert.rejects(as(principal, (s) => s.tx`select * from hand_out_stretch(${target.connection.place}::uuid, now(), now(), null, null, null)`), refused);
-        await assert.rejects(as(principal, (s) => s.tx`select change_never_read(${target.connection.place}::uuid, false, ${`news@${target.connection.address.split('@')[1]}`}, null, '{}')`), refused);
-        await assert.rejects(as(principal, (s) => s.tx`update readings set never_senders = '{}' where connection_id = ${target.connection.id}`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`select * from move_reading(${target.connection.place}::uuid, true, now(), now(), null, null, null)`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`select * from move_reading(${target.connection.place}::uuid, false, now(), now(), null, null, null)`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`select change_never_read(${target.connection.place}::uuid, false, ${s.tx.json({ sender: `news@${target.connection.address.split('@')[1]}` })}, '[]')`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`update readings set never_read = '[]' where account = ${target.connection.account}`), refused);
+        await assert.rejects(as(principal, (s) => s.tx`insert into readings (private_to, provider, tenant, account, kind, resource) values (${target.person.id}, 'microsoft', 't', ${target.connection.account}, 'mailbox', 'x')`), refused);
       }
 
       // Nor send the other client's space to Homing's model, settle the other's call, or turn
@@ -770,9 +771,9 @@ async function mailbox(who: { id: string }, space: string, address: string) {
     `;
     // Reading it in order began a month ago, and one sender is never read there.
     const began = new Date(Math.floor((Date.now() - 30 * 24 * 60 * 60_000) / 1000) * 1000);
-    await s.tx`select * from begin_reading(${placeId}::uuid, ${began}, ${began}, ${crypto.randomUUID()}::uuid, ${new Date(began.getTime() + 60_000)})`;
-    await s.tx`select change_never_read(${placeId}::uuid, true, ${`news@${address.split('@')[1]}`}, null, '{Junk Email}')`;
-    return { id: connectionId, place: placeId, address };
+    await s.tx`select * from move_reading(${placeId}::uuid, true, ${began}, ${began}, ${crypto.randomUUID()}::uuid, ${new Date(began.getTime() + 60_000)}, null)`;
+    await s.tx`select change_never_read(${placeId}::uuid, true, ${s.tx.json({ sender: `news@${address.split('@')[1]}` })}, '[{"standard": "junkemail"}]')`;
+    return { id: connectionId, place: placeId, address, account };
   });
 }
 

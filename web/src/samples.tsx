@@ -276,7 +276,10 @@ const sampleReading: SpaceConnectionsData = {
   places: [{
     ...sampleConnections.places[0],
     reading: { began: '2025-01-01T00:00:00Z', reached: '2025-03-14T10:42:07Z' },
-    neverRead: { senders: ['news@weekly-digest.test', 'cloudvendor.test'], folders: ['Junk Email', 'Deleted Items', 'Drafts', 'Outbox', 'Private'] },
+    neverRead: [
+      { folder: 'Junk Email' }, { folder: 'Deleted Items' }, { folder: 'Drafts' }, { folder: 'Outbox' },
+      { sender: 'news@weekly-digest.test', by: 'Claude', at: '2025-02-03T09:12:00Z' }, { sender: 'cloudvendor.test', by: null, at: '2025-02-10T16:40:00Z' }, { folder: 'Private', by: null, at: '2025-01-02T08:05:00Z' },
+    ],
   }],
 };
 

@@ -42,11 +42,20 @@ export interface PlaceInSpace {
   connection: Connection;
   /** The other spaces the person uses the same connection in, of those they can open. */
   elsewhere: { id: string; name: string; personal: boolean }[];
-  /** For a kind read in order, where reading began and the place it reached, or null before it begins. */
-  reading: { began: Date; reached: Date } | null;
-  /** What's never read there, as the person left it, or null for as its kind starts it. */
+  /** For a kind read in order: where reading began and the place it reached, null before it begins, and what's never read there, null for as its kind starts it. */
+  began: Date | null;
+  reached: Date | null;
   neverRead: NeverRead | null;
 }
+
+/**
+ * Places, p, with their connections, c, and the person's reading of each, r, which only they see:
+ * one for each place their account reaches, whichever connection to it they use now.
+ */
+export const placesWithReadings = (s: Session) => s.tx`
+  places p join connections c on c.id = p.connection_id
+  left join readings r on (r.private_to, r.provider, r.tenant, r.account, r.kind, r.resource) = (p.private_to, c.provider, c.tenant, c.account, p.kind, p.resource)
+`;
 
 interface ConnectionRow {
   connectionId: string;
@@ -82,10 +91,10 @@ export function kindOf(connector: Connector | undefined, kind: string): PlaceKin
 export async function placesIn(s: Session, spaceId: string): Promise<PlaceInSpace[]> {
   const person = personOf(s.principal);
   if (!person) return [];
-  const rows = await s.tx<(ConnectionRow & { id: string; kind: string; addedAt: Date; began: Date | null; reached: Date | null; neverSenders: string[] | null; neverFolders: string[] | null })[]>`
+  const rows = await s.tx<(ConnectionRow & Pick<PlaceInSpace, 'id' | 'kind' | 'addedAt' | 'began' | 'reached' | 'neverRead'>)[]>`
     select p.id, p.kind, p.added_at, c.id as connection_id, c.provider, c.address, c.name, c.scopes, c.status, c.connected_at, c.refreshed_at,
-           r.began, r.reached, r.never_senders, r.never_folders
-    from places p join connections c on c.id = p.connection_id left join readings r on (r.connection_id, r.kind, r.resource) = (p.connection_id, p.kind, p.resource)
+           r.began, r.reached, r.never_read
+    from ${placesWithReadings(s)}
     where p.space_id = ${spaceId}::uuid and p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
     order by p.added_at, p.id
   `;
@@ -104,8 +113,9 @@ export async function placesIn(s: Session, spaceId: string): Promise<PlaceInSpac
     addedAt: row.addedAt,
     connection: connectionOf(row),
     elsewhere: others.filter((other) => other.connectionId === row.connectionId).map(({ id, name, personal }) => ({ id, name, personal })),
-    reading: row.began && row.reached && { began: row.began, reached: row.reached },
-    neverRead: row.neverSenders === null && row.neverFolders === null ? null : { senders: row.neverSenders ?? [], folders: row.neverFolders ?? [] },
+    began: row.began,
+    reached: row.reached,
+    neverRead: row.neverRead,
   }));
 }
 
@@ -386,6 +396,7 @@ export async function using<T>(
     let token: Promise<string> | undefined;
     return {
       resource: place.resource,
+      connection: place.connection,
       signal,
       neverRead: place.neverRead,
       // The renewal is part of the same use, which is already recorded.

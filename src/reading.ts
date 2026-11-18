@@ -9,16 +9,22 @@
 // it moves the place reached, and a stretch nobody confirms comes again.
 // Nothing here looks at what an email says.
 
+import postgres from 'postgres';
 import type { AgentPrincipal } from './assistants.ts';
 import { kindOf, type Broker } from './connections.ts';
-import type { Listed, NeverRead } from './connectors.ts';
+import type { Connectors, Listed } from './connectors.ts';
 import { withPrincipal, type Session } from './db.ts';
 import { current, visible, visibleContent } from './knowledge.ts';
 import { listPlace, neverReadIn, oneLine, placesFor, type Place, type Problem } from './places.ts';
 
 /** How many lines a stretch has unless the assistant asks for fewer or more, and the most it may ask for. */
 export const linesUsually = 100;
-export const linesAtMost = 300;
+export const linesAtMost = 150;
+/**
+ * The most characters a stretch's conversations take, beside Homing's own words above them, so the
+ * whole of it fits in one answer, as assistants' clients cut what a tool gives at about 25,000 tokens.
+ */
+export const charactersAtMost = 36_000;
 /** How long before now a stretch ends at the latest, since mail that just arrived can still be settling. */
 export const settling = 5 * 60_000;
 /** How many items held from one conversation a stretch shows. */
@@ -38,33 +44,22 @@ export interface HeldItem {
   text: string;
 }
 
-/** What asking for the list gave: a stretch, nothing to read up to now, a refusal, or why the system couldn't be read. */
+/** How a stretch's conversations read, as the assistant gets them, which is what its size is measured by. */
+export type Framing = (place: Place, conversations: Conversation[]) => string;
+
+/** How a stretch came about: reading began or began again, the stretch before was confirmed, the next was asked for, or it's the same one again. */
+type How = 'began' | 'began again' | 'confirmed' | 'next' | 'again';
+
+/**
+ * What asking for the list gave: a stretch, with its conversations as framed, whether it reaches
+ * the newest mail Homing hands out, and whether it ends sooner so it can be read in one answer;
+ * nothing to read up to now; a refusal; or why the system couldn't be read.
+ */
 export type Listing =
-  | {
-      outcome: 'stretch';
-      place: Place;
-      began: Date;
-      from: Date;
-      until: Date;
-      token: string;
-      lapses: Date;
-      /** How it came about: reading began or began again, the stretch before was confirmed, or it's the same one again. */
-      how: 'began' | 'began again' | 'confirmed' | 'next' | 'again';
-      /** Whether it reaches the newest mail Homing hands out. */
-      today: boolean;
-      conversations: Conversation[];
-    }
-  | { outcome: 'nothing'; place: Place; began: Date; reached: Date; how: 'began' | 'began again' | 'confirmed' | 'next'; today: boolean }
+  | { outcome: 'stretch'; place: Place; began: Date; from: Date; until: Date; token: string; lapses: Date; how: How; today: boolean; short: boolean; emails: number; conversations: number; text: string }
+  | { outcome: 'nothing'; place: Place; began: Date; reached: Date; how: Exclude<How, 'again'>; today: boolean }
   | { outcome: 'refused'; text: string }
   | { outcome: 'problem'; place: Place; problem: Problem; retryAfter?: number; reached: Date | null };
-
-/** Where reading a place stands, beside what places.ts reads with the place itself. */
-interface Standing {
-  token: string | null;
-  stretchEnds: Date | null;
-  lapsesAt: Date | null;
-  lapsed: boolean;
-}
 
 /** A moment to the whole second before it. */
 const second = (at: Date) => new Date(Math.floor(at.getTime() / 1000) * 1000);
@@ -107,41 +102,37 @@ function dayOf(value: string): Date | undefined {
  * begins there, or begins again. With the current token, the stretch it was given is done, and
  * the place reached moves to its end. Without either, the stretch handed out now comes again, or,
  * once it lapsed or when there's none, the stretch from the place reached. Homing lists the mailbox
- * before it changes anything, so a fault at the system loses no place.
+ * before it changes anything, so a fault at the system loses no place. A stretch ends at an earlier
+ * second when it would be too long to read in one answer, though never before its first.
  */
-export async function listStretch(broker: Broker, principal: AgentPrincipal, input: { mailbox?: string; from?: string; token?: string; lines?: number }): Promise<Listing> {
+export async function listStretch(
+  broker: Broker,
+  principal: AgentPrincipal,
+  input: { mailbox?: string; from?: string; token?: string; lines?: number },
+  frame: Framing,
+): Promise<Listing> {
   if (input.from !== undefined && input.token !== undefined) return { outcome: 'refused', text: 'Give either a token or a day to begin from, not both. Nothing changed.' };
-  const found = await withPrincipal(broker.sql, principal, async (s) => {
-    const place = await placeNamed(s, broker, input.mailbox);
-    if (typeof place === 'string') return place;
-    const [standing] = await s.tx<Standing[]>`
-      select r.token, r.stretch_ends, r.lapses_at, r.lapses_at <= now() as lapsed
-      from readings r join places p on (p.connection_id, p.kind, p.resource) = (r.connection_id, r.kind, r.resource)
-      where p.id = ${place.place}::uuid
-    `;
-    return { place, standing: standing as Standing | undefined };
-  });
-  if (typeof found === 'string') return { outcome: 'refused', text: found };
-  const { place, standing } = found;
-  const reached = place.reading?.reached ?? null;
+  const place = await withPrincipal(broker.sql, principal, (s) => placeNamed(s, broker, input.mailbox));
+  if (typeof place === 'string') return { outcome: 'refused', text: place };
+  const { began, reached, token: handed, stretchEnds, lapsesAt } = place;
   const at = (moment: Date) => `${moment.toISOString().slice(0, 19).replace('T', ' ')} UTC`;
   const until = second(new Date(Date.now() - settling));
 
   let from: Date;
-  let how: 'began' | 'began again' | 'confirmed' | 'next' | 'again';
+  let how: How;
   if (input.from !== undefined) {
     const day = dayOf(input.from);
     if (!day) return { outcome: 'refused', text: `"${oneLine(input.from)}" isn't a day. Give the day to begin from as YYYY-MM-DD, such as 2025-01-01. Nothing changed.` };
     if (day >= until) return { outcome: 'refused', text: 'That day hasn’t come yet, so there’s nothing to read from it. Nothing changed.' };
     from = day;
-    how = place.reading ? 'began again' : 'began';
-  } else if (!place.reading || reached === null) {
+    how = began ? 'began again' : 'began';
+  } else if (!began || !reached) {
     return {
       outcome: 'refused',
       text: `Reading the user's mailbox ${oneLine(place.address)} in order hasn't begun. Ask the user how far back to read, then ask again with from, the day to begin from, as YYYY-MM-DD.`,
     };
   } else if (input.token !== undefined) {
-    if (!standing?.token || standing.token !== input.token.trim().toLowerCase()) {
+    if (!handed || handed !== input.token.trim().toLowerCase()) {
       return {
         outcome: 'refused',
         text:
@@ -149,17 +140,14 @@ export async function listStretch(broker: Broker, principal: AgentPrincipal, inp
           'The stretch it was for was confirmed already, or handed out again once it lapsed, or reading began again since. Ask again without a token for the stretch handed out now.',
       };
     }
-    from = standing.stretchEnds!;
+    from = stretchEnds!;
     how = 'confirmed';
-  } else if (standing?.token && !standing.lapsed) {
-    from = reached;
-    how = 'again';
   } else {
     from = reached;
-    how = 'next';
+    how = handed && lapsesAt! > new Date() ? 'again' : 'next';
   }
 
-  const end = how === 'again' ? standing!.stretchEnds! : until;
+  const end = how === 'again' ? stretchEnds! : until;
   const most = how === 'again' ? Number.MAX_SAFE_INTEGER : Math.max(1, Math.min(Math.floor(input.lines ?? linesUsually), linesAtMost));
   const listedIn = from < end ? await listPlace(broker, principal, place, { from, until: end, most }) : { listed: [], through: end };
   if ('problem' in listedIn) return { outcome: 'problem', place, problem: listedIn.problem, retryAfter: listedIn.retryAfter, reached };
@@ -171,7 +159,7 @@ export async function listStretch(broker: Broker, principal: AgentPrincipal, inp
     if (through < end) {
       return {
         outcome: 'refused',
-        text: `The stretch handed out now, from ${at(from)} to ${at(end)}, couldn't be listed again in full at once. Ask again without a token after it lapses at ${at(standing!.lapsesAt!)}, when it's handed out afresh.`,
+        text: `The stretch handed out now, from ${at(from)} to ${at(end)}, couldn't be listed again in full at once. Ask again without a token after it lapses at ${at(lapsesAt!)}, when it's handed out afresh.`,
       };
     }
     cut = end;
@@ -182,23 +170,27 @@ export async function listStretch(broker: Broker, principal: AgentPrincipal, inp
     if (!cutAt) return { outcome: 'refused', text: `More emails arrived within one second, at ${at(from)}, than Homing lists at once. Tell the user. Nothing changed.` };
     cut = cutAt;
   }
-  const lines = listed.filter((line) => line.at !== null && line.at < cut);
-  const began = how === 'began' || how === 'began again' ? from : place.reading!.began;
+  let lines = listed.filter((line) => line.at! < cut);
+  const held = await withPrincipal(broker.sql, principal, (s) => heldFrom(s, place.connection, lines.flatMap((line) => line.conversation ?? [])));
+  let text = frame(place, grouped(lines, held));
+  let short = false;
+  // Too long to read in one answer: it ends a second sooner, until it fits or holds only its first.
+  while (how !== 'again' && text.length > charactersAtMost) {
+    const sooner = second(lines.at(-1)!.at!);
+    const fewer = lines.filter((line) => line.at! < sooner);
+    if (fewer.length === 0) break;
+    [cut, lines, text, short] = [sooner, fewer, frame(place, grouped(fewer, held)), true];
+  }
+  const beginning = how === 'began' || how === 'began again';
 
   // Nothing to read in it, as when all of it is never read: the place reached moves past it at once.
   const empty = lines.length === 0 && how !== 'again';
-  const token = empty || how === 'again' ? null : crypto.randomUUID();
-  let lapses: Date | null = null;
-  if (how === 'again') {
-    lapses = standing!.lapsesAt;
-  } else {
-    const moved = await withPrincipal(broker.sql, principal, (s) =>
-      how === 'began' || how === 'began again'
-        ? s.tx<{ lapsesAt: Date | null }[]>`select * from begin_reading(${place.place}::uuid, ${from}, ${empty ? cut : from}, ${token}::uuid, ${empty ? null : cut})`
-        : s.tx<{ lapsesAt: Date | null }[]>`
-            select * from hand_out_stretch(${place.place}::uuid, ${from}, ${empty ? cut : from}, ${token}::uuid, ${empty ? null : cut}, ${how === 'confirmed' ? standing!.token : null}::uuid)
-          `,
-    );
+  const token = empty || how === 'again' ? handed : crypto.randomUUID();
+  let lapses = lapsesAt;
+  if (how !== 'again') {
+    const moved = await withPrincipal(broker.sql, principal, (s) => s.tx<{ lapsesAt: Date | null }[]>`
+      select * from move_reading(${place.place}::uuid, ${beginning}, ${from}, ${empty ? cut : from}, ${empty ? null : token}::uuid, ${empty ? null : cut}, ${how === 'confirmed' ? handed : null}::uuid)
+    `);
     if (moved.length === 0) {
       return {
         outcome: 'refused',
@@ -208,35 +200,30 @@ export async function listStretch(broker: Broker, principal: AgentPrincipal, inp
     lapses = moved[0].lapsesAt;
   }
   const today = how !== 'again' && cut.getTime() === until.getTime();
-  if (empty) return { outcome: 'nothing', place, began, reached: cut, how: how as Exclude<typeof how, 'again'>, today };
+  const startedAt = beginning ? from : began!;
+  if (empty) return { outcome: 'nothing', place, began: startedAt, reached: cut, how: how as Exclude<How, 'again'>, today };
+  const conversations = new Set(lines.map((line) => line.conversation ?? line.id)).size;
+  return { outcome: 'stretch', place, began: startedAt, from, until: cut, token: token!, lapses: lapses!, how, today, short, emails: lines.length, conversations, text };
+}
 
-  // Grouped by conversation, in the order each first appears.
+/** The lines grouped by conversation, in the order each first appears, with what Homing holds from each. */
+function grouped(lines: Listed[], held: Map<string, Conversation['held']>): Conversation[] {
   const groups = new Map<string, Listed[]>();
   for (const line of lines) {
     const key = line.conversation ?? `email ${line.id}`;
-    groups.set(key, [...(groups.get(key) ?? []), line]);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(line);
   }
-  const held = await withPrincipal(broker.sql, principal, (s) => heldFrom(s, place.connection, [...groups.values()].flatMap((group) => group[0].conversation ?? [])));
-  return {
-    outcome: 'stretch',
-    place,
-    began,
-    from,
-    until: cut,
-    token: (token ?? standing!.token)!,
-    lapses: lapses!,
-    how,
-    today,
-    conversations: [...groups.values()].map((group) => ({ lines: group, held: held.get(group[0].conversation ?? '') ?? { items: [], more: 0 } })),
-  };
+  return [...groups.values()].map((group) => ({ lines: group, held: held.get(group[0].conversation ?? '') ?? { items: [], more: 0 } }));
 }
 
 /**
  * What the person can see that rests on emails of these conversations, which Homing read through
- * the connection: for each, the newest few current items that cite one, and how many more.
+ * a connection to the same account, this one or one before it: for each, the newest few current
+ * items that cite one, and how many more.
  */
-async function heldFrom(s: Session, connection: string, conversations: string[]): Promise<Map<string, { items: HeldItem[]; more: number }>> {
-  const held = new Map<string, { items: HeldItem[]; more: number }>();
+async function heldFrom(s: Session, connection: string, conversations: string[]): Promise<Map<string, Conversation['held']>> {
+  const held = new Map<string, Conversation['held']>();
   if (conversations.length === 0) return held;
   const rows = await s.tx<(HeldItem & { conversation: string; total: number; personal: boolean })[]>`
     select conversation, id, space, personal, page, left(body, 300) as text, total from (
@@ -250,7 +237,11 @@ async function heldFrom(s: Session, connection: string, conversations: string[])
         join citations ci on ci.source_id = src.id
         join content i on i.id = ci.content_id
         join spaces sp on sp.id = i.space_id
-        where src.read_through = ${connection}::uuid and src.conversation in ${s.tx(conversations)} and ${visible(s, 'src')}
+        where src.read_through in (
+            select c.id from connections c join connections this on (c.person_id, c.provider, c.tenant, c.account) = (this.person_id, this.provider, this.tenant, this.account)
+            where this.id = ${connection}::uuid
+          )
+          and src.conversation in ${s.tx([...new Set(conversations)])} and ${visible(s, 'src')}
           and i.kind = 'text' and ${visibleContent(s, 'i')} and ${current(s, 'i')}
       ) found
     ) ranked
@@ -265,58 +256,70 @@ async function heldFrom(s: Session, connection: string, conversations: string[])
   return held;
 }
 
-/** What a never-read sender looks like, kept: an address or a domain, in plain lower-case ASCII, as the database checks too. */
-const senderShape = /^([a-z0-9._%+'-]+@)?([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+/** An entry of the never-read list, without who added it and when. */
+export type Entry = { sender: string } | { folder: string } | { standard: string };
 
-/** An entry for the never-read list as it's kept, or why it can't be one. */
-export function neverReadEntry(entry: { sender?: string; folder?: string }): { sender: string } | { folder: string } | { refused: string } {
+/**
+ * An entry for the never-read list as it's kept, or why it can't be one: a sender in lower case, as
+ * the database checks it, or a folder on one line, without wildcards. A folder by Homing's name for
+ * one the kind starts the list with is that one.
+ */
+function entryOf(entry: { sender?: string; folder?: string }, standard: Record<string, string>): Entry | { refused: string } {
   if ((entry.sender === undefined) === (entry.folder === undefined)) return { refused: 'Give a sender or a folder, one at a time.' };
-  if (entry.sender !== undefined) {
-    const sender = entry.sender.trim().toLowerCase();
-    if (sender.length > 254 || !senderShape.test(sender)) {
-      return { refused: 'A sender is an address, such as news@example.com, or a domain, such as example.com, which covers its subdomains: in plain letters, without wildcards or spaces.' };
-    }
-    return { sender };
-  }
+  if (entry.sender !== undefined) return { sender: entry.sender.trim().toLowerCase() };
   const folder = entry.folder!.trim();
   if (!folder || Array.from(folder).length > 200 || /[\p{Cc}\p{Cf}*?]/u.test(folder)) {
     return { refused: 'A folder is its name as the user sees it in their mailbox, such as Newsletters, on one line, without wildcards.' };
   }
-  return { folder };
+  const made = Object.keys(standard).find((name) => standard[name].toLowerCase() === folder.toLowerCase());
+  return made ? { standard: made } : { folder };
 }
 
 /**
- * Adds a sender or a folder to the never-read list of the user's mailbox, for their assistant when
- * the user says so: it's withheld from then on wherever Homing reads the mailbox. Only the person
- * takes something off, in Homing itself.
+ * Adds a sender or a folder to the never-read list of one of the person's places, or takes one off,
+ * as whoever asks: the database lets only the person themselves, in Homing, take something off, and
+ * records who added an entry and when. What changed, or why nothing did.
+ */
+export async function changeNeverRead(
+  s: Session,
+  connectors: Connectors,
+  place: Place,
+  adding: boolean,
+  input: { sender?: string; folder?: string },
+): Promise<{ refused: string } | { entry: Entry; changed: boolean }> {
+  const entry = entryOf(input, kindOf(connectors.get(place.connector), place.kind)?.inOrder?.standard ?? {});
+  if ('refused' in entry) return entry;
+  try {
+    // In a savepoint, so what the database refuses comes back as a refusal.
+    const [{ changed }] = await s.tx.savepoint((sp) => sp<{ changed: boolean }[]>`
+      select change_never_read(${place.place}::uuid, ${adding}, ${sp.json(entry)}, ${sp.json(neverReadIn(connectors, { ...place, neverRead: null }) as never)}) as changed
+    `);
+    return { entry, changed };
+  } catch (error) {
+    if (!(error instanceof postgres.PostgresError) || error.code !== '23514') throw error;
+    return {
+      refused:
+        'sender' in entry
+          ? 'A sender is an address, such as news@example.com, or a domain, such as example.com, which covers its subdomains: in plain letters, without wildcards or spaces.'
+          : 'The never-read list holds 500 entries at most.',
+    };
+  }
+}
+
+/**
+ * Adds a sender or a folder to the never-read list of the user's mailbox, for their assistant: it's
+ * withheld from then on wherever Homing reads the mailbox. Only the person takes something off, in
+ * Homing itself.
  */
 export async function neverReadFor(
   broker: Broker,
   principal: AgentPrincipal,
   input: { mailbox?: string; sender?: string; folder?: string },
-): Promise<{ refused: string } | { place: Place; entry: { sender: string } | { folder: string }; changed: boolean; list: NeverRead }> {
-  const entry = neverReadEntry(input);
-  if ('refused' in entry) return { refused: `${entry.refused} Nothing changed.` };
+): Promise<{ refused: string } | { place: Place; entry: Entry; changed: boolean }> {
   return withPrincipal(broker.sql, principal, async (s) => {
     const place = await placeNamed(s, broker, input.mailbox);
     if (typeof place === 'string') return { refused: place };
-    const changed = await changeNeverRead(s, broker, place, true, entry);
-    const [after] = await placeListOf(s, broker, place.place);
-    return { place, entry, changed, list: after! };
+    const done = await changeNeverRead(s, broker.connectors, place, true, input);
+    return 'refused' in done ? { refused: `${done.refused} Nothing changed.` } : { place, ...done };
   });
-}
-
-/** Changes the never-read list of one of the person's places, by its id, as whoever asks: the database lets only the person themselves, in Homing, take something off. */
-export async function changeNeverRead(s: Session, broker: Pick<Broker, 'connectors'>, place: Pick<Place, 'place' | 'connector' | 'kind'>, adding: boolean, entry: { sender: string } | { folder: string }): Promise<boolean> {
-  const start = kindOf(broker.connectors.get(place.connector), place.kind)?.inOrder?.neverRead.folders ?? [];
-  const [{ changed }] = await s.tx<{ changed: boolean }[]>`
-    select change_never_read(${place.place}::uuid, ${adding}, ${'sender' in entry ? entry.sender : null}, ${'folder' in entry ? entry.folder : null}, ${s.tx.array(start)}::text[]) as changed
-  `;
-  return changed;
-}
-
-/** The never-read list of one of the person's places, as it is now, with the place. */
-export async function placeListOf(s: Session, broker: Broker, placeId: string): Promise<[NeverRead | undefined, Place | undefined]> {
-  const place = (await placesFor(s)).find((one) => one.place === placeId);
-  return [place && neverReadIn(broker.connectors, place), place];
 }

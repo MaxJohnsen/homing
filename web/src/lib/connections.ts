@@ -28,14 +28,11 @@ export interface PlaceData {
   neverRead?: NeverReadData | null;
 }
 
-/** Senders, by an address or a domain, and folders, by name, that Homing never reads in a place. */
-export interface NeverReadData {
-  senders: string[];
-  folders: string[];
-}
-
-/** One entry of what's never read: a sender or a folder. */
+/** One entry of what's never read: a sender, by an address or a domain, or a folder, by name. */
 export type NeverReadEntry = { sender: string } | { folder: string };
+
+/** What Homing never reads in a place, with who added each entry and when, beside those it starts with: your assistant by name, or null for you. */
+export type NeverReadData = (NeverReadEntry & { by?: string | null; at?: string })[];
 
 /** A space's Connections: yours there, and whether this Homing can connect Microsoft 365. */
 export interface SpaceConnectionsData {

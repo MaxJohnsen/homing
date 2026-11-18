@@ -30,10 +30,11 @@ export interface Connector {
   auth: OAuth;
   /** What an account there can reach, by kind of place, such as a mailbox. */
   kinds: Record<string, PlaceKind>;
-  /** What an error from any of the above means, when it's the system's refusal or silence; undefined when it isn't. */
+  /**
+   * What an error from any of the above means, when it's the system's refusal or silence; undefined
+   * when it isn't. An error may also carry retryAfter, how many seconds the system asked Homing to wait.
+   */
   refused(error: unknown): Refusal | undefined;
-  /** How many seconds the system asked Homing to wait, when an error says so, such as one about being asked too often. */
-  retryAfter?(error: unknown): number | undefined;
 }
 
 /**
@@ -101,8 +102,11 @@ export interface PlaceKind {
  * connector lists, and withholds what's never read wherever it reads the place.
  */
 export interface InOrder {
-  /** What the never-read list holds until its owner changes it, such as a mailbox's Junk Email. */
-  neverRead: NeverRead;
+  /**
+   * The folders the never-read list starts with, which the system makes itself, by the system's own
+   * name for each and how Homing names it, such as a mailbox's junkemail, Junk Email.
+   */
+  standard: Record<string, string>;
   /**
    * The items that came from one moment until another, oldest first, without what's never read:
    * every one up to the whole second it says it got through, which is until when nothing more came
@@ -117,17 +121,17 @@ export type Listed = Envelope & { where: string | null };
 
 /**
  * What's never read in a place, whoever asks, until its owner takes it off: senders by an address
- * or a domain, which covers its subdomains, and folders by name, with every folder in them.
+ * or a domain, which covers its subdomains, and folders, with every folder in them, by name, or, for
+ * one the system makes, by the system's own name for it. Each one the person or their assistant
+ * added says who did, their assistant by name or null for the person, and when.
  */
-export interface NeverRead {
-  senders: string[];
-  folders: string[];
-}
+export type NeverRead = (({ sender: string } | { folder: string } | { standard: string }) & { by?: string | null; at?: string })[];
 
 /** What Homing hands a connector for one use of a place. */
 export interface Access {
-  /** The place's resource, such as the account's id. */
+  /** The place's resource, such as the account's id, and the connection it's used through, for what a connector remembers of the system for a while. */
   resource: string;
+  connection: string;
   /** A current token. Homing records the use before the first, and refreshes it when it needs to. */
   token(): Promise<string>;
   /** Homing's time limit, which the connector stops at. */

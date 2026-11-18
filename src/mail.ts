@@ -56,25 +56,35 @@ function envelopeOf(email: EmailSummary, audience: Audience = 'unknown'): Envelo
   return { id: email.id, title: email.subject, at: email.at, author: email.from, audience, conversation: email.conversation ?? null };
 }
 
+/** Where an email is: the names of its folder and of every folder it's in, and which of them the system makes itself, by its own names for them. */
+export interface Where {
+  names: string[];
+  standard: string[];
+}
+
+/** Whether a never-read list names any folder, so where an email is decides too. */
+export const namesFolders = (never: NeverRead) => never.some((entry) => !('sender' in entry));
+
 /**
- * Whether an email is never read: it's in a folder on the never-read list, or in one within such
- * a folder, by name whatever its case, or it's from or to a sender on the list, by address, or by
- * domain, which covers its subdomains. Its folders are its own and every one it's in, or null when
- * Homing couldn't tell where it is, which counts as on the list once the list names any folder.
+ * Whether an email is never read: it's in a folder on the never-read list, or in one within such a
+ * folder, by the system's own name for one it makes, or else by name whatever its case, or it's
+ * from or to a sender on the list, by address, or by domain, which covers its subdomains. Where it
+ * is is null when Homing couldn't tell, which counts as on the list once the list names any folder.
  * Only where it is and who it's from and to decide, never what it says. A sender it only quotes
  * can't be recognized.
  */
-export function withheld(email: { parties: Party[]; folders: string[] | null }, never: NeverRead): boolean {
-  if (never.folders.length > 0) {
-    if (email.folders === null) return true;
-    const listed = new Set(never.folders.map((folder) => folder.toLowerCase()));
-    if (email.folders.some((folder) => listed.has(folder.toLowerCase()))) return true;
+export function withheld(email: { parties: Party[]; where: Where | null }, never: NeverRead): boolean {
+  if (namesFolders(never)) {
+    if (email.where === null) return true;
+    const { names, standard } = email.where;
+    const listed = new Set(names.map((name) => name.toLowerCase()));
+    if (never.some((entry) => ('standard' in entry ? standard.includes(entry.standard) : 'folder' in entry && listed.has(entry.folder.toLowerCase())))) return true;
   }
   return email.parties.some(({ address }) => {
     const at = address?.trim().toLowerCase();
     if (!at) return false;
     const domain = at.slice(at.lastIndexOf('@') + 1);
-    return never.senders.some((sender) => (sender.includes('@') ? at === sender : domain === sender || domain.endsWith(`.${sender}`)));
+    return never.some((entry) => 'sender' in entry && (entry.sender.includes('@') ? at === entry.sender : domain === entry.sender || domain.endsWith(`.${entry.sender}`)));
   });
 }
 

@@ -11,8 +11,9 @@
 // a page that may hold fewer than asked for, and a next link to follow, whose
 // $skip counts items that aren't emails too, so only the link leads on. Its
 // folders go by their well-known names in any language. When it's asked too
-// often, or is down, it says how long to wait. It's never asked to change
-// anything, and counts it if it is.
+// often, or is down, it says how long to wait, and it can answer badly: a
+// body cut short, one that isn't JSON, or one that isn't what Graph
+// documents. It's never asked to change anything, and counts it if it is.
 
 import { execFileSync } from 'node:child_process';
 import { createHash, generateKeyPairSync, randomBytes, randomUUID, X509Certificate } from 'node:crypto';
@@ -34,6 +35,8 @@ export interface Account {
   noMailbox?: boolean;
   /** The language of its mailbox, which Outlook names its folders in. English by default. */
   language?: 'en' | 'nb';
+  /** A mailbox whose emails give their folder's id in another form than its folders do, which a folder read by that form gives back. */
+  otherFolderIds?: boolean;
 }
 
 /** An email, as someone sends it to an account. */
@@ -89,6 +92,9 @@ const wellKnown: [string, string, string][] = [
   ['inbox', 'Inbox', 'Innboks'], ['sentitems', 'Sent Items', 'Sendte elementer'], ['drafts', 'Drafts', 'Kladd'], ['deleteditems', 'Deleted Items', 'Slettede elementer'],
   ['junkemail', 'Junk Email', 'Søppelpost'], ['outbox', 'Outbox', 'Utboks'], ['archive', 'Archive', 'Arkiv'],
 ];
+
+/** How Graph answers a request badly, with a 200 all the same. */
+export type Badly = 'cut short' | 'not JSON' | 'not what Graph documents';
 
 /** An email's ordinary id, which changes when it moves to another folder. */
 const ordinaryId = (email: Kept) => `AAMk${email.folder}-${email.id.slice(6)}`;
@@ -159,6 +165,8 @@ export class MicrosoftStandIn {
   private readonly outages = new Map<string, { status: number; retryAfter?: number }>();
   /** Accounts whose mailbox answers slowly, by how many milliseconds. */
   private readonly slowness = new Map<string, number>();
+  /** Accounts whose mailbox answers badly, how, and to which requests. */
+  private readonly badly = new Map<string, { how: Badly; only: RegExp }>();
   /** How many milliseconds refreshing a sign-in takes. */
   private refreshDelay = 0;
   private server?: Server;
@@ -167,7 +175,15 @@ export class MicrosoftStandIn {
   async start(): Promise<this> {
     this.server = createServer((req, res) => {
       void this.handle(req.method ?? 'GET', new URL(req.url ?? '/', this.url), req).then(
-        ({ status, body, headers }) => res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(JSON.stringify(body)),
+        ({ status, body, headers, badly }) => {
+          const text = JSON.stringify(badly === 'not what Graph documents' ? { value: {} } : body);
+          if (badly === 'not JSON') return res.writeHead(status, { 'content-type': 'text/html' }).end('<html><body>Something went wrong</body></html>');
+          if (badly !== 'cut short') return res.writeHead(status, { 'content-type': 'application/json', ...headers }).end(text);
+          // The whole length promised, half of it sent, and the connection dropped.
+          res.writeHead(status, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(text)) });
+          res.write(text.slice(0, Math.floor(text.length / 2)));
+          setTimeout(() => res.destroy(), 20);
+        },
         () => res.writeHead(500).end(),
       );
     });
@@ -228,9 +244,9 @@ export class MicrosoftStandIn {
     this.refusals.delete(account.oid);
   }
 
-  /** Someone sends the account an email, or it's in the account's mailbox already, such as one it sent. Returns its immutable id. */
+  /** Someone sends the account an email, or it's in the account's mailbox already, such as one it sent. Returns its immutable id, as long as Graph's. */
   deliver(account: Account, email: Email): string {
-    const id = `AAkALg${randomBytes(24).toString('base64url')}=`;
+    const id = `AAkALgAAAAAAHYQDEapmEc2byACqAC-EWg0A${randomBytes(24).toString('base64url')}=`;
     const mailbox = this.mailboxOf(account);
     mailbox.emails.push({ ...email, id, folder: this.folderOf(mailbox, email.folder ?? 'inbox').id, conversation: email.conversation ?? `AAQk${randomBytes(12).toString('base64url')}=` });
     return id;
@@ -297,6 +313,12 @@ export class MicrosoftStandIn {
     return folder!;
   }
 
+  /** The account's mailbox answers its requests that match with a 200 that's no answer, or as it should again without how. */
+  answerBadly(account: Account, how?: Badly, only = /./) {
+    if (how) this.badly.set(account.oid, { how, only });
+    else this.badly.delete(account.oid);
+  }
+
   /** The account's mailbox answers after this many milliseconds, or at once again with 0. */
   slow(account: Account, milliseconds: number) {
     this.slowness.set(account.oid, milliseconds);
@@ -312,7 +334,7 @@ export class MicrosoftStandIn {
     for (const token of this.accessTokens.values()) token.expiresAt = Date.now() - 1000;
   }
 
-  private async handle(method: string, url: URL, req: import('node:http').IncomingMessage): Promise<{ status: number; body: unknown; headers?: Record<string, string> }> {
+  private async handle(method: string, url: URL, req: import('node:http').IncomingMessage): Promise<{ status: number; body: unknown; headers?: Record<string, string>; badly?: Badly }> {
     if (method === 'POST' && /^\/[\w.-]+\/oauth2\/v2\.0\/token$/.test(url.pathname)) {
       let text = '';
       for await (const chunk of req) text += chunk;
@@ -339,16 +361,14 @@ export class MicrosoftStandIn {
           ...(outage.retryAfter !== undefined && { headers: { 'retry-after': String(outage.retryAfter) } }),
         };
       }
-      if (url.pathname.startsWith('/v1.0/me/mailFolders/')) {
-        if (held.account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
+      const folders = url.pathname.startsWith('/v1.0/me/mailFolders/');
+      if (folders || url.pathname.startsWith('/v1.0/me/messages')) {
+        if (folders && held.account.noMailbox) return { status: 404, body: { error: { code: 'MailboxNotEnabledForRESTAPI' } } };
         const delay = this.slowness.get(held.account.oid) ?? 0;
         if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-        return this.folder(held.account, url);
-      }
-      if (url.pathname.startsWith('/v1.0/me/messages')) {
-        const delay = this.slowness.get(held.account.oid) ?? 0;
-        if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
-        return this.mail(held.account, url, String(req.headers.prefer ?? ''));
+        const answer = folders ? this.folder(held.account, url) : this.mail(held.account, url, String(req.headers.prefer ?? ''));
+        const bad = this.badly.get(held.account.oid);
+        return answer.status === 200 && bad?.only.test(decodeURIComponent(url.pathname + url.search)) ? { ...answer, badly: bad.how } : answer;
       }
     }
     return { status: 404, body: {} };
@@ -359,9 +379,9 @@ export class MicrosoftStandIn {
     const mailbox = this.mailboxOf(account);
     const path = /^\/v1\.0\/me\/mailFolders\/([^/]+)$/.exec(url.pathname);
     const named = path && decodeURIComponent(path[1]);
-    const folder = named && mailbox.folders.find((one) => one.id === named || one.wellKnown === named);
+    const folder = named && mailbox.folders.find((one) => one.id === named || one.wellKnown === named || `AAkF${one.id}` === named);
     if (!folder) return { status: 404, body: { error: { code: 'ErrorItemNotFound' } } };
-    const all: Record<string, unknown> = { id: folder.id, displayName: folder.name, parentFolderId: folder.parent };
+    const all: Record<string, unknown> = { id: named.startsWith('AAkF') ? named : folder.id, displayName: folder.name, parentFolderId: folder.parent };
     const select = (url.searchParams.get('$select') ?? '').split(',').filter(Boolean);
     return { status: 200, body: Object.fromEntries(Object.entries(all).filter(([name]) => select.length === 0 || name === 'id' || select.includes(name))) };
   }
@@ -388,7 +408,7 @@ export class MicrosoftStandIn {
         sentDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
         bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
         hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
-        parentFolderId: email.folder,
+        parentFolderId: account.otherFolderIds ? `AAkF${email.folder}` : email.folder,
         isDraft: email.draft === true || email.folder === drafts.id,
         // Microsoft gives the text when asked to, and the HTML otherwise.
         body: content(email.html),
