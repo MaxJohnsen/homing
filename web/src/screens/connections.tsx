@@ -189,7 +189,7 @@ function CopySentence({ sentence, children }: { sentence: string; children?: Rea
   };
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-muted py-1.5 pr-1.5 pl-4">
+      <div className="flex flex-wrap items-center gap-2 rounded-lg bg-muted py-1.5 pr-1.5 pl-4">
         <p ref={text} className="min-w-[min(100%,12rem)] flex-1 py-1 text-sm [overflow-wrap:anywhere]">{sentence}</p>
         <div className="ml-auto flex items-center gap-2">
           {children}
@@ -248,7 +248,7 @@ function NeverRead({ place, list, change }: { place: PlaceData; list: NeverReadD
       <div className="flex flex-col gap-0.5">
         <span id={`${id}-title`} className="text-sm font-semibold">Never read</span>
         <span className="text-sm text-pretty text-muted-foreground">
-          Homing doesn’t read mail from or to these senders, or in these folders and their subfolders, for anyone. Your assistant can add to the list; only you can take something off.
+          Homing doesn’t read mail from or to these senders, or in these folders and the folders in them, for anyone. Your assistant can add to the list; only you can take something off.
         </span>
       </div>
       <div className="flex flex-col gap-2 text-sm">
