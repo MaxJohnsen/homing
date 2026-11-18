@@ -79,29 +79,31 @@ async function world() {
 }
 
 const skillMd = (description: string) => ({ path: 'SKILL.md', body: `---\nname: learn-from-a-mailbox\ndescription: ${description}\n---\n\nRead it your way.\n` });
-const homingsOwn = /- learn-from-a-mailbox: How to learn from the user's mailbox in Homing, reading it from its oldest mail to its newest\.[^\n]*\((page:[0-9a-f-]{36}), built into Homing\)/;
 const itemOf = (answer: { text: string; failed: boolean }) => {
   assert.ok(!answer.failed, answer.text);
   return /item:([0-9a-f-]{36})/.exec(answer.text)![1];
 };
+/** The skill the mailbox's line in context points to, by its reference. */
+const learnFrom = (context: string) => /^The user's mailbox [^\n]* is connected to Homing: [^\n]* To learn from it, follow the skill learn-from-a-mailbox \((page:[0-9a-f-]{36})\)\.$/m.exec(context)?.[1];
 
-test('a new person’s assistant finds Homing’s skill for learning from a mailbox in context, only for a request about mail, and reads it whole', async () => {
+test('a person with a mailbox finds Homing’s skill for learning from it on the mailbox’s line in context, and reads it whole; nobody else, and nothing else, gets it', async () => {
   const { cara, minus1, claude } = await world();
-  const here = (await claude.call('context', { request: 'Learn from my mailbox', space: `space:${minus1}` })).text;
-  const [, reference] = homingsOwn.exec(here.slice(here.indexOf('\n## Skills\n'))) ?? [];
+  const here = (await claude.call('context', { request: 'What is the status?', space: `space:${minus1}` })).text;
+  const reference = learnFrom(here);
   assert.ok(reference, here);
-  // Without a space too, among the skills that fit the request.
-  const anywhere = (await claude.call('context', { request: 'Learn from my mailbox' })).text;
-  assert.match(anywhere.slice(anywhere.indexOf('\n## Skills that fit\n')), homingsOwn);
-  assert.equal(homingsOwn.exec(anywhere)?.[1], reference);
-  for (const request of ['Read my email', 'Carry on reading my mail']) assert.match((await claude.call('context', { request })).text, homingsOwn, request);
-  // A request about something else doesn't get it, and still hears that nothing in Homing matches.
-  const elsewhere = (await claude.call('context', { request: 'Who are my clients, and which projects and people are current?' })).text;
-  assert.doesNotMatch(elsewhere, /learn-from-a-mailbox/);
-  assert.match(elsewhere, /^You are Ana\. Nothing in Homing matches this request\./);
+  // Without a space, on the same line, whatever the request; never listed among skills on its own account.
+  for (const request of ['Learn from my mailbox', 'Read the contract', 'Learn Norwegian']) {
+    const anywhere = (await claude.call('context', { request })).text;
+    assert.equal(learnFrom(anywhere), reference, anywhere);
+    assert.equal(anywhere.split(reference!).length, 2, anywhere);
+    assert.doesNotMatch(anywhere, /^- learn-from-a-mailbox/m);
+  }
+  // A request about something else gets its ordinary answer.
+  assert.match((await claude.call('context', { request: 'Read the contract' })).text, /^You are Ana\. Nothing in Homing matches this request\./);
+  assert.doesNotMatch(here, /^- learn-from-a-mailbox/m);
 
   // Read whole, exactly as Homing has it.
-  const read = await claude.call('read', { ref: reference });
+  const read = await claude.call('read', { ref: reference! });
   assert.ok(!read.failed, read.text);
   const file = await readFile(new URL('../skills/learn-from-a-mailbox/SKILL.md', import.meta.url), 'utf8');
   assert.equal(read.text, `# learn-from-a-mailbox\nA skill built into Homing (${reference}). A skill of the user's own with its name replaces it. Its SKILL.md:\n\n${file}`);
@@ -115,23 +117,20 @@ test('a new person’s assistant finds Homing’s skill for learning from a mail
   await Promise.all([claude.close(), carasClaude.close()]);
 });
 
-test('a skill of the person’s own with that name replaces Homing’s, in a space and in their personal space', async () => {
-  const { ana, minus1, acme, claude } = await world();
-  const skills = async (space?: string) => {
-    const text = (await claude.call('context', { request: 'Learn from my mailbox', ...(space && { space: `space:${space}` }) })).text;
-    return text.split('\n').filter((line) => line.startsWith('- learn-from-a-mailbox:'));
-  };
-  const acmes = await as({ person: ana.id, direct: true }, (s) => saveSkill(s, { spaceId: acme, files: [skillMd('How Acme learns from a mailbox')], shared: true }));
-  assert.deepEqual(await skills(acme), [`- learn-from-a-mailbox: How Acme learns from a mailbox (page:${acmes.pageId})`]);
-  assert.match((await skills(minus1)).join('\n'), homingsOwn);
+test('a skill of the person’s own with that name is what the mailbox’s line points to, listed as any skill is', async () => {
+  const { ana, minus1, claude } = await world();
+  const context = async (space?: string) => (await claude.call('context', { request: 'Learn from my mailbox', ...(space && { space: `space:${space}` }) })).text;
+  const homings = learnFrom(await context(minus1));
 
   const anas = await as({ person: ana.id, direct: true }, (s) => saveSkill(s, { spaceId: ana.personalSpaceId, files: [skillMd('How Ana learns from her mailbox')] }));
-  assert.deepEqual(await skills(minus1), [`- learn-from-a-mailbox: How Ana learns from her mailbox (page:${anas.pageId})`]);
-  // Acme's is more specific than her personal space's.
-  assert.deepEqual(await skills(acme), [`- learn-from-a-mailbox: How Acme learns from a mailbox (page:${acmes.pageId})`]);
-  // Without a space, the ones she can see, and never Homing's.
-  const anywhere = await skills();
-  assert.ok(anywhere.length > 0 && anywhere.every((line) => !homingsOwn.test(line)), anywhere.join('\n'));
+  for (const space of [minus1, undefined]) assert.equal(learnFrom(await context(space)), `page:${anas.pageId}`);
+  assert.match(await context(minus1), new RegExp(`^- learn-from-a-mailbox: How Ana learns from her mailbox \\(page:${anas.pageId}\\)$`, 'm'));
+
+  // Minus 1's own is more specific than her personal space's.
+  const minus1s = await as({ person: ana.id, direct: true }, (s) => saveSkill(s, { spaceId: minus1, files: [skillMd('How Minus 1 learns from a mailbox')], shared: true }));
+  assert.equal(learnFrom(await context(minus1)), `page:${minus1s.pageId}`);
+  assert.equal(learnFrom(await context()), `page:${minus1s.pageId}`);
+  assert.notEqual(homings, `page:${minus1s.pageId}`);
   await claude.close();
 });
 

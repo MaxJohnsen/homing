@@ -47,7 +47,7 @@ import {
 import { modelProcessingOf, setModelProcessing } from './model.ts';
 import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePlan, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, searchProposals, suggestArchive, requestsIn, suggestSpace, Undecidable, type PlanStep, type Proposal, type ProposalView } from './proposals.ts';
-import { homingSkill, skillsFor, skillsMatching } from './skills.ts';
+import { homingSkill, learningSkill, skillsFor, skillsMatching } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, searchTasks, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { accessibleSpaces, archiveSpace, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, sameName, spaceNameLength, SpaceRefused, spaceView, type MemberChange, type Space, type SpaceView } from './spaces.ts';
@@ -757,9 +757,6 @@ const personalRoot = (space: Space) => space.privateTo !== null && space.parentI
 /** A space as an agent reads it in a sentence: its name, or the user's personal space. */
 const spaceLabel = (space: Space) => (personalRoot(space) ? "the user's personal space" : space.name);
 
-/** Where one of Homing's own skills is, as context and `read` say it. */
-const homingOwn = 'built into Homing';
-
 /** How many matches context lists without a space; search finds the rest. */
 const shownMatches = 5;
 
@@ -777,7 +774,7 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
   // The rules that apply come with a space's own context, not one by one.
   // What's in an archived space is left out too, unless the request names it.
   const archivedIds = new Set(spaces.filter((space) => space.archived && !named.includes(space)).map((space) => space.id));
-  const everyday = <T extends { spaceId: string | null }>(found: T[]) => found.filter((one) => one.spaceId === null || !archivedIds.has(one.spaceId));
+  const everyday = <T extends { spaceId: string }>(found: T[]) => found.filter((one) => !archivedIds.has(one.spaceId));
   const knowledge = everyday(telling ? await search(s, telling, { limit: 50, current: true, knowledge: true, active: true }) : []);
   const skills = everyday(telling ? await skillsMatching(s, telling, 20) : []).slice(0, 3);
   const matched = new Set([...knowledge.map((hit) => hit.spaceId), ...skills.map((skill) => skill.spaceId)]);
@@ -805,14 +802,14 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
         "If it is, ask the user which space it's about, or `search` with other words."
       : `You are ${me}. Choose the space this is about, or ask the user, and call \`context\` again with it for the rules that apply there. ` +
         'What matched is below, and may already answer the request. To find a task or a proposal the user means, `search` for it: it looks in all their spaces.',
-    ...(places.length ? [describePlaces(places, links, 'without a space')] : []),
+    ...(places.length ? [await describePlaces(s, places, links, 'without a space')] : []),
     ...(candidates.length ? ['\n## Spaces that fit', ...candidates.map((space) => `- ${space.name} (${ref('space', space.id)})`)] : []),
     ...(relevant.length ? ['\n## Relevant to the request', ...relevant] : []),
     ...(skills.length
       ? [
           '\n## Skills that fit',
           'How the user does particular tasks. Read a skill with `read` before a task it describes.',
-          ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)}, ${skill.spaceId === null ? homingOwn : `in ${spaces.find((space) => space.id === skill.spaceId)?.name ?? 'a space above'}`})`),
+          ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)}, in ${spaces.find((space) => space.id === skill.spaceId)?.name ?? 'a space above'})`),
         ]
       : []),
     '\n## Your spaces',
@@ -851,7 +848,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
       'What you save with `remember` stays on your private side.',
-    ...(places.length ? [describePlaces(places, links, 'here')] : []),
+    ...(places.length ? [await describePlaces(s, places, links, 'here')] : []),
     ...(space.archived
       ? [
           `It's archived${space.archivedAt ? '' : ` with ${archivedWith?.name ?? 'the space above it'}`}: finished work, out of everyday context. ` +
@@ -912,7 +909,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
       ? [
           '\n## Skills',
           'How to do particular tasks here. Read a skill with `read` before a task it describes.',
-          ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)}${skill.spaceId === null ? `, ${homingOwn}` : ''}${skill.includedIn ? `, from ${skill.spaceName}, included in ${skill.includedIn.personal ? 'your personal space' : (skill.includedIn.spaceName ?? 'a space above')}${skill.includedIn.shared ? '' : ' for you'}` : ''})`),
+          ...skills.map((skill) => `- ${skill.name}: ${oneLine(skill.description)} (${ref('page', skill.pageId)}${skill.includedIn ? `, from ${skill.spaceName}, included in ${skill.includedIn.personal ? 'your personal space' : (skill.includedIn.spaceName ?? 'a space above')}${skill.includedIn.shared ? '' : ' for you'}` : ''})`),
         ]
       : []),
     ...(tasks.length
@@ -971,7 +968,7 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
       const skillMd = homing.files.find((file) => file.path === 'SKILL.md');
       return [
         `# ${homing.name}`,
-        `A skill ${homingOwn} (${ref('page', homing.pageId)}). A skill of the user's own with its name replaces it. Its SKILL.md:`,
+        `A skill built into Homing (${ref('page', homing.pageId)}). A skill of the user's own with its name replaces it. Its SKILL.md:`,
         '',
         skillMd?.body ?? '',
         ...homing.files.filter((file) => file !== skillMd).flatMap((file) => ['', `## ${file.path}`, ...fenced(file.body, '')]),
@@ -2248,7 +2245,7 @@ async function connectedSources(broker: Broker, principal: AgentPrincipal, sourc
  * What context says about the user's places, kind by kind: that Homing searches them, or reads by
  * reference what's in them, or what they need first.
  */
-function describePlaces(places: Place[], links: Links, where: 'here' | 'without a space'): string {
+async function describePlaces(s: Session, places: Place[], links: Links, where: 'here' | 'without a space'): Promise<string> {
   const said: string[] = [];
   for (const kind of new Set(places.map((place) => `${place.connector} ${place.kind}`))) {
     const these = places.filter((place) => `${place.connector} ${place.kind}` === kind);
@@ -2259,10 +2256,13 @@ function describePlaces(places: Place[], links: Links, where: 'here' | 'without 
     const working = these.filter((place) => place.status === 'connected');
     const one = working.length === 1;
     if (working.length) {
+      // How to learn from it, as it applies where it's connected.
+      const skill = await learningSkill(s, working[0].kind, working[0].space);
       said.push(
         `The user's ${one ? words.place : words.places} ${working.map(placeName).join(' and ')} ${one ? 'is' : 'are'} connected to Homing: ` +
           (searches ? `\`search\` ${where} also searches ${one ? 'it' : 'them'} live, and ` : '') +
-          `\`read\` opens ${words.anItem} by its ${connector.id}:… reference.`,
+          `\`read\` opens ${words.anItem} by its ${connector.id}:… reference.` +
+          (skill ? ` To learn from ${one ? 'it' : 'them'}, follow the skill ${skill.name} (${ref('page', skill.pageId)}).` : ''),
       );
     }
     for (const place of these.filter((place) => place.status !== 'connected')) {

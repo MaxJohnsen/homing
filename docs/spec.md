@@ -99,7 +99,8 @@ Homing picks the rules that apply and puts them in order, and requirements alway
 - Homing doesn't judge whether two rules contradict each other, because that means interpreting their text. The agent does, and Homing can't guarantee it notices every contradiction.
 - If two requirements conflict, the agent stops the affected action, tells the user which rules conflict, and can propose a fix.
 - When someone adds a rule, they see the rules that already apply there.
-- Skills are matched by name. A skill in a more specific space replaces an inherited one with the same name, personal skills are the least specific, Homing's own skills come last, and between equally specific skills the private one wins. An included skill counts as set in the space that includes it, and a skill with its name set there wins.
+- Skills are matched by name. A skill in a more specific space replaces an inherited one with the same name, personal skills are the least specific, and between equally specific skills the private one wins. An included skill counts as set in the space that includes it, and a skill with its name set there wins.
+- Homing comes with a skill for learning from each kind of place it reads, such as a mailbox. It's offered with a connected place of its kind, never matched to a request, so only someone who connected one gets it. Where a skill of theirs with its name applies to the place, that one is offered instead.
 
 **Only people change guidance.** Agents act in your name through MCP, so your identity alone doesn't prove that *you* decided. Every write to a guidance or skill page, including its files, settings and includes, passes one check in the store: it must be a direct edit by an authorized person, or an approved proposal (§6). That covers imports, MCP, background workers and any path added later. When you ask an agent to add a rule, you confirm the exact text.
 

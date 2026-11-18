@@ -68,7 +68,7 @@ try {
     const skills = await as(args[0], (s) => skillsFor(s, args[1]));
     if (skills.length === 0) console.log('  None');
     for (const skill of skills) {
-      const from = skill.spaceId === null ? 'built into Homing' : [skill.spaceName ?? 'a space above', skill.privateTo && 'private'].filter(Boolean).join(', ');
+      const from = [skill.spaceName ?? 'a space above', skill.privateTo && 'private'].filter(Boolean).join(', ');
       console.log(`  ${skill.pageId}  ${skill.name} (${from}): ${skill.description}`);
     }
   } else if (command === 'import-skill' && args.length === 3) {

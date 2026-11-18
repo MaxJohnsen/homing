@@ -6,7 +6,6 @@ import { parse } from 'yaml';
 import type { Session } from './db.ts';
 import { applying, applyingAlready, inclusionColumns, inclusionJoin, withInclusion, type Inclusion } from './guidance.ts';
 import { checkSpace, current, insertItem, itemColumns, sideOf, termsOf, visible, visibleContent, wordsIn, type Item } from './knowledge.ts';
-import { placesFor } from './places.ts';
 import { accessibleSpaces, listSpaces } from './spaces.ts';
 
 /** A file in a skill's folder, such as SKILL.md or references/tone.md. */
@@ -19,8 +18,7 @@ export interface Skill {
   pageId: string;
   name: string;
   description: string;
-  /** The skill's space, or null for one Homing comes with. */
-  spaceId: string | null;
+  spaceId: string;
   /** The name of the skill's space, or null when the viewer can't open it. */
   spaceName: string | null;
   privateTo: string | null;
@@ -70,7 +68,6 @@ export async function readSkillFolder(folder: string): Promise<{ files: SkillFil
 export interface HomingSkill {
   pageId: string;
   name: string;
-  description: string;
   files: SkillFile[];
 }
 
@@ -84,10 +81,10 @@ const homingSkills: HomingSkill[] = await Promise.all(
     .sort((a, b) => a.name.localeCompare(b.name))
     .map(async (entry) => {
       const { files } = await readSkillFolder(join(entry.parentPath, entry.name));
-      const { name, description } = describe(files);
+      const { name } = describe(files);
       const hash = createHash('sha256').update(`homing skill ${name}`).digest('hex');
       const pageId = [hash.slice(0, 8), hash.slice(8, 12), hash.slice(12, 16), hash.slice(16, 20), hash.slice(20, 32)].join('-');
-      return { pageId, name, description, files };
+      return { pageId, name, files };
     }),
 );
 
@@ -96,15 +93,17 @@ export function homingSkill(pageId: string): HomingSkill | undefined {
   return homingSkills.find((skill) => skill.pageId === pageId);
 }
 
+/** The skill that says how to learn from a kind of place, by the kind: one of Homing's own. */
+const learningSkills = new Map([['mailbox', 'learn-from-a-mailbox']]);
+
 /**
- * Homing's own skills, as a person's skills are listed, in a space they can open or without one:
- * they are about what Homing reads for the person, such as their mailbox, so they're listed once
- * the person has connected something.
+ * The skill that says how to learn from a kind of place, as it applies in the place's space: one
+ * the person has with its name, which replaces Homing's as it would any skill, or else Homing's.
  */
-async function homingSkillsFor(s: Session, spaceId?: string): Promise<Skill[]> {
-  if (homingSkills.length === 0 || (await placesFor(s)).length === 0) return [];
-  if (spaceId && (await s.tx`select from spaces where id = ${spaceId}::uuid and id in (${accessibleSpaces(s)})`).length === 0) return [];
-  return homingSkills.map(({ pageId, name, description }) => ({ pageId, name, description, spaceId: null, spaceName: null, privateTo: null, includedIn: null }));
+export async function learningSkill(s: Session, kind: string, spaceId: string): Promise<{ name: string; pageId: string } | undefined> {
+  const name = learningSkills.get(kind);
+  if (!name) return undefined;
+  return (await skillsFor(s, spaceId)).find((skill) => skill.name === name) ?? homingSkills.find((skill) => skill.name === name);
 }
 
 /**
@@ -176,12 +175,12 @@ export async function removeSkill(s: Session, pageId: string): Promise<boolean> 
  * space replaces an inherited one with the same name, personal skills are
  * the least specific, and between equally specific ones the private one
  * wins. One a space's guidance includes counts as set in that space, after
- * the skills set there. Homing's own skills come last. The agent picks the
- * ones a task needs by their descriptions.
+ * the skills set there. The agent picks the ones a task needs by their
+ * descriptions.
  */
 export async function skillsFor(s: Session, spaceId: string): Promise<Skill[]> {
   const used = new Set<string>();
-  return [...(await applyingSkills(s, spaceId)), ...(await homingSkillsFor(s, spaceId))].filter((skill) => !used.has(skill.name) && used.add(skill.name));
+  return (await applyingSkills(s, spaceId)).filter((skill) => !used.has(skill.name) && used.add(skill.name));
 }
 
 /** A skill that applies in a space, and whether another with its name is used there instead. */
@@ -248,20 +247,11 @@ async function applyingSkills(s: Session, spaceId: string): Promise<Skill[]> {
 /**
  * The skills the person can see whose name or description has one of the words, matched the way
  * search matches them: longer words by how they start. A skill's other text holds many common
- * words, so a match there alone doesn't count. In the order search ranks them, and Homing's own
- * last, unless the person can see a skill with its name, which replaces it.
+ * words, so a match there alone doesn't count. In the order search ranks them.
  */
-export async function skillsMatching(s: Session, words: string, limit = 3): Promise<{ pageId: string; spaceId: string | null; name: string; description: string }[]> {
+export async function skillsMatching(s: Session, words: string, limit = 3): Promise<{ pageId: string; spaceId: string; name: string; description: string }[]> {
   const terms = await termsOf(s, words);
   if (!terms) return [];
-  const homing = (await homingSkillsFor(s)).filter((skill) => wordsIn(`${skill.name} ${skill.description}`, words) > 0);
-  const replaced = homing.length
-    ? new Set((await s.tx<{ name: string }[]>`
-        select distinct t.body as name from content t
-        join pages p on p.id = t.page_id and p.type = 'skill'
-        where t.kind = 'title' and t.body in ${s.tx(homing.map((skill) => skill.name))} and ${visibleContent(s, 't')} and ${current(s, 't')}
-      `).map((row) => row.name))
-    : new Set<string>();
   const rows = await s.tx<{ pageId: string; spaceId: string; name: string; skillMd: string }[]>`
     select t.page_id, t.space_id, t.body as name, f.body as skill_md
     from content f
@@ -272,10 +262,10 @@ export async function skillsMatching(s: Session, words: string, limit = 3): Prom
     order by ts_rank(f.search, to_tsquery('simple', ${terms}), 1) desc
     limit 20
   `;
-  return [
-    ...rows.map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd).description ?? '' })).filter((skill) => wordsIn(`${skill.name} ${skill.description}`, words) > 0),
-    ...homing.filter((skill) => !replaced.has(skill.name)),
-  ].slice(0, limit);
+  return rows
+    .map(({ skillMd, ...skill }) => ({ ...skill, description: frontmatter(skillMd).description ?? '' }))
+    .filter((skill) => wordsIn(`${skill.name} ${skill.description}`, words) > 0)
+    .slice(0, limit);
 }
 
 /**

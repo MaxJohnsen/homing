@@ -241,8 +241,7 @@ for (const [layer, sql] of [
           assert.deepEqual(bodies(await rulesFor(s, target.space)), []);
           assert.deepEqual(bodies(await rulesFor(s, intruder.space)), bodies(intruder.rules));
           assert.equal((await skillsFor(s, target.space)).length, 0);
-          // Their own client's skill, besides Homing's own, which comes with their mailbox.
-          assert.deepEqual((await skillsFor(s, intruder.space)).filter((skill) => skill.spaceId !== null).map((skill) => skill.pageId), [intruder.skill.pageId]);
+          assert.deepEqual((await skillsFor(s, intruder.space)).map((skill) => skill.pageId), [intruder.skill.pageId]);
           assert.equal(await readPage(s, target.skill.pageId), undefined);
           const found = await search(s, target.skill.name.replaceAll('-', ' '));
           assert.ok(found.every((hit) => hit.spaceId === intruder.space || hit.spaceId === intruder.person.personalSpaceId));
