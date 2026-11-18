@@ -1,6 +1,6 @@
-import { Fragment, useRef, useState } from 'react';
+import { Fragment, useRef, useState, type ReactNode } from 'react';
 import { cn } from 'cn';
-import { Lock, X } from 'lucide-react';
+import { Check, Copy, Lock, X } from 'lucide-react';
 import { OnlyYou } from '@/components/only-you';
 import { MicrosoftLogo } from '@/components/provider-logos';
 import { dateOf, focusRing, Section, wrapsLabel } from '@/components/screen';
@@ -91,6 +91,7 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
           </span>
         </div>
       </div>
+      {place.kind === 'mailbox' && connection.status === 'connected' && <AskToLearn place={place} />}
       {place.neverRead && <NeverRead place={place} list={place.neverRead} change={actions?.neverRead} />}
       {connection.status === 'needs attention' && (
         <p className="text-sm text-destructive">Microsoft stopped letting Homing in, so it isn’t used until you sign in again.</p>
@@ -120,6 +121,86 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
       )}
       {problem && <FieldError>{problem}</FieldError>}
     </li>
+  );
+}
+
+/** How far back the sentence asks your assistant to read. The choice only shapes the sentence: nothing is sent or kept. */
+const periods = [
+  { value: 'three months', label: 'Three months', words: 'going back three months' },
+  { value: 'one year', label: 'One year', words: 'going back a year' },
+  { value: 'two years', label: 'Two years', words: 'going back two years' },
+  { value: 'five years', label: 'Five years', words: 'going back five years' },
+  { value: 'everything', label: 'Everything in it', words: 'from its beginning' },
+];
+
+/**
+ * Your assistant learns from a mailbox when you ask it to, since Homing starts nothing itself: the
+ * sentence to give it, with how far back to read, and once reading has begun, the one that carries on,
+ * which a scheduled task in your assistant can give it too.
+ */
+function AskToLearn({ place }: { place: PlaceData }) {
+  const [back, setBack] = useState('two years');
+  const { address } = place.connection;
+  const id = `learn-${place.id}`;
+  if (place.reading) {
+    return (
+      <div className="flex flex-col gap-2">
+        <p className="text-sm text-pretty text-muted-foreground">To carry on, give your assistant this, now or in a scheduled task:</p>
+        <CopySentence sentence={`Carry on learning from my mailbox ${address} in Homing.`} />
+      </div>
+    );
+  }
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-sm text-pretty text-muted-foreground">Your assistant learns from this mailbox when you ask it to. To begin, give it this:</p>
+      <CopySentence sentence={`Learn from my mailbox ${address} in Homing, ${periods.find((period) => period.value === back)?.words}.`}>
+        <label htmlFor={id} className="sr-only">How far back</label>
+        <select
+          id={id}
+          value={back}
+          onChange={(event) => setBack(event.target.value)}
+          className={cn('h-8 field-sizing-content rounded-full border border-border bg-card pr-7 pl-3 text-sm font-semibold text-foreground', focusRing)}
+        >
+          {periods.map((period) => <option key={period.value} value={period.value}>{period.label}</option>)}
+        </select>
+      </CopySentence>
+    </div>
+  );
+}
+
+/** A sentence to give your assistant, and Copy. Where the browser won't copy it, it's selected for you to copy yourself. */
+function CopySentence({ sentence, children }: { sentence: string; children?: ReactNode }) {
+  const text = useRef<HTMLParagraphElement>(null);
+  const [copied, setCopied] = useState<string>();
+  const [selected, setSelected] = useState<string>();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(sentence);
+      setSelected(undefined);
+      setCopied(sentence);
+      setTimeout(() => setCopied(undefined), 2000);
+    } catch {
+      const range = document.createRange();
+      range.selectNodeContents(text.current!);
+      getSelection()?.removeAllRanges();
+      getSelection()?.addRange(range);
+      setSelected(sentence);
+    }
+  };
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl bg-muted py-1.5 pr-1.5 pl-4">
+        <p ref={text} className="min-w-[min(100%,12rem)] flex-1 py-1 text-sm [overflow-wrap:anywhere]">{sentence}</p>
+        <div className="ml-auto flex items-center gap-2">
+          {children}
+          <Button variant="outline" size="sm" onClick={copy} aria-live="polite">
+            {copied === sentence ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+            {copied === sentence ? 'Copied' : 'Copy'}
+          </Button>
+        </div>
+      </div>
+      {selected === sentence && <p role="status" className="pl-4 text-sm text-muted-foreground">It’s selected for you to copy.</p>}
+    </div>
   );
 }
 
@@ -167,7 +248,7 @@ function NeverRead({ place, list, change }: { place: PlaceData; list: NeverReadD
       <div className="flex flex-col gap-0.5">
         <span id={`${id}-title`} className="text-sm font-semibold">Never read</span>
         <span className="text-sm text-pretty text-muted-foreground">
-          Homing doesn’t read mail from or to these senders, or in these folders and the folders in them, for anyone. Your assistant can add to the list; only you can take something off.
+          Homing doesn’t read mail from or to these senders, or in these folders and their subfolders, for anyone. Your assistant can add to the list; only you can take something off.
         </span>
       </div>
       <div className="flex flex-col gap-2 text-sm">

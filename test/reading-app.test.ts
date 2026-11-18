@@ -605,9 +605,10 @@ test('a mailbox connected in two spaces is read once, with one never-read list',
   await session.close();
 });
 
-test('the app shows how far reading has come, and nothing before it begins', async () => {
+test('the app shows how far reading has come, and nothing before it begins, with the mailbox’s address for the sentence to give your assistant', async () => {
   const { ana, acme, account, session } = await world();
   const before = (await ana.browser.json(`/api/spaces/${acme}/connections`)).body.places[0];
+  assert.deepEqual([before.kind, before.connection.address, before.connection.status], ['mailbox', account.address, 'connected']);
   assert.deepEqual([before.reading, before.neverRead], [null, [{ folder: 'Junk Email' }, { folder: 'Deleted Items' }, { folder: 'Drafts' }, { folder: 'Outbox' }]]);
   microsoft.deliver(account, { from: { name: 'Gunnar Lie', address: 'gunnar@northwind.test' }, to: [owner(account)], subject: 'Budget', html: '<p>Hi</p>', at: new Date(Date.now() - 2 * day) });
   const from = dayOf(new Date(Date.now() - 3 * day));
