@@ -879,6 +879,36 @@ test('a second that holds more than a stretch may: its first, as many as fit, ho
   await other.session.close();
 });
 
+test('time running out within the second a stretch begins at passes no mail: nothing moves, and the next use lists that second whole', async () => {
+  const { account, place, session } = await world();
+  const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
+  const base = new Date(Math.floor((Date.now() - 10 * day) / 1000) * 1000);
+  const before = microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: 'Before', html: '<p>Hi</p>', at: new Date(base.getTime() - 60_000) });
+  // A hundred and twenty emails in one second, fifty to a page.
+  const burst = new Set<string>();
+  for (let one = 0; one < 120; one++) burst.add(microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: `Burst ${one}`, html: '<p>Hi</p>', at: base }));
+  const after = microsoft.deliver(account, { from: gunnar, to: [owner(account)], subject: 'After', html: '<p>Hi</p>', at: new Date(base.getTime() + 60_000) });
+  microsoft.shortPages(account, 50);
+  const first = stretchOf((await list(session, { from: dayOf(new Date(base.getTime() - day)), lines: 1 })).text);
+  assert.deepEqual(first.ids, [before]);
+  const handedOut = await readingOf(place);
+  assert.equal(handedOut.stretchEnds?.getTime(), base.getTime());
+  // The next stretch begins at that second, and at thirteen seconds a page, time runs out within it.
+  microsoft.slow(account, 13_000);
+  const slow = await list(session, { token: first.token });
+  microsoft.slow(account, 0);
+  assert.ok(slow.failed, slow.text);
+  assert.match(slow.text, /^Microsoft didn't answer for the user's mailbox .*\. Try again later\. Nothing moved: /);
+  assert.deepEqual(await readingOf(place), handedOut);
+  // The token still confirms the stretch before, and the next holds that second whole.
+  const whole = await list(session, { token: first.token });
+  const got = stretchOf(whole.text);
+  assert.deepEqual(new Set(got.ids), burst);
+  assert.doesNotMatch(whole.text, /can't be listed/);
+  assert.deepEqual(stretchOf((await list(session, { token: got.token })).text).ids, [after]);
+  await session.close();
+});
+
 test('a long run of mail that’s never read is passed a few pages at a time, each use getting further, however slow Microsoft is', async () => {
   const { account, place, session } = await world();
   const start = Math.floor((Date.now() - 20 * day) / 1000) * 1000;

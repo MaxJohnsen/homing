@@ -550,8 +550,9 @@ const graphTime = (at: Date) => at.toISOString().replace(/\.\d+Z$/, 'Z');
  * since a page may hold fewer than asked for. It stops once it has more than most, past the first
  * second, or, so each use gets further however much of the mail is never read, after so many pages
  * or so long, or at the most requests one use makes. Then it got through to the second of the last
- * email it looked at, since more may have arrived in that same second, or, when that's the second
- * it began at, through that second, partly.
+ * email it looked at, since more may have arrived in that same second. When that's the second it
+ * began at and that second alone filled the pages it asks for, it got through that second, partly.
+ * When time or requests ran out there, it's no answer: nothing moves, and the next use tries again.
  */
 export async function listMail(box: Mailbox, { from, until, most }: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }> {
   const filter = `receivedDateTime ge ${graphTime(from)} and receivedDateTime lt ${graphTime(until)}`;
@@ -559,11 +560,13 @@ export async function listMail(box: Mailbox, { from, until, most }: { from: Date
   const listed: Listed[] = [];
   const started = Date.now();
   let last: Date | undefined;
-  const stop = (at: Date | undefined) => {
+  const stop = (at: Date | undefined, crowded = false) => {
     // Pages without a single email, which Graph doesn't give, are no answer.
     if (!at) throw new MicrosoftUnreachable('Graph');
     const through = second(at);
-    return through > from ? { listed: listed.filter((line) => line.at! < through), through } : { listed, through: new Date(through.getTime() + 1000), partly: true };
+    if (through > from) return { listed: listed.filter((line) => line.at! < through), through };
+    if (!crowded) throw new MicrosoftUnreachable('in time');
+    return { listed, through: new Date(through.getTime() + 1000), partly: true };
   };
   for (let pages = 1; link; pages++) {
     let page: ReturnType<typeof pageOf>;
@@ -585,7 +588,8 @@ export async function listMail(box: Mailbox, { from, until, most }: { from: Date
     last = summaries.at(-1)?.at ?? last;
     if (listed.length > most && last && second(last) > second(listed[0].at!)) return stop(last);
     link = page.next;
-    if (link && (pages >= pagesAtMost || Date.now() - started > askingFor)) return stop(last);
+    if (link && pages >= pagesAtMost) return stop(last, true);
+    if (link && Date.now() - started > askingFor) return stop(last);
   }
   return { listed, through: until };
 }

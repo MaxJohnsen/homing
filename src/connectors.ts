@@ -111,8 +111,9 @@ export interface InOrder {
    * The items that came from one moment until another, oldest first, without what's never read:
    * every one up to the whole second it says it got through, which is until when nothing more came
    * before it. It stops once it has more than most, or has asked the system as much or as long as
-   * it may at once, so through may be sooner, though always after from: when it can't get through
-   * the second it begins at, it gives what it found of that second, through it, partly.
+   * it may at once, so through may be sooner, though always after from: when the second it begins
+   * at alone holds more than it ever asks for at once, it gives what it found of that second,
+   * through it, partly, and when time or requests ran out there, it fails, so the next tries again.
    */
   list(access: Access, window: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }>;
 }
