@@ -8,6 +8,7 @@ import { ProposedChange } from '@/components/proposed-change';
 import { RuleReach } from '@/components/rule-reach';
 import { parentOf, SpaceFields, type SpaceDraft } from '@/components/space-fields';
 import { Avatar, dateOf } from '@/components/screen';
+import { restsOn } from '@/lib/knowledge';
 import { placeOf, precedenceOf, type IncludeData, type PlanData, type PlanStepData, type ProposalData, type PublicationData, type TaskShareData } from '@/lib/proposals';
 
 /**
@@ -316,12 +317,13 @@ function PublishDetails({ proposal, publication }: { proposal: ProposalData; pub
 
 /**
  * What sharing an item with a space does, wherever it's decided: exactly what everyone there would
- * see, how many people that is, and what it rests on that they won't see.
+ * see, how many people that is, whether it rests on what Homing read, and what it rests on that they won't see.
  */
 export function SharingDetails({ place, publication }: { place: string; publication: PublicationData }) {
   const who = whoWillSee(place, publication.audience);
   const sources = sourceList(publication);
   const listed = sourcesOf(publication);
+  const read = restsOn(publication.readFrom);
   return (
     <>
       {publication.sharedText !== null && publication.sharedText !== publication.text ? (
@@ -332,7 +334,7 @@ export function SharingDetails({ place, publication }: { place: string; publicat
       ) : (
         <ProposedChange kind="preference" label={`On ${publication.page}`} text={publication.text} />
       )}
-      <p className="text-base">{who}</p>
+      <p className="text-base">{who}{read && ` They’ll see that it ${read[0].toLowerCase()}${read.slice(1)}`}</p>
       {sources.length > 0 && (
         <p className="rounded-xl bg-muted px-4 py-3 text-base">
           It’s based on {listed}. Everyone in {place} will see what it says and that you shared it, but not {sources.length === 1 ? 'that source' : 'those sources'}.

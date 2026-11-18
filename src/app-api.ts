@@ -10,7 +10,7 @@ import { AccessDenied, personOf, withPrincipal, type Session } from './db.ts';
 import { exportSpace } from './export.ts';
 import { ImportRefused, importProgressOf, importsAgain, importSpace, preview as previewUpload, previewed, previewProgressOf, receive, turnNow, uploadTime, workFolder } from './import.ts';
 import { addInclude, addRule, editRule, includesIn, includesNotOpen, IncludeRefused, removeInclude, removeRule, rulesFor, type Inclusion, type RuleKind } from './guidance.ts';
-import { archivePage, createPage, gather, historyOf, importedAuthor, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
+import { archivePage, createPage, gather, historyOf, importedAuthor, lastMove, linksOf, overviewLength, overviewOf, pagesIn, publicationOf, publishItem, readItem, readPage, recentChanges, search, sourcesIn, sourceView, supersedeItem, TooLong, ungather, updateItem, writeItem, writeOverview, type Imported, type PageOrder } from './knowledge.ts';
 import { modelName, modelProcessingOf, modelStatement, modelUsageOfEveryone, modelUseThisMonth, monthlyLimit, setModelProcessing, setMonthlyLimit } from './model.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
@@ -486,10 +486,14 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           const names = await peopleNames(s, [...[...page.items, ...history].map((entry) => entry.writtenBy), ...page.items.map((item) => item.publishedBy), page.archived?.by ?? null]);
           const links = await linksOf(s, page.id);
           const { total: gathers } = await pagesIn(s, page.spaceId, { in: page.id, limit: 1 });
-          return { page, space, history, names, links, gathers };
+          // Where the reader moved it from, which only they see.
+          const move = await lastMove(s, page.id);
+          const from = move && (await listSpaces(s)).find((other) => other.id === move.movedFrom);
+          const moved = move && { from: from ? { id: from.id, name: from.name, personal: from.privateTo !== null && from.parentId === null } : null, agent: move.agent, at: move.at };
+          return { page, space, history, names, links, gathers, moved };
         });
         if (!found) return answer(res, 404, noPage);
-        const { page, space, history, names, links, gathers } = found;
+        const { page, space, history, names, links, gathers, moved } = found;
         const by = (writtenBy: string | null) => authorOf(names, person, writtenBy, null, null).by;
         json(res, 200, {
           id: page.id,
@@ -504,6 +508,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           // When it was archived and by whom, unless that's someone the reader doesn't share a space with.
           // Archived by someone else before the reader could see the page, since then, by nobody named.
           archived: page.archived && { at: page.archived.at, by: by(page.archived.by), since: page.archived.since },
+          moved: moved ?? null,
           space: {
             id: space.id,
             name: space.name,
@@ -523,6 +528,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
             sharedBy: item.privateTo !== null ? null : item.publishedBy ? by(item.publishedBy) : item.publishedAt && item.imported?.publishedBy ? { name: item.imported.publishedBy.name, you: false, imported: true } : null,
             sharedAt: item.privateTo === null ? item.publishedAt : null,
             sources: item.sources,
+            readFrom: item.readFrom,
             // What it replaced, and so what others still see when it's your private update to something shared.
             replaced: item.replaced && { text: item.replaced.body, shared: item.replaced.shared, until: item.createdAt },
             earlier: history
@@ -672,6 +678,7 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
               : null,
             at: change.at,
             onlyYou: change.onlyYou,
+            readFrom: change.readFrom,
             pageArchived: change.pageArchived,
             space: { ...where(change.spaceId), archived: archived.has(change.spaceId) },
           })),
@@ -800,8 +807,9 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
 
       case 'publish item': {
         const body = await readJson(req);
-        if (typeof body.shown !== 'string') return answer(res, 400, { message: 'Share what you were shown.' });
-        const shared = await write((s) => publishItem(s, route.id, body.shown as string));
+        // What was shown, and the space it was shown for.
+        if (typeof body.shown !== 'string' || typeof body.space !== 'string' || !new RegExp(`^${uuid}$`, 'i').test(body.space)) return answer(res, 400, { message: 'Share what you were shown.' });
+        const shared = await write((s) => publishItem(s, route.id, body.space as string, body.shown as string));
         if (!shared) return answer(res, 409, { message: 'This changed while you were reading. The page now shows it as it is.' });
         json(res, 200, { id: shared });
         break;
@@ -1085,6 +1093,8 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
     if (error instanceof postgres.PostgresError && error.message === "that person can't be given this task") {
       return answer(res, 400, { field: 'assignee', message: 'They can’t open this space, so they can’t be given the task.' });
     }
+    // Moved to another space since it was shown, so it's shared nowhere, and the page shows where it is now.
+    if (error instanceof postgres.PostgresError && /^it's in .+ now$/s.test(error.message)) return answer(res, 409, { message: `${error.message[0].toUpperCase()}${error.message.slice(1)}.` });
     // The store refuses what the person may not do, such as a member changing a shared rule.
     if (error instanceof AccessDenied || (error instanceof postgres.PostgresError && error.code === '42501')) {
       return answer(res, 403, { message: error instanceof AccessDenied ? error.message : 'You can’t make that change here.' });

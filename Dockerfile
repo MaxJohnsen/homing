@@ -11,6 +11,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY migrations migrations
+COPY skills skills
 COPY src src
 COPY --from=web /app/web/dist web/dist
 ARG VERSION=dev

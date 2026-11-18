@@ -111,8 +111,8 @@ describe('reading a year of the mailbox to its end, in several sessions', () => 
     microsoft.shortPages(account, 37);
     const expected = [...sent].filter(([, email]) => !['junkemail', 'drafts'].includes(email.folder ?? '')).map(([id]) => id);
 
-    // Context says nothing of reading before it began.
-    assert.doesNotMatch((await session.call('context', { request: 'Northwind budget' })).text, /in order|learn-from-a-mailbox/);
+    // Context says nothing of how far reading has come before it began.
+    assert.doesNotMatch((await session.call('context', { request: 'Northwind budget' })).text, /in order/);
     const notBegun = await list(session);
     assert.ok(notBegun.failed);
     assert.match(notBegun.text, /in order hasn't begun\. Ask the user how far back to read, then ask again with from/);
@@ -122,6 +122,7 @@ describe('reading a year of the mailbox to its end, in several sessions', () => 
     let from: string | undefined = dayOf(emails[0].at);
     let sessions = 0;
     let today = false;
+    let handedOut = '';
     const chatgpt = await assistantOf(ana, assistants.chatgpt);
     // A new conversation every three stretches, one of them in another assistant, each carrying on where the last stopped.
     for (let round = 0; !today && round < 40; round++) {
@@ -131,6 +132,7 @@ describe('reading a year of the mailbox to its end, in several sessions', () => 
         const asked = microsoft.asked.graph;
         const answer = await list(current, from ? { from, lines: 40 } : { token, lines: 40 });
         assert.ok(!answer.failed, answer.text);
+        handedOut = answer.text;
         assert.ok(microsoft.asked.graph - asked <= mostRequests, `${microsoft.asked.graph - asked} requests`);
         // No sign-in of Ana's ever reaches her assistant.
         for (const issued of microsoft.issued) assert.ok(!answer.text.includes(issued));
@@ -176,9 +178,12 @@ describe('reading a year of the mailbox to its end, in several sessions', () => 
     // Graph's own next link led on, never a $skip of Homing's.
     assert.ok(microsoft.listings.every((filter) => /^receivedDateTime ge \S+ and receivedDateTime lt \S+$/.test(filter)));
 
-    // Context and the app say how far reading has come, and which skill says how to carry on.
+    // Context and the app say how far reading has come, and which skill says how to carry on, by its reference, as the list does.
     const { reached } = await readingOf(place);
-    assert.match((await session.call('context', { request: 'Northwind budget' })).text, new RegExp(`Reading the user's mailbox ${account.address} in order began from ${dayOf(emails[0].at)} and has reached ${reached.toISOString().slice(0, 16).replace('T', ' ')} UTC; the skill learn-from-a-mailbox says how to carry on\\.`));
+    const said = (await session.call('context', { request: 'Northwind budget' })).text;
+    const skill = new RegExp(`\\. Reading it in order began from ${dayOf(emails[0].at)} and has reached ${reached.toISOString().slice(0, 16).replace('T', ' ')} UTC\\. To learn from it, follow the skill learn-from-a-mailbox \\((page:[0-9a-f-]{36})\\)\\.`).exec(said)?.[1];
+    assert.ok(skill, said);
+    assert.ok(handedOut.includes(`The skill learn-from-a-mailbox (${skill}) says how to do the work.`), handedOut.slice(0, 2000));
     const uses = await admin`select operation, agent from connection_uses where place_id = ${place} and operation = 'list'`;
     assert.ok(uses.length >= confirmed.length && uses.some((use) => use.agent === 'ChatGPT'));
     await session.close();
@@ -329,14 +334,19 @@ test('a conversation whose earlier emails were saved from shows those items, and
     text: 'The Northwind budget for 2027 is NOK 2 million, approved by the board (Gunnar Lie).',
     sources: [{ reference: `microsoft:${place}:${answered}`, excerpt: 'The Northwind budget for 2027 is NOK 2 million' }],
   });
-  const item = /item:[0-9a-f-]{36}/.exec(saved.text)![0];
+  const replaced = /item:[0-9a-f-]{36}/.exec(saved.text)![0];
   // Homing kept which conversation the source is from.
   assert.deepEqual((await admin`select conversation from sources where reference = ${`microsoft:${place}:${answered}`}`).map((row) => row.conversation), [conversation]);
+  // A newer version, which carries the source on, is what shows.
+  const newer = await session.call('remember', { replaces: replaced, text: 'The Northwind budget for 2027 is NOK 2 million, as the board approved (Gunnar Lie).' });
+  const item = /item:[0-9a-f-]{36}/.exec(newer.text)![0];
+  assert.notEqual(item, replaced);
 
   const next = await list(session, { token: stretchOf(first.text).token });
   const blocks = next.text.split('\n## Conversation ').slice(1);
   assert.equal(blocks.length, 2);
-  assert.ok(blocks[0].includes(`Already in Homing from it: ${item} in Acme, on the page "Northwind budget": "The Northwind budget for 2027 is NOK 2 million, approved by the board (Gunnar Lie)."`), blocks[0]);
+  assert.ok(blocks[0].includes(`Already in Homing from it: ${item} in Acme, on the page "Northwind budget": "The Northwind budget for 2027 is NOK 2 million, as the board approved (Gunnar Lie)."`), blocks[0]);
+  assert.ok(!blocks[0].includes(replaced) && !blocks[0].includes('; and'), blocks[0]);
   assert.ok(blocks[0].includes(later));
   assert.doesNotMatch(blocks[1], /Already in Homing/);
   await session.close();

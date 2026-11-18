@@ -1,6 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parse } from 'yaml';
 import type { Session } from './db.ts';
 import { applying, applyingAlready, inclusionColumns, inclusionJoin, withInclusion, type Inclusion } from './guidance.ts';
@@ -61,6 +62,48 @@ export async function readSkillFolder(folder: string): Promise<{ files: SkillFil
     throw new Error(`Homing keeps only text files up to 512 KB in skills for now. ${problems.join(' ')}`);
   }
   return { files: files.sort((a, b) => a.path.localeCompare(b.path)), skipped: skipped.sort() };
+}
+
+/** A skill Homing comes with, from its own skills folder, with a page reference made from its name. */
+export interface HomingSkill {
+  pageId: string;
+  name: string;
+  files: SkillFile[];
+}
+
+/**
+ * Homing's own skills, each a SKILL.md folder in its skills folder, read once as Homing starts.
+ * Nothing of them is kept in the database, so a new version of one applies with the next start.
+ */
+const homingSkills: HomingSkill[] = await Promise.all(
+  (await readdir(fileURLToPath(new URL('../skills/', import.meta.url)), { withFileTypes: true }))
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(async (entry) => {
+      const { files } = await readSkillFolder(join(entry.parentPath, entry.name));
+      const { name } = describe(files);
+      const hash = createHash('sha256').update(`homing skill ${name}`).digest('hex');
+      const pageId = [hash.slice(0, 8), hash.slice(8, 12), hash.slice(12, 16), hash.slice(16, 20), hash.slice(20, 32)].join('-');
+      return { pageId, name, files };
+    }),
+);
+
+/** One of Homing's own skills, by its reference. */
+export function homingSkill(pageId: string): HomingSkill | undefined {
+  return homingSkills.find((skill) => skill.pageId === pageId);
+}
+
+/** The skill that says how to learn from a kind of place, by the kind: one of Homing's own. */
+const learningSkills = new Map([['mailbox', 'learn-from-a-mailbox']]);
+
+/**
+ * The skill that says how to learn from a kind of place, as it applies in the place's space: one
+ * the person has with its name, which replaces Homing's as it would any skill, or else Homing's.
+ */
+export async function learningSkill(s: Session, kind: string, spaceId: string): Promise<{ name: string; pageId: string } | undefined> {
+  const name = learningSkills.get(kind);
+  if (!name) return undefined;
+  return (await skillsFor(s, spaceId)).find((skill) => skill.name === name) ?? homingSkills.find((skill) => skill.name === name);
 }
 
 /**

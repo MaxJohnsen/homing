@@ -65,6 +65,8 @@ export interface ItemData {
   sharedAt?: string | null;
   /** Its sources as you see them. Your own aren't shared, such as those behind something you shared. */
   sources: { id: string; reference: string | null; excerpt: string; shared?: boolean; readFrom?: string | null }[];
+  /** The kind of place Homing read what it rests on in, such as a mailbox, if it read any itself, told to everyone who sees it. */
+  readFrom?: string | null;
   /** What it replaced. When it's your private update of something shared that the others still see, shared is true. */
   replaced: { text: string; shared: boolean; until: string } | null;
   /** What it said before it was last changed, oldest first, each with who wrote that version. */
@@ -87,6 +89,8 @@ export interface PageData {
   mentionedOn: { id: string; title: string }[];
   /** When it was archived and by whom, if it is. Archived by someone else before you could see the page, since then, by nobody named. */
   archived?: { at: string; by: Author; since: boolean } | null;
+  /** Where you last moved it from, by which assistant and when, if you did. Null for a space you can no longer open. */
+  moved?: { from: { id: string; name: string; personal: boolean } | null; agent: string | null; at: string } | null;
   /** Where it is, and how many people see what's shared there now. */
   space: { id: string; name: string; personal: boolean; private: boolean; people: number; above: boolean };
   items: ItemData[];
@@ -140,6 +144,16 @@ export function nameIn(author: Author): string | null {
 /** The assistant that changed someone's own text for them: "your assistant Claude", "their assistant Claude". */
 export function theirAssistant(author: Author, agent: string): string {
   return `${author?.you ? 'your' : 'their'} assistant ${agent}`;
+}
+
+/**
+ * What something says, to everyone who sees it, when it rests on what Homing read itself in a kind
+ * of place, such as an email in a mailbox, whoever wrote or corrected it. Null when it rests on none.
+ */
+export function restsOn(readFrom: string | null | undefined): string | null {
+  if (readFrom == null) return null;
+  const [what, whose] = readFrom === 'mailbox' ? ['an email', 'the email’s'] : ['something', 'its'];
+  return `Rests on ${what} Homing read: what was taken from it, not ${whose} own words.`;
 }
 
 /**
@@ -218,6 +232,8 @@ export interface ChangeData {
   sharedBy?: Author;
   at: string;
   onlyYou: boolean;
+  /** The kind of place Homing read what it rests on in, if it read any itself. */
+  readFrom?: string | null;
   /** On a page that's archived. */
   pageArchived?: boolean;
   /** Where it changed, and whether that space is archived, as you see it. */

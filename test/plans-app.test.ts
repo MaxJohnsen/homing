@@ -172,7 +172,7 @@ test('if a change can no longer be made when approving, nothing changes, and it 
   // The item is shared another way meanwhile.
   const first = proposalOf((await plan({ space: `space:${garden}`, changes: [share(item), rule] })).text);
   const shown = await shownOf(ana, first);
-  assert.equal((await ana.browser.json(`/api/items/${item}/publish`, { shown: 'The roses go along the south wall.' })).status, 200);
+  assert.equal((await ana.browser.json(`/api/items/${item}/publish`, { shown: 'The roses go along the south wall.', space: garden })).status, 200);
   const refused1 = await decide(ana, first, shown.plan.shown);
   assert.equal(refused1.status, 409);
   assert.equal(refused1.body.message, 'Nothing changed, because what’s on “Plants” can’t be shared. It’s shared already.');
@@ -385,10 +385,10 @@ test('a plan shares only what’s in its own space, even written straight to the
     insert into proposals (space_id, private_to, action, change) values (${home}::uuid, ${ana.id}::uuid, 'plan', ${s.tx.json({ steps })}) returning id
   `);
   const shown = await shownOf(ana, id);
-  assert.deepEqual(shown.plan.steps.map((step: any) => step.problem), ['It isn’t yours to share there.', 'It isn’t yours to share there.']);
+  assert.deepEqual(shown.plan.steps.map((step: any) => step.problem), ['It’s in Garden now.', 'It isn’t yours to share there.']);
   const refusedOther = await decide(ana, id, shown.plan.shown);
   assert.equal(refusedOther.status, 409);
-  assert.equal(refusedOther.body.message, 'Nothing changed, because what’s on “Plants” can’t be shared. It isn’t yours to share there.');
+  assert.equal(refusedOther.body.message, 'Nothing changed, because what’s on “Plants” can’t be shared. It’s in Garden now.');
   const [row] = await admin`select private_to from content where id = ${item}`;
   const [kept] = await admin`select private_to from tasks where id = ${task}`;
   assert.deepEqual([row.privateTo, kept.privateTo], [ana.id, ana.id]);

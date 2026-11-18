@@ -53,7 +53,7 @@ before(async () => {
     const diary = await addSource(s, { spaceId: acme, excerpt: 'Gunnar prefers calls before nine.', reference: 'Ana’s call diary' });
     await writeItem(s, { pageId: gunnar, body: 'Prefers calls before nine.', sources: [diary.id] });
     const contracts = await writeItem(s, { pageId: gunnar, body: 'Gunnar signs contracts over 1 MNOK.', sources: [diary.id] });
-    await publishItem(s, contracts.id, contracts.body);
+    await publishItem(s, contracts.id, contracts.spaceId, contracts.body);
     // Shared as a copy, then updated on her own side, so the update stands in the copy's place for her.
     await updateItem(s, contracts.id, { body: 'Gunnar signs contracts over 2 MNOK.' });
     // Something resting on a note Ana keeps in her personal space, which no export of Acme holds.
@@ -64,7 +64,7 @@ before(async () => {
     // Shared after she'd changed it on her own: what it said before stays only hers.
     const draft = await writeItem(s, { pageId: plan, body: 'The launch budget is 1 MNOK.' });
     await updateItem(s, draft.id, { body: 'The launch budget is 1.5 MNOK.' });
-    await publishItem(s, draft.id, 'The launch budget is 1.5 MNOK.');
+    await publishItem(s, draft.id, draft.spaceId, 'The launch budget is 1.5 MNOK.');
     const launch = await createPage(s, { spaceId: acme, title: 'Launch 2027', shared: true });
     await gather(s, { collectionId: launch, pageId: plan, shared: true });
     const worries = await createPage(s, { spaceId: acme, title: 'My launch worries' });
@@ -351,7 +351,7 @@ test('who wrote imported knowledge comes along by name, credited to nobody here'
   assert.deepEqual([sharing.body.hiddenElsewhere, sharing.body.hiddenUnseen, sharing.body.copy], [1, 0, true]);
   assert.equal(await as(ana, async (s) => (await s.tx`select hidden_sources(${budgetHere}) as n`)[0].n), 1);
   // Shared as a copy, then updated on her own side: the update still rests on what the import didn't bring.
-  await as({ ...ana, direct: true }, (s) => publishItem(s, budgetHere, 'The budget is 2 MNOK.'));
+  await as({ ...ana, direct: true }, (s) => publishItem(s, budgetHere, copy, 'The budget is 2 MNOK.'));
   const update = await as({ ...ana, direct: true }, (s) => updateItem(s, budgetHere, { body: 'The budget is 3 MNOK.' }));
   assert.equal(await as(ana, async (s) => (await s.tx`select hidden_sources(${update!.id}) as n`)[0].n), 1);
 });
@@ -361,7 +361,7 @@ test('sharing an imported item keeps who wrote it, as the one person they were',
   const copy = await imported(ana, bytes, 'Acme, shared on');
   const [{ item, page }] = await admin`select id as item, page_id as page from content where space_id = ${copy} and body = 'Prefers calls before nine.'`;
   // It rests on Ana's call diary, which only she sees, so the people in the space get a copy of it.
-  await as({ ...ana, direct: true }, (s) => publishItem(s, item, 'Prefers calls before nine.'));
+  await as({ ...ana, direct: true }, (s) => publishItem(s, item, copy, 'Prefers calls before nine.'));
   const [shared] = await admin`select id, written_by, imported from content where published_from = ${item}`;
   assert.equal(shared.writtenBy, null);
   // The app says who wrote it, imported, and an assistant can't replace it, even for its own person.

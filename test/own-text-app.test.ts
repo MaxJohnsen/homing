@@ -176,7 +176,7 @@ test('what Ana wrote and shared, her assistant changes only as her own update, w
   assert.equal(await itemAs(cara, plan, mine), undefined);
 
   // Once Ana shares it, everyone sees it as hers, changed by her assistant.
-  assert.equal((await ana.browser.json(`/api/items/${mine}/publish`, { shown: forAna.text })).status, 200);
+  assert.equal((await ana.browser.json(`/api/items/${mine}/publish`, { shown: forAna.text, space: acme })).status, 200);
   const forCara = (await cara.browser.json(`/api/pages/${plan}`)).body.items as PageItem[];
   assert.deepEqual(forCara.map((item) => [item.text, ...whoWrote(item)]), [['Go-live is on 22 March.\n\nThe content team signs off a week before.', 'Ana', null, 'Claude']]);
 });
