@@ -4,7 +4,7 @@
 // Graph, stays in microsoft.ts, and what's the same for every system, such
 // as finding places and framing, is in places.ts and mcp.ts.
 
-import type { Audience, Envelope, Found, Item, Party, Words } from './connectors.ts';
+import type { Audience, Envelope, Found, Item, NeverRead, Party, Words } from './connectors.ts';
 import { noItem, oneLine, SourceRefused, when } from './places.ts';
 
 /** How Homing words a mailbox and the emails in it. */
@@ -42,7 +42,7 @@ export interface Email {
 }
 
 /** An email as a list of them shows it, such as a search or its thread. */
-export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'>;
+export type EmailSummary = Pick<Email, 'id' | 'subject' | 'from' | 'at' | 'preview'> & { conversation?: string | null };
 
 /** How many of an email's recipients its audience keeps. */
 const audienceKept = 100;
@@ -53,7 +53,39 @@ export function emailFound(email: EmailSummary): Found {
 }
 
 function envelopeOf(email: EmailSummary, audience: Audience = 'unknown'): Envelope {
-  return { id: email.id, title: email.subject, at: email.at, author: email.from, audience };
+  return { id: email.id, title: email.subject, at: email.at, author: email.from, audience, conversation: email.conversation ?? null };
+}
+
+/** Where an email is: the names of its folder and of every folder it's in, and which of them the system makes itself, by its own names for them. */
+export interface Where {
+  names: string[];
+  standard: string[];
+}
+
+/** Whether a never-read list names any folder, so where an email is decides too. */
+export const namesFolders = (never: NeverRead) => never.some((entry) => !('sender' in entry));
+
+/**
+ * Whether an email is never read: it's in a folder on the never-read list, or in one within such a
+ * folder, by the system's own name for one it makes, or else by name whatever its case, or it's
+ * from or to a sender on the list, by address, or by domain, which covers its subdomains. Where it
+ * is is null when Homing couldn't tell, which counts as on the list once the list names any folder.
+ * Only where it is and who it's from and to decide, never what it says. A sender it only quotes
+ * can't be recognized.
+ */
+export function withheld(email: { parties: Party[]; where: Where | null }, never: NeverRead): boolean {
+  if (namesFolders(never)) {
+    if (email.where === null) return true;
+    const { names, standard } = email.where;
+    const listed = new Set(names.map((name) => name.toLowerCase()));
+    if (never.some((entry) => ('standard' in entry ? standard.includes(entry.standard) : 'folder' in entry && listed.has(entry.folder.toLowerCase())))) return true;
+  }
+  return email.parties.some(({ address }) => {
+    const at = address?.trim().toLowerCase();
+    if (!at) return false;
+    const domain = at.slice(at.lastIndexOf('@') + 1);
+    return never.some((entry) => 'sender' in entry && (entry.sender.includes('@') ? at === entry.sender : domain === entry.sender || domain.endsWith(`.${entry.sender}`)));
+  });
 }
 
 /**

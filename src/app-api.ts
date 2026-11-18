@@ -14,6 +14,8 @@ import { archivePage, createPage, gather, historyOf, importedAuthor, lastMove, l
 import { modelName, modelProcessingOf, modelStatement, modelUsageOfEveryone, modelUseThisMonth, monthlyLimit, setModelProcessing, setMonthlyLimit } from './model.ts';
 import { publicationData, requestsSent, shortAction, waitingFor } from './proposals.ts';
 import { includable, readSkill, skillsHere } from './skills.ts';
+import { entryName, neverReadIn, placesFor } from './places.ts';
+import { changeNeverRead } from './reading.ts';
 import { accountFinder, isEmail } from './people.ts';
 import { conversionOf, makeCollaborative, movedFrom } from './share-space.ts';
 import { addTask, changeTask, searchTasks, shareTask, TaskRefused, tasksIn, type Task } from './tasks.ts';
@@ -983,8 +985,37 @@ export async function handleAppApi(app: App, req: IncomingMessage, res: ServerRe
           microsoft,
           // Whoever looks after Homing is told how to set it up; nobody else is offered anything that can't work.
           looksAfter: !microsoft && (await looksAfter()),
-          places: found.map((place) => ({ id: place.id, kind: place.kind, addedAt: place.addedAt, elsewhere: place.elsewhere, connection: connectionData(app.connectors, place.connection) })),
+          places: found.map((place) => ({
+            id: place.id,
+            kind: place.kind,
+            addedAt: place.addedAt,
+            elsewhere: place.elsewhere,
+            connection: connectionData(app.connectors, place.connection),
+            // For a kind read in order, such as a mailbox: how far its reading has come, and what's never read there, folders by name.
+            reading: place.began && { began: place.began, reached: place.reached },
+            neverRead:
+              neverReadIn(app.connectors, { connector: place.connection.provider, kind: place.kind, neverRead: place.neverRead })?.map((entry) =>
+                'standard' in entry ? { folder: entryName(app.connectors, { connector: place.connection.provider, kind: place.kind }, entry) } : entry,
+              ) ?? null,
+          })),
         });
+        break;
+      }
+
+      case 'never read': {
+        // The person's own place, taking an entry off what's never read there, or adding one, as they do only here.
+        const body = await readJson(req);
+        if (body.change !== 'add' && body.change !== 'remove') return answer(res, 400, { message: 'Say whether to add it or take it off.' });
+        const done = await write(async (s) => {
+          const [row] = await s.tx<{ space: string }[]>`select space_id as space from places where id = ${route.id}::uuid and removed_at is null`;
+          const place = row && (await placesFor(s, row.space)).find((one) => one.place === route.id);
+          if (!place || !neverReadIn(app.connectors, place)) return undefined;
+          const entry = { sender: typeof body.sender === 'string' ? body.sender : undefined, folder: typeof body.folder === 'string' ? body.folder : undefined };
+          return changeNeverRead(s, app.connectors, place, body.change === 'add', entry);
+        });
+        if (!done) return answer(res, 404, { message: 'There’s nothing of yours to change here.' });
+        if ('refused' in done) return answer(res, 400, { field: 'entry', message: done.refused });
+        json(res, 200, {});
         break;
       }
 
@@ -1152,7 +1183,7 @@ type Route =
   | { name: 'spaces' | 'waiting' | 'admin' | 'requests' | 'search' | 'changes' | 'create space' | 'import' | 'import preview' | 'import progress' | 'preview progress' | 'accounts' | 'model use' | 'model limit' }
  | { name: 'change member'; id: string; person: string }
   | { name: 'connect'; id: string; connector: string }
-  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection'; id: string };
+  | { name: 'space' | 'rename space' | 'archive space' | 'model processing' | 'add member' | 'conversion' | 'convert space' | 'export' | 'tasks' | 'add task' | 'change task' | 'share task' | 'pages' | 'page' | 'sources' | 'source' | 'add page' | 'add item' | 'correct item' | 'publication' | 'publish item' | 'archive page' | 'gather' | 'ungather' | 'overview' | 'write overview' | 'rules' | 'add rule' | 'skills' | 'edit rule' | 'remove rule' | 'skill' | 'includable' | 'add include' | 'remove include' | 'connections' | 'remove place' | 'revoke connection' | 'never read'; id: string };
 
 function routeOf(method: string, path: string): Route | undefined {
   const match = (pattern: string) => new RegExp(`^${pattern}$`, 'i').exec(path)?.[1]?.toLowerCase();
@@ -1221,6 +1252,7 @@ function routeOf(method: string, path: string): Route | undefined {
       ['add include', `/api/spaces/${uuid}/includes`],
       ['remove include', `/api/includes/${uuid}/remove`],
       ['remove place', `/api/places/${uuid}/remove`],
+      ['never read', `/api/places/${uuid}/never-read`],
       ['revoke connection', `/api/connections/${uuid}/revoke`],
     ] as const) {
       const id = match(pattern);

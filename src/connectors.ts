@@ -5,7 +5,8 @@
 // the code to redeem, and using a place, an Access with the place's resource,
 // a token and Homing's time limit. Everything it gives back is outside
 // content, which Homing frames itself, so nothing in it passes for Homing's
-// own words. Following changes and acting come later, beside find and read.
+// own words. A kind may also be read in order, oldest first, by its owner's
+// assistant. Acting comes later, beside find and read.
 
 import { microsoftConnector, type MicrosoftSettings } from './microsoft.ts';
 
@@ -29,7 +30,10 @@ export interface Connector {
   auth: OAuth;
   /** What an account there can reach, by kind of place, such as a mailbox. */
   kinds: Record<string, PlaceKind>;
-  /** What an error from any of the above means, when it's the system's refusal or silence; undefined when it isn't. */
+  /**
+   * What an error from any of the above means, when it's the system's refusal or silence; undefined
+   * when it isn't. An error may also carry retryAfter, how many seconds the system asked Homing to wait.
+   */
   refused(error: unknown): Refusal | undefined;
 }
 
@@ -83,18 +87,59 @@ export interface PlaceKind {
   discover?(access: Access): Promise<{ resource: string; name: string }[]>;
   /** Live search, newest first, where it makes sense. A kind without it is still read by reference. */
   search?(access: Access, words: string, limit: number): Promise<Found[]>;
-  /** One item by its id, with what it's read with unless left out, or undefined when it isn't there any more. */
-  read(access: Access, id: string, options: { related: boolean }): Promise<Item | undefined>;
+  /**
+   * One item by its id, with what it's read with unless left out, or undefined when it isn't there
+   * any more, or withheld when it's on the place's never-read list.
+   */
+  read(access: Access, id: string, options: { related: boolean }): Promise<Item | 'withheld' | undefined>;
+  /** For a kind whose items can be read in the order they came, such as a mailbox by when each email arrived. */
+  inOrder?: InOrder;
 }
+
+/**
+ * A kind of place listed in order, oldest first, for its owner's assistant to read through (spec
+ * §8). Homing keeps where reading began, the place it reached and what is never read; the
+ * connector lists, and withholds what's never read wherever it reads the place.
+ */
+export interface InOrder {
+  /**
+   * The folders the never-read list starts with, which the system makes itself, by the system's own
+   * name for each and how Homing names it, such as a mailbox's junkemail, Junk Email.
+   */
+  standard: Record<string, string>;
+  /**
+   * The items that came from one moment until another, oldest first, without what's never read:
+   * every one up to the whole second it says it got through, which is until when nothing more came
+   * before it. It stops once it has more than most, or has asked the system as much or as long as
+   * it may at once, so through may be sooner, though always after from: when the second it begins
+   * at alone holds more than it ever asks for at once, it gives what it found of that second,
+   * through it, partly, and when time or requests ran out there, it fails, so the next tries again.
+   */
+  list(access: Access, window: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }>;
+}
+
+/** An item as a list in order gives it: its envelope, and where it is there, such as an email's folder by name. */
+export type Listed = Envelope & { where: string | null };
+
+/**
+ * What's never read in a place, whoever asks, until its owner takes it off: senders by an address
+ * or a domain, which covers its subdomains, and folders, with every folder in them, by name, or, for
+ * one the system makes, by the system's own name for it. Each one the person or their assistant
+ * added says who did, their assistant by name or null for the person, and when.
+ */
+export type NeverRead = (({ sender: string } | { folder: string } | { standard: string }) & { by?: string | null; at?: string })[];
 
 /** What Homing hands a connector for one use of a place. */
 export interface Access {
-  /** The place's resource, such as the account's id. */
+  /** The place's resource, such as the account's id, and the connection it's used through, for what a connector remembers of the system for a while. */
   resource: string;
+  connection: string;
   /** A current token. Homing records the use before the first, and refreshes it when it needs to. */
   token(): Promise<string>;
   /** Homing's time limit, which the connector stops at. */
   signal: AbortSignal;
+  /** What's never read in the place, for a kind that has the list, which the connector withholds wherever it reads it. */
+  neverRead?: NeverRead;
 }
 
 /** How Homing words a kind of place and what's in it, to people and assistants. */
@@ -136,6 +181,8 @@ export interface Envelope {
   at: Date | null;
   author: Party | null;
   audience: Audience;
+  /** What it belongs with there, such as an email's conversation, by the system's id, where the kind has that. */
+  conversation?: string | null;
 }
 
 /** An item a search found, with its first words, as the system gives them. */

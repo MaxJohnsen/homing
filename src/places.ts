@@ -8,8 +8,8 @@
 // even that it's there.
 
 import type { AgentPrincipal } from './assistants.ts';
-import { ConnectionUnusable, kindOf, messageOf, Unanswered, using, type Broker, type Use } from './connections.ts';
-import type { Access, Audience, Connector, Connectors, Found, Item, Value, Words } from './connectors.ts';
+import { ConnectionUnusable, kindOf, messageOf, placesWithReadings, Unanswered, using, type Broker, type Use } from './connections.ts';
+import type { Access, Audience, Connector, Connectors, Found, Item, Listed, NeverRead, Value, Words } from './connectors.ts';
 import { personOf, withPrincipal, type Principal, type Session } from './db.ts';
 import { accessibleSpaces, spaceView } from './spaces.ts';
 
@@ -27,6 +27,37 @@ export interface Place {
   name: string | null;
   address: string;
   status: 'connected' | 'needs attention';
+  /**
+   * For a kind read in order, as only its owner sees it: where reading began and the place reached,
+   * null before it begins; the stretch handed out now, its token, end and when the hand-out lapses;
+   * and what's never read there, null for as its kind starts it.
+   */
+  began: Date | null;
+  reached: Date | null;
+  token: string | null;
+  stretchEnds: Date | null;
+  lapsesAt: Date | null;
+  neverRead: NeverRead | null;
+}
+
+/** What a place is, with its connection and its reading, as Homing reads it from placesWithReadings. */
+const placeColumns = (s: Session) => s.tx`
+  p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status,
+  r.began, r.reached, r.token, r.stretch_ends, r.lapses_at, r.never_read
+`;
+
+/** What's never read in a place: as its owner left it, or as its kind starts it, or nothing for a kind without the list. */
+export function neverReadIn(connectors: Connectors, place: Pick<Place, 'connector' | 'kind' | 'neverRead'>): NeverRead | undefined {
+  const standard = kindOf(connectors.get(place.connector), place.kind)?.inOrder?.standard;
+  return standard && (place.neverRead ?? Object.keys(standard).map((name) => ({ standard: name })));
+}
+
+/** An entry of what's never read in a place as people see it: a sender, a folder by its name, or one the system makes, by Homing's name for it. */
+export function entryName(connectors: Connectors, place: Pick<Place, 'connector' | 'kind'>, entry: NeverRead[number]): string {
+  if ('sender' in entry) return entry.sender;
+  if ('folder' in entry) return entry.folder;
+  const standard = kindOf(connectors.get(place.connector), place.kind)?.inOrder?.standard ?? {};
+  return Object.hasOwn(standard, entry.standard) ? standard[entry.standard] : entry.standard;
 }
 
 /**
@@ -54,9 +85,8 @@ export async function placesFor(s: Session, spaceId?: string): Promise<Place[]> 
   if (!person) return [];
   const places = await s.tx<Place[]>`
     select * from (
-      select distinct on (c.id, p.kind, p.resource)
-        p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status
-      from places p join connections c on c.id = p.connection_id
+      select distinct on (c.id, p.kind, p.resource) ${placeColumns(s)}
+      from ${placesWithReadings(s)}
       where p.private_to = ${person}::uuid and p.removed_at is null and c.revoked_at is null
         and p.space_id in (${accessibleSpaces(s)})
         ${spaceId
@@ -194,7 +224,7 @@ export async function searchPlaces(broker: Broker, principal: AgentPrincipal, pl
 }
 
 /** What reading an item by its reference gives the person: the item, or why it can't be read. */
-export type Read = { place: Place; item: Item } | { place: Place; problem: Problem | 'removed' | 'not there' };
+export type Read = { place: Place; item: Item } | { place: Place; problem: Problem | 'removed' | 'not there' | 'never read' };
 
 /**
  * Reads an item by its reference, for the person whose place it's in. Undefined when the reference
@@ -212,6 +242,7 @@ export async function readFor(broker: Broker, principal: AgentPrincipal, ref: Re
   try {
     const deadline = AbortSignal.timeout(readTimeLimit);
     const item = await asOwner(broker, connector, principal, place, 'read', deadline, (access) => kind.read(access, ref.id, { related }));
+    if (item === 'withheld') return { place, problem: 'never read' };
     return item ? { place, item } : { place, problem: 'not there' };
   } catch (error) {
     const problem = problemOf(connector, place, error);
@@ -229,9 +260,8 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   const person = personOf(s.principal);
   if (!person) return undefined;
   const [named] = await s.tx<(Place & { removed: boolean; tenant: string; account: string })[]>`
-    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status,
-           c.tenant, c.account, p.removed_at is not null or c.revoked_at is not null as removed
-    from places p join connections c on c.id = p.connection_id
+    select ${placeColumns(s)}, c.tenant, c.account, p.removed_at is not null or c.revoked_at is not null as removed
+    from ${placesWithReadings(s)}
     where p.id = ${ref.place}::uuid and p.private_to = ${person}::uuid and c.person_id = ${person}::uuid and c.provider = ${ref.connector}
       and p.space_id in (${accessibleSpaces(s)})
   `;
@@ -239,8 +269,8 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   const { tenant, account, ...place } = named;
   if (!place.removed) return place;
   const [again] = await s.tx<Place[]>`
-    select p.id as place, p.space_id as space, c.id as connection, c.provider as connector, p.kind, p.resource, p.name, c.address, c.status
-    from places p join connections c on c.id = p.connection_id
+    select ${placeColumns(s)}
+    from ${placesWithReadings(s)}
     where p.space_id = ${place.space}::uuid and p.private_to = ${person}::uuid and p.kind = ${place.kind} and p.resource = ${place.resource} and p.removed_at is null
       and c.person_id = ${person}::uuid and c.revoked_at is null and c.provider = ${place.connector} and c.tenant = ${tenant} and c.account = ${account}
     order by p.added_at desc
@@ -249,9 +279,30 @@ async function placeOf(s: Session, ref: Reference): Promise<(Place & { removed: 
   return again ? { ...again, removed: false } : place;
 }
 
-/** Uses the place as its owner, recording the use, for the assistant it's for. */
+/** Uses the place as its owner, recording the use, for the assistant it's for, with what's never read there. */
 function asOwner<T>(broker: Broker, connector: Connector, principal: AgentPrincipal, place: Place, operation: Use['operation'], signal: AbortSignal, fn: (access: Access) => Promise<T>): Promise<T> {
-  return using(broker, connector, principal.person, place, { place: place.place, space: place.space, operation, agent: principal.agent }, signal, fn);
+  const neverRead = neverReadIn(broker.connectors, place);
+  return using(broker, connector, principal.person, { ...place, neverRead }, { place: place.place, space: place.space, operation, agent: principal.agent }, signal, fn);
+}
+
+/** How long listing one stretch of a place in order may take. */
+const listTimeLimit = 40_000;
+
+/** What listing a place in order gave: its items and how far it got, or why it couldn't, with how long the system asked Homing to wait. */
+export type ListedIn = { listed: Listed[]; through: Date; partly?: boolean } | { problem: Problem; retryAfter?: number };
+
+/** Lists one of the person's places in order, from one moment until another, for their assistant, as searching and reading do. */
+export async function listPlace(broker: Broker, principal: AgentPrincipal, place: Place, window: { from: Date; until: Date; most: number }): Promise<ListedIn> {
+  const connector = broker.connectors.get(place.connector);
+  const list = kindOf(connector, place.kind)?.inOrder?.list;
+  if (place.status === 'needs attention') return { problem: 'needs attention' };
+  if (!connector?.ready || !list) return { problem: 'not set up' };
+  try {
+    return await asOwner(broker, connector, principal, place, 'list', AbortSignal.timeout(listTimeLimit), (access) => list(access, window));
+  } catch (error) {
+    const problem = problemOf(connector, place, error);
+    return { problem: problem === 'gone' ? 'failed' : problem, retryAfter: (error as { retryAfter?: number } | undefined)?.retryAfter };
+  }
 }
 
 function problemOf(connector: Connector, place: Place, error: unknown): Problem | 'gone' {
@@ -276,7 +327,7 @@ export function noItem(words: Words): string {
  * Why a place couldn't be searched or read, in a sentence for its owner's assistant, with where
  * they sign in again when that's what it needs. Only ever said about the person's own place.
  */
-export function problemText(connectors: Connectors, place: Place, problem: Problem | 'removed' | 'not there', doing: 'searching' | 'reading', signIn?: string): string {
+export function problemText(connectors: Connectors, place: Place, problem: Problem | 'removed' | 'not there' | 'never read', doing: 'searching' | 'reading' | 'listing', signIn?: string): string {
   const connector = connectors.get(place.connector);
   const kind = kindOf(connector, place.kind);
   const words = wordsOf(connector, place.kind);
@@ -285,7 +336,9 @@ export function problemText(connectors: Connectors, place: Place, problem: Probl
   const left = doing === 'searching' ? ', so this leaves it out' : '';
   switch (problem) {
     case 'needs attention':
-      return `${box} needs them to sign in to ${vendor} again in Homing${signIn ? `, at ${signIn},` : ''} before Homing can ${doing === 'searching' ? 'search' : 'read'} it.`;
+      return `${box} needs them to sign in to ${vendor} again in Homing${signIn ? `, at ${signIn},` : ''} before Homing can ${{ searching: 'search', reading: 'read', listing: 'list' }[doing]} it.`;
+    case 'never read':
+      return `that ${words.item} is on the never-read list of ${box}.`;
     case 'removed':
       return `that ${words.item} is in ${box}, which isn't connected there any more. The user can connect it again in Homing.`;
     case 'not there':
@@ -312,6 +365,8 @@ export interface KeptSource {
   connection: string;
   /** Who could see it there, as Homing read it, or null when that's unknown. */
   audience: Exclude<Audience, 'unknown'> | null;
+  /** What it belongs with there, such as an email's conversation, where its kind has that. */
+  conversation: string | null;
   words: Words;
 }
 
@@ -341,6 +396,7 @@ export async function keepSource(broker: Broker, principal: AgentPrincipal, refe
     excerpt: item.excerpt ? item.excerpt(words) : fieldsExcerpt(item, wordsOf(connector, place.kind), words),
     connection: place.connection,
     audience: item.envelope.audience === 'unknown' ? null : item.envelope.audience,
+    conversation: item.envelope.conversation ?? null,
     words: wordsOf(connector, place.kind),
   };
 }

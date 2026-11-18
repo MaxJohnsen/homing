@@ -310,6 +310,15 @@ function connectionActions(spaceId: string): ConnectionActions {
         return error instanceof Error ? error.message : 'Something went wrong. Try again.';
       }
     },
+    neverRead: async (placeId, change, entry) => {
+      try {
+        await api(`/api/places/${placeId}/never-read`, { change, ...entry });
+        await reload(`/api/spaces/${spaceId}/connections`);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) await reload(`/api/spaces/${spaceId}/connections`);
+        return error instanceof Error ? error.message : 'Something went wrong. Try again.';
+      }
+    },
   };
 }
 

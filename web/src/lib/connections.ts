@@ -22,7 +22,17 @@ export interface PlaceData {
   /** The other spaces you use the same account in. */
   elsewhere: { id: string; name: string; personal: boolean }[];
   connection: ConnectionData;
+  /** For a place your assistant reads in order, such as a mailbox: from when, and how far it has come, or null before it begins. */
+  reading?: { began: string; reached: string } | null;
+  /** What Homing never reads there, for anyone, or null for a place without the list. */
+  neverRead?: NeverReadData | null;
 }
+
+/** One entry of what's never read: a sender, by an address or a domain, or a folder, by name. */
+export type NeverReadEntry = { sender: string } | { folder: string };
+
+/** What Homing never reads in a place, with who added each entry and when, beside those it starts with: your assistant by name, or null for you. */
+export type NeverReadData = (NeverReadEntry & { by?: string | null; at?: string })[];
 
 /** A space's Connections: yours there, and whether this Homing can connect Microsoft 365. */
 export interface SpaceConnectionsData {

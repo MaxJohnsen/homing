@@ -31,6 +31,7 @@ import { Tasks } from '@/screens/tasks';
 import { ImportSpace, type ImportActions, type ImportPreviewData } from '@/screens/import-space';
 import { Members, Space, SpaceSettings, type MemberActions, type ShareSpaceActions } from '@/screens/space';
 import { Connections, type AccountConnectionActions, type ConnectionActions } from '@/screens/connections';
+import type { SpaceConnectionsData } from '@/lib/connections';
 import { Waiting } from '@/screens/waiting';
 
 // Every screen with sample data, for `npm run dev:web`. Each state has its own address for review.
@@ -98,6 +99,7 @@ const screens: Record<string, { label: string; render: () => ReactNode }> = {
   '/spaces/tasks': { label: 'A space’s tasks', render: () => <InApp spaceId="northwind"><Space space={sampleSpace.closed} view="tasks"><Tasks space={sampleSpace.closed} data={sampleTasks} actions={{ add: notSaved, done: notSaved, share: notSaved }} now={new Date('2026-10-20T10:00:00+02:00')} /></Space></InApp> },
   '/spaces/tasks/empty': { label: 'A space with no tasks', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="tasks"><Tasks space={sampleSpace.root} data={{ open: [], done: [] }} actions={{ add: notSaved, done: notSaved, share: notSaved }} /></Space></InApp> },
   '/spaces/connections': { label: 'A space’s connections: your mailbox, only for you', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleConnections} actions={sampleConnectionActions} /></Space></InApp> },
+  '/spaces/connections/reading': { label: 'A mailbox your assistant reads in order, with more that’s never read', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={sampleReading} actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/connected': { label: 'A space’s connections, just after connecting', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: sampleConnections.places.map((place) => ({ ...place, elsewhere: [] })) }} notice="connected" actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/empty': { label: 'A space with nothing connected yet', render: () => <InApp spaceId="acme"><Space space={sampleSpace.root} view="connections"><Connections space={sampleSpace.root} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
   '/spaces/connections/personal': { label: 'Your personal space’s connections', render: () => <InApp spaceId="personal"><Space space={sampleSpace.personal} view="connections"><Connections space={sampleSpace.personal} data={{ ...sampleConnections, places: [] }} actions={sampleConnectionActions} /></Space></InApp> },
@@ -268,9 +270,23 @@ const sampleMemberActions: MemberActions = {
 /** Samples show the form, and say so when asked to create something. */
 const notCreated: CreateSpace = async () => ({ problem: 'Samples don’t create spaces.' });
 
+/** Ana's mailbox, read in order from the start of the year, with a newsletter and a folder she never wants read. */
+const sampleReading: SpaceConnectionsData = {
+  ...sampleConnections,
+  places: [{
+    ...sampleConnections.places[0],
+    reading: { began: '2025-01-01T00:00:00Z', reached: '2025-03-14T10:42:07Z' },
+    neverRead: [
+      { folder: 'Junk Email' }, { folder: 'Deleted Items' }, { folder: 'Drafts' }, { folder: 'Outbox' },
+      { sender: 'news@weekly-digest.test', by: 'Claude', at: '2025-02-03T09:12:00Z' }, { sender: 'cloudvendor.test', by: null, at: '2025-02-10T16:40:00Z' }, { folder: 'Private', by: null, at: '2025-01-02T08:05:00Z' },
+    ],
+  }],
+};
+
 const sampleConnectionActions: ConnectionActions = {
   connect: async () => 'Samples don’t connect anything.',
   remove: async () => 'Samples don’t save anything.',
+  neverRead: async () => 'Samples don’t save anything.',
 };
 
 const sampleAccountConnections: AccountConnectionActions = {

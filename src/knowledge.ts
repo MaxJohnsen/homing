@@ -197,12 +197,12 @@ export interface Hit {
 
 /**
  * Keeps where knowledge came from, without giving it a page yet. The same source is kept once.
- * One Homing read itself, such as an email, names the connection it read it through, and who could
- * see it there, where Homing knows.
+ * One Homing read itself, such as an email, names the connection it read it through, who could see
+ * it there and the conversation it's in, where Homing knows.
  */
 export async function addSource(
   s: Session,
-  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string; audience?: Exclude<Audience, 'unknown'> | null },
+  input: { spaceId: string; excerpt: string; reference?: string; shared?: boolean; readThrough?: string; audience?: Exclude<Audience, 'unknown'> | null; conversation?: string | null },
 ): Promise<Source> {
   const privateTo = sideOf(s, input.shared);
   await checkSpace(s, input.spaceId, input.shared);
@@ -214,10 +214,10 @@ export async function addSource(
   `;
   if (existing) return existing;
   const [source] = await s.tx<Source[]>`
-    insert into sources (space_id, private_to, reference, excerpt, read_through, audience)
+    insert into sources (space_id, private_to, reference, excerpt, read_through, audience, conversation)
     values (
       ${input.spaceId}::uuid, ${privateTo}::uuid, ${input.reference ?? null}, ${input.excerpt}, ${input.readThrough ?? null}::uuid,
-      ${input.audience ? s.tx.json(input.audience as never) : null}::jsonb
+      ${input.audience ? s.tx.json(input.audience as never) : null}::jsonb, ${input.conversation ?? null}
     )
     returning ${sourceColumns(s)}
   `;

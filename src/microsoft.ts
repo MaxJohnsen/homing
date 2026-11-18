@@ -11,8 +11,8 @@
 import { createHash, createPrivateKey, randomUUID, X509Certificate, type KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { decodeJwt, SignJWT } from 'jose';
-import type { Connector, Grant, Party, Tokens } from './connectors.ts';
-import { emailFound, emailItem, mailbox } from './mail.ts';
+import type { Access, Connector, Grant, Listed, NeverRead, Party, Tokens } from './connectors.ts';
+import { emailFound, emailItem, mailbox, namesFolders, withheld, type Where } from './mail.ts';
 
 /** How this Homing signs people in with Microsoft: its app registration in Microsoft Entra ID. */
 export interface MicrosoftSettings {
@@ -132,8 +132,11 @@ export class MicrosoftRefused extends Error {
 /** Microsoft didn't answer, or not in time. Trying again later may work. */
 export class MicrosoftUnreachable extends Error {
   override name = 'MicrosoftUnreachable';
-  constructor(what: string) {
+  /** How many seconds Microsoft asked Homing to wait, when it was asked too often or was busy and said so. */
+  readonly retryAfter?: number;
+  constructor(what: string, retryAfter?: number) {
     super(`Microsoft didn’t answer ${what}.`);
+    this.retryAfter = retryAfter;
   }
 }
 
@@ -147,6 +150,14 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
     if (!settings) throw new Error('Microsoft 365 isn’t set up on this Homing.');
     return settings;
   };
+  // What Homing remembers of mailboxes' folders, and, once, that it couldn't place an email in them.
+  const memory = new Map<string, Known>();
+  let said = false;
+  const unplaced = () => {
+    if (!said) console.warn('microsoft: an email’s folder didn’t match its mailbox’s folders, so Homing withholds it. If this keeps happening, Graph’s ids for emails’ folders may not be its folders’ own. Said once.');
+    said = true;
+  };
+  const boxOf = (access: Access) => mailboxOf(set(), access, memory, unplaced);
   return {
     id: 'microsoft',
     name: 'Microsoft 365',
@@ -179,11 +190,12 @@ export function microsoftConnector(settings?: MicrosoftSettings): Connector {
       mailbox: {
         // An immutable id lasts while an email moves between folders, though not to an archive mailbox.
         words: { ...mailbox, lost: 'or it moved to an archive' },
-        search: async (access, words, limit) => (await searchMail(set(), await access.token(), words, { top: limit, signal: access.signal })).map(emailFound),
+        search: async (access, words, limit) => (await searchMail(await boxOf(access), words, limit)).map(emailFound),
         read: async (access, id, { related }) => {
-          const read = await readMail(set(), await access.token(), id, { signal: access.signal, thread: related });
-          return read && emailItem(read.mail, read.thread, read.moreInThread);
+          const read = await readMail(await boxOf(access), id, { thread: related });
+          return read === 'withheld' ? read : read && emailItem(read.mail, read.thread, read.moreInThread);
         },
+        inOrder: { standard, list: async (access, window) => listMail(await boxOf(access), window) },
       },
     },
     refused: (error) => {
@@ -264,7 +276,7 @@ export async function whoIs(settings: MicrosoftSettings, access: string): Promis
 /** An email in a mailbox, as a list of them shows it. Its id is its immutable id, which stays while it's in the mailbox. */
 export interface MailSummary {
   id: string;
-  conversationId: string | null;
+  conversation: string | null;
   subject: string | null;
   from: Party | null;
   /** When the mailbox received it, or sent it. */
@@ -295,52 +307,213 @@ export interface MailWithThread {
 /** Ids that stay the same when an email moves to another folder, so a reference to it keeps working. */
 const immutableIds = 'IdType="ImmutableId"';
 const summaryFields = 'id,conversationId,subject,from,receivedDateTime,sentDateTime,bodyPreview';
+/** What the never-read list goes by: where an email is, and who it's from and to. */
+const placingFields = 'parentFolderId,isDraft,from,toRecipients,ccRecipients,bccRecipients';
+/** What a line of the mailbox in order shows, and what a thread lists: no text. */
+const lineFields = `id,conversationId,subject,receivedDateTime,sentDateTime,${placingFields}`;
 /** How many emails of a thread, and attachments of an email, Homing reads. */
 const listLength = 25;
 
+/** The folders Outlook makes that the never-read list starts with, by their well-known names, and Outlook's English name for each. */
+const standard: Record<string, string> = { junkemail: 'Junk Email', deleteditems: 'Deleted Items', drafts: 'Drafts', outbox: 'Outbox' };
+
+/**
+ * How many requests one use of a mailbox makes to Graph at most, such as one stretch of it in
+ * order, a search or reading an email, so each stays well under a minute; how many at once, as
+ * Graph takes them for one mailbox; how many emails a page of the mailbox in order holds; and how
+ * many pages one stretch asks for at most, and for how long it asks for more, so it ends well
+ * within its time limit however much of the mail is never read.
+ */
+export const mostRequests = 40;
+const atOnce = 4;
+const pageSize = 250;
+export const pagesAtMost = 10;
+const askingFor = 25_000;
+
+/** One use of a mailbox has asked Graph as much as it may. */
+class AskedEnough extends Error {}
+
+/** One use of the account's mailbox: Graph as its owner, within Homing's time limit, at most so many requests, what's never read there, and where its emails are. */
+interface Mailbox {
+  get(path: string, prefer?: string[]): Promise<Record<string, unknown>>;
+  never: NeverRead;
+  /** Where an email is, its own folder's name first, or undefined when Homing can't tell. */
+  where(message: Record<string, unknown>): Promise<Where | undefined>;
+}
+
+/** A mailbox's folder, as Graph gives it: its name, the folder it's in, and the well-known name of one the never-read list starts with. */
+interface Folder {
+  name: string;
+  parent: string | null;
+  standard?: string;
+}
+
+/**
+ * What Homing remembers of a mailbox's folders for ten minutes, so it reads each once in that time,
+ * not for each email or use: each folder by its id, and the top of the mailbox, which the four the
+ * never-read list starts with are in, with their names. A folder renamed or moved meanwhile shows
+ * once it's forgotten. Of a hundred mailboxes at most, the oldest forgotten first, 2,000 folders each.
+ */
+interface Known {
+  until: number;
+  top?: Promise<{ id: string | null; names: Set<string> }>;
+  folders: Map<string, Promise<Folder | undefined>>;
+}
+const knownFor = 10 * 60_000;
+const mailboxesKnown = 100;
+const foldersKnown = 2_000;
+
+/** What Homing remembers of the folders of the mailbox a connection reaches, afresh once it's due. */
+function knownOf(memory: Map<string, Known>, connection: string): Known {
+  let known = memory.get(connection);
+  if (!known || known.until < Date.now()) {
+    memory.delete(connection);
+    if (memory.size >= mailboxesKnown) memory.delete(memory.keys().next().value!);
+    known = { until: Date.now() + knownFor, folders: new Map() };
+    memory.set(connection, known);
+  }
+  return known;
+}
+
+async function mailboxOf(settings: MicrosoftSettings, access: Access, memory: Map<string, Known>, unplaced: () => void): Promise<Mailbox> {
+  const token = await access.token();
+  let asked = 0;
+  const get = async (path: string, prefer: string[] = [immutableIds]) => {
+    if (++asked > mostRequests) throw new AskedEnough();
+    return graph(settings, token, path, { prefer, signal: access.signal });
+  };
+  const never = access.neverRead ?? [];
+  return { get, never, where: whereIn(get, knownOf(memory, access.connection), namesFolders(never), unplaced) };
+}
+
+/** Graph doesn't have it. */
+const gone = (error: unknown) => {
+  if (error instanceof MicrosoftRefused && ['ErrorItemNotFound', 'http_404'].includes(error.detail ?? '')) return undefined;
+  throw error;
+};
+
+/**
+ * Where a mailbox's emails are, from its folders, each read once while it's remembered, with the
+ * folder it's in. Without folders on the never-read list, only an email's own folder matters, for
+ * its name. With them, every folder it's in, up to one the list starts with or the top of the
+ * mailbox, and an email that doesn't lead there can't be placed: Graph doesn't have its folder, or,
+ * at the top, a folder has the name of one the list starts with but isn't it, so Graph's ids for
+ * emails' folders don't match its folders' own. A draft counts as in Drafts wherever it is.
+ */
+function whereIn(get: Mailbox['get'], known: Known, up: boolean, unplaced: () => void): Mailbox['where'] {
+  /** Remembers what's under way, and forgets it if it fails. */
+  const remember = <T>(work: Promise<T>, forget: () => void) => (work.catch(forget), work);
+  const folder = (id: string) => {
+    let found = known.folders.get(id);
+    if (!found) {
+      found = remember(get(`/v1.0/me/mailFolders/${encodeURIComponent(id)}?$select=id,displayName,parentFolderId`).then(folderIn, gone), () => known.folders.delete(id));
+      if (known.folders.size < foldersKnown) known.folders.set(id, found);
+    }
+    return found;
+  };
+  const top = () =>
+    (known.top ??= remember(
+      (async () => {
+        const four = await Promise.all(Object.keys(standard).map(async (name) => [name, await get(`/v1.0/me/mailFolders/${name}?$select=id,displayName,parentFolderId`).catch(gone)] as const));
+        let id: string | null = null;
+        const names = new Set<string>();
+        for (const [name, body] of four) {
+          if (!body) continue;
+          const found = { ...folderIn(body), standard: name };
+          known.folders.set(body.id as string, Promise.resolve(found));
+          names.add(found.name.toLowerCase());
+          id = found.parent;
+        }
+        return { id, names };
+      })(),
+      () => (known.top = undefined),
+    ));
+  return async (message) => {
+    const where: Where = { names: [], standard: message.isDraft === true ? ['drafts'] : [] };
+    const above = up ? await top() : undefined;
+    for (let at = typeof message.parentFolderId === 'string' ? message.parentFolderId : null, depth = 0; at && depth < 20; depth++) {
+      if (at === above?.id) return where;
+      const found = await folder(at);
+      if (!found) break;
+      where.names.push(found.name);
+      if (found.standard) where.standard.push(found.standard);
+      if (!up || found.standard) return where;
+      if (found.parent === above?.id && above.names.has(found.name.toLowerCase())) break;
+      at = found.parent;
+    }
+    if (up) unplaced();
+    return undefined;
+  };
+}
+
+/**
+ * The one place Homing reads mail for anyone: every email Graph gives goes through it before
+ * anything else sees it, and what's never read is left out here, as the never-read list says, by
+ * where it is and who it's from and to. Where each is, Homing finds out in their order, as many at
+ * once as Graph takes. Emails it has no requests left to place, a list in order stops before;
+ * anything else leaves them out.
+ */
+async function keptOf(box: Mailbox, messages: Record<string, unknown>[], { names = false, stop = false } = {}) {
+  const placed = names || namesFolders(box.never) ? await inTurn(messages, (message) => box.where(message).catch((error) => (error instanceof AskedEnough ? 'asked enough' : Promise.reject(error)))) : [];
+  const kept: { message: Record<string, unknown>; folder: string | null }[] = [];
+  for (const [index, message] of messages.entries()) {
+    const where = placed[index] ?? null;
+    if (where === 'asked enough' && stop) return { kept, stoppedAt: message as Record<string, unknown> | undefined };
+    const parties = [...addressesOf([message.from]), ...addressesOf(message.toRecipients), ...addressesOf(message.ccRecipients), ...addressesOf(message.bccRecipients)];
+    if (withheld({ parties, where: where === 'asked enough' ? null : where }, box.never)) continue;
+    kept.push({ message, folder: (where !== 'asked enough' && where?.names[0]) || null });
+  }
+  return { kept };
+}
+
+/** fn for each item, in their order, as many at once as Graph takes for one mailbox, and none more once one fails. */
+async function inTurn<T, R>(items: T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const done: R[] = [];
+  let next = 0;
+  const one = async (): Promise<void> => {
+    for (let at = next++; at < items.length; at = next++) done[at] = await fn(items[at]).catch((error) => ((next = items.length), Promise.reject(error)));
+  };
+  await Promise.all(Array.from({ length: atOnce }, one));
+  return done;
+}
+
 /**
  * Searches the account's mailbox as Outlook does, in the sender, subject and text of its emails,
- * newest first, for at most a few. The words are Outlook's search syntax, quoted as one search.
+ * newest first, for at most a few, without what's never read. The words are Outlook's search
+ * syntax, quoted as one search.
  */
-export async function searchMail(settings: MicrosoftSettings, access: string, words: string, { top, signal }: { top: number; signal?: AbortSignal }): Promise<MailSummary[]> {
+export async function searchMail(box: Mailbox, words: string, top: number): Promise<MailSummary[]> {
   // Whole characters, so an emoji is never cut in half, which no address can carry.
   const search = Array.from(words.toWellFormed().replace(/[\p{Cc}\p{Cf}]/gu, ' ').replace(/\s+/g, ' ').trim()).slice(0, 255).join('');
   if (!search) return [];
   const quoted = `"${search.replace(/[\\"]/g, '\\$&')}"`;
-  const body = await graph(settings, access, `/v1.0/me/messages?$search=${encodeURIComponent(quoted)}&$top=${top}&$select=${summaryFields}`, { prefer: [immutableIds], signal });
-  return listOf(body).map(summaryOf);
+  // A few more than shown, since what's never read is left out.
+  const { value } = pageOf(await box.get(`/v1.0/me/messages?$search=${encodeURIComponent(quoted)}&$top=${Math.min(top * 3, listLength)}&$select=${summaryFields},${placingFields}`));
+  return (await keptOf(box, value)).kept.slice(0, top).map(({ message }) => summaryOf(message));
 }
 
 /**
  * Reads one email in the account's mailbox by its immutable id, with its text and, unless left
- * out, the names of its attachments and its thread. Undefined when it isn't in the mailbox any more.
+ * out, the names of its attachments and its thread, without what's never read. Undefined when it
+ * isn't in the mailbox any more, and withheld when it's never read, whose text Homing doesn't ask for.
  */
-export async function readMail(
-  settings: MicrosoftSettings,
-  access: string,
-  id: string,
-  { signal, thread: withThread = true }: { signal?: AbortSignal; thread?: boolean } = {},
-): Promise<MailWithThread | undefined> {
+export async function readMail(box: Mailbox, id: string, { thread: withThread = true }: { thread?: boolean } = {}): Promise<MailWithThread | 'withheld' | undefined> {
+  const path = `/v1.0/me/messages/${encodeURIComponent(id)}`;
   let message: Record<string, unknown>;
   try {
-    message = await graph(
-      settings,
-      access,
-      `/v1.0/me/messages/${encodeURIComponent(id)}?$select=${summaryFields},toRecipients,ccRecipients,body,uniqueBody,hasAttachments`,
-      // Microsoft turns the HTML into text, so nothing in it is fetched or run.
-      { prefer: [immutableIds, 'outlook.body-content-type="text"'], signal },
-    );
+    const placing = emailIn(await box.get(`${path}?$select=id,${placingFields}`));
+    if ((await keptOf(box, [placing])).kept.length === 0) return 'withheld';
+    // Microsoft turns the HTML into text, so nothing in it is fetched or run.
+    message = emailIn(await box.get(`${path}?$select=${summaryFields},toRecipients,ccRecipients,body,uniqueBody,hasAttachments`, [immutableIds, 'outlook.body-content-type="text"']));
   } catch (error) {
     if (error instanceof MicrosoftRefused && ['ErrorItemNotFound', 'ErrorInvalidIdMalformed', 'http_404'].includes(error.detail ?? '')) return undefined;
     throw error;
   }
   const summary = summaryOf(message);
-  const conversation = withThread ? summary.conversationId : null;
+  const conversation = withThread ? summary.conversation : null;
   const [thread, attachments] = await Promise.all([
-    conversation
-      ? graph(settings, access, `/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${listLength}&$select=${summaryFields}`, { prefer: [immutableIds], signal })
-      : undefined,
-    withThread && message.hasAttachments === true ? graph(settings, access, `/v1.0/me/messages/${encodeURIComponent(id)}/attachments?$select=name,isInline&$top=${listLength}`, { prefer: [immutableIds], signal }) : undefined,
+    conversation ? box.get(`/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${listLength}&$select=${lineFields}`).then(pageOf) : undefined,
+    withThread && message.hasAttachments === true ? box.get(`${path}/attachments?$select=name,isInline&$top=${listLength}`).then(pageOf) : undefined,
   ]);
   // As text, as Microsoft was asked, or else turned into text here.
   const textIn = (body: unknown) => {
@@ -355,17 +528,91 @@ export async function readMail(
       cc: addressesOf(message.ccRecipients),
       body: textIn(message.body) ?? '',
       unique: textIn(message.uniqueBody),
-      attachments: listOf(attachments)
+      attachments: (attachments?.value ?? [])
         .filter((attachment) => attachment.isInline !== true)
         .flatMap((attachment) => (typeof attachment.name === 'string' && attachment.name.trim() ? [attachment.name.trim()] : [])),
     },
-    thread: listOf(thread).map(summaryOf).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)),
-    moreInThread: typeof thread?.['@odata.nextLink'] === 'string',
+    thread: (await keptOf(box, thread?.value ?? [])).kept.map(({ message }) => summaryOf(message)).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)),
+    moreInThread: thread?.next !== undefined,
   };
 }
 
-function listOf(body: Record<string, unknown> | undefined): Record<string, unknown>[] {
-  return Array.isArray(body?.value) ? body.value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null) : [];
+/** A moment to the whole second before it, as Graph keeps when an email arrived. */
+const second = (at: Date) => new Date(Math.floor(at.getTime() / 1000) * 1000);
+/** A moment as Graph's filters take it. */
+const graphTime = (at: Date) => at.toISOString().replace(/\.\d+Z$/, 'Z');
+
+/**
+ * The mailbox in order (connectors.ts): every email in every folder, what its owner sent too, by
+ * when it arrived, oldest first, from one moment until another, without what's never read. One
+ * line each, with who it's from and to, its subject, when it arrived, its conversation and its
+ * folder by name, and never its text. Graph's own next link leads on, as its documentation asks,
+ * since a page may hold fewer than asked for. It stops once it has more than most, past the first
+ * second, or, so each use gets further however much of the mail is never read, after so many pages
+ * or so long, or at the most requests one use makes. Then it got through to the second of the last
+ * email it looked at, since more may have arrived in that same second. When that's the second it
+ * began at and that second alone filled the pages it asks for, it got through that second, partly.
+ * When time or requests ran out there, it's no answer: nothing moves, and the next use tries again.
+ */
+export async function listMail(box: Mailbox, { from, until, most }: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }> {
+  const filter = `receivedDateTime ge ${graphTime(from)} and receivedDateTime lt ${graphTime(until)}`;
+  let link: string | undefined = `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent('receivedDateTime asc')}&$top=${pageSize}&$select=${lineFields}`;
+  const listed: Listed[] = [];
+  const started = Date.now();
+  let last: Date | undefined;
+  const stop = (at: Date | undefined, crowded = false) => {
+    // Pages without a single email, which Graph doesn't give, are no answer.
+    if (!at) throw new MicrosoftUnreachable('Graph');
+    const through = second(at);
+    if (through > from) return { listed: listed.filter((line) => line.at! < through), through };
+    if (!crowded) throw new MicrosoftUnreachable('in time');
+    return { listed, through: new Date(through.getTime() + 1000), partly: true };
+  };
+  for (let pages = 1; link; pages++) {
+    let page: ReturnType<typeof pageOf>;
+    try {
+      page = pageOf(await box.get(link));
+    } catch (error) {
+      if (error instanceof AskedEnough) return stop(last);
+      throw error;
+    }
+    // Every one an email, with its id and when it arrived, or it's no answer.
+    const summaries = page.value.map(summaryOf);
+    if (summaries.some((summary) => !summary.id || !summary.at)) throw new MicrosoftUnreachable('Graph');
+    const { kept, stoppedAt } = await keptOf(box, page.value, { names: true, stop: true });
+    for (const { message, folder } of kept) {
+      listed.push({ ...emailFound(summaryOf(message)), audience: { people: [...addressesOf(message.toRecipients), ...addressesOf(message.ccRecipients)], more: 0 }, where: folder });
+    }
+    if (stoppedAt) return stop(summaryOf(stoppedAt).at!);
+    // What's left out still counts for where the list got to.
+    last = summaries.at(-1)?.at ?? last;
+    if (listed.length > most && last && second(last) > second(listed[0].at!)) return stop(last);
+    link = page.next;
+    if (link && pages >= pagesAtMost) return stop(last, true);
+    if (link && Date.now() - started > askingFor) return stop(last);
+  }
+  return { listed, through: until };
+}
+
+/** A page of a list as Graph documents it: its entries, each an object, and the link to the next, if there is one. Anything else is no answer. */
+function pageOf(body: Record<string, unknown>): { value: Record<string, unknown>[]; next?: string } {
+  const { value, '@odata.nextLink': next } = body;
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'object' && entry !== null) || (next !== undefined && typeof next !== 'string')) {
+    throw new MicrosoftUnreachable('Graph');
+  }
+  return { value, next };
+}
+
+/** One email as Graph gives it, with its id, or it's no answer. */
+function emailIn(body: Record<string, unknown>): Record<string, unknown> {
+  if (typeof body.id !== 'string' || !body.id) throw new MicrosoftUnreachable('Graph');
+  return body;
+}
+
+/** One folder as Graph gives it, with its id, or it's no answer. A folder without a name has an empty one. */
+function folderIn(body: Record<string, unknown>): Folder {
+  if (typeof body.id !== 'string') throw new MicrosoftUnreachable('Graph');
+  return { name: typeof body.displayName === 'string' ? body.displayName : '', parent: typeof body.parentFolderId === 'string' ? body.parentFolderId : null };
 }
 
 function summaryOf(message: Record<string, unknown>): MailSummary {
@@ -373,7 +620,7 @@ function summaryOf(message: Record<string, unknown>): MailSummary {
   const at = text(message.receivedDateTime) ?? text(message.sentDateTime);
   return {
     id: String(message.id ?? ''),
-    conversationId: text(message.conversationId),
+    conversation: text(message.conversationId),
     subject: text(message.subject),
     from: addressesOf([message.from])[0] ?? null,
     at: at && !Number.isNaN(Date.parse(at)) ? new Date(at) : null,
@@ -414,32 +661,55 @@ export function textOf(html: string): string {
     .trim();
 }
 
+/**
+ * Calls Microsoft Graph with the account's token, at a path, or at a link Graph gave, such as the
+ * next page of a list, only when it's Graph's own, so the token never goes anywhere else.
+ */
 async function graph(
   settings: MicrosoftSettings,
   access: string,
   path: string,
   { prefer = [], signal }: { prefer?: string[]; signal?: AbortSignal } = {},
 ): Promise<Record<string, unknown>> {
+  if (!path.startsWith('/') && !path.startsWith(`${settings.graph}/`)) throw new MicrosoftRefused('graph_refused', 'foreign_link');
   let response: Response;
+  let text: string;
   try {
     const headers = new Headers({ authorization: `Bearer ${access}`, accept: 'application/json' });
     for (const preference of prefer) headers.append('prefer', preference);
-    response = await fetch(`${settings.graph}${path}`, {
+    // The whole answer, within Homing's time limit and fifteen seconds.
+    response = await fetch(path.startsWith('/') ? `${settings.graph}${path}` : path, {
       headers,
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
     });
+    text = await response.text();
   } catch {
     throw new MicrosoftUnreachable('Graph');
   }
-  const body = (await response.json().catch(() => ({}))) as { error?: { code?: unknown } } & Record<string, unknown>;
-  // A body that didn't finish arriving in time is no answer.
-  if (signal?.aborted) throw new MicrosoftUnreachable('Graph');
-  if (response.ok) return body;
-  if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('Graph');
-  const code = typeof body.error?.code === 'string' ? body.error.code : `http_${response.status}`;
+  const body = objectIn(text);
+  if (response.ok) {
+    // An answer cut short, or anything but a JSON object, is no answer.
+    if (!body) throw new MicrosoftUnreachable('Graph');
+    return body;
+  }
+  const wait = Number(response.headers.get('retry-after'));
+  if (response.status >= 500 || response.status === 429) throw new MicrosoftUnreachable('Graph', wait > 0 ? Math.min(Math.ceil(wait), 3600) : undefined);
+  const error = body?.error as { code?: unknown } | undefined;
+  const code = typeof error?.code === 'string' ? error.code : `http_${response.status}`;
   // An account without an Exchange Online mailbox, such as one only for signing in.
-  if (path.includes('/mailFolders/') && (response.status === 404 || code === 'MailboxNotEnabledForRESTAPI')) throw new MicrosoftRefused('no_mailbox', code);
+  if (path === '/v1.0/me/mailFolders/inbox?$select=id' && (response.status === 404 || code === 'MailboxNotEnabledForRESTAPI')) throw new MicrosoftRefused('no_mailbox', code);
   throw new MicrosoftRefused('graph_refused', code);
+}
+
+/** A JSON object, or undefined for anything else. */
+function objectIn(text: string): Record<string, unknown> | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
 interface TokenAnswer {

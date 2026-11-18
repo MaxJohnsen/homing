@@ -1,12 +1,13 @@
 import { Fragment, useRef, useState } from 'react';
 import { cn } from 'cn';
-import { Lock } from 'lucide-react';
+import { Lock, X } from 'lucide-react';
 import { OnlyYou } from '@/components/only-you';
 import { MicrosoftLogo } from '@/components/provider-logos';
 import { dateOf, focusRing, Section, wrapsLabel } from '@/components/screen';
 import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
-import type { AccountConnectionData, ConnectedAccountsData, ConnectionData, ConnectionNotice, PlaceData, SpaceConnectionsData } from '@/lib/connections';
+import { Input } from '@/components/ui/input';
+import type { AccountConnectionData, ConnectedAccountsData, ConnectionData, ConnectionNotice, NeverReadData, NeverReadEntry, PlaceData, SpaceConnectionsData } from '@/lib/connections';
 import { Link } from '@/lib/router';
 import type { SpaceData } from '@/lib/spaces';
 
@@ -16,6 +17,8 @@ export interface ConnectionActions {
   connect: (again?: string) => Promise<string | undefined>;
   /** Stops using something of yours in this space. The account stays connected. */
   remove: (placeId: string) => Promise<string | undefined>;
+  /** Adds a sender or a folder to what Homing never reads there, or takes one off. */
+  neverRead: (placeId: string, change: 'add' | 'remove', entry: NeverReadEntry) => Promise<string | undefined>;
 }
 
 const deploymentGuide = 'https://github.com/MaxJohnsen/homing/blob/main/docs/deployment.md#microsoft-365';
@@ -82,9 +85,13 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
             <span className="min-w-0 text-base font-semibold [overflow-wrap:anywhere]">{connection.address}</span>
             <OnlyYou />
           </div>
-          <span className="text-sm text-pretty text-muted-foreground">{whatItIs(connection)} Connected on {dateOf(connection.connectedAt)}.</span>
+          <span className="text-sm text-pretty text-muted-foreground">
+            {whatItIs(connection)} Connected on {dateOf(connection.connectedAt)}.
+            {place.reading && ` Your assistant has read it in order from ${dateOf(place.reading.began)} up to ${dateOf(place.reading.reached)}.`}
+          </span>
         </div>
       </div>
+      {place.neverRead && <NeverRead place={place} list={place.neverRead} change={actions?.neverRead} />}
       {connection.status === 'needs attention' && (
         <p className="text-sm text-destructive">Microsoft stopped letting Homing in, so it isn’t used until you sign in again.</p>
       )}
@@ -113,6 +120,90 @@ function PlaceRow({ space, place, actions }: { space: SpaceData; place: PlaceDat
       )}
       {problem && <FieldError>{problem}</FieldError>}
     </li>
+  );
+}
+
+/**
+ * What Homing never reads in a mailbox, for anyone: senders and folders, each with who added it and
+ * when, beside those it starts with, and each of which you can take off, which asks first, and a
+ * field to add one. Your assistant can add to it; only you take something off.
+ */
+function NeverRead({ place, list, change }: { place: PlaceData; list: NeverReadData; change?: ConnectionActions['neverRead'] }) {
+  const [entry, setEntry] = useState('');
+  const [taking, setTaking] = useState<NeverReadEntry>();
+  const [problem, setProblem] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  const run = async (how: 'add' | 'remove', what: NeverReadEntry) => {
+    if (!change) return;
+    setBusy(true);
+    const answer = await change(place.id, how, what);
+    setBusy(false);
+    setProblem(answer);
+    if (!answer) {
+      setTaking(undefined);
+      if (how === 'add') setEntry('');
+    }
+  };
+  const named = (what: NeverReadEntry) => ('sender' in what ? what.sender : what.folder);
+  const chips = (entries: NeverReadData) =>
+    entries.map((one) => (
+      <li key={'sender' in one ? `sender ${one.sender}` : `folder ${one.folder}`} className="flex items-center gap-0.5 rounded-2xl bg-card py-0.5 pr-0.5 pl-2.5 text-sm">
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          {named(one)}
+          {one.at && <span className="text-muted-foreground"> added by {one.by ?? 'you'}, {dateOf(one.at)}</span>}
+        </span>
+        {change && (
+          <Button variant="ghost" size="icon-xs" aria-label={`Take ${named(one)} off the list`} className="text-muted-foreground" disabled={busy} onClick={() => setTaking('sender' in one ? { sender: one.sender } : { folder: one.folder })}>
+            <X />
+          </Button>
+        )}
+      </li>
+    ));
+  const folders = list.filter((one) => 'folder' in one);
+  const senders = list.filter((one) => 'sender' in one);
+  const id = `never-read-${place.id}`;
+  return (
+    <div role="group" aria-labelledby={`${id}-title`} className="flex flex-col gap-3 rounded-lg bg-muted p-3">
+      <div className="flex flex-col gap-0.5">
+        <span id={`${id}-title`} className="text-sm font-semibold">Never read</span>
+        <span className="text-sm text-pretty text-muted-foreground">
+          Homing doesn’t read mail from or to these senders, or in these folders and the folders in them, for anyone. Your assistant can add to the list; only you can take something off.
+        </span>
+      </div>
+      <div className="flex flex-col gap-2 text-sm">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-muted-foreground">Folders:</span>
+          {folders.length ? <ul className="flex flex-wrap gap-1.5">{chips(folders)}</ul> : <span>none</span>}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-muted-foreground">Senders:</span>
+          {senders.length ? <ul className="flex flex-wrap gap-1.5">{chips(senders)}</ul> : <span>none</span>}
+        </div>
+      </div>
+      {taking && change && (
+        <div role="alertdialog" aria-label={`Take ${named(taking)} off the list?`} className="flex flex-col gap-2 rounded-lg bg-card p-3 text-sm">
+          <p>
+            <span className="font-semibold">Take {named(taking)} off the list?</span>{' '}
+            {'sender' in taking ? 'Homing then reads mail from and to it again' : 'Homing then reads mail in it again'}, when your assistant asks for it.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" disabled={busy} autoFocus onClick={() => setTaking(undefined)}>Keep it</Button>
+            <Button variant="destructive" size="sm" disabled={busy} onClick={() => run('remove', taking)}>Take it off</Button>
+          </div>
+        </div>
+      )}
+      {change && (
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <label htmlFor={`${id}-entry`} className="sr-only">An address, a domain or a folder</label>
+          <Input id={`${id}-entry`} value={entry} maxLength={254} onChange={(event) => setEntry(event.target.value)} placeholder="An address, a domain or a folder" disabled={busy} className="sm:flex-1" />
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" size="sm" disabled={busy || !entry.trim()} onClick={() => run('add', { sender: entry })}>Add sender</Button>
+            <Button type="button" variant="outline" size="sm" disabled={busy || !entry.trim()} onClick={() => run('add', { folder: entry })}>Add folder</Button>
+          </div>
+        </div>
+      )}
+      {problem && <FieldError>{problem}</FieldError>}
+    </div>
   );
 }
 
