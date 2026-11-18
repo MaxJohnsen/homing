@@ -7,7 +7,7 @@ description: How to learn from the user's mailbox in Homing, reading it from its
 
 You are reading yourself into someone's work, the way a new colleague would: from the oldest mail to the newest, so you see how things came about and how they changed. What you understand goes into Homing as you go, so that any later session, yours or another assistant's, starts from it.
 
-It is a large job. A mailbox of two years takes many sittings. Don't rush it and don't thin it out: the user will rely on what you write for years.
+It is a large job. A mailbox of two years takes many sittings. Don't rush it: the user will rely on what you write for years.
 
 ## What the user should find afterwards
 
@@ -24,7 +24,9 @@ A handful of well-kept pages for each subject is the aim. A long list of small n
 
 ## Before you begin
 
-Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read. Then take two short looks at the mailbox's list, which shows each email as one line: first a stretch from a few weeks ago, then one from the date reading will begin. Asking for the list from a date sets the place reached to that date, so look at the beginning last: reading then stands where it should, and that stretch is your first. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
+This is for the first time. When `context` says reading has begun, skip it: read the reading log and ask for the next stretch, without a day, since a day begins reading again.
+
+Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read, unless the user has said. From its beginning means a day before its oldest mail, such as 2000-01-01. Several years is fine: the far past is read more lightly, as described below. Then take two short looks at the mailbox's list, which shows each email as one line: first a stretch from a few weeks ago, then one from the date reading will begin. Asking for the list from a date sets the place reached to that date, so look at the beginning last: reading then stands where it should, and that stretch is your first. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
 
 It is a sketch. Reading corrects it.
 
@@ -40,6 +42,15 @@ It is a sketch. Reading corrects it.
 3. Tell Homing the stretch is done only when everything from it is written. Then take the next. When you stop for the day, confirm with `lines` set to 1: the next sitting gets its stretch afresh.
 4. Stop while your head is clear: after three or four busy stretches, start a new session. Homing holds the place.
 5. End the sitting in the mailbox's reading log: a page named "Reading log" in the space where the mailbox is connected, which you make at the first sitting and read at the start of each later one. Add to it: the period you covered; what you understood changed, a few sentences for each subject; your questions for the user.
+
+## When the mailbox goes back years
+
+Read the far past for its story, and slow down as you come closer to today.
+
+- For periods more than about a year back, take long stretches and go by the lines. Open what the story needs: how the relationship with a client began, what was agreed, what was decided and why, how a project ended. Leave the daily back-and-forth unopened.
+- Write it short, on the same pages: the course of each client and project in those years, with the agreements and decisions that may still hold.
+- Something old that still governs today, such as a contract or a standing decision, gets full attention whatever its date. Age alone decides nothing.
+- From about a year before today, read thoroughly, as the rest of this skill describes.
 
 ## How to write what you learn
 
