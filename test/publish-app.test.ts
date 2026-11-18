@@ -147,9 +147,9 @@ test('only people share, only their own, and never from a personal space', async
   });
   assert.match((await publish(personal)).text, /Your personal space has no shared side/);
   // The assistant itself can't share, straight against the database either.
-  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select publish_item(${mine}::uuid, 'A draft.')`), refused);
+  await assert.rejects(as({ person: ana.id, agent: 'Claude' }, (s) => s.tx`select publish_item(${mine}::uuid, ${acme}::uuid, 'A draft.')`), refused);
   // Nor can Cara share Ana's private item, which she can't see.
-  await assert.rejects(as({ person: cara.id, direct: true }, (s) => s.tx`select publish_item(${mine}::uuid, 'A draft.')`), refused);
+  await assert.rejects(as({ person: cara.id, direct: true }, (s) => s.tx`select publish_item(${mine}::uuid, ${acme}::uuid, 'A draft.')`), refused);
   const caraAssistant = new Assistant(homing.url, assistants.claude);
   await caraAssistant.connect(cara.browser);
   const caras = await caraAssistant.open();
@@ -239,17 +239,17 @@ test('in the app, Ana shares her own items straight from the page, after seeing 
   assert.deepEqual([what.status, what.body.text, what.body.copy, what.body.sharesTitle], [200, 'The budget is 450,000.', false, false]);
   assert.equal((await cara.browser.json(`/api/items/${update}/publication`)).status, 404);
   assert.equal((await ana.browser.json(`/api/items/${update}/publish`, {})).status, 400);
-  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: 'Something else' })).status, 409);
-  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: 'The budget is 450,000.' })).status, 200);
+  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: 'Something else', space: acme })).status, 409);
+  assert.equal((await ana.browser.json(`/api/items/${update}/publish`, { shown: 'The budget is 450,000.', space: acme })).status, 200);
   assert.deepEqual((await pageAs(cara, page)).items.map((entry) => entry.text), ['The budget is 450,000.']);
   assert.ok(shared);
 
   // Once shared, her update of it says what everyone sees, until she shares that too.
-  await ana.browser.json(`/api/items/${email}/publish`, { shown: 'Travel has 30,000 more.' });
+  await ana.browser.json(`/api/items/${email}/publish`, { shown: 'Travel has 30,000 more.', space: acme });
   const newer = (await as({ person: ana.id, agent: 'Claude' }, (s) => updateItem(s, email, { body: 'Travel has 35,000 more.' })))!.id;
   const mine = (await pageAs(ana, page)).items.find((entry) => entry.id === newer);
   assert.deepEqual([mine?.replaced?.text, mine?.replaced?.shared], ['Travel has 30,000 more.', true]);
-  assert.equal((await ana.browser.json(`/api/items/${newer}/publish`, { shown: 'Travel has 35,000 more.' })).status, 200);
+  assert.equal((await ana.browser.json(`/api/items/${newer}/publish`, { shown: 'Travel has 35,000 more.', space: acme })).status, 200);
   assert.ok((await pageAs(cara, page)).items.some((entry) => entry.text === 'Travel has 35,000 more.'));
   assert.equal((await ana.browser.json(`/api/items/${(await as(ana, (s) => createPage(s, { spaceId: ana.personalSpaceId, title: 'Mine' })))}/publication`)).status, 404);
 });
@@ -263,7 +263,7 @@ test('what the page and the panel say others see stays true after corrections, o
   const update = (await as({ person: ana.id, agent: 'Claude' }, (s) => supersedeItem(s, shared, { body: 'The hotel is Bristol.' })))!.id;
   // Sharing an update for the first time says what it replaces.
   assert.equal((await ana.browser.json(`/api/items/${update}/publication`)).body.sharedText, 'The hotel is Grand.');
-  await ana.browser.json(`/api/items/${update}/publish`, { shown: 'The hotel is Bristol.' });
+  await ana.browser.json(`/api/items/${update}/publish`, { shown: 'The hotel is Bristol.', space: acme });
   // Ana corrects it again for herself: the page says what the others see now, not what they saw first.
   const again = (await as({ person: ana.id, agent: 'Claude' }, (s) => supersedeItem(s, update, { body: 'The hotel is Bristol, room 12.' })))!.id;
   const mine = ((await ana.browser.json(`/api/pages/${page}`)).body.items as { id: string; replaced: { text: string } | null }[]).find((entry) => entry.id === again);
@@ -276,7 +276,7 @@ test('what the page and the panel say others see stays true after corrections, o
     const email = await addSource(s, { spaceId: acme, reference: 'Email from the venue', excerpt: 'Doors open at 18.' });
     return (await writeItem(s, { pageId: copyPage, body: 'Doors open at 18.', sources: [email.id] })).id;
   });
-  await ana.browser.json(`/api/items/${original}/publish`, { shown: 'Doors open at 18.' });
+  await ana.browser.json(`/api/items/${original}/publish`, { shown: 'Doors open at 18.', space: acme });
   const copy = ((await cara.browser.json(`/api/pages/${copyPage}`)).body.items as { id: string }[])[0].id;
   assert.equal((await cara.browser.json(`/api/items/${copy}`, { text: 'Doors open at 17.', shared: true })).status, 200);
   assert.deepEqual((await pageAs(ana, copyPage)).items.map((entry) => [entry.id, entry.text, entry.sources.map((source) => source.reference)]), [
@@ -284,7 +284,7 @@ test('what the page and the panel say others see stays true after corrections, o
   ]);
   // Her original can't be shared over the correction: a change of hers is an update of the copy.
   assert.equal((await ana.browser.json(`/api/items/${original}/publication`)).body.current, false);
-  assert.equal((await ana.browser.json(`/api/items/${original}/publish`, { shown: 'Doors open at 18.' })).status, 409);
+  assert.equal((await ana.browser.json(`/api/items/${original}/publish`, { shown: 'Doors open at 18.', space: acme })).status, 409);
 });
 
 test('the overview is shared another way, so it has nothing to share from the page', async () => {

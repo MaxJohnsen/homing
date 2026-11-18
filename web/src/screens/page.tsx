@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { FieldError } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { nameIn, nameOf, plain, sourceName, theirAssistant, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
+import { nameIn, nameOf, plain, restsOn, sourceName, theirAssistant, type Author, type ItemData, type PageActions, type PageData, type PagesData } from '@/lib/knowledge';
 import type { PublicationData } from '@/lib/proposals';
 import { Link } from '@/lib/router';
 import { AboutPage, CollectionPages } from '@/screens/collection';
@@ -95,6 +95,7 @@ function About({ page, now }: { page: PageData; now?: Date }) {
         ? 'Only you see it.'
         : `Everyone in ${page.space.name} sees it${mine ? `, except ${mine === 1 ? 'one item' : `${mine} items`} only you see` : ''}.`}
       {page.archived && ` Archived ${page.archived.since ? 'since' : 'on'} ${dateOf(page.archived.at)}.`}
+      {page.moved && ` Moved here from ${page.moved.from ? (page.moved.from.personal ? 'your personal space' : page.moved.from.name) : 'a space you can no longer open'} by ${page.moved.agent ?? 'you'} on ${dateOf(page.moved.at)}.`}
     </>
   );
 }
@@ -229,10 +230,12 @@ function Details({ item, yourUpdate, onCorrect, onRestore, onShare, space }: {
   const byPerson = item.by !== null && item.agent === null;
   // Your own text, which your assistant may change when you ask: here, or as your own update of what you shared.
   const yours = byPerson && item.by?.you === true && !item.by.imported;
+  const read = restsOn(item.readFrom);
   return (
     <div className="flex cursor-auto flex-col gap-3 text-sm">
       <p className="text-muted-foreground">
         {wrote(item.by, item.agent, item.editAgent)} on {dateOf(item.writtenAt)}.
+        {read && ` ${read}`}
         {byPerson && (yours ? (item.shared ? ' Assistants never rewrite it, though yours can make your own update of it when you ask.' : ' Your assistant may change it when you ask, and you can restore an earlier version.') : ' Assistants never rewrite it.')}
       </p>
       {item.sharedBy && item.sharedAt && <p className="text-muted-foreground">{nameOf(item.sharedBy)} shared it with everyone here on {dateOf(item.sharedAt)}.</p>}
@@ -272,6 +275,7 @@ function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: Page
   // The page's actions are made anew on each render, so they're read when needed, not watched.
   const latest = useRef(actions);
   latest.current = actions;
+  // Fetched again once the page is in another space, such as one it moved to, so it shows what sharing there does.
   useEffect(() => {
     heading.current?.focus();
     let live = true;
@@ -282,7 +286,7 @@ function ShareItem({ item, page, actions, onDone }: { item: ItemData; page: Page
     return () => {
       live = false;
     };
-  }, [item.id, item.text]);
+  }, [item.id, item.text, page.space.id]);
 
   const share = async () => {
     if (!publication) return;

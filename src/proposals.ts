@@ -55,9 +55,12 @@ export interface Proposal {
   target: Included | null;
   /**
    * The exact change: a new rule's kind, text and reach, or for an include whether it's for
-   * everyone and whether it's a space's rules or a skill, but never what it points to.
+   * everyone and whether it's a space's rules or a skill, but never what it points to. A share
+   * that ended when its page moved keeps the space the page moved to.
    */
-  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill' } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange>;
+  change: { kind?: RuleKind; text?: string; shared?: boolean; onlyHere?: boolean; what?: 'rules' | 'skill'; movedTo?: string } & Partial<SpaceChange> & Partial<MembersChange> & Partial<PlanChange>;
+  /** That space, by name, for someone who can open it. */
+  movedTo: { name: string; personal: boolean } | null;
   /** The assistant that proposed it. */
   agent: string | null;
   /** Whether it asks the space's admins. */
@@ -444,6 +447,8 @@ export async function proposePublish(s: Session, input: { itemId: string; why?: 
 
 /** Whether one of the person's items can be proposed for sharing with its space, and that space. */
 async function publishFits(s: Session, itemId: string): Promise<{ publication: Publication; space: SpaceView }> {
+  // Held until this is proposed, so a move of its page at the same moment waits and then ends the proposal, or comes first and is seen here.
+  await s.tx`select id from content where id = ${itemId}::uuid and ${visible(s, 'content')} for update`;
   const publication = await publicationOf(s, itemId);
   if (!publication) throw new SpaceRefused('missing', 'There’s no item of yours with that reference to share.');
   const space = await spaceView(s, publication.item.spaceId);
@@ -833,11 +838,14 @@ async function planNow(s: Session, proposal: Proposal, spaces: Space[], deciding
       `;
       const publication = open ? ((await publicationOf(s, step.item)) ?? null) : null;
       const page = publication?.pageTitle ?? item?.page ?? 'Untitled';
+      // Where it is, if not where the plan shares it, such as a space its page moved to.
+      const there = spaces.find((space) => space.id === item?.spaceId);
       let problem: string | null = null;
       if (open) {
         if (!item) problem = 'It’s gone, or you can no longer see it.';
         else if (item.shared) problem = 'It’s shared already.';
-        else if (!publication || item.spaceId !== where) problem = 'It isn’t yours to share there.';
+        else if (!publication) problem = 'It isn’t yours to share there.';
+        else if (item.spaceId !== where) problem = `It’s in ${there?.privateTo && !there.parentId ? 'your personal space' : there?.name} now.`;
         else if (publication.sharedAs) problem = 'You shared it already.';
         else if (!publication.current) problem = 'It was changed or replaced since.';
       }
@@ -1039,8 +1047,8 @@ async function makeStep(s: Session, spaceId: string, step: PlanStep, shown: Plan
   switch (step.action) {
     case 'publish': {
       const publication = await publicationOf(s, step.item);
-      if (!publication?.current || publication.item.spaceId !== spaceId || !shown.item) throw new Undecidable('changed', 'It was changed, replaced or shared since.');
-      if (!(await publishItem(s, step.item, shown.item.text))) throw new Undecidable('changed', 'It changed after you opened this.');
+      if (!publication?.current || !shown.item) throw new Undecidable('changed', 'It was changed, replaced or shared since.');
+      if (!(await publishItem(s, step.item, spaceId, shown.item.text))) throw new Undecidable('changed', 'It changed after you opened this.');
       return;
     }
     case 'share task': {
@@ -1086,6 +1094,12 @@ function refusalOf(error: unknown): string | undefined {
   if (error instanceof postgres.PostgresError && ['42501', '23514', '40001'].includes(error.code)) return `${error.message[0].toUpperCase()}${error.message.slice(1)}.`;
 }
 
+/** A change the store refused as it was shown, such as an item that moved since, for the person to see why. */
+function changedSince(error: unknown): never {
+  const why = refusalOf(error);
+  throw why === undefined ? error : new Undecidable('changed', why);
+}
+
 /** A proposal the person can see, with what they need to decide it. */
 export async function readProposal(s: Session, proposalId: string, findAccount?: FindAccount): Promise<ProposalView | undefined> {
   const [proposal] = await s.tx<Proposal[]>`
@@ -1102,7 +1116,7 @@ export async function readProposal(s: Session, proposalId: string, findAccount?:
     // Once shared, the item may have moved to the shared side: it still shows what was shared.
     const [item] = await s.tx<Publication['item'][]>`select ${itemColumns(s)} from content where id = ${proposal.itemId}::uuid and ${visible(s, 'content')}`;
     const [title] = item ? await s.tx<{ body: string }[]>`select body from content where page_id = ${item.pageId}::uuid and kind = 'title' and ${visible(s, 'content')} order by private_to is null limit 1` : [];
-    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, hiddenElsewhere: 0, copy: false, sharedText: null, current: false, sharedAs: null };
+    if (item) publication = { item, pageTitle: title?.body ?? 'Untitled', sharesTitle: false, hidden: [], hiddenUnseen: 0, hiddenElsewhere: 0, copy: false, sharedText: null, current: false, sharedAs: null, readFrom: null };
   }
   const task: Task | undefined = proposal.taskId ? await readTask(s, proposal.taskId) : undefined;
   const audienceOf = proposal.action === 'publish' || proposal.action === 'share task' ? await spaceView(s, proposal.spaceId) : undefined;
@@ -1579,11 +1593,12 @@ export async function decide(
   if (decision.approve && !sending) {
     const { change } = proposal;
     if (proposal.action === 'publish') {
-      // Approving shares exactly what was shown: if the item changed since, it's shown again.
-      // Approving shares exactly the text that was shown, checked again as it's shared.
+      // Approving shares exactly the text that was shown, in the space it was shown for, checked
+      // again as it's shared: if the item changed since, it's shown again, and one that moved says where it is.
       const publication = await publicationOf(s, proposal.itemId!);
       if (!publication?.current) throw new Undecidable('changed', 'This was changed or replaced after you opened this page, so there’s nothing to share.');
-      if (decision.shown === undefined || !(await publishItem(s, proposal.itemId!, decision.shown))) {
+      const shared = decision.shown !== undefined && (await publishItem(s, proposal.itemId!, proposal.spaceId, decision.shown).catch(changedSince));
+      if (!shared) {
         throw new Undecidable('changed', 'This changed after you opened this page. Check it again before sharing it.');
       }
     } else if (proposal.action === 'share space') {
@@ -1748,6 +1763,7 @@ export function publicationData(publication: Publication, audience: { people: nu
     sharesTitle: publication.sharesTitle,
     sharedText: publication.sharedText,
     current: publication.current,
+    readFrom: publication.readFrom,
     why,
     audience,
   };
@@ -1797,8 +1813,9 @@ export function proposalData(proposal: ProposalView) {
     why: !proposal.request && ['add rule', 'change rule', 'remove rule', 'add include', 'remove include'].includes(proposal.action) ? proposal.reason : null,
     // Who decided it, when that was someone other than the reader.
     decidedBy: proposal.names.decidedBy,
-    // The assistant that withdrew it, if the person didn't themselves.
+    // The assistant that withdrew it, if the person didn't themselves, and where it moved the page, if that withdrew it.
     withdrawnBy: proposal.state === 'withdrawn' ? proposal.decidedIn : null,
+    movedTo: proposal.change.movedTo ? (proposal.movedTo ? (proposal.movedTo.personal ? 'your personal space' : proposal.movedTo.name) : 'a space you can no longer open') : null,
     // A suggested space: as suggested, why, where it may go instead, and what it became.
     suggestion:
       proposal.action === 'add space'
@@ -1917,6 +1934,11 @@ function columns(s: Session) {
       where include_open(x.space_included, x.skill_included)
       limit 1
     ) as target,
+    -- Where a share's page moved, which ended it, only for someone who can open that space.
+    (
+      select jsonb_build_object('name', x.name, 'personal', x.private_to is not null and x.parent_id is null) from spaces x
+      where x.id = (proposals.change->>'movedTo')::uuid and x.id in (${accessibleSpaces(s)})
+    ) as moved_to,
     case when state in ('open', 'requested') and expires_at <= now() then 'expired' else state end as state,
     created_at, expires_at, requested_at, admins_emailed, decided_by, decided_at, decided_in, space_created
   `;

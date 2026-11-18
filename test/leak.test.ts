@@ -2,8 +2,8 @@
 //
 // Ana works for Acme and Ben for Beta. Each has a page of knowledge on their
 // client's shared side, a private note on it that cites an email and has an
-// earlier version, notes in their personal space, a shared and a private
-// rule for their client, a skill, a rule their assistant proposed and
+// earlier version, notes in their personal space, moved out and back, a
+// shared and a private rule for their client, a skill, a rule their assistant proposed and
 // they haven't decided yet, their work mailbox connected in their client's
 // space, only for them, and a call to Homing's model about their client. Each tries to read and
 // change the other's, in three ways: through Homing, through Homing with
@@ -30,6 +30,7 @@ import {
   createPage,
   gather,
   listPages,
+  movePage,
   pagesIn,
   publishItem,
   readItem,
@@ -185,7 +186,7 @@ for (const [layer, sql] of [
           assert.equal(await as(intruder.person, (s) => updateItem(s, item.id, { body: 'Changed' }), sql), undefined);
           assert.equal(await as(intruder.person, (s) => supersedeItem(s, item.id, { body: 'Changed' }), sql), undefined);
           // Nor share it, even as a person editing directly.
-          await assert.rejects(as({ ...intruder.person, direct: true }, (s) => s.tx`select publish_item(${item.id}::uuid, ${item.body})`, sql), refused);
+          await assert.rejects(as({ ...intruder.person, direct: true }, (s) => s.tx`select publish_item(${item.id}::uuid, ${item.spaceId}::uuid, ${item.body})`, sql), refused);
         }
       }
       await assertUntouched();
@@ -297,7 +298,7 @@ for (const [layer, sql] of [
 
 describe('straight against the database', () => {
   test('each person reads only their own client’s rows', async () => {
-    for (const { name, person, space, items, rules: ownRules, skill, source, proposal, connection, modelCall } of [acme, beta]) {
+    for (const { name, person, space, pages: ownPages, items, rules: ownRules, skill, source, proposal, connection, modelCall } of [acme, beta]) {
       await as(person, async (s) => {
         const texts = await s.tx`select body from content where kind = 'text' order by created_at`;
         const rules = await s.tx`select body from content where kind in ('requirement', 'preference') order by created_at`;
@@ -318,6 +319,7 @@ describe('straight against the database', () => {
         const read = await s.tx`select read_through from sources where read_through is not null`;
         const audiences = await s.tx`select audience from sources where audience is not null`;
         const modelCalls = await s.tx`select id, spaces from model_calls`;
+        const moves = await s.tx`select page_id, moved_from from page_moves order by at`;
 
         assert.deepEqual(texts.map((row) => row.body), bodies(items));
         assert.deepEqual(rules.map((row) => row.body), bodies(ownRules));
@@ -338,6 +340,7 @@ describe('straight against the database', () => {
         assert.deepEqual(read.map((row) => row.readThrough), [connection.id]);
         assert.deepEqual(audiences.map((row) => row.audience), [{ people: [{ name: person.name, address: connection.address }], more: 0 }]);
         assert.deepEqual(modelCalls.map((row) => [row.id, row.spaces]), [[modelCall, [space]]]);
+        assert.deepEqual(moves.map((row) => [row.pageId, row.movedFrom]), [[ownPages[1], person.personalSpaceId], [ownPages[1], space]]);
       });
       // Nobody reads credentials at all, not even their own: only the functions that use them do.
       await assert.rejects(as(person, (s) => s.tx`select * from credentials`), refused);
@@ -720,6 +723,10 @@ async function client(
       source,
       tasks: tasks.map((task) => task.id),
     };
+  });
+  // Their notes, moved into the client's space and back by their assistant, which is recorded for them alone.
+  await as({ person: p.id, agent: 'Claude' }, async (s) => {
+    for (const to of [client.space, p.personalSpaceId]) await movePage(s, client.pages[1], to);
   });
   const proposal = await as({ person: p.id, agent: 'Claude' }, (s) =>
     proposeRule(s, { action: 'add rule', spaceId: client.space, kind: 'preference', text: notes.proposed, shared: true }),
@@ -1128,7 +1135,7 @@ describe('through an include', () => {
       await addTask(s, { spaceId: office, title: 'Ana’s own office task' });
       const draft = await writeItem(s, { pageId: page, body: 'Ana’s own first draft' });
       await updateItem(s, draft.id, { body: 'The office opens in May.' });
-      await publishItem(s, draft.id, 'The office opens in May.');
+      await publishItem(s, draft.id, draft.spaceId, 'The office opens in May.');
     });
     for (const sql of [db, admin]) {
       // Ben's export of the lounge holds nothing of Acme, nor that the lounge includes it.
@@ -1221,13 +1228,13 @@ describe('through a page archived while it was someone’s own', () => {
     // Later, Cara shares one of her notes, Ana shares her kitchen and what she restored with Cara,
     // and then what's on those pages.
     await new Promise((resolve) => setTimeout(resolve, 20));
-    await as({ ...cara, direct: true }, (s) => publishItem(s, mine.item.id, 'The reorg moves Ops to Bergen'));
+    await as({ ...cara, direct: true }, (s) => publishItem(s, mine.item.id, mine.item.spaceId, 'The reorg moves Ops to Bergen'));
     await as({ ...ana, direct: true }, async (s) => {
       await makeCollaborative(s, kitchen, { rules: 'keep' });
       await addMember(s, kitchen, cara.id);
-      await publishItem(s, old.item.id, 'We stopped buying from Fjordfisk');
+      await publishItem(s, old.item.id, old.item.spaceId, 'We stopped buying from Fjordfisk');
       await addMember(s, restored, cara.id);
-      await publishItem(s, logoItem, 'A heron, in green');
+      await publishItem(s, logoItem, restored, 'A heron, in green');
     });
     [notes, supplier, logo] = [await times(acme, mine.page), await times(kitchen, old.page), await times(restored, logoPage)];
   });

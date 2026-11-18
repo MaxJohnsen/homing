@@ -61,7 +61,7 @@ before(async () => {
     const diary = await addSource(s, { spaceId: acme, excerpt: 'Gunnar prefers calls before nine.', reference: 'Ana’s call diary' });
     const calls = await writeItem(s, { pageId: gunnar, body: 'Prefers calls before nine.', sources: [diary.id] });
     const contracts = await writeItem(s, { pageId: gunnar, body: 'Gunnar signs contracts over 1 MNOK.', sources: [diary.id] });
-    await publishItem(s, contracts.id, contracts.body);
+    await publishItem(s, contracts.id, contracts.spaceId, contracts.body);
     // Shared as a copy, since it rests on Ana's diary, and then updated on her own side.
     await updateItem(s, contracts.id, { body: 'Gunnar signs contracts over 2 MNOK.' });
     plan = await createPage(s, { spaceId: acme, title: 'Launch plan', type: 'project', shared: true });
@@ -172,8 +172,8 @@ before(async () => {
   assert.equal((await admin`update content set created_at = '2026-01-05T09:00:00Z', updated_at = '2026-01-05T09:00:00Z' where page_id in ${admin(pages)}`).count, 4);
   assert.equal((await admin`update pages set created_at = '2026-01-05T09:00:00Z', archived_at = case when archived_at is null then null else '2026-01-10T09:00:00Z'::timestamptz end where id in ${admin(pages)}`).count, 2);
   assert.equal((await admin`update page_archives set at = case when archived then '2026-01-10T09:00:00Z'::timestamptz else '2026-01-12T09:00:00Z'::timestamptz end where page_id in ${admin(pages)}`).count, 3);
-  await as(cara_, (s) => publishItem(s, venues.item.id, venues.item.body));
-  await as(cara_, (s) => publishItem(s, old.item.id, old.item.body));
+  await as(cara_, (s) => publishItem(s, venues.item.id, venues.item.spaceId, venues.item.body));
+  await as(cara_, (s) => publishItem(s, old.item.id, old.item.spaceId, old.item.body));
 });
 
 after(() => homing.close());

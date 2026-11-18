@@ -8,6 +8,8 @@ import { includesIn, IncludeRefused, rulesFor, type Rule, type RuleKind } from '
 import {
   archivedPages,
   archivePage,
+  lastMove,
+  movePage,
   addSource,
   createPage,
   gather,
@@ -45,7 +47,7 @@ import {
 import { modelProcessingOf, setModelProcessing } from './model.ts';
 import { afterDecision, type Notifier } from './notify.ts';
 import { decide, NotSuggested, openProposals, proposalData, proposeInclude, proposeMemberChange, proposePageArchive, proposePlan, proposePublish, proposeRule, proposeTaskShare, proposeSpaceShare, readProposal, withdraw, endedLately, searchProposals, suggestArchive, requestsIn, suggestSpace, Undecidable, type PlanStep, type Proposal, type ProposalView } from './proposals.ts';
-import { skillsFor, skillsMatching } from './skills.ts';
+import { homingSkill, learningSkill, skillsFor, skillsMatching } from './skills.ts';
 import { accountFinder, isEmail, type FindAccount } from './people.ts';
 import { addTask, changeTask, ownTask, readTask, searchTasks, TaskRefused, tasksIn, type Task } from './tasks.ts';
 import { accessibleSpaces, archiveSpace, listSpaces, newSpace, peopleNames, placeSpace, renameSpace, sameName, spaceNameLength, SpaceRefused, spaceView, type MemberChange, type Space, type SpaceView } from './spaces.ts';
@@ -191,6 +193,11 @@ const pageArchiveInput = z.strictObject({
   reopen: z.boolean().optional().describe('True to reopen an archived page the user asked you to reopen'),
 }).describe('For page.archive');
 
+const pageMoveInput = z.strictObject({
+  page: text().describe('The page to move, such as page:…'),
+  to: text().describe('The space it belongs in, such as space:…'),
+}).describe('For page.move');
+
 const withdrawInput = z.strictObject({
   proposal: text().describe('The proposal or request to withdraw, such as proposal:…'),
 }).describe('For proposal.withdraw');
@@ -289,20 +296,22 @@ export function mcpServer(
       title: 'Search',
       description:
         "Searches pages, knowledge, sources and tasks you can see, and the user's proposals still waiting, optionally within a space and the spaces below it. " +
-        "Where the user connected their mailbox to Homing, it also searches their email, live: `read` opens an email by its microsoft:… reference.",
+        "Where the user connected their mailbox to Homing, it also searches their email, live: `read` opens an email by its microsoft:… reference. " +
+        'With known, only what Homing knows: to find where something belongs.',
       inputSchema: z.object({
         query: text(),
         space: text().optional().describe('A space reference, such as space:…'),
+        known: z.boolean().optional().describe('True for only what is known in Homing, without sources and the mailbox'),
       }),
       annotations: { readOnlyHint: true },
     },
-    async ({ query, space }) => {
+    async ({ query, space, known }) => {
       // The user's places, such as their mailboxes, are searched at the same time, as the user, and never hold up the rest for long.
-      const live = foundIn(sql, broker, principal, query, space);
+      const live = known ? Promise.resolve([]) : foundIn(sql, broker, principal, query, space);
       const found = await answer(async (s) => {
         const spaceId = space === undefined ? undefined : await spaceIdOf(s, space);
         const lines = [
-          ...(await describeHits(s, links, await search(s, query, { spaceId }), spaceId)),
+          ...(await describeHits(s, links, await search(s, query, { spaceId, ...(known && { only: 'content' as const }) }), spaceId)),
           ...(await describeTasks(s, await searchTasks(s, query, { spaceId }))),
           ...(await describeWaiting(s, await searchProposals(s, query, { spaceId }))),
         ];
@@ -439,6 +448,7 @@ export function mcpServer(
         'page.archive takes a page that is no longer active, such as a finished project or someone who has left, out of everyday context; it stays searchable. ' +
         'Only when the user asks, or with clear evidence; age is not evidence. A page in a space only the user has is archived, or reopened, at once; ' +
         'in a space others can open, it waits for their approval, and when archiving it is your own idea, give the evidence as why. ' +
+        "page.move moves a page that is wholly the user's own to another space they can open, where it belongs, with everything on it and its history. " +
         'proposal.withdraw withdraws a proposal or request of the user\'s that still waits, when they no longer want it; it never decides it. ' +
         'Whether a proposal still waits, and how it ended, comes from Homing: `read` it rather than going by what you said before. ' +
         "space.share, only when the user asks to share a space in their personal space with others, proposes it: they choose where it goes, who has it and what becomes of its rules, and approve once. " +
@@ -450,9 +460,9 @@ export function mcpServer(
         'Only what the user decides alone goes in: a request to a space\'s admins goes on its own, and routine work, such as keeping knowledge or a space only the user will have, is done first, outside the plan. ' +
         'Nothing can be added to a plan: to revise one, withdraw it and propose it again.',
       inputSchema: z.object({
-        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'space.share', 'space.export', 'space.model_off', 'proposal.withdraw', 'plan.propose']),
+        action: z.enum(['guidance.propose', 'space.create', 'space.suggest', 'space.rename', 'members.change', 'knowledge.publish', 'task.share', 'space.archive', 'page.archive', 'page.move', 'space.share', 'space.export', 'space.model_off', 'proposal.withdraw', 'plan.propose']),
         // Anything else goes on to the action's own check, which says exactly what doesn't fit.
-        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, shareSpaceInput, exportInput, modelOffInput, withdrawInput, planInput, z.record(z.string(), z.unknown())]),
+        input: z.union([guidanceInput, createSpaceInput, suggestSpaceInput, renameSpaceInput, membersInput, publishInput, taskShareInput, archiveInput, pageArchiveInput, pageMoveInput, shareSpaceInput, exportInput, modelOffInput, withdrawInput, planInput, z.record(z.string(), z.unknown())]),
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
       ...(card && { _meta: { ui: { resourceUri: approvalCard }, [RESOURCE_URI_META_KEY]: approvalCard } }),
@@ -478,6 +488,8 @@ export function mcpServer(
             return suggestArchiving(s, links, inputFor(action, archiveInput, input), card);
           case 'page.archive':
             return archivePageFor(s, links, inputFor(action, pageArchiveInput, input), card);
+          case 'page.move':
+            return movePageFor(s, links, inputFor(action, pageMoveInput, input), card);
           case 'space.share':
             return proposeSpaceSharing(s, links, inputFor(action, shareSpaceInput, input), card);
           case 'space.export':
@@ -790,7 +802,7 @@ async function resolve(s: Session, links: Links, request: string): Promise<strin
         "If it is, ask the user which space it's about, or `search` with other words."
       : `You are ${me}. Choose the space this is about, or ask the user, and call \`context\` again with it for the rules that apply there. ` +
         'What matched is below, and may already answer the request. To find a task or a proposal the user means, `search` for it: it looks in all their spaces.',
-    ...(places.length ? [describePlaces(places, links, 'without a space')] : []),
+    ...(places.length ? [await describePlaces(s, places, links, 'without a space')] : []),
     ...(candidates.length ? ['\n## Spaces that fit', ...candidates.map((space) => `- ${space.name} (${ref('space', space.id)})`)] : []),
     ...(relevant.length ? ['\n## Relevant to the request', ...relevant] : []),
     ...(skills.length
@@ -836,7 +848,7 @@ async function spaceContext(s: Session, links: Links, spaceId: string, request?:
     `# ${space.name}`,
     `You are ${(await peopleNames(s, [me])).get(me)}${space.admin ? ', an admin of this space' : ''} (${ref('space', space.id)}). ` +
       'What you save with `remember` stays on your private side.',
-    ...(places.length ? [describePlaces(places, links, 'here')] : []),
+    ...(places.length ? [await describePlaces(s, places, links, 'here')] : []),
     ...(space.archived
       ? [
           `It's archived${space.archivedAt ? '' : ` with ${archivedWith?.name ?? 'the space above it'}`}: finished work, out of everyday context. ` +
@@ -951,6 +963,17 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
   }
 
   if (kind === 'page') {
+    const homing = homingSkill(id);
+    if (homing) {
+      const skillMd = homing.files.find((file) => file.path === 'SKILL.md');
+      return [
+        `# ${homing.name}`,
+        `A skill built into Homing (${ref('page', homing.pageId)}). A skill of the user's own with its name replaces it. Its SKILL.md:`,
+        '',
+        skillMd?.body ?? '',
+        ...homing.files.filter((file) => file !== skillMd).flatMap((file) => ['', `## ${file.path}`, ...fenced(file.body, '')]),
+      ].join('\n');
+    }
     const page = await readPage(s, id);
     if (!page) throw missing;
     const space = (await listSpaces(s)).find((candidate) => candidate.id === page.spaceId);
@@ -990,12 +1013,17 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     }
     const { collections, mentionedOn } = await linksOf(s, page.id);
     const gathered = await pagesIn(s, page.spaceId, { in: page.id, order: 'name' });
+    const moved = await lastMove(s, page.id);
+    const movedFrom = moved && (await listSpaces(s)).find((candidate) => candidate.id === moved.movedFrom);
     const names = await peopleNames(s, page.items.map((item) => item.writtenBy));
     const people = page.items.filter(byPerson);
     return [
       `# ${page.title}`,
       `${page.type ? `A ${page.type} page` : 'A page'} in ${space?.name} (${ref('page', page.id)})`,
       ...(page.archived ? [`Archived ${page.archived.since ? 'since' : 'on'} ${day(page.archived.at)}: no longer active, out of everyday context.`] : []),
+      ...(moved
+        ? [`Moved here from ${movedFrom ? `${spaceLabel(movedFrom)} (${ref('space', movedFrom.id)})` : 'a space the user can no longer open'} by ${moved.agent ?? 'the user'} on ${day(moved.at)}.`]
+        : []),
       ...(people.some((item) => ownText(s, item) || ownText(s, item, 'shared'))
         ? [
             'What the user wrote themselves stays theirs: change it only when they ask you to, with updates where it is private, ' +
@@ -1012,8 +1040,8 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
         ? page.items.flatMap((item) => [
             // Longer Markdown as written, so its structure shows and a passage can be copied exactly for an edit.
             ...(item.body === oneLine(item.body)
-              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)})`]
-              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}:`, ...fenced(item.body)]),
+              ? [`- ${item.body} (${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}${also(learned(links, item.readFrom))})`]
+              : [`- ${ref('item', item.id)}, ${side(item.privateTo)}, written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)}${also(learned(links, item.readFrom))}:`, ...fenced(item.body)]),
             ...(item.privateTo && item.replaced?.shared
               ? [`  - A private update. Others in the space still see: ${quote(item.replaced.body)}`]
               : []),
@@ -1037,11 +1065,12 @@ async function read(s: Session, links: Links, value: string): Promise<string> {
     const names = await peopleNames(s, [item.writtenBy, ...item.history.map((revision) => revision.writtenBy)]);
     const rule = item.kind === 'requirement' || item.kind === 'preference';
     const what = rule ? `A ${item.kind}, ` : item.path ? `The skill file ${item.path}, ` : '';
+    const fromMail = learned(links, item.readFrom);
     return [
       item.body,
       '',
       `${what}${ref('item', item.id)} on ${ref('page', item.pageId)}, ${side(item.privateTo)}. ` +
-        `Written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)} on ${day(item.updatedAt)}.`,
+        `Written by ${author(names, item.writtenBy, item.agent, item.imported, item.editAgent)} on ${day(item.updatedAt)}.${fromMail && ` ${capitalize(fromMail)}.`}`,
       ...(item.replacedBy
         ? [
             item.replacedBy.shared || item.privateTo
@@ -1225,7 +1254,7 @@ async function collect(s: Session, spaceId: string, input: { page?: string; gath
   if (!input.page) throw new Refused('Say which page, with page: and a page reference or its title.');
   const page = /^page:/i.test(input.page)
     ? { id: parseRef(input.page, 'page') }
-    : (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === oneLineTitle(input.page!).toLowerCase());
+    : await pageTitled(s, spaceId, input.page);
   if (!page) throw new Refused('There is no page with that title in this space that you can see.');
   const said: string[] = [];
   if (input.gatherInto) {
@@ -1261,10 +1290,14 @@ async function pageFor(s: Session, spaceId: string, page?: Page | string, type?:
   if (typeof page === 'object') return { id: page.id, title: page.title, created: false, archived: page.archived !== null };
   // Titles are one line however they were written, so "Gunnar  Holm" is Gunnar Holm's page.
   const title = oneLineTitle(page ?? 'Notes') || 'Notes';
-  // A subject keeps one page, archived or not: an active one with the title first.
-  const existing = (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === title.toLowerCase());
+  const existing = await pageTitled(s, spaceId, title);
   if (existing) return { id: existing.id, title: existing.title!, created: false, archived: existing.archived };
   return { id: await createPage(s, { spaceId, title, type: page ? type : 'notes' }), title, created: true, archived: false };
+}
+
+/** The page in a space with a title, whatever its case and spacing: a subject keeps one page, archived or not, an active one first. */
+async function pageTitled(s: Session, spaceId: string, title: string) {
+  return (await listPages(s, spaceId, { withArchived: true })).find((candidate) => oneLineTitle(candidate.title ?? '').toLowerCase() === oneLineTitle(title).toLowerCase());
 }
 
 async function proposeGuidance(
@@ -1750,6 +1783,50 @@ async function archivePageFor(s: Session, links: Links, input: z.infer<typeof pa
   return card ? { text, structuredContent: { done: answer, note: text } } : text;
 }
 
+/**
+ * Moves a page that's wholly the user's own to another space they can open, where it belongs, at
+ * once: it's theirs alone before and after, and recorded for them. A page with its title there
+ * already is where its knowledge goes instead, so nothing moves.
+ */
+async function movePageFor(s: Session, links: Links, input: z.infer<typeof pageMoveInput>, card: boolean): Promise<string | Answer> {
+  const pageId = parseRef(input.page, 'page');
+  const page = await readPage(s, pageId);
+  if (!page) throw new Refused('There is no page with that reference that you can see.');
+  const to = await spaceIdOf(s, input.to, onTheSpace);
+  const spaces = await listSpaces(s);
+  const named = (spaceId: string) => {
+    const space = spaces.find((candidate) => candidate.id === spaceId);
+    return space ? `${spaceLabel(space)} (${ref('space', space.id)})` : 'a space above';
+  };
+  if (spaces.find((space) => space.id === to)?.archived) throw new Refused(`${capitalize(named(to))} is archived. Nothing moved: ask the user whether to reopen it first.`);
+  const same = await pageTitled(s, to, page.title);
+  if (same && same.id !== pageId) {
+    throw new Refused(
+      `${capitalize(named(to))} already has a${same.archived ? 'n archived' : ''} page called ${quote(same.title ?? '')} (${ref('page', same.id)}). ` +
+        'Nothing moved: write what this page says on that one instead, or ask the user.',
+    );
+  }
+  const { collections } = await linksOf(s, pageId);
+  const { total: gathered } = await pagesIn(s, page.spaceId, { in: pageId, limit: 1 });
+  let from: string;
+  try {
+    from = await movePage(s, pageId, to);
+  } catch (error) {
+    if (error instanceof postgres.PostgresError && (error.code === '42501' || error.code === '23514')) throw new Refused(`${capitalize(error.message)}. Nothing moved.`);
+    throw error;
+  }
+  const left = [
+    collections.length && `It's no longer in ${collections.length === 1 ? 'the collection' : 'the collections'} ${collections.map((c) => `${quote(c.title)} (${ref('page', c.id)})`).join(', ')}, since a collection gathers pages of its own space.`,
+    gathered && `The ${gathered === 1 ? 'page it gathered stays' : `${gathered} pages it gathered stay`} in ${named(from)}, out of it.`,
+  ].filter(Boolean);
+  const text =
+    `Moved ${quote(page.title)} (${ref('page', pageId)}) from ${named(from)} to ${named(to)}, with everything on it and its history, still citing its sources where they're kept. ` +
+    `It's still only the user's.${left.length ? ` ${left.join(' ')}` : ''}`;
+  const where = spaces.find((space) => space.id === to);
+  const done = { heading: 'Page moved', name: page.title, detail: `It’s in ${where && !personalRoot(where) ? where.name : 'your personal space'} now, with everything on it and its history.`, link: links.page(pageId) };
+  return card ? { text, structuredContent: { done, note: text } } : text;
+}
+
 /** Proposes archiving, or reopening, a page in a space others can open, for the user to approve. */
 async function proposePageArchiving(s: Session, links: Links, pageId: string, input: z.infer<typeof pageArchiveInput>, card: boolean): Promise<string | Answer> {
   let proposal: Proposal;
@@ -1988,6 +2065,9 @@ function outcome(proposal: Proposal | ProposalView, links: Links, created?: { id
         ? `The user didn't send it, on ${day(proposal.decidedAt!)}. Nothing changed.`
         : `${decider} rejected it on ${day(proposal.decidedAt!)}. Nothing changed.`;
     case 'withdrawn': {
+      // A share ends when its page moves, since it's shared only in the space it was shown for.
+      const moved = proposal.change.movedTo && (proposal.movedTo ? `${proposal.movedTo.personal ? "the user's personal space" : proposal.movedTo.name} (${ref('space', proposal.change.movedTo)})` : 'a space the user can no longer open');
+      if (moved) return `Withdrawn on ${day(proposal.decidedAt!)}, when ${proposal.decidedIn} moved its page to ${moved}, so nothing was shared. If the user still wants it shared, propose it where it is now.`;
       // A suggestion of the assistant's own that was withdrawn counts as turned down.
       const own = (proposal.action === 'add space' || proposal.action === 'archive space' || proposal.action === 'archive page') && !proposal.change.asked;
       return `Withdrawn by ${proposal.decidedIn ?? 'the user'} on ${day(proposal.decidedAt!)}, so it ended and nothing changed.${own ? " Don't suggest it again unless the user asks." : ''}`;
@@ -2021,7 +2101,7 @@ async function describeHits(s: Session, links: Links, hits: Hit[], within?: stri
     const space = spaces.get(hit.spaceId);
     const included = within && !inside(hit.spaceId) ? ', included here' : '';
     const by = people(hit) ? `, written by ${author(names, hit.writtenBy, hit.agent, hit.imported, hit.editAgent)}` : '';
-    const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}${by}`;
+    const where = `in ${space?.name ?? 'a space above'}${included}${space?.archived ? ', archived' : ''}${hit.private ? ', private' : ''}${by}${also(hit.kind === 'item' ? learned(links, hit.readFrom) : '')}`;
     const notes = [
       hit.updatesShared && 'A private update: others still see the earlier version.',
       hit.replacedForYou && "What others still see. The user's private update replaces it for them.",
@@ -2168,7 +2248,7 @@ async function connectedSources(broker: Broker, principal: AgentPrincipal, sourc
  * What context says about the user's places, kind by kind: that Homing searches them, or reads by
  * reference what's in them, or what they need first.
  */
-function describePlaces(places: Place[], links: Links, where: 'here' | 'without a space'): string {
+async function describePlaces(s: Session, places: Place[], links: Links, where: 'here' | 'without a space'): Promise<string> {
   const said: string[] = [];
   for (const kind of new Set(places.map((place) => `${place.connector} ${place.kind}`))) {
     const these = places.filter((place) => `${place.connector} ${place.kind}` === kind);
@@ -2179,10 +2259,13 @@ function describePlaces(places: Place[], links: Links, where: 'here' | 'without 
     const working = these.filter((place) => place.status === 'connected');
     const one = working.length === 1;
     if (working.length) {
+      // How to learn from it, as it applies where it's connected.
+      const skill = await learningSkill(s, working[0].kind, working[0].space);
       said.push(
         `The user's ${one ? words.place : words.places} ${working.map(placeName).join(' and ')} ${one ? 'is' : 'are'} connected to Homing: ` +
           (searches ? `\`search\` ${where} also searches ${one ? 'it' : 'them'} live, and ` : '') +
-          `\`read\` opens ${words.anItem} by its ${connector.id}:… reference.`,
+          `\`read\` opens ${words.anItem} by its ${connector.id}:… reference.` +
+          (skill ? ` To learn from ${one ? 'it' : 'them'}, follow the skill ${skill.name} (${ref('page', skill.pageId)}).` : ''),
       );
     }
     for (const place of these.filter((place) => place.status !== 'connected')) {
@@ -2228,6 +2311,20 @@ function author(names: Map<string, string>, writtenBy: string | null, agent: str
   const edited = before ? (before.by === 'person' ? before.agent : null) : editAgent;
   return [who, through && `through ${through}`].filter(Boolean).join(' ') + (edited ? `, changed by ${edited} for them` : '');
 }
+
+/**
+ * What an item says, to everyone who sees it, when it rests on something Homing read itself in a
+ * kind of place, whoever wrote or corrected it: "rests on an email Homing read: what was taken from
+ * it, not the email's own words". Nothing when it rests on nothing Homing read.
+ */
+function learned(links: Links, readFrom: string | null): string {
+  if (readFrom === null) return '';
+  const words = wordsOf([...links.connectors.values()].find((connector) => kindOf(connector, readFrom)), readFrom);
+  return `rests on ${words.anItem} Homing read: what was taken from it, not the ${words.item}'s own words`;
+}
+
+/** A clause added to a list of facts, when there is one: ", rests on…". */
+const also = (clause: string) => (clause ? `, ${clause}` : '');
 
 /** "Preference, from Acme, private: Write reports in Norwegian.", or one an include brings: "…, from Standards (space:…), included in Acme: …" */
 function describeRule(rule: Rule): string {

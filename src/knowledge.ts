@@ -114,6 +114,15 @@ function readFrom(s: Session, table: string) {
   )`;
 }
 
+/**
+ * For each of these items, the kind of place Homing read what it rests on in, if it read any itself,
+ * such as a mailbox: what it cites, or anything in its line does. Asked once for all of them.
+ */
+async function readFromAll(s: Session, ids: string[]): Promise<Map<string, string>> {
+  const rows = await s.tx<{ item: string; kind: string }[]>`select item, kind from read_from(${s.tx.array(ids)}::uuid[])`;
+  return new Map(rows.map((row) => [row.item, row.kind]));
+}
+
 export interface Page {
   id: string;
   spaceId: string;
@@ -128,8 +137,11 @@ export interface Page {
    * first see the page, it's archived since then, by nobody named (spec §3).
    */
   archived: { at: Date; by: string | null; since: boolean } | null;
-  /** The current items, each with its sources and the earlier item it replaced, if any. */
-  items: (Item & { sources: Citation[]; replaced: Replaced | null })[];
+  /**
+   * The current items, each with its sources, the kind of place Homing read what it rests on in, if
+   * it read any itself, and the earlier item it replaced, if any.
+   */
+  items: (Item & { sources: Citation[]; readFrom: string | null; replaced: Replaced | null })[];
 }
 
 /** What an item replaced. When your private update replaced a shared item, others still see that one. */
@@ -175,7 +187,10 @@ export interface Hit {
   agent: string | null;
   editAgent: string | null;
   imported: Imported | null;
-  /** A source Homing read itself, such as an email in the person's mailbox, and the kind of place it read it in. */
+  /**
+   * A source Homing read itself, such as an email in the person's mailbox, and the kind of place it
+   * read it in. For an item, the kind of place Homing read what it rests on in, if it read any.
+   */
   readByHoming: boolean;
   readFrom: string | null;
 }
@@ -323,11 +338,8 @@ export async function updateItem(
   const me = personOf(s.principal);
   const shared = original.privateTo ? await sharedNowAs(s, itemId) : undefined;
   if (shared === itemId || (original.privateTo === null && s.principal.agent !== undefined && me)) {
-    // Everyone sees it, so yours is an update of it. Something you shared by moving it, meanwhile
-    // or before, still rests on what it did, and so does your update.
-    const moved = shared === itemId || (original.publishedFrom === null && original.publishedBy === me);
-    const kept = moved ? await s.tx<{ sourceId: string }[]>`select source_id from citations where content_id = ${itemId}::uuid` : [];
-    return supersedeItem(s, itemId, { body: input.body, sources: [...new Set([...kept.map((row) => row.sourceId), ...(input.sources ?? [])])] });
+    // Everyone sees it, so yours is an update of it, resting on what it does.
+    return supersedeItem(s, itemId, input);
   }
   if (shared) {
     const update = await supersedeItem(s, shared, input);
@@ -350,6 +362,8 @@ export async function updateItem(
  * to be true. A private replacement changes only the writer's own view; a
  * shared one replaces a shared item for everyone. Something of yours that
  * you shared as a copy is the copy from then on, so that's what it replaces.
+ * The new item rests on what the old one did, besides its own sources, so
+ * rewriting never loses where knowledge came from, such as an email.
  */
 export async function supersedeItem(
   s: Session,
@@ -363,7 +377,9 @@ export async function supersedeItem(
   if (!old) return undefined;
   const privateTo = sideOf(s, input.shared);
   const body = await textFor(s, old, input.body);
-  return insertItem(s, { sources: input.sources, body, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
+  const item = await insertItem(s, { sources: input.sources, body, pageId: old.pageId, spaceId: old.spaceId, privateTo, kind: 'text', supersedes: old.id });
+  for (const before of new Set([old.id, original.id])) await s.tx`select carry_citations(${before}::uuid, ${item.id}::uuid)`;
+  return item;
 }
 
 /**
@@ -394,7 +410,7 @@ async function textFor(s: Session, item: Item, text: NewText): Promise<string> {
  * update of a shared item, which says what the others still see (spec §3).
  */
 export async function readPage(s: Session, pageId: string): Promise<Page | undefined> {
-  const items = await s.tx<Page['items']>`
+  const items = await s.tx<Omit<Page['items'][number], 'readFrom'>[]>`
     with recursive chain (id, first, shared, nearest_shared) as (
       select c.id, c.id, c.private_to is null, null::uuid from content c
       where c.page_id = ${pageId}::uuid and c.supersedes is null and ${visibleContent(s, 'c')}
@@ -430,6 +446,8 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
   `;
   // Your own title for a page comes before the shared one.
   const titles = items.filter((item) => item.kind === 'title').sort((a, b) => Number(!a.privateTo) - Number(!b.privateTo));
+  const shown = items.filter((item) => item.kind !== 'title');
+  const read = await readFromAll(s, shown.map((item) => item.id));
   return {
     id: pageId,
     spaceId: items[0].spaceId,
@@ -438,8 +456,27 @@ export async function readPage(s: Session, pageId: string): Promise<Page | undef
     shared: titles.some((title) => title.privateTo === null),
     updatedAt: new Date(Math.max(...items.map((item) => item.updatedAt.getTime()))),
     archived: archivedAt ? { at: archivedAt, by: archivedBy, since: archivedSince ?? false } : null,
-    items: items.filter((item) => item.kind !== 'title'),
+    items: shown.map((item) => ({ ...item, readFrom: read.get(item.id) ?? null })),
   };
+}
+
+/**
+ * Moves a page that's wholly the person's own to another space they can open, by their assistant:
+ * its items, with their citations and history. Its sources stay where they were kept, and the
+ * collections it's in, or that it is, end, since a collection gathers pages of its own space.
+ * Recorded for the person alone. Says which space it was in.
+ */
+export async function movePage(s: Session, pageId: string, spaceId: string): Promise<string> {
+  const [{ movedFrom }] = await s.tx<{ movedFrom: string }[]>`select move_page(${pageId}::uuid, ${spaceId}::uuid) as moved_from`;
+  return movedFrom;
+}
+
+/** The person's latest move of a page, if they moved it: from where, by which assistant, and when. */
+export async function lastMove(s: Session, pageId: string): Promise<{ movedFrom: string; agent: string | null; at: Date } | undefined> {
+  const [move] = await s.tx<{ movedFrom: string; agent: string | null; at: Date }[]>`
+    select moved_from, agent, at from page_moves where page_id = ${pageId}::uuid order by at desc limit 1
+  `;
+  return move;
 }
 
 /** The space a page is in, if the viewer sees it in a space they can open. */
@@ -473,6 +510,8 @@ export interface Publication {
   current: boolean;
   /** If it was shared as a copy, what everyone sees of it now: the copy, or what replaced that since. */
   sharedAs: string | null;
+  /** The kind of place Homing read what it rests on in, if it read any itself, which everyone there will see. */
+  readFrom: string | null;
 }
 
 /** What sharing the item would do, if it's one of your own private items. */
@@ -496,8 +535,8 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
   `;
   const copy = await copyOf(s, itemId);
   const sharedAs = copy ? await everyoneSees(s, copy) : null;
-  const [facts] = await s.tx<{ hiddenCount: number; base: string | null; sharedText: string | null; current: boolean; sharedTitle: string | null; ownTitle: string | null }[]>`
-    select hidden_sources(${itemId}::uuid) as hidden_count,
+  const [facts] = await s.tx<{ hiddenCount: number; base: string | null; sharedText: string | null; current: boolean; sharedTitle: string | null; ownTitle: string | null; readFrom: string | null }[]>`
+    select hidden_sources(${itemId}::uuid) as hidden_count, (select kind from read_from(array[${itemId}::uuid])) as read_from,
            shared_base(${itemId}::uuid) as base,
            -- What everyone sees now that sharing this replaces: the shared item it updates.
            (select body from content where id = shared_base(${itemId}::uuid)) as shared_text,
@@ -519,18 +558,20 @@ export async function publicationOf(s: Session, itemId: string): Promise<Publica
     // Shared already as a copy, it's the copy from then on, and an update of that is shared instead.
     current: facts.current && sharedAs === null,
     sharedAs,
+    readFrom: facts.readFrom,
   };
 }
 
 /**
  * Shares one of your private items with everyone in its space (spec §5), exactly the text you were
- * shown: directly, as a person, or by approving what your assistant proposed. Returns the shared
- * item, or undefined if it changed since it was shown.
+ * shown, in the space you were shown it for: directly, as a person, or by approving what your
+ * assistant proposed. Returns the shared item, or undefined if it changed since it was shown. One
+ * that moved to another space since is refused, saying where it is.
  */
-export async function publishItem(s: Session, itemId: string, shown: string): Promise<string | undefined> {
+export async function publishItem(s: Session, itemId: string, spaceId: string, shown: string): Promise<string | undefined> {
   try {
     // In a savepoint, so a refusal leaves the rest of the transaction usable.
-    const [{ id }] = await s.tx.savepoint((sp) => sp<{ id: string }[]>`select publish_item(${itemId}::uuid, ${shown}) as id`);
+    const [{ id }] = await s.tx.savepoint((sp) => sp<{ id: string }[]>`select publish_item(${itemId}::uuid, ${spaceId}::uuid, ${shown}) as id`);
     return id;
   } catch (error) {
     // Changed or replaced since it was shown: it's shown again as it is now.
@@ -545,8 +586,8 @@ export async function publishItem(s: Session, itemId: string, shown: string): Pr
  * and your original of something you shared as a copy says which copy stands for it.
  */
 export async function readItem(s: Session, itemId: string) {
-  const [item] = await s.tx<(Item & { sources: Citation[]; updates: string | null })[]>`
-    select ${itemColumns(s)}, ${citationsOf(s)} as sources,
+  const [item] = await s.tx<(Item & { sources: Citation[]; readFrom: string | null; updates: string | null })[]>`
+    select ${itemColumns(s)}, ${citationsOf(s, true)} as sources, (select kind from read_from(array[id])) as read_from,
            case when private_to is not null and supersedes is not null then shared_base(id) end as updates
     from content
     where id = ${itemId}::uuid and ${visibleContent(s, 'content')}
@@ -870,6 +911,8 @@ export interface Change {
   publishedAt: Date | null;
   at: Date;
   onlyYou: boolean;
+  /** The kind of place Homing read what it rests on in, if it read any itself, such as a mailbox. */
+  readFrom: string | null;
 }
 
 /**
@@ -900,7 +943,7 @@ export async function recentChanges(
     : s.tx`and c.page_id not in ${archivedPages} ${shelved.length ? s.tx`and c.space_id not in ${s.tx(shelved)}` : s.tx``}`;
   // The newest items first, then only those still current: checked per item, behind the fence,
   // since checking it for the whole store at once is slow. Replaced items are few, so a margin covers them.
-  const rows = await s.tx<(Change & { total: number })[]>`
+  const rows = await s.tx<Omit<Change, 'readFrom'>[]>`
     select item_id, page_id, space_id, title, text, kind, new_page and not overview as new_page, written_by, agent, edit_agent, imported, published_by, published_at, at, only_you, overview,
            exists (select from pages p where p.id = recent.page_id and p.archived) as page_archived
     from (
@@ -938,7 +981,9 @@ export async function recentChanges(
           ? s.tx`or exists (select from content c where c.space_id in ${s.tx(shelved)} and c.kind = 'text' and ${visible(s, 'c')} and ${current(s, 'c')})`
           : s.tx``} as archived
       `;
-  return { changes: rows.slice(0, limit), more: rows.length > limit, archived };
+  const changes = rows.slice(0, limit);
+  const read = await readFromAll(s, changes.map((change) => change.itemId));
+  return { changes: changes.map((change) => ({ ...change, readFrom: read.get(change.itemId) ?? null })), more: rows.length > limit, archived };
 }
 
 /** A source in a list, as the viewer sees it. */
@@ -1153,7 +1198,7 @@ export async function search(
     : within('c');
 
   // A match in a skill's current files finds the skill, once.
-  return s.tx<Hit[]>`
+  const hits = await s.tx<Hit[]>`
     select kind, id, space_id, page_id, page_type, title, text, private, superseded, archived, updates_shared, replaced_for_you, item_kind, written_by, agent, edit_agent, imported, read_by_homing, read_from from (
     select distinct on (kind, id) * from (
       select case when c.kind in ('title', 'file') then 'page' else 'item' end as kind,
@@ -1191,6 +1236,8 @@ export async function search(
     order by superseded, rank desc
     limit ${options.limit ?? 20}
   `;
+  const read = await readFromAll(s, hits.filter((hit) => hit.kind === 'item').map((hit) => hit.id));
+  return hits.map((hit) => (hit.kind === 'item' ? { ...hit, readFrom: read.get(hit.id) ?? null } : hit));
 }
 
 export function itemColumns(s: Session, table?: string) {
