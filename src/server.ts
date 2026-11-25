@@ -142,8 +142,10 @@ export async function startServer(sql: Sql, options: ServerOptions): Promise<Hom
   });
   mcp = toNodeHandler({
     fetch: async (request, context) => {
-      if (options.logRequests ?? true) logRequest(await request.clone().text(), (context?.authInfo?.extra?.principal as AgentPrincipal).agent);
-      return handler.fetch(request, context);
+      const asked = (options.logRequests ?? true) ? askedFor(await request.clone().text(), (context?.authInfo?.extra?.principal as AgentPrincipal).agent) : undefined;
+      if (!asked) return handler.fetch(request, context);
+      const began = performance.now();
+      return measured(await handler.fetch(request, context), (bytes) => console.log(`${asked}, ${Math.round(performance.now() - began)} ms, ${bytes} bytes`));
     },
   });
   auth = authHandler(homingAuth);
@@ -178,20 +180,50 @@ const assistantSites = (process.env.HOMING_ASSISTANT_SITES || 'claude.ai,chatgpt
 const cardClients = ['https://claude.ai/oauth/mcp-oauth-client-metadata'];
 
 /**
- * Logs what an assistant asked for, such as `Claude tools/call act`: the
- * method and the tool or resource, never the arguments or anything else a
- * person wrote.
+ * What an assistant asked for, as the log says it, such as `mcp: Claude
+ * tools/call act`: the method and the tool or resource, never the arguments
+ * or anything else a person wrote. Undefined for what isn't logged.
  */
-function logRequest(body: string, assistant: string) {
+function askedFor(body: string, assistant: string): string | undefined {
   let message: { method?: unknown; params?: { name?: unknown; uri?: unknown } } | undefined;
   try {
     message = JSON.parse(body);
   } catch {
-    return;
+    return undefined;
   }
-  if (typeof message?.method !== 'string' || message.method.startsWith('notifications/')) return;
+  if (typeof message?.method !== 'string' || message.method.startsWith('notifications/')) return undefined;
   const what = [message.params?.name, message.params?.uri].find((value) => typeof value === 'string');
-  console.log(`mcp: ${assistant} ${message.method}${what ? ` ${what}` : ''}`);
+  return `mcp: ${assistant} ${message.method}${what ? ` ${what}` : ''}`;
+}
+
+/**
+ * A response as it was, which tells how many bytes its answer held once all of
+ * it has gone out, or its reader stopped: how long Homing took over a request
+ * and how much an assistant got to read, without looking at any of it.
+ */
+function measured(response: Response, done: (bytes: number) => void): Response {
+  if (!response.body) {
+    done(0);
+    return response;
+  }
+  let bytes = 0;
+  const reader = response.body.getReader();
+  const counted = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const { done: ended, value } = await reader.read();
+      if (ended) {
+        done(bytes);
+        return controller.close();
+      }
+      bytes += value.byteLength;
+      controller.enqueue(value);
+    },
+    cancel(reason) {
+      done(bytes);
+      return reader.cancel(reason);
+    },
+  });
+  return new Response(counted, response);
 }
 
 /** Where Homing is reached, which decides the host names it answers to. */

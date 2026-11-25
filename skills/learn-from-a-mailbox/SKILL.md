@@ -32,7 +32,7 @@ It is a sketch. Reading corrects it.
 
 ## A sitting
 
-1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets its length). It is oldest first, one line for each email, grouped by conversation, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does.
+1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets its length). It is oldest first, one line for each email, grouped by conversation, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does. Look at its dates before you read it: mail from more than about a year ago is read lightly, as the next section describes, and that decides how much you open and how much you write.
 2. Go through the conversations in order.
    - Decide from the lines whether it is worth opening. Much mail isn't: a newsletter, a receipt, a meeting time long past. Nothing in Homing decides that for you.
    - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't.
@@ -48,7 +48,7 @@ It is a sketch. Reading corrects it.
 Read the far past for its story, and slow down as you come closer to today.
 
 - For periods more than about a year back, take long stretches and go by the lines. Open what the story needs: how the relationship with a client began, what was agreed, what was decided and why, how a project ended. Leave the daily back-and-forth unopened.
-- Write it short, on the same pages: the course of each client and project in those years, with the agreements and decisions that may still hold.
+- Write it short, on the same pages: the course of each client and project in those years, with the agreements and decisions that may still hold. A subject usually needs one item for a stretch of old mail, or none: what began, what was agreed or decided, what changed, what ended. Leave out what mattered only then, such as a rollout week by week or a fault that was fixed.
 - Something old that still governs today, such as a contract or a standing decision, gets full attention whatever its date. Age alone decides nothing.
 - From about a year before today, read thoroughly, as the rest of this skill describes.
 
@@ -73,7 +73,15 @@ Apply what they say: correct the pages, create the spaces they agree to, and mov
 
 ## When you reach today
 
-Go through each space once more. Bring its overview up to date: where it stands now and what is open. Make tasks for what the user still has to do or follow up. Tell the user the history is read and what you would look at first.
+You wrote the old years without knowing how they turned out. Now you know. Before the work is done, go through everything you wrote with that knowledge, a space at a time and a page at a time. It is a sitting of its own, or several: start it in a new session.
+
+- **Settle what later mail settled.** A question that was answered, a plan that was carried out or dropped, a price, a date or a role that changed: replace the item with how it stands now, and say what it was.
+- **Shorten what no longer matters.** Where a page tells an old period in more detail than anyone needs today, bring it down to the story: how it began, what turned it, how it ended. What the items said before stays in their history.
+- **Say what has ended.** A client that left, a company that was sold or closed, a person who moved on: say so, with its date, on the page and in the space's overview.
+- **Bring each overview up to date**: where it stands now and what is open.
+- **Make tasks** for what the user still has to do or follow up.
+
+Then hold a last checkpoint. Tell the user what you changed, space by space, and what looks finished. Ask which pages and spaces they no longer need in front of them, and archive the ones they name: what is archived stays searchable. Tell the user the history is read and what you would look at first.
 
 ## After that
 
