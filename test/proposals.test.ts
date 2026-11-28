@@ -341,7 +341,7 @@ test('only assistants checked to keep the model off the card get it', async () =
   assert.deepEqual(await rules(ana, space), []);
 });
 
-test('the log says what assistants asked for, never what they wrote', async () => {
+test('the log says what assistants asked for, how long it took and how much they got, never what they wrote', async () => {
   const logged = await startServer(db, { port: 0, host: '127.0.0.1', authDatabase: inTestDatabase(authDatabaseUrl), ...testAssistants, logRequests: true });
   try {
     const ana = await member(logged.url, 'Ana');
@@ -353,7 +353,7 @@ test('the log says what assistants asked for, never what they wrote', async () =
     await conversation.close();
     const log = lines.mock.calls.map((call) => String(call.arguments[0]));
     lines.mock.restore();
-    assert.ok(log.includes('mcp: Claude tools/call act'), log.join('\n'));
+    assert.ok(log.some((line) => /^mcp: Claude tools\/call act, \d+ ms, [1-9]\d* bytes$/.test(line)), log.join('\n'));
     assert.ok(log.every((line) => !line.includes('secret')));
   } finally {
     await logged.close();

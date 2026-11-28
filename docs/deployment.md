@@ -16,7 +16,7 @@ The log shows a link for creating the first account. It works once, for an hour;
 
 Keep the secret. It signs sessions, protects the keys that sign assistants' tokens, and seals the sign-ins of connected accounts, such as people's Microsoft 365. Changing it signs everyone out, stops assistants from getting new tokens, and makes each connected account need its owner to sign in again.
 
-The log also shows what assistants ask Homing for, such as `mcp: Claude tools/call act`, but never what they send.
+The log also shows what assistants ask Homing for, how long each answer took and how large it was, such as `mcp: Claude tools/call act, 420 ms, 2310 bytes`, but never what they send or get.
 
 ## HTTPS
 
