@@ -129,7 +129,7 @@ export class Ledger {
               ],
               text: null,
               related: [],
-              moreRelated: false,
+              moreRelated: { earlier: false, later: false },
             };
           },
         },

@@ -118,8 +118,8 @@ export interface InOrder {
   list(access: Access, window: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }>;
 }
 
-/** An item as a list in order gives it: its envelope, and where it is there, such as an email's folder by name. */
-export type Listed = Envelope & { where: string | null };
+/** An item as a list in order gives it: its envelope, its first words, and where it is there, such as an email's folder by name. */
+export type Listed = Found & { where: string | null };
 
 /**
  * What's never read in a place, whoever asks, until its owner takes it off: senders by an address
@@ -199,10 +199,10 @@ export interface Item {
   fields: [label: string, value: Value][];
   /** Its text, for a kind with prose, such as an email's; null for one of fields only. */
   text: string | null;
-  /** What it's read with, itself among them, oldest first, such as its thread. */
+  /** What it's read with, itself among them, oldest first, such as its thread around it. */
   related: Envelope[];
-  /** Whether there's more of that than Homing read. */
-  moreRelated: boolean;
+  /** Whether there's more of that than Homing read, before what it read and after. */
+  moreRelated: { earlier: boolean; later: boolean };
   /** What a source keeps of it, with the words given, the kind's own way. By default, its fields. */
   excerpt?(words?: string): string;
 }

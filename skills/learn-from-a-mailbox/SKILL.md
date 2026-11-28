@@ -26,16 +26,16 @@ A handful of well-kept pages for each subject is the aim. A long list of small n
 
 This is for the first time. When `context` says reading has begun, skip it: read the reading log, which says where the work stands, and ask for the next stretch, without a day, since a day begins reading again.
 
-Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read, unless the user has said. From its beginning means a day before its oldest mail, such as 2000-01-01. Several years is fine: the far past is read more lightly, as described below. Then take two short looks at the mailbox's list, which shows each email as one line: first a stretch from a few weeks ago, then one from the date reading will begin. Asking for the list from a date sets the place reached to that date, so look at the beginning last: reading then stands where it should, and that stretch is your first. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
+Start with the user there. Read their spaces first, so you know what Homing already holds. Ask how far back to read, unless the user has said. From its beginning means a day before its oldest mail, such as 2000-01-01. Several years is fine: the far past is read more lightly, as described below. Then take two short looks at the mailbox's list, which shows each conversation as one entry, with its first words: first a stretch from a few weeks ago, then one from the date reading will begin. Asking for the list from a date sets the place reached to that date, so look at the beginning last: reading then stands where it should, and that stretch is your first. Say what you see: the clients and projects that stand out, and the spaces you would start with. Create the ones the user agrees to, each with a short overview.
 
 It is a sketch. Reading corrects it.
 
 ## A sitting
 
-1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets its length). It is oldest first, one line for each email, grouped by conversation, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does. Look at its dates before you read it: mail from more than about a year ago is read lightly, as the next section describes, and that decides how much you open and how much you write.
+1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets how many emails it holds at most). It is oldest first, one entry for each conversation, with the first words of its newest email, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does. Look at its dates before you read it: mail from more than about a year ago is read lightly, as the next section describes, and that decides how much you open and how much you write.
 2. Go through the conversations in order.
-   - Decide from the lines whether it is worth opening. Much mail isn't: a newsletter, a receipt, a meeting time long past. Nothing in Homing decides that for you.
-   - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't.
+   - Decide from the entry whether it is worth opening. Much mail isn't: a newsletter, a receipt, a meeting time long past. Nothing in Homing decides that for you.
+   - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't: they are in the thread `read` lists with it.
    - Work out what it is about. The same person can write about several projects, so go by what the email is about, not by who sent it.
    - Find where that knowledge lives: what Homing already holds from the conversation, and the pages of the space it belongs to. Read the page before you write. Search only when no page fits: search what is known, without the emails (`search` with `known`), and in both languages if the user's mail is in two.
    - Write there. Cite the email the words were written in, with the words exactly as `read` shows them.
@@ -47,7 +47,7 @@ It is a sketch. Reading corrects it.
 
 Read the far past for its story, and slow down as you come closer to today.
 
-- For periods more than about a year back, take long stretches and go by the lines. Open what the story needs: how the relationship with a client began, what was agreed, what was decided and why, how a project ended. Leave the daily back-and-forth unopened.
+- For periods more than about a year back, take long stretches and go by the entries. Open what the story needs: how the relationship with a client began, what was agreed, what was decided and why, how a project ended. Leave the daily back-and-forth unopened.
 - Write it short, on the same pages: the course of each client and project in those years, with the agreements and decisions that may still hold. A subject usually needs one item for a stretch of old mail, or none: the story of that stretch, with what began, what changed and what ended. An agreement or a decision that may still hold gets an item of its own. Leave out what mattered only then, such as a rollout week by week or a fault that was fixed.
 - Something old that still governs today, such as a contract or a standing decision, gets full attention whatever its date. Age alone decides nothing.
 - From about a year before today, read thoroughly, as the rest of this skill describes.

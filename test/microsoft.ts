@@ -6,10 +6,11 @@
 // Graph also keeps a mailbox for each account, with folders, which it
 // searches and reads as Outlook does, with ids that change when an email
 // moves, and immutable ones that don't, for whoever asks for those. It lists
-// a mailbox's emails by when they arrived, as Graph documents it: oldest
-// first only with a filter on the same field first, at most 1,000 to a page,
-// a page that may hold fewer than asked for, and a next link to follow, whose
-// $skip counts items that aren't emails too, so only the link leads on. Its
+// a mailbox's emails by when they arrived, and a conversation's, as Graph
+// documents it: in order only with a filter on the same field first, at most
+// 1,000 to a page, a page that may hold fewer than asked for, and a next link
+// to follow, whose $skip counts items that aren't emails too, so only the
+// link leads on. Its
 // folders go by their well-known names in any language. When it's asked too
 // often, or is down, it says how long to wait, and it can answer badly: a
 // body cut short, one that isn't JSON, or one that isn't what Graph
@@ -407,7 +408,8 @@ export class MicrosoftStandIn {
         bccRecipients: (email.bcc ?? []).map((emailAddress) => ({ emailAddress })),
         receivedDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
         sentDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
-        bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
+        // Its first 255 characters as text, line breaks and all, as Graph previews an email.
+        bodyPreview: textOf(email.html).replace(/\n/g, '\r\n').slice(0, 255),
         hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
         parentFolderId: account.otherFolderIds ? `AAkF${email.folder}` : email.folder,
         isDraft: email.draft === true || email.folder === drafts.id,
@@ -458,29 +460,36 @@ export class MicrosoftStandIn {
         .sort((a, b) => b.at.getTime() - a.at.getTime());
       return { status: 200, body: { value: matches.slice(0, top).map(fields), ...(matches.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
     }
-    const conversation = filter && /^conversationId eq '(.*)'$/.exec(filter)?.[1]?.replace(/''/g, "'");
-    if (conversation) {
-      if (order !== null) return bad;
-      const thread = mailbox.emails.filter((email) => email.conversation === conversation);
-      return { status: 200, body: { value: thread.slice(0, top).map(fields), ...(thread.length > top && { '@odata.nextLink': `${this.url}/next` }) } };
-    }
-    // Every email by when it arrived, as Graph filters it, oldest first when asked.
-    const dated = filter && /^receivedDateTime ge (\S+?)(?: and receivedDateTime lt (\S+))?$/.exec(filter);
+    // Emails by when they arrived, to the second, as Graph keeps that, and by their conversation, each
+    // clause as Graph filters it, and all of them at once.
+    if (filter === null) return bad;
+    type Listable = { at: Date; conversation?: string };
+    const second = (at: Date) => Math.floor(at.getTime() / 1000);
+    const compare: Record<string, (seconds: number, than: number) => boolean> = { ge: (a, b) => a >= b, gt: (a, b) => a > b, le: (a, b) => a <= b, lt: (a, b) => a < b };
+    const clauses = filter.split(' and ').map((clause) => {
+      const dated = /^receivedDateTime (ge|gt|le|lt) (\S+)$/.exec(clause);
+      if (dated) {
+        const than = Date.parse(dated[2]) / 1000;
+        return Number.isNaN(than) ? undefined : { field: 'receivedDateTime', holds: (item: Listable) => compare[dated[1]](second(item.at), than) };
+      }
+      const conversation = /^conversationId eq '((?:[^']|'')*)'$/.exec(clause)?.[1].replace(/''/g, "'");
+      return conversation === undefined ? undefined : { field: 'conversationId', holds: (item: Listable) => item.conversation === conversation };
+    });
+    if (!clauses.every((clause) => clause !== undefined)) return bad;
     // As Graph: what a list is ordered by must come first in its filter.
-    if (order !== null && (!dated || !['receivedDateTime asc', 'receivedDateTime desc'].includes(order))) {
+    if (order !== null && (!['receivedDateTime asc', 'receivedDateTime desc'].includes(order) || clauses[0].field !== 'receivedDateTime')) {
       return { status: 400, body: { error: { code: 'InefficientFilter', message: 'The restriction or sort order is too complex for this operation.' } } };
     }
-    if (!dated) return bad;
-    const [from, until] = [Date.parse(dated[1]), dated[2] ? Date.parse(dated[2]) : Infinity];
-    if (Number.isNaN(from) || Number.isNaN(until)) return bad;
-    this.asked.listed++;
-    this.listings.push(filter);
-    // To the second, as Graph keeps when an email arrived, and the items that aren't emails among them, which $skip counts too.
-    const second = (at: Date) => Math.floor(at.getTime() / 1000);
-    const within = (at: Date) => second(at) * 1000 >= from && second(at) * 1000 < until;
+    // The mailbox in order, not a thread.
+    if (clauses.every((clause) => clause.field === 'receivedDateTime')) {
+      this.asked.listed++;
+      this.listings.push(filter);
+    }
+    // With the items that aren't emails among them, which $skip counts too.
+    const within = (item: Listable) => clauses.every((clause) => clause.holds(item));
     const items = [
-      ...mailbox.emails.filter((email) => within(email.at)).map((email) => ({ at: email.at, id: email.id, email })),
-      ...mailbox.others.filter((other) => within(other.at)).map((other) => ({ at: other.at, id: other.id, email: undefined })),
+      ...mailbox.emails.filter(within).map((email) => ({ at: email.at, id: email.id, email })),
+      ...mailbox.others.filter(within).map((other) => ({ at: other.at, id: other.id, email: undefined })),
     ];
     if (order) items.sort((a, b) => (order.endsWith('desc') ? -1 : 1) * (second(a.at) - second(b.at)) || a.id.localeCompare(b.id));
     const skip = Number(url.searchParams.get('$skip') ?? 0);
