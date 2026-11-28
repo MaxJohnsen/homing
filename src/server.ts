@@ -181,8 +181,9 @@ const cardClients = ['https://claude.ai/oauth/mcp-oauth-client-metadata'];
 
 /**
  * What an assistant asked for, as the log says it, such as `mcp: Claude
- * tools/call act`: the method and the tool or resource, never the arguments
- * or anything else a person wrote. Undefined for what isn't logged.
+ * tools/call act`: the method and the tool or resource, each only when it's
+ * a plain name, never the arguments or anything else a person wrote.
+ * Undefined for what isn't logged.
  */
 function askedFor(body: string, assistant: string): string | undefined {
   let message: { method?: unknown; params?: { name?: unknown; uri?: unknown } } | undefined;
@@ -191,35 +192,42 @@ function askedFor(body: string, assistant: string): string | undefined {
   } catch {
     return undefined;
   }
-  if (typeof message?.method !== 'string' || message.method.startsWith('notifications/')) return undefined;
-  const what = [message.params?.name, message.params?.uri].find((value) => typeof value === 'string');
+  const plain = (value: unknown): value is string => typeof value === 'string' && /^[\w:/.-]{1,200}$/.test(value);
+  if (!plain(message?.method) || message.method.startsWith('notifications/')) return undefined;
+  const what = [message.params?.name, message.params?.uri].find(plain);
   return `mcp: ${assistant} ${message.method}${what ? ` ${what}` : ''}`;
 }
 
 /**
- * A response as it was, which tells how many bytes its answer held once all of
- * it has gone out, or its reader stopped: how long Homing took over a request
- * and how much an assistant got to read, without looking at any of it.
+ * A response as it was, which tells, once, how many bytes its answer held when
+ * Homing has handed all of it over, or its reader stopped: how long Homing
+ * took over a request and how large its answer was, without looking at any of
+ * it.
  */
-function measured(response: Response, done: (bytes: number) => void): Response {
+function measured(response: Response, tell: (bytes: number) => void): Response {
   if (!response.body) {
-    done(0);
+    tell(0);
     return response;
   }
   let bytes = 0;
+  let told = false;
+  const done = () => {
+    if (!told) tell(bytes);
+    told = true;
+  };
   const reader = response.body.getReader();
   const counted = new ReadableStream<Uint8Array>({
     async pull(controller) {
       const { done: ended, value } = await reader.read();
       if (ended) {
-        done(bytes);
+        done();
         return controller.close();
       }
       bytes += value.byteLength;
       controller.enqueue(value);
     },
     cancel(reason) {
-      done(bytes);
+      done();
       return reader.cancel(reason);
     },
   });
