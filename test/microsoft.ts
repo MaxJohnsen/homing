@@ -407,7 +407,8 @@ export class MicrosoftStandIn {
         bccRecipients: (email.bcc ?? []).map((emailAddress) => ({ emailAddress })),
         receivedDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
         sentDateTime: email.at.toISOString().replace(/\.\d+Z$/, 'Z'),
-        bodyPreview: textOf(email.html).replace(/\s+/g, ' ').slice(0, 255),
+        // Its first 255 characters as text, line breaks and all, as Graph previews an email.
+        bodyPreview: textOf(email.html).replace(/\n/g, '\r\n').slice(0, 255),
         hasAttachments: (email.attachments ?? []).some((attachment) => !attachment.inline),
         parentFolderId: account.otherFolderIds ? `AAkF${email.folder}` : email.folder,
         isDraft: email.draft === true || email.folder === drafts.id,

@@ -309,7 +309,7 @@ const immutableIds = 'IdType="ImmutableId"';
 const summaryFields = 'id,conversationId,subject,from,receivedDateTime,sentDateTime,bodyPreview';
 /** What the never-read list goes by: where an email is, and who it's from and to. */
 const placingFields = 'parentFolderId,isDraft,from,toRecipients,ccRecipients,bccRecipients';
-/** What a line of the mailbox in order shows, and what a thread lists: no text. */
+/** What a thread lists of each email, never its text. The mailbox in order adds its first words. */
 const lineFields = `id,conversationId,subject,receivedDateTime,sentDateTime,${placingFields}`;
 /** How many emails of a thread, and attachments of an email, Homing reads. */
 const listLength = 25;
@@ -544,19 +544,21 @@ const graphTime = (at: Date) => at.toISOString().replace(/\.\d+Z$/, 'Z');
 
 /**
  * The mailbox in order (connectors.ts): every email in every folder, what its owner sent too, by
- * when it arrived, oldest first, from one moment until another, without what's never read. One
- * line each, with who it's from and to, its subject, when it arrived, its conversation and its
- * folder by name, and never its text. Graph's own next link leads on, as its documentation asks,
- * since a page may hold fewer than asked for. It stops once it has more than most, past the first
- * second, or, so each use gets further however much of the mail is never read, after so many pages
- * or so long, or at the most requests one use makes. Then it got through to the second of the last
- * email it looked at, since more may have arrived in that same second. When that's the second it
- * began at and that second alone filled the pages it asks for, it got through that second, partly.
- * When time or requests ran out there, it's no answer: nothing moves, and the next use tries again.
+ * when it arrived, oldest first, from one moment until another, without what's never read. Each
+ * comes with who it's from and to, its subject, when it arrived, its conversation, its folder by name
+ * and its first words, as Graph previews them, and never its text. Graph gives the first words of
+ * what's never read too, as it does for search, and they're left out with the email. Graph's own
+ * next link leads on, as its documentation asks, since a page may hold fewer than asked for. It
+ * stops once it has more than most, past the first second, or, so each use gets further however
+ * much of the mail is never read, after so many pages or so long, or at the most requests one use
+ * makes. Then it got through to the second of the last email it looked at, since more may have
+ * arrived in that same second. When that's the second it began at and that second alone filled the
+ * pages it asks for, it got through that second, partly. When time or requests ran out there, it's
+ * no answer: nothing moves, and the next use tries again.
  */
 export async function listMail(box: Mailbox, { from, until, most }: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }> {
   const filter = `receivedDateTime ge ${graphTime(from)} and receivedDateTime lt ${graphTime(until)}`;
-  let link: string | undefined = `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent('receivedDateTime asc')}&$top=${pageSize}&$select=${lineFields}`;
+  let link: string | undefined = `/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent('receivedDateTime asc')}&$top=${pageSize}&$select=${lineFields},bodyPreview`;
   const listed: Listed[] = [];
   const started = Date.now();
   let last: Date | undefined;

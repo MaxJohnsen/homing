@@ -2,8 +2,8 @@
 // mailbox from its oldest mail to its newest, a stretch at a time, and
 // decides for itself what each conversation is about and what is worth
 // keeping. Homing gives only what an assistant can't do for itself: the next
-// stretch, one line for each email, with what it already holds from each
-// conversation; the place reached, which any session carries on from; and
+// stretch, one entry for each conversation, with what it already holds from
+// it; the place reached, which any session carries on from; and
 // what is never read there, which Homing withholds wherever it reads the
 // place. One token is the whole of confirming a stretch: whoever asks with
 // it moves the place reached, and a stretch nobody confirms comes again.
@@ -17,7 +17,7 @@ import { withPrincipal, type Session } from './db.ts';
 import { current, visible, visibleContent } from './knowledge.ts';
 import { listPlace, neverReadIn, oneLine, placesFor, type Place, type Problem } from './places.ts';
 
-/** How many lines a stretch has unless the assistant asks for fewer or more, and the most it may ask for. */
+/** How many emails a stretch has unless the assistant asks for fewer or more, and the most it may ask for. */
 export const linesUsually = 100;
 export const linesAtMost = 150;
 /**
@@ -32,7 +32,7 @@ const heldShown = 5;
 
 /** A conversation in a stretch: its emails, oldest first, and what Homing already holds from it. */
 export interface Conversation {
-  lines: Listed[];
+  emails: Listed[];
   held: { items: HeldItem[]; more: number };
 }
 
@@ -88,7 +88,7 @@ async function placeNamed(s: Session, broker: Broker, named: string | undefined)
 }
 
 /**
- * The cut between two stretches: before the first second that takes the lines past most, so no
+ * The cut between two stretches: before the first second that takes the emails past most, so no
  * second is split, and when the first email's second alone holds more, after that second.
  */
 function cutOf(listed: Listed[], through: Date, most: number): Date {
@@ -214,15 +214,15 @@ export async function listStretch(
   return { outcome: 'stretch', place, began: startedAt, from, until: cut, token: token!, lapses: lapses!, how, today, short, unlisted, emails: shown.length, conversations, text };
 }
 
-/** The lines grouped by conversation, in the order each first appears, with what Homing holds from each. */
-function grouped(lines: Listed[], held: Map<string, Conversation['held']>): Conversation[] {
+/** The emails grouped by conversation, in the order each first appears, with what Homing holds from each. */
+function grouped(emails: Listed[], held: Map<string, Conversation['held']>): Conversation[] {
   const groups = new Map<string, Listed[]>();
-  for (const line of lines) {
-    const key = line.conversation ?? `email ${line.id}`;
+  for (const email of emails) {
+    const key = email.conversation ?? `email ${email.id}`;
     if (!groups.has(key)) groups.set(key, []);
-    groups.get(key)!.push(line);
+    groups.get(key)!.push(email);
   }
-  return [...groups.values()].map((group) => ({ lines: group, held: held.get(group[0].conversation ?? '') ?? { items: [], more: 0 } }));
+  return [...groups.values()].map((group) => ({ emails: group, held: held.get(group[0].conversation ?? '') ?? { items: [], more: 0 } }));
 }
 
 /**

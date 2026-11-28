@@ -118,8 +118,8 @@ export interface InOrder {
   list(access: Access, window: { from: Date; until: Date; most: number }): Promise<{ listed: Listed[]; through: Date; partly?: boolean }>;
 }
 
-/** An item as a list in order gives it: its envelope, and where it is there, such as an email's folder by name. */
-export type Listed = Envelope & { where: string | null };
+/** An item as a list in order gives it: its envelope, its first words, and where it is there, such as an email's folder by name. */
+export type Listed = Found & { where: string | null };
 
 /**
  * What's never read in a place, whoever asks, until its owner takes it off: senders by an address
