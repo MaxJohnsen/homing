@@ -32,10 +32,10 @@ It is a sketch. Reading corrects it.
 
 ## A sitting
 
-1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets its length). It is oldest first, one entry for each conversation, with the first words of its newest email, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does. Look at its dates before you read it: mail from more than about a year ago is read lightly, as the next section describes, and that decides how much you open and how much you write.
+1. Ask Homing for the next stretch of the mailbox's list (`act` with `mailbox.list`; `lines` sets how many emails it holds at most). It is oldest first, one entry for each conversation, with the first words of its newest email, and each conversation shows what Homing already holds from it. Take as long a stretch as you can work through well: long where little happens, short where much does. Look at its dates before you read it: mail from more than about a year ago is read lightly, as the next section describes, and that decides how much you open and how much you write.
 2. Go through the conversations in order.
    - Decide from the entry whether it is worth opening. Much mail isn't: a newsletter, a receipt, a meeting time long past. Nothing in Homing decides that for you.
-   - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't.
+   - Open the conversation's newest email, which usually quotes the rest. Open earlier ones when it doesn't: they are in the thread `read` lists with it.
    - Work out what it is about. The same person can write about several projects, so go by what the email is about, not by who sent it.
    - Find where that knowledge lives: what Homing already holds from the conversation, and the pages of the space it belongs to. Read the page before you write. Search only when no page fits: search what is known, without the emails (`search` with `known`), and in both languages if the user's mail is in two.
    - Write there. Cite the email the words were written in, with the words exactly as `read` shows them.

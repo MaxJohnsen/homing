@@ -90,10 +90,10 @@ export function withheld(email: { parties: Party[]; where: Where | null }, never
 
 /**
  * An email as Homing reads it: its sender, recipients, date, subject and attachments' names, its
- * text, and its thread. Who could see it are its To and Cc, unless it names nobody there, as an
- * email sent only as Bcc doesn't.
+ * text, and its thread around it. Who could see it are its To and Cc, unless it names nobody there,
+ * as an email sent only as Bcc doesn't.
  */
-export function emailItem(email: Email, thread: EmailSummary[], moreInThread: boolean): Item {
+export function emailItem(email: Email, thread: EmailSummary[], moreInThread: Item['moreRelated']): Item {
   const recipients = [...email.to, ...email.cc];
   const audience: Audience = recipients.length ? { people: recipients.slice(0, audienceKept), more: Math.max(0, recipients.length - audienceKept) } : 'unknown';
   const fields: Item['fields'] = [['From', { party: email.from }]];

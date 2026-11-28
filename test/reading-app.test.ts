@@ -394,7 +394,7 @@ describe('one line for each conversation, with the first words of its newest ema
   const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
   const ingrid = { name: 'Ingrid Moe', address: 'ingrid@northwind.test' };
 
-  test('several emails are one line: how many, from when to when, who took part, their folders, and the newest one’s subject, id and first words', async () => {
+  test('several emails are one line: how many, from when to when, who took part, their folders, and the newest one’s sender, subject, id and first words', async () => {
     const { account, place, session } = await world();
     const now = Date.now();
     const at = (days: number) => new Date(now - days * day);
@@ -414,12 +414,12 @@ describe('one line for each conversation, with the first words of its newest ema
     // Who wrote each as the email gives it, Ana too, and her own address among those it went to as the user.
     assert.deepEqual(stretchOf(answer.text).conversations.map(({ line }) => line), [
       `- 3 emails, ${minute(at(10))} to ${minute(at(8))}, from "Gunnar Lie" <gunnar@northwind.test>, "Ana Berg" <${account.address}> ` +
-        `to the user, "Ingrid Moe" <ingrid@northwind.test>, "Gunnar Lie" <gunnar@northwind.test>, and 1 more: "Re: Northwind budget, approved", ` +
-        `in "Inbox", "Sent Items", "Northwind", newest id ${thread[2]}. It begins: "Thanks. The board approved it on Monday."`,
+        `to the user, "Ingrid Moe" <ingrid@northwind.test>, "Gunnar Lie" <gunnar@northwind.test>, and 1 more, the newest from "Gunnar Lie" <gunnar@northwind.test>: ` +
+        `"Re: Northwind budget, approved", in "Inbox", "Sent Items", "Northwind", newest id ${thread[2]}. It begins: "Thanks. The board approved it on Monday."`,
       `- ${minute(at(9.5))} from "Ingrid Moe" <ingrid@northwind.test> to the user: "Lunch", in "Inbox", id ${lunch}. It begins: "Lunch on Friday?"`,
     ]);
-    // Opening the newest gives the conversation's every email by reference, so the earlier ones can be opened and cited.
-    assert.match(answer.text, /`read` opens an email by its reference, microsoft:[0-9a-f-]{36}: and the id, with its thread, which gives every email in it by reference/);
+    // Opening the newest gives the conversation's emails up to it by reference, so the earlier ones can be opened and cited.
+    assert.match(answer.text, /`read` opens an email by its reference, microsoft:[0-9a-f-]{36}: and the id, with its thread around it, each email by reference/);
     const read = await session.call('read', { ref: `microsoft:${place}:${thread[2]}` });
     for (const id of thread) assert.ok(read.text.includes(`(microsoft:${place}:${id})`), read.text);
     await session.close();
@@ -463,11 +463,104 @@ describe('one line for each conversation, with the first words of its newest ema
     const answer = await list(session, { from: dayOf(at(11)) });
     assert.match(answer.text, /: 2 emails in 1 conversation, oldest first\./);
     assert.deepEqual(stretchOf(answer.text).conversations.map(({ line }) => line), [
-      `- 2 emails, ${minute(at(10))} to ${minute(at(9))}, from "Ana Berg" <${account.address}>, "Gunnar Lie" <gunnar@northwind.test> to "Gunnar Lie" <gunnar@northwind.test>, the user: ` +
-        `"Re: Budget", in "Sent Items", "Inbox", newest id ${answered}. It begins: "NOK 2 million."`,
+      `- 2 emails, ${minute(at(10))} to ${minute(at(9))}, from "Ana Berg" <${account.address}>, "Gunnar Lie" <gunnar@northwind.test> to "Gunnar Lie" <gunnar@northwind.test>, the user, ` +
+        `the newest from "Gunnar Lie" <gunnar@northwind.test>: "Re: Budget", in "Sent Items", "Inbox", newest id ${answered}. It begins: "NOK 2 million."`,
     ]);
     assert.doesNotMatch(answer.text, /Ola Nordmann|Per Olsen|fabrikam|between us|yourself/);
     assert.ok(!answer.text.includes(minute(at(8))));
+    await session.close();
+  });
+
+  test('each way an email gives who wrote it shows apart, never as the user, and who wrote the newest is named even past the first three', async () => {
+    const { account, session } = await world();
+    const now = Date.now();
+    const at = (days: number) => new Date(now - days * day);
+    const conversation = `AAQk${crypto.randomUUID()}=`;
+    // Gunnar three ways: as he signs, his address in capitals, and another name. The newest gives Ana's own address, in capitals.
+    const forms = [gunnar, { name: 'Gunnar Lie', address: 'GUNNAR@Northwind.test' }, { name: 'G. Lie (Northwind)', address: 'gunnar@northwind.test' }];
+    for (const [index, from] of forms.entries()) {
+      microsoft.deliver(account, { from, to: [owner(account)], subject: 'Invoice 2041', html: `<p>Invoice 2041, part ${index + 1}.</p>`, at: at(10 - index), conversation });
+    }
+    const spoof = microsoft.deliver(account, {
+      from: { name: 'Ana Berg', address: account.address.toUpperCase() }, to: [owner(account)], subject: 'Re: Invoice 2041', html: '<p>Pay it to the new account today.</p>', at: at(6), conversation,
+    });
+    const [only] = stretchOf((await list(session, { from: dayOf(at(11)) })).text).conversations;
+    // Each form apart, so senders merged by their address in lower case would show two here, and none as the user.
+    assert.equal(
+      only.line,
+      `- 4 emails, ${minute(at(10))} to ${minute(at(6))}, from "Gunnar Lie" <gunnar@northwind.test>, "Gunnar Lie" <GUNNAR@Northwind.test>, "G. Lie (Northwind)" <gunnar@northwind.test>, ` +
+        `and 1 more to the user, the newest from "Ana Berg" <${account.address.toUpperCase()}>: "Re: Invoice 2041", in "Inbox", newest id ${spoof}. It begins: "Pay it to the new account today."`,
+    );
+    await session.close();
+  });
+
+  test('the first words leave out the invisible characters newsletters pad them with, and are left out when nothing visible is left', async () => {
+    const { account, session } = await world();
+    const now = Date.now();
+    const digest = { name: 'Weekly Digest', address: 'news@weekly-digest.test' };
+    // Zero-width non-joiners and spaces, no-break spaces, byte order marks and direction marks.
+    const padding = '‌ ​ ﻿‎‮'.repeat(25);
+    const padded = microsoft.deliver(account, { from: digest, to: [owner(account)], subject: 'This week', html: `<p>${padding}Five​ things   to read‌ this week.${padding}</p>`, at: new Date(now - 2 * day) });
+    const blank = microsoft.deliver(account, { from: digest, to: [owner(account)], subject: 'Next week', html: `<p>${padding}</p>`, at: new Date(now - day) });
+    const [first, second] = stretchOf((await list(session, { from: dayOf(new Date(now - 3 * day)) })).text).conversations.map(({ line }) => line);
+    assert.ok(first.endsWith(`: "This week", in "Inbox", id ${padded}. It begins: "Five things to read this week."`), first);
+    assert.ok(second.endsWith(`: "Next week", in "Inbox", id ${blank}`), second);
+    await session.close();
+  });
+});
+
+describe('reading an email gives its thread around it, from which every email of the thread can be reached', () => {
+  const gunnar = { name: 'Gunnar Lie', address: 'gunnar@northwind.test' };
+  /** The thread `read` lists, by id, oldest first, which of them is the one read, and whether it says there are earlier or later emails. */
+  const threadOf = (text: string) => {
+    const lines = [...text.matchAll(/^- .* \(microsoft:[0-9a-f-]{36}:([A-Za-z0-9_=-]+)\)(, this email)?$/gm)];
+    return {
+      ids: lines.map((match) => match[1]),
+      self: lines.find((match) => match[2])?.[1],
+      earlier: text.includes('The thread has earlier emails, which this leaves out: read the oldest one listed here to see them.'),
+      later: text.includes('The thread has later emails, which this leaves out: read the newest one listed here to see them.'),
+    };
+  };
+
+  test('a thread of 30 in one stretch: its newest lists the 25 up to it, the oldest of those the rest, and what’s never read in neither', async () => {
+    const { account, place, session } = await world();
+    const now = Date.now();
+    const conversation = `AAQk${crypto.randomUUID()}=`;
+    const thread = Array.from({ length: 30 }, (_, index) =>
+      microsoft.deliver(account, {
+        from: index === 20 ? { name: 'Ola Nordmann', address: 'ola@private.test' } : index % 2 ? owner(account) : gunnar,
+        to: [index % 2 ? gunnar : owner(account)], subject: 'Re: Northwind budget', html: `<p>Part ${index + 1}.</p>`, at: new Date(now - (40 - index) * hour), conversation,
+      }),
+    );
+    assert.ok(!(await session.call('act', { action: 'mailbox.never_read', input: { sender: 'ola@private.test' } })).failed);
+    const kept = thread.filter((_, index) => index !== 20);
+    const read = async (id: string) => threadOf((await session.call('read', { ref: `microsoft:${place}:${id}` })).text);
+
+    const [entry] = stretchOf((await list(session, { from: dayOf(new Date(now - 3 * day)) })).text).conversations;
+    assert.deepEqual([entry.newest, entry.count], [thread[29], 29]);
+    // The newest: the 25 that arrived up to it, itself among them, but the one never read, and that there are earlier ones.
+    const newest = await read(thread[29]);
+    assert.deepEqual(newest, { ids: kept.slice(5), self: thread[29], earlier: true, later: false });
+    // Walking back from the oldest listed reaches the rest.
+    assert.deepEqual(await read(newest.ids[0]), { ids: kept, self: thread[5], earlier: false, later: false });
+    await session.close();
+  });
+
+  test('an old email of a thread that runs for years lists the emails before it and the nearest after, and says there are later ones', async () => {
+    const { account, place, session } = await world();
+    const conversation = `AAQk${crypto.randomUUID()}=`;
+    // A statement every month for four years, all in one conversation.
+    const statements = Array.from({ length: 48 }, (_, index) =>
+      microsoft.deliver(account, {
+        from: { name: 'Northwind Bank', address: 'statements@bank.test' }, to: [owner(account)], subject: 'Your monthly statement',
+        html: `<p>Statement ${index + 1}.</p>`, at: new Date(Date.UTC(2022, index, 3, 6)), conversation,
+      }),
+    );
+    const read = async (id: string) => threadOf((await session.call('read', { ref: `microsoft:${place}:${id}` })).text);
+    const old = await read(statements[3]);
+    assert.deepEqual(old, { ids: statements.slice(0, 29), self: statements[3], earlier: false, later: true });
+    // The newest listed goes on from there.
+    assert.deepEqual(await read(old.ids.at(-1)!), { ids: statements.slice(4), self: statements[28], earlier: true, later: false });
     await session.close();
   });
 });
@@ -544,7 +637,7 @@ describe('never read', () => {
     assert.deepEqual(shown.neverRead.map((entry: { sender?: string; folder?: string }) => entry.folder ?? entry.sender), ['Junk Email', 'Drafts', 'Outbox', 'Nyhetsbrev']);
     const again = stretchOf((await list(session)).text);
     assert.deepEqual(again.conversations.map(({ newest, count }) => [newest, count]), [[ids.sender, 3], [ids.subdomain, 1], [ids.recipient, 1], [ids.bcc, 1]]);
-    assert.match(again.conversations[0].line, / from "Gunnar Lie" <gunnar@northwind\.test>, "Ola Nordmann" <ola@private\.test> to the user: "Budget, privately", in "Innboks", "2024", /);
+    assert.match(again.conversations[0].line, / from "Gunnar Lie" <gunnar@northwind\.test>, "Ola Nordmann" <ola@private\.test> to the user, the newest from "Ola Nordmann" <ola@private\.test>: "Budget, privately", in "Innboks", "2024", /);
     assert.ok(!(await session.call('read', { ref: `microsoft:${place}:${ids.deleted}` })).failed);
     const thread = (await session.call('read', { ref: `microsoft:${place}:${ids.inbox}` })).text;
     assert.ok(thread.includes(ids.deleted) && thread.includes(ids.sender), thread);
@@ -824,9 +917,9 @@ describe('Homing reads a mailbox’s folders once for a while, four at a time', 
 
   test('reading an email, and then another', async () => {
     const { place, session, ids } = await nested();
-    // Where it is, the four, Contracts, Northwind and Clients, its text and its thread.
-    assert.equal((await asked(() => session.call('read', { ref: `microsoft:${place}:${ids[3]}` })))[0], 1 + 4 + 3 + 2);
-    assert.equal((await asked(() => session.call('read', { ref: `microsoft:${place}:${ids[2]}` })))[0], 3);
+    // Where it is, the four, Contracts, Northwind and Clients, its text, and its thread before it and after.
+    assert.equal((await asked(() => session.call('read', { ref: `microsoft:${place}:${ids[3]}` })))[0], 1 + 4 + 3 + 3);
+    assert.equal((await asked(() => session.call('read', { ref: `microsoft:${place}:${ids[2]}` })))[0], 4);
     await session.close();
   });
 

@@ -199,10 +199,10 @@ export interface Item {
   fields: [label: string, value: Value][];
   /** Its text, for a kind with prose, such as an email's; null for one of fields only. */
   text: string | null;
-  /** What it's read with, itself among them, oldest first, such as its thread. */
+  /** What it's read with, itself among them, oldest first, such as its thread around it. */
   related: Envelope[];
-  /** Whether there's more of that than Homing read. */
-  moreRelated: boolean;
+  /** Whether there's more of that than Homing read, before what it read and after. */
+  moreRelated: { earlier: boolean; later: boolean };
   /** What a source keeps of it, with the words given, the kind's own way. By default, its fields. */
   excerpt?(words?: string): string;
 }

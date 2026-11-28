@@ -296,12 +296,12 @@ export interface Mail extends MailSummary {
   attachments: string[];
 }
 
-/** An email with its thread, oldest first, as far as Homing reads it. */
+/** An email with its thread around it, oldest first, as far as Homing reads it. */
 export interface MailWithThread {
   mail: Mail;
   thread: MailSummary[];
-  /** Whether the thread holds more than Homing read of it. */
-  moreInThread: boolean;
+  /** Whether the thread holds emails that arrived before what Homing read of it, and after. */
+  moreInThread: { earlier: boolean; later: boolean };
 }
 
 /** Ids that stay the same when an email moves to another folder, so a reference to it keeps working. */
@@ -311,7 +311,7 @@ const summaryFields = 'id,conversationId,subject,from,receivedDateTime,sentDateT
 const placingFields = 'parentFolderId,isDraft,from,toRecipients,ccRecipients,bccRecipients';
 /** What a thread lists of each email, never its text. The mailbox in order adds its first words. */
 const lineFields = `id,conversationId,subject,receivedDateTime,sentDateTime,${placingFields}`;
-/** How many emails of a thread, and attachments of an email, Homing reads. */
+/** How many emails of a thread on each side of the one read, itself among those before, and how many attachments of an email, Homing reads. */
 const listLength = 25;
 
 /** The folders Outlook makes that the never-read list starts with, by their well-known names, and Outlook's English name for each. */
@@ -494,8 +494,12 @@ export async function searchMail(box: Mailbox, words: string, top: number): Prom
 
 /**
  * Reads one email in the account's mailbox by its immutable id, with its text and, unless left
- * out, the names of its attachments and its thread, without what's never read. Undefined when it
- * isn't in the mailbox any more, and withheld when it's never read, whose text Homing doesn't ask for.
+ * out, the names of its attachments and its thread around it, without what's never read. Undefined
+ * when it isn't in the mailbox any more, and withheld when it's never read, whose text Homing
+ * doesn't ask for. The thread is the nearest emails of its conversation that arrived up to the
+ * same second as this one, itself among them, and the nearest that arrived after, each side by when
+ * they arrived, as Graph orders it only with that first in the filter, and whether there's more on
+ * each side. An email without the time it arrived has no thread listed.
  */
 export async function readMail(box: Mailbox, id: string, { thread: withThread = true }: { thread?: boolean } = {}): Promise<MailWithThread | 'withheld' | undefined> {
   const path = `/v1.0/me/messages/${encodeURIComponent(id)}`;
@@ -510,11 +514,19 @@ export async function readMail(box: Mailbox, id: string, { thread: withThread = 
     throw error;
   }
   const summary = summaryOf(message);
-  const conversation = withThread ? summary.conversation : null;
-  const [thread, attachments] = await Promise.all([
-    conversation ? box.get(`/v1.0/me/messages?$filter=${encodeURIComponent(`conversationId eq '${conversation.replace(/'/g, "''")}'`)}&$top=${listLength}&$select=${lineFields}`).then(pageOf) : undefined,
+  const conversation = withThread && summary.at ? summary.conversation : null;
+  const side = (compared: 'le' | 'gt', order: 'desc' | 'asc') => {
+    const filter = `receivedDateTime ${compared} ${graphTime(summary.at!)} and conversationId eq '${conversation!.replace(/'/g, "''")}'`;
+    return box.get(`/v1.0/me/messages?$filter=${encodeURIComponent(filter)}&$orderby=${encodeURIComponent(`receivedDateTime ${order}`)}&$top=${listLength}&$select=${lineFields}`).then(pageOf);
+  };
+  const [before, after, attachments] = await Promise.all([
+    conversation ? side('le', 'desc') : undefined,
+    conversation ? side('gt', 'asc') : undefined,
     withThread && message.hasAttachments === true ? box.get(`${path}/attachments?$select=name,isInline&$top=${listLength}`).then(pageOf) : undefined,
   ]);
+  const thread = (await keptOf(box, [...(before?.value ?? []).reverse(), ...(after?.value ?? [])])).kept.map(({ message }) => summaryOf(message));
+  // Itself, even when more of its thread arrived in that same second than Homing reads.
+  if (conversation && !thread.some((one) => one.id === summary.id)) thread.push(summary);
   // As text, as Microsoft was asked, or else turned into text here.
   const textIn = (body: unknown) => {
     const { contentType, content } = (body ?? {}) as { contentType?: unknown; content?: unknown };
@@ -532,8 +544,8 @@ export async function readMail(box: Mailbox, id: string, { thread: withThread = 
         .filter((attachment) => attachment.isInline !== true)
         .flatMap((attachment) => (typeof attachment.name === 'string' && attachment.name.trim() ? [attachment.name.trim()] : [])),
     },
-    thread: (await keptOf(box, thread?.value ?? [])).kept.map(({ message }) => summaryOf(message)).sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)),
-    moreInThread: thread?.next !== undefined,
+    thread: thread.sort((a, b) => (a.at?.getTime() ?? 0) - (b.at?.getTime() ?? 0)),
+    moreInThread: { earlier: before?.next !== undefined, later: after?.next !== undefined },
   };
 }
 
